@@ -19,53 +19,15 @@ github_identity = importlib.import_module("github_identity")
 github_read = importlib.import_module("github_read")
 
 
-def automation_configured() -> bool:
-    values = {**os.environ, **github_identity.load_local_env()}
-    names = {
-        "CODEX_AUTOMATION_LOGIN",
-        "GH_WITH_ENV_TOKEN_EXPECTED_LOGIN",
-        "CODEX_GITHUB_TOKEN",
-        "GH_TOKEN",
-        "GITHUB_TOKEN",
-    }
-    return any(
-        value and (name in names or re.fullmatch(r"GITHUB_(?:READER_|CLIENT_)?APP_.*", name))
-        for name, value in values.items()
-    ) or str(values.get("GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH", "")).casefold() in {"1", "yes", "true"}
+def identity_context() -> tuple[dict[str, str], bool]:
+    try:
+        return github_identity.persistent_auth_context()
+    except github_identity.GitHubAppError as error:
+        raise ValueError(str(error)) from error
 
 
 def persistent_environment() -> dict[str, str]:
-    local_values = github_identity.load_local_env()
-    transient_tokens = [
-        name
-        for name in ("GH_TOKEN", "GITHUB_TOKEN", "CODEX_GITHUB_TOKEN")
-        if os.environ.get(name) and os.environ[name] != local_values.get(name)
-    ]
-    if transient_tokens and not github_identity.github_app_config():
-        raise ValueError(
-            "shell-only GitHub tokens cannot reach the service; use gh auth login or the existing local.env credential route"
-        )
-    selected = {
-        name: value
-        for name, value in os.environ.items()
-        if name
-        in {
-            "CODE_HOME",
-            "GH_CONFIG_DIR",
-            "XDG_CONFIG_HOME",
-            "CODEX_AUTOMATION_LOGIN",
-            "CODEX_AUTOMATION_BOT_LOGINS",
-            "GH_WITH_ENV_TOKEN_EXPECTED_LOGIN",
-            "GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH",
-        }
-        or re.fullmatch(
-            r"GITHUB_(?:READER_|CLIENT_)?APP_(?:ID|INSTALLATION_ID|PRIVATE_KEY_PATH|API_URL|TOKEN_CACHE_DIR|OWNERS)",
-            name,
-        )
-    }
-    path = github_identity.env_file_path()
-    selected["CODEX_SKILLS_ENV_FILE"] = str((path or Path.home() / ".code/local.env").resolve())
-    return selected
+    return identity_context()[0]
 
 
 def environment_prefix(environment: dict[str, str]) -> list[str]:
@@ -73,7 +35,7 @@ def environment_prefix(environment: dict[str, str]) -> list[str]:
 
 
 def select_login(login: str | None = None) -> str | None:
-    if automation_configured():
+    if identity_context()[1]:
         if login:
             raise ValueError("CLI login selection conflicts with configured automation; preserve that identity")
         reader = github_read.GitHubReader(

@@ -80,6 +80,7 @@ class GitHubAccessTests(unittest.TestCase):
                 "CODEX_SKILLS_ENV_FILE": str(env_file),
                 "CODE_HOME": str(self.root / "code"),
                 "GH_CONFIG_DIR": str(self.root / "gh"),
+                "GH_TOKEN": "ambient-secret",
             },
         ):
             environment = github_access.persistent_environment()
@@ -87,6 +88,7 @@ class GitHubAccessTests(unittest.TestCase):
         self.assertEqual(environment["CODE_HOME"], str(self.root / "code"))
         self.assertEqual(environment["GH_CONFIG_DIR"], str(self.root / "gh"))
         self.assertNotIn("fixture-secret", str(environment))
+        self.assertNotIn("ambient-secret", str(environment))
         with (
             patch.dict(os.environ, {"GH_TOKEN": "transient-secret"}),
             patch_attr(github_access.github_read, "GitHubReader") as reader,
@@ -99,15 +101,35 @@ class GitHubAccessTests(unittest.TestCase):
 
     def test_plain_login_lists_private_owned_repositories_with_owner_and_archive_filter(self) -> None:
         reader = Mock()
-        reader.paged_json.return_value = [
-            {"full_name": "director/private", "private": True, "archived": False},
-            {"full_name": "director/retired", "archived": True},
-            {"full_name": "other/shared", "archived": False},
-        ]
-        self.assertEqual(foreign_watch.installed_repositories(reader, "director", "director"), ["director/private"])
+
+        def repositories(path: str, **kwargs: Any) -> list[dict]:
+            self.assertEqual(path, "/user/repos")
+            if "organization_member" not in kwargs.get("params", {}).get("affiliation", "").split(","):
+                return []
+            return [
+                {"full_name": "organization/private", "private": True, "archived": False},
+                {"full_name": "organization/retired", "archived": True},
+                {"full_name": "other/shared", "archived": False},
+            ]
+
+        reader.paged_json.side_effect = repositories
         self.assertEqual(
-            foreign_watch.installed_repositories(reader, "director", "different-login"), ["director/private"]
+            foreign_watch.installed_repositories(reader, "organization", "director"), ["organization/private"]
         )
+
+    def test_cache_only_and_host_selectors_do_not_select_automation(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "CODEX_HOME": str(self.root / "account"),
+                "GH_HOST": "example.invalid",
+                "GITHUB_APP_TOKEN_CACHE_DIR": str(self.root / "cache"),
+            },
+        ):
+            selectors, configured = github_access.identity_context()
+        self.assertFalse(configured)
+        self.assertEqual(selectors["GH_HOST"], "example.invalid")
+        self.assertNotIn("CODEX_HOME", selectors)
 
 
 if __name__ == "__main__":

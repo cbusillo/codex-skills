@@ -151,6 +151,17 @@ def configure_locked(args: argparse.Namespace, root: Path, config_path: Path) ->
         if existing is None:
             argv.extend([option, value])
     args.github_environment = github_access.persistent_environment()
+    prefix = github_access.environment_prefix(args.github_environment)
+    if argv[0] == prefix[0]:
+        stop = next(
+            (index for index, value in enumerate(argv[1:], 1) if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", value)),
+            len(argv),
+        )
+        persisted = dict(value.split("=", 1) for value in argv[1:stop])
+        if persisted != args.github_environment:
+            raise ValueError(
+                "service authentication selectors changed; repeat with the original nonsecret login settings"
+            )
     args.github_cli_login = github_access.select_login(option_value(argv, "--github-cli-login"))
     if args.github_cli_login and option_value(argv, "--github-cli-login") is None:
         argv.extend(["--github-cli-login", args.github_cli_login])
@@ -179,12 +190,7 @@ def configure_locked(args: argparse.Namespace, root: Path, config_path: Path) ->
     if previous and previous["argv"] != argv:
         with services.service_lock(config_path, "foreign"):
             pass
-    prefix = github_access.environment_prefix(args.github_environment)
-    if argv[0] == prefix[0]:
-        persisted = dict(value.split("=", 1) for value in argv[1:] if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", value))
-        if any(persisted.get(name) != value for name, value in args.github_environment.items()):
-            raise ValueError("existing service authentication selectors differ; preserve its configured environment")
-    else:
+    if argv[0] != prefix[0]:
         argv = [*prefix, *argv]
     config["services"]["foreign"] = {**(previous or {"cwd": str(CATALOG), "restart_seconds": 60}), "argv": argv}
     ledger.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -446,6 +452,8 @@ def start(args: argparse.Namespace) -> dict:
                 }
         if services.reconciliation_marker(config_path, "foreign").exists() and not config_path.exists():
             raise ValueError("foreign service requires reconciliation before launching a Supervisor")
+        if services.reconciliation_marker(config_path, "foreign").exists():
+            prepare_foreign_service(root, config_path)
         ledger, state = configure(args, root, config_path)
         prepare_foreign_service(root, config_path)
         journal = previous if args.recover else {"status": "launching"}

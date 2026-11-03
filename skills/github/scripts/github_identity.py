@@ -30,6 +30,9 @@ from typing import Any, Iterator
 import fcntl
 
 
+APP_CREDENTIAL_SUFFIXES = ("ID", "INSTALLATION_ID", "PRIVATE_KEY_PATH")
+
+
 class GitHubAppError(RuntimeError):
     """A safe-to-display GitHub App configuration or token error."""
 
@@ -181,6 +184,35 @@ def automation_login(environ: Mapping[str, str] | None = None) -> str | None:
     )
 
 
+def persistent_auth_context(environ: Mapping[str, str] | None = None) -> tuple[dict[str, str], bool]:
+    values = os.environ if environ is None else environ
+    local_values = load_local_env(values)
+    merged = {**values, **local_values}
+    prefixes = ("GITHUB_APP", "GITHUB_READER_APP", "GITHUB_CLIENT_APP")
+    credentials = {f"{prefix}_{suffix}" for prefix in prefixes for suffix in APP_CREDENTIAL_SUFFIXES}
+    configured = bool(automation_login(values) or merged.get("GITHUB_CLIENT_APP_OWNERS")
+                      or any(merged.get(name) for name in credentials)
+                      or any(merged.get(name) for name in ("CODEX_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"))
+                      or str(merged.get("GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH", "")).casefold() in {"1", "yes", "true"})
+    token = next((name for name in ("CODEX_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN") if merged.get(name)), None)
+    if token and merged[token] != local_values.get(token) and not github_app_config(values):
+        raise GitHubAppError(f"effective {token} is shell-only; unset it and use gh auth login, or the existing local.env credential route")
+    names = {"CODE_HOME", "GH_CONFIG_DIR", "XDG_CONFIG_HOME", "GH_HOST", "GITHUB_API_URL",
+             "CODEX_AUTOMATION_LOGIN", "CODEX_AUTOMATION_BOT_LOGINS", "GITHUB_CLIENT_APP_OWNERS",
+             "GH_WITH_ENV_TOKEN_EXPECTED_LOGIN", "GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH"}
+    names.update(f"{prefix}_{suffix}" for prefix in prefixes
+                 for suffix in (*APP_CREDENTIAL_SUFFIXES, "API_URL", "TOKEN_CACHE_DIR"))
+    selectors = {name: values[name] for name in names if values.get(name)}
+    path = env_file_path(values)
+    selectors["CODEX_SKILLS_ENV_FILE"] = str((path or pathlib.Path.home() / ".code/local.env").resolve())
+    if not values.get("CODE_HOME") and values.get("CODEX_HOME"):
+        cache = str(pathlib.Path(values["CODEX_HOME"]).expanduser() / "state/github-app-token")
+        for prefix in prefixes:
+            if any(merged.get(f"{prefix}_{suffix}") for suffix in APP_CREDENTIAL_SUFFIXES) and not merged.get(f"{prefix}_TOKEN_CACHE_DIR"):
+                selectors[f"{prefix}_TOKEN_CACHE_DIR"] = cache
+    return selectors, configured
+
+
 def configured_bot_logins(environ: Mapping[str, str] | None = None) -> tuple[str, ...]:
     raw = configured_value("CODEX_AUTOMATION_BOT_LOGINS", environ=environ)
     if not raw:
@@ -245,7 +277,7 @@ def github_app_config(environ: Mapping[str, str] | None = None, *, reader: bool 
 def _github_app_config(prefix: str, environ: Mapping[str, str] | None = None) -> GitHubAppConfig | None:
     values = os.environ if environ is None else environ
     local_values = load_local_env(values)
-    names = tuple(f"{prefix}_{suffix}" for suffix in ("ID", "INSTALLATION_ID", "PRIVATE_KEY_PATH"))
+    names = tuple(f"{prefix}_{suffix}" for suffix in APP_CREDENTIAL_SUFFIXES)
     configured = {
         name: configured_value(name, environ=values, local_env=local_values)
         for name in names
@@ -319,7 +351,7 @@ def reader_config_available() -> bool:
     """Presence only; validation and minting remain in the existing App path."""
     local_values = load_local_env()
     return all(configured_value(f"GITHUB_READER_APP_{suffix}", local_env=local_values)
-               for suffix in ("ID", "INSTALLATION_ID", "PRIVATE_KEY_PATH"))
+               for suffix in APP_CREDENTIAL_SUFFIXES)
 
 
 def _b64url(payload: bytes) -> str:

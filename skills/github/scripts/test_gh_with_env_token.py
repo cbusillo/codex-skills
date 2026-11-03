@@ -423,10 +423,12 @@ def test_active_cli_write_retains_selected_login_before_sending() -> None:
         fake_gh = root / "gh"
         called = root / "called"
         write(fake_gh, f"#!/bin/sh\ntouch '{called}'\n")
+        env_file = root / "local.env"
+        env_file.write_text("GH_WITH_ENV_TOKEN_EXPECTED_LOGIN=file-login\n")
         for actual in ("director", "changed"):
             called.unlink(missing_ok=True)
             write(classifier, "import json\n" + f"print(json.dumps({{'body': {{'login': {actual!r}}}}}))\n")
-            result = run_wrapper(root / "absent.env", classifier, root / "unused.py", "issue", "comment", "1", "--body", "fixture",
+            result = run_wrapper(env_file, classifier, root / "unused.py", "issue", "comment", "1", "--body", "fixture",
                                  gh_command=fake_gh, extra_env={"GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK": "1",
                                                              "GH_WITH_ENV_TOKEN_EXPECTED_LOGIN": "director"})
             assert (result.returncode == 0) == (actual == "director"), result.stderr
@@ -442,7 +444,9 @@ def test_approved_active_fallback_keeps_the_default_automation_login_route() -> 
         write(fake_gh, "#!/bin/sh\n"
               "if [ \"$*\" = 'api user --jq .login' ]; then echo person; exit 0; fi\n"
               "printf 'written\\n'\n")
-        result = run_wrapper(root / "missing.env", unused, unused, "issue", "comment", "1", "--body", "fixture",
+        env_file = root / "local.env"
+        env_file.write_text("GH_WITH_ENV_TOKEN_EXPECTED_LOGIN=stale-app-login\n")
+        result = run_wrapper(env_file, unused, unused, "issue", "comment", "1", "--body", "fixture",
                              gh_command=fake_gh, extra_env={"GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK": "1",
                                                          "CODEX_AUTOMATION_LOGIN": "agent"})
         assert result.returncode == 0, result.stderr

@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -184,6 +186,17 @@ class SupervisorStartTests(unittest.TestCase):
         ledger = self.root / "workers.json"
         supervisor.save_state(ledger, [])
         commands = []
+        selector = str(self.root / "github settings with spaces.env")
+        self.args.github_environment = {"CODEX_SKILLS_ENV_FILE": selector}
+        fixture_bin = self.root / harness
+        fixture_bin.mkdir()
+        for executable in ("uv", "claude"):
+            shim = fixture_bin / executable
+            shim.write_text(
+                f"#!{sys.executable}\nimport json, os, sys\nprint(json.dumps({{'argv': sys.argv[1:], 'selector': os.environ.get('CODEX_SKILLS_ENV_FILE'), 'account': os.environ.get('CODEX_HOME') or os.environ.get('CLAUDE_CONFIG_DIR')}}))\n"
+            )
+            shim.chmod(0o700)
+        run_fixture = subprocess.run
 
         def launch(argv: list[str], **_: object) -> subprocess.CompletedProcess:
             if argv[-1] == "window":
@@ -194,6 +207,30 @@ class SupervisorStartTests(unittest.TestCase):
                 codex_session_proxy.managed_argv(self.root, words)
             else:
                 iterm_tab.fresh_claude_session(command)
+            account_key = "CODEX_HOME" if self.args.harness == "codex" else "CLAUDE_CONFIG_DIR"
+            account = str(self.root / "account with spaces")
+            wrapped = iterm_tab.with_account(
+                command,
+                {"provider": "openai" if self.args.harness == "codex" else "anthropic", "env": {account_key: account}},
+                coordinate=self.args.harness == "codex",
+            )
+            observed = run_fixture(
+                ["/bin/zsh", "-c", wrapped],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                env={
+                    "PATH": str(fixture_bin) + os.pathsep + os.defpath,
+                    "HOME": str(self.root),
+                    "ZDOTDIR": str(self.root / "empty-startup"),
+                },
+            )
+            self.assertEqual(observed.returncode, 0, observed.stderr)
+            effective = json.loads(observed.stdout)
+            self.assertEqual(effective["selector"], selector)
+            self.assertEqual(effective["account"], account)
+            if self.args.harness == "codex":
+                self.assertIn(str(Path(iterm_tab.__file__).with_name("codex-session.py")), effective["argv"])
             commands.append(words)
             registration = Path(argv[argv.index("--ledger") + 1])
             self.assertNotEqual(registration, ledger)
@@ -402,6 +439,38 @@ class SupervisorStartTests(unittest.TestCase):
         own = [argv[index + 1] for index, value in enumerate(argv) if value == "--own-login"]
         self.assertIn("person", own)
         self.assertIn("--own-login=example", argv)
+
+    def test_stored_selector_loss_refuses_before_auth_or_configuration_change(self) -> None:
+        config = self.root / "services.json"
+        with patch.object(supervisor.shutil, "which", return_value="/fixture/uv"):
+            supervisor.configure(self.args, self.root, config)
+        data = supervisor.services.load_config(config)
+        data["services"]["foreign"]["argv"].insert(1, "GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1")
+        supervisor.save_state(config, data)
+        before = config.read_bytes()
+        with patch.object(supervisor.github_access, "select_login") as authenticate:
+            with self.assertRaises(ValueError):
+                supervisor.configure(self.args, self.root, config)
+        authenticate.assert_not_called()
+        self.assertEqual(config.read_bytes(), before)
+
+    def test_held_reader_keeps_its_configuration_before_any_auth_or_launch(self) -> None:
+        config = self.root / "services.json"
+        with patch.object(supervisor.shutil, "which", return_value="/fixture/uv"):
+            supervisor.configure(self.args, self.root, config)
+        before = config.read_bytes()
+        supervisor.services.reconciliation_marker(config, "foreign").touch()
+        self.args.events = True
+        with (
+            patch.object(supervisor, "prepare_foreign_service", side_effect=ValueError("held")),
+            patch.object(supervisor.github_access, "select_login") as authenticate,
+            patch.object(supervisor, "launch_supervisor") as launch,
+        ):
+            with self.assertRaises(ValueError):
+                supervisor.start(self.args)
+        authenticate.assert_not_called()
+        launch.assert_not_called()
+        self.assertEqual(config.read_bytes(), before)
 
     def test_ended_supervisor_generation_can_restart_but_unknown_liveness_cannot(self) -> None:
         with (
