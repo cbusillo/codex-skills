@@ -410,10 +410,13 @@ markers and exact-output contracts as described under Carry Context.
 
 - Before sending anything a person will read, ask of each clause: would
   deleting it stop them from understanding the result or taking the action
-  asked of them? If not, delete it. For the Director it is a trial on
-  Supervisor handoffs and closeout reports until 2026-11-17; the Director says
-  when a cut removed something they needed, and two such reports end it. Other
-  Director messages keep their shape until then.
+  asked of them? If not, delete it. Fields a skill requires, and everything
+  Carry Context preserves, stay. For the Director it is a trial on Supervisor
+  handoffs and closeout reports until 2026-11-17, or their second report that
+  a cut removed something they needed, whichever comes first. Record those
+  reports and the Director's decision on what follows on
+  [codex-skills#3402](https://github.com/cbusillo/codex-skills/issues/3402)
+  deletion test; other Director messages keep their shape until that decision.
 - Scan the whole reply for numbered issue/PR mentions. Link each prose mention
   with its short title, or use a pronoun instead; leave literal commands and
   helper-consumed text unchanged.
