@@ -1305,10 +1305,14 @@ def read_issue_brief(issue: str, header: str) -> str:
                                 stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
         payload = json.loads(result.stdout)
         status = payload["issue"]["recorded_current_status"] if not result.returncode and payload.get("ok") else ""
+        managed = payload["issue"]["provenance"]["section_updates_allowed"]
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError) as error:
         raise ValueError(f"Brief source unavailable for {issue}") from error
+    if managed is not True:
+        raise ValueError(f"{issue} needs a managed Current Status written through gh-plan.py update-section")
     status = status.replace("\r\n", "\n")
-    brief = re.search(r"(?m)^Brief:[ \t]*\n(?P<fence>`{3,}|~{3,})(?:text)?[ \t]*\n(?P<brief>[\s\S]*?)^(?P=fence)[ \t]*$", status)
+    brief = re.search(r"(?m)^Brief:[ \t]*\n(?P<fence>(?P<marker>`|~)(?P=marker){2,})(?:text)?[ \t]*\n"
+                      r"(?P<brief>[\s\S]*?)^(?P=fence)(?P=marker)*[ \t]*$", status)
     if not brief or not re.search(r"(?m)^Next actor: agent:supervisor[ \t]*$", status[:brief.start()]):
         raise ValueError(f"{issue} needs Next actor: agent:supervisor and a fenced Brief: in Current Status; use ###, not ##, inside briefs")
     if not brief["brief"].strip():
@@ -1449,10 +1453,10 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
             raise ValueError("fresh --ledger registration needs managed Codex --remote launches")
     for text in command_texts:
         validate_text(text)
-    brief_files: Path | list[Path] = getattr(args, "brief_file", None) or []
-    if not brief_files:
+    brief_input: Path | list[Path] = getattr(args, "brief_file", None) or []
+    if not brief_input:
         raise ValueError("new launches require --brief-file; put the prompt in that file")
-    brief_files = brief_files if isinstance(brief_files, list) else [brief_files]
+    brief_files = [brief_input] if isinstance(brief_input, Path) else brief_input
     if len(brief_files) != len(files):
         raise ValueError("provide one --brief-file per --command-file, in launch order")
     headers = [read_launch_text(path) for path in brief_files]
@@ -1467,8 +1471,8 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
         if not brief.strip():
             raise ValueError("brief must be nonempty")
         validate_text(brief, allow_tabs=True)
-        validate_brief_rules(brief)
     for brief in headers:
+        validate_brief_rules(brief)
         check_launch_issue(brief)
     validate_computer_use_launch(args, command_texts, briefs)
     apps = [gui_launch.declared_app(brief) for brief in briefs]
