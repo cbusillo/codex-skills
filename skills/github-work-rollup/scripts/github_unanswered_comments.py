@@ -513,7 +513,7 @@ def is_external_comment(
         return False
     if author in self_logins or author in bot_logins:
         return False
-    return not is_github_bot(comment.author, comment.author_type) or author in (automation_logins or {})
+    return comment.kind == OPENING_POST or not is_github_bot(comment.author, comment.author_type) or author in (automation_logins or {})
 
 
 def comment_timestamp(value: str) -> datetime:
@@ -1870,7 +1870,7 @@ def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, .
         "limitations": [
             "Repository scans cover issues and PRs opened in the window, issue/PR conversation comments and inline PR review comments; full-history --thread scans also cover the opening post and non-empty PR review bodies.",
             "An edit to an issue or PR description is caught only by a full-history --thread scan or when the thread is opened in the window.",
-            "Configured own automation is excluded. People-index agents (contacts.github.bot_usernames) remain eligible even as GitHub Bot accounts and are labeled with who they act for. Other GitHub bots stay filtered; unlisted human-account logins ending in bot or automation are marked possible_automation.",
+            "Configured own automation is excluded. People-index agents (contacts.github.bot_usernames) remain eligible even as GitHub Bot accounts and are labeled with who they act for. Other GitHub bots stay filtered on comments, but their opening posts remain eligible; unlisted human-account logins ending in bot or automation are marked possible_automation.",
             "Waits on the Director are open issues whose current wait (the trusted structured record when one is readable, otherwise the Current Status prose marked for review) names the Director's login, a people-index name, or the Director role, with no Director or Owner question still open; an unreadable trusted record is listed as an unresolved wait for review, whether or not a question is open; negated mentions are left out, and waits worded as the Director's own hold (resume, park, hold, select, revisit) are listed as director_hold without raising attention; repository scans only.",
             "A targeted public reply from the Director or configured automation handles a comment after its latest edit. Exact comment links, an inline-review thread with one eligible external comment, or a salutation using an unambiguous people-index name target a reply; automation may also use an unambiguous single-author mention.",
             "Director reactions and question/decision records are diagnostic awareness evidence, not public replies or requirements for clearing attention. Unanswered comments remain flagged even on closed threads; edits and new comments reopen attention.",
