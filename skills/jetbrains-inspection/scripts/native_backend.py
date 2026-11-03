@@ -30,6 +30,7 @@ import time
 import tomllib
 import urllib.parse
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, NamedTuple
 from xml.etree import ElementTree
@@ -1390,6 +1391,15 @@ def python_support_plugins(sdk: SdkEntry) -> set[str]:
                                    for root in sdk.class_roots) else set()
 
 
+def python_scanner_environment(interpreter: Path, private: Path, prepare: Callable[[list[str], dict[str, str]], None],
+                               preparation_env: dict[str, str]) -> dict[str, str]:
+    if common.checked([str(interpreter), "-c", "import importlib.util; print(importlib.util.find_spec('pip') is not None)"]).strip() == b"True":
+        return {}
+    support = private / "packaging-support"
+    prepare(["uv", "pip", "install", "--python", str(interpreter), "--target", str(support), "pip"], preparation_env)
+    return {"PYTHONPATH": str(support)}
+
+
 def java_sdk(home: Path) -> SdkEntry:
     release = {}
     for line in (home / "release").read_text().splitlines():
@@ -1622,6 +1632,8 @@ def next_action_for_reason(host: Any, receipt: dict[str, Any], reason: str, verd
                   "See references/native-backend.md; never copy or move activation files.")
     elif reason in {"native_required_plugin_missing", "native_required_plugins_unreadable", "native_worker_plugins_unreadable"}:
         action = UNAVAILABLE_REASONS[reason][1].format(**(PLUGIN_FALLBACK | receipt.get("missing_plugins", {})), product=product.display_name)
+    elif reason == "native_python_support_plugin_unavailable":
+        action = "The Pydantic support plugin was not installed, enabled or loaded. Check its compatibility with the configured PyCharm build and the independent worker's plugin installation before one fresh assessment."
     elif reason in {"native_node_not_configured", "native_node_unavailable"}:
         action = "Set jetbrains.nativeWorkers.webstorm.node in the shared helper config to the absolute path of an executable node with npm in the same directory. See references/native-backend.md."
     elif reason in {"native_jdk_not_configured", "native_jdk_unavailable"}:
@@ -1884,6 +1896,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
 
         check_lifetime(parent_fd, deadline)
         sdk = None
+        scanner_env = {}
         if webstorm:
             assert node is not None
             prepare(*web_preparation(node, project / web_relative, private, preparation_caches))
@@ -1893,12 +1906,11 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
             bound_gradle_daemon(preparation_caches["GRADLE_USER_HOME"])
             prepare_jvm_model(project, sdk_name, selected | controls)
         else:
+            preparation_env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(private / "prepare-home"),
+                               "TMPDIR": str(private / "tmp"), **preparation_caches}
             if requested is not None:
-                preparation_env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(private / "prepare-home"),
-                                   "TMPDIR": str(private / "tmp"), **preparation_caches}
                 prepare(common.preparation(settings, private), preparation_env)
                 interpreter = project / ".venv/bin/python"
-                prepare(["uv", "pip", "install", "--python", str(interpreter), "pip"], preparation_env)
             elif source_interpreter.is_file():
                 interpreter = source_interpreter
             else:
@@ -1908,6 +1920,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
                 raise Blocked("native_python_version_mismatch")
             receipt["python_version"] = version
             receipt["python_interpreter"] = str(interpreter)
+            scanner_env = python_scanner_environment(interpreter, private, prepare, preparation_env)
             sdk = python_sdk(interpreter, version)
             prepare_model(project, sdk_name, framework, selected | controls)
         shutil.copyfile(profile, private / "profile.xml")
@@ -1929,6 +1942,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
                f"{product.env_var_base_name}_PROPERTIES": str(private / "idea.properties"),
                f"{product.env_var_base_name}_VM_OPTIONS": str(private / "native.vmoptions"),
                "JETBRAINS_INSPECTION_REGISTRY_DIR": str(private / "registry")}
+        env.update(scanner_env)
         if intellij:
             env.update(JAVA_HOME=str(jdk), GRADLE_USER_HOME=preparation_caches["GRADLE_USER_HOME"])
         argv = ["/usr/bin/nice", "-n", str(NICE), str(app / "Contents/bin/inspect.sh"), str(project), str(private / "profile.xml"), str(private / "results"), "-v2"]
@@ -1954,6 +1968,8 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
                     launch(["/usr/bin/nice", "-n", str(NICE), sys.executable, str(installer), str(app / "Contents/MacOS" / product.launcher_names[0]),
                             "installPlugins", plugin_id, "--give-consent-to-use-third-party-plugins"],
                            re.compile(r"(?:installed plugin: .*|already installed: " + re.escape(plugin_id) + r")"))
+                    if not receipt["license_observation_complete"]:
+                        raise Blocked("native_license_observation_unproven")
                     installed, disabled = common.worker_plugins(app, config, plugins)
                     if plugin_id not in installed or plugin_id in disabled:
                         raise Blocked("native_python_support_plugin_unavailable")
@@ -1967,6 +1983,8 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
                     raise Blocked("native_license_observation_unproven")
                 require_gradle_import(receipt)
             launch(argv)
+            if receipt.get("python_support_plugins") and not receipt.get("pydantic_plugin_version"):
+                raise Blocked("native_python_support_plugin_unavailable")
         except Blocked as error:
             if intellij and str(error) in GRADLE_FAILURE_SYMPTOMS and receipt.get("gradle_import", {}).get("data_imported") is not True:
                 raise Blocked("native_gradle_import_failed") from None

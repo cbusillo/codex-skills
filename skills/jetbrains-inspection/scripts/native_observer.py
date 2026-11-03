@@ -126,7 +126,7 @@ class EngineObserver:
                 self.receipt["pydantic_plugin_version"] = plugin.group(1)
             sdk = re.search(r"Binary skeletons directory for SDK (jb-native-[\w-]+) \((.*?)\)\):", event)
             if sdk and sdk.group(1) == "jb-native-" + self.receipt.get("run_id", ""):
-                self.receipt["python_sdk_observed"] = sdk.group(2) == self.receipt.get("python_interpreter", str(self.project / ".venv/bin/python"))
+                self.receipt["python_sdk_observed"] = sdk.group(2) == self.receipt.get("python_interpreter")
         if not partial and self.completion_line.fullmatch(line):
             self.completion = True
         if re.search(r"Using default project profile|Cannot load project|No files to inspect|No modules", line, re.I):
