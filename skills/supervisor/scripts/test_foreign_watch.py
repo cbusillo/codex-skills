@@ -130,7 +130,7 @@ class WatchTests(unittest.TestCase):
 
     def test_own_mentions_stay_logged_without_waking_on_thread_author_confusion(self) -> None:
         own_reply = {**comment("AGENT[bot]", "@director please decide", STARTED), "node_id": "own", "created_at": STARTED}
-        foreign_reply = {**comment("client", "@director please decide", STARTED), "node_id": "foreign", "created_at": STARTED}
+        foreign_reply = {**comment(body="@director please decide", updated=STARTED), "node_id": "foreign", "created_at": STARTED}
         previous_reply = {**foreign_reply, "node_id": "previous", "created_at": SINCE, "updated_at": SINCE}
         lagged = "2026-10-09T11:59:00Z"
         edited_reply = {**own_reply, "created_at": SINCE, "edited_at": STARTED, "editor": "client"}
@@ -151,7 +151,7 @@ class WatchTests(unittest.TestCase):
             with self.subTest(opener=opener, editor=editor, prior=prior, pull=pull, wakes=wakes), tempfile.TemporaryDirectory() as directory:
                 clock = WatchClock()
                 reader = Mock()
-                thread = {**mention(REPO, 1), "node_id": "thread", "created_at": created, "user": {"login": opener}}
+                thread: dict[str, Any] = {**mention(REPO, 1), "node_id": "thread", "created_at": created, "user": {"login": opener}}
                 if pull:
                     thread["pull_request"] = {}
                 reader.request.return_value = SimpleNamespace(body={"items": [thread], "total_count": 1})
@@ -161,7 +161,7 @@ class WatchTests(unittest.TestCase):
                     nodes = []
                     for identifier in variables["ids"]:
                         source = next(source for source in [thread, *comments] if source["node_id"] == identifier)
-                        actor = editor if identifier == "thread" else source.get("editor")
+                        actor = str((editor if identifier == "thread" else source.get("editor")) or "")
                         nodes.append({"lastEditedAt": STARTED if actor else None, "editor": {
                             "login": actor.removesuffix("[bot]"), "__typename": "Bot" if actor.endswith("[bot]") else "User"
                         } if actor else None})
