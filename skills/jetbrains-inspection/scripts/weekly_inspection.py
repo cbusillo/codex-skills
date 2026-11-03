@@ -46,7 +46,7 @@ def category_counts(result: dict[str, Any]) -> dict[str, int]:
             f"inspection coverage or custody is incomplete: {result.get('agent_result', {}).get('agent_report', 'no terminal report')}"
         )
     artifact = result.get("findings_artifact")
-    if not artifact:
+    if not isinstance(artifact, str) or not artifact:
         if all(result.get(key) == 0 for key in ("finding_count", "preexisting_finding_count", "advisory_finding_count")):
             return {}
         raise ValueError("full findings artifact is unavailable")

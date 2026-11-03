@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import importlib.util
 import json
 import subprocess
 import sys
@@ -15,8 +16,16 @@ from typing import Any
 from unittest.mock import patch
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
-sys.path.insert(0, str(SCRIPTS))
-import weekly_inspection as weekly
+spec = importlib.util.spec_from_file_location("weekly_inspection", SCRIPTS / "weekly_inspection.py")
+if spec is None or spec.loader is None:
+    raise ImportError("weekly inspection helper is unavailable")
+weekly: Any = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = weekly
+spec.loader.exec_module(weekly)
+
+
+def patch_attr(target: Any, name: str, *args: Any, **kwargs: Any) -> Any:
+    return patch.object(target, name, *args, **kwargs)
 
 
 class WeeklyInspectionTests(unittest.TestCase):
@@ -30,7 +39,7 @@ class WeeklyInspectionTests(unittest.TestCase):
 
     def run_record(self, day: int, counts: dict[str, int], **changes: object) -> None:
         monday = dt.datetime(2026, 11, 2, tzinfo=dt.UTC) + dt.timedelta(days=day)
-        run = {
+        run: dict[str, Any] = {
             "status": "complete",
             "at": monday.isoformat(),
             "week": monday.date().isoformat(),
@@ -83,7 +92,7 @@ class WeeklyInspectionTests(unittest.TestCase):
     def test_full_artifact_counts_existing_and_advisory_observations(self) -> None:
         findings = Path(self.temporary.name) / "findings.json"
         findings.write_text(json.dumps([{"rule_id": "types", "introduced": False}, {"rule_id": "spelling", "severity": "TYPO"}]))
-        result = {
+        result: dict[str, Any] = {
             "backend": "native",
             "agent_result": {"verdict": "GREEN"},
             "coverage": {"complete": True},
@@ -121,8 +130,8 @@ class WeeklyInspectionTests(unittest.TestCase):
                 "audit_repositories",
                 return_value=(["owner/broken", "owner/good"], {"complete": True, "unknown": {}, "gaps": []}),
             ),
-            patch.object(weekly, "inspection_worktree", side_effect=[ValueError("missing checkout"), worktree]),
-            patch.object(weekly, "inspect_repository", side_effect=fixture_inspection),
+            patch_attr(weekly, "inspection_worktree", side_effect=[ValueError("missing checkout"), worktree]),
+            patch_attr(weekly, "inspect_repository", side_effect=fixture_inspection),
         ):
             code = weekly.main(
                 [
@@ -168,7 +177,7 @@ class WeeklyInspectionTests(unittest.TestCase):
             target.write_text("")
         helper = weekly.inspection_helper()
         with (
-            patch.object(weekly, "inspection_helper", return_value=helper),
+            patch_attr(weekly, "inspection_helper", return_value=helper),
             patch.object(
                 helper,
                 "inspection_scope_paths",
@@ -188,7 +197,7 @@ class WeeklyInspectionTests(unittest.TestCase):
         source = root / "repo"
         self.state["repositories"]["owner/repo"] = {"worktree": str(root / "retired"), "branch": "work/retired"}
 
-        def fixture_git(path: Path, *args: str) -> str:
+        def fixture_git(_path: Path, *args: str) -> str:
             if args[:3] == ("remote", "get-url", "origin"):
                 return "https://github.com/owner/repo.git"
             if args[0] == "symbolic-ref":
@@ -202,14 +211,14 @@ class WeeklyInspectionTests(unittest.TestCase):
             return ""
 
         result = subprocess.CompletedProcess([], 0, stdout=f"{created}\n")
-        with patch.object(weekly, "git", side_effect=fixture_git), patch.object(subprocess, "run", return_value=result) as creator:
+        with patch_attr(weekly, "git", side_effect=fixture_git), patch.object(subprocess, "run", return_value=result) as creator:
             self.assertEqual(weekly.inspection_worktree("owner/repo", root, self.state), created)
             (created / ".venv").mkdir()
             self.assertEqual(weekly.inspection_worktree("owner/repo", root, self.state), created)
             self.assertEqual(creator.call_count, 1)
 
     def test_discovery_failure_is_reported_and_next_schedule_can_run(self) -> None:
-        with patch.object(weekly, "audit_repositories", side_effect=ValueError("read unavailable")):
+        with patch_attr(weekly, "audit_repositories", side_effect=ValueError("read unavailable")):
             self.assertEqual(
                 weekly.main(
                     [
@@ -226,7 +235,7 @@ class WeeklyInspectionTests(unittest.TestCase):
                 0,
             )
         self.assertEqual(weekly.read_baselines(self.path)["discovery"]["status"], "unknown")
-        with patch.object(weekly, "audit_repositories", return_value=([], {"complete": True, "unknown": {}, "gaps": []})):
+        with patch_attr(weekly, "audit_repositories", return_value=([], {"complete": True, "unknown": {}, "gaps": []})):
             self.assertEqual(
                 weekly.main(
                     [
@@ -270,7 +279,7 @@ class WeeklyInspectionTests(unittest.TestCase):
         config.write_text(json.dumps({"qualityGate": {"inspection": {"ide": "PyCharm"}}}))
         helper = weekly.inspection_helper()
         with (
-            patch.object(weekly, "inspection_helper", return_value=helper),
+            patch_attr(weekly, "inspection_helper", return_value=helper),
             patch.object(
                 helper, "inspection_scope_paths", return_value=["code.py", "docs/pnpm-lock.yaml", "docs/site.yaml", "README.md"]
             ),
@@ -285,7 +294,7 @@ class WeeklyInspectionTests(unittest.TestCase):
     def test_partial_discovery_runs_known_repository_and_records_unknown_adoption(self) -> None:
         discovery = {"complete": False, "unknown": {"owner/unread": "adoption unavailable"}, "gaps": []}
         now = dt.datetime.now(dt.UTC)
-        run = {
+        run: dict[str, Any] = {
             "status": "complete",
             "at": now.isoformat(),
             "week": now.date().isoformat(),
@@ -295,9 +304,9 @@ class WeeklyInspectionTests(unittest.TestCase):
             "evidence": "receipt",
         }
         with (
-            patch.object(weekly, "audit_repositories", return_value=(["owner/good"], discovery)),
-            patch.object(weekly, "inspection_worktree", return_value=Path(self.temporary.name)) as prepare,
-            patch.object(weekly, "inspect_repository", return_value=run),
+            patch_attr(weekly, "audit_repositories", return_value=(["owner/good"], discovery)),
+            patch_attr(weekly, "inspection_worktree", return_value=Path(self.temporary.name)) as prepare,
+            patch_attr(weekly, "inspect_repository", return_value=run),
         ):
             self.assertEqual(
                 weekly.main(
