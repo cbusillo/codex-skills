@@ -59,7 +59,7 @@ class DeliveryTests(unittest.TestCase):
                               "author": self.authors[0],
                               "url": f"https://github.com/{self.queue.replace('#', '/issues/')}#issuecomment-{len(self.comments) + 1}",
                               "created_at": "2026-10-15T17:35:24Z"})
-        return self.comments[-1]
+        return {"comment": self.comments[-1]}
 
     def run_queue(self, **overrides):
         args = SimpleNamespace(queue=self.queue, owner=self.owner, decision_author=self.authors,

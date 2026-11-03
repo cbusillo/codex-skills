@@ -8,23 +8,31 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
 import json
 import math
-from pathlib import Path
 import re
 import sys
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, NamedTuple
 
 SKILLS = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(SKILLS / "github/scripts"))
 sys.path.insert(0, str(SKILLS / "github-work-rollup/scripts"))
-from github_read import GitHubReader, GitHubReadError, GitHubReadShapeError, automation_only_gh_prefix_args, path_with_query
 import github_direction_next
 import github_plan_wait
 import github_repository_scope as repository_scope
 import github_unanswered_comments as attention
+from github_read import (
+    GitHubReader,
+    GitHubReadError,
+    GitHubReadShapeError,
+    automation_only_gh_prefix_args,
+    path_with_query,
+)
+
+from skills.github.scripts.github_plan_status import questions
 
 
 def parse_date(value):
@@ -164,6 +172,28 @@ def read_discussion(reader, repo, number, discussions, errors):
     return discussions[key]
 
 
+def recorded_decisions(reader: GitHubReader, wait: dict[str, Any], owner: str,
+                       discussions: dict[tuple[str, int], Any], errors: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if wait.get("state") != "waiting":
+        return []
+    found = []
+    for match in questions.COMMENT_URL.finditer(wait.get("evidence", "")):
+        repo, number = match[1], int(match[2])
+        comments = read_discussion(reader, repo, number, discussions, errors)
+        if comments is None:
+            continue
+        normalized = [{**comment, "author": (comment.get("user") or {}).get("login") or comment.get("author") or "",
+                       "url": comment.get("html_url") or comment.get("url")} for comment in comments]
+        trusted = github_plan_wait.authors(repo) | {owner.casefold()}
+        sources = [comment for comment in normalized if comment["url"] == match[0]
+                   and comment["author"].casefold() in trusted]
+        if len(sources) != 1:
+            continue
+        found.extend(question for question in questions.questions(normalized, owner, trusted, recorded_decisions_only=True)
+                     if question["url"] == match[0] and question["answers"])
+    return found
+
+
 def collect_query(reader, owner, terms, now, issue_limit=1000, phrase="Waiting for", *, include_archived=False,
                   where="body", discussions: dict[tuple[str, int], Any] | None = None,
                   recipient: str | None = None, recipient_term: str | None = None) -> dict[str, Any]:
@@ -171,10 +201,11 @@ def collect_query(reader, owner, terms, now, issue_limit=1000, phrase="Waiting f
               else f'user:{owner} is:issue is:open in:{where} "{phrase}"')
     query = repository_scope.search_query(search, include_archived=include_archived)
     discussions = {} if discussions is None else discussions
-    result = {"waits": [], "complete": False, "errors": [],
+    result: dict[str, Any] = {"waits": [], "needs_status": [], "complete": False, "errors": [],
               "repositories_with_matches": [], "query": query, "total_count": None,
               "scope": "Visible open issues in owned repositories and recipient-named issues elsewhere, by wait fields in the body "
-                       "or structured wait records in comments, resolved from each complete discussion; search indexing may lag live records"}
+                       "or structured wait records in comments, resolved from live discussions; recorded answers go to needs_status, "
+                       "preserving their holds. Search indexing may lag discovery"}
     rows, seen, totals = [], set(), []
     # GitHub Search exposes at most 1,000 results for a query. Read response
     # metadata on every page so timeouts/truncation cannot look complete.
@@ -216,8 +247,16 @@ def collect_query(reader, owner, terms, now, issue_limit=1000, phrase="Waiting f
                         texts = "\n".join(str(source.get("body") or "") for source in [entry, *comments])
                         if not github_plan_wait.names_recipient(texts, [recipient_term], {owner.casefold()}):
                             continue
-                    rows.extend(wait_rows(repo, [entry], terms, owner, now, {entry["number"]: comments},
-                                          errors=result["errors"]))
+                    waits = wait_rows(repo, [entry], terms, owner, now, {entry["number"]: comments}, errors=result["errors"])
+                    resolution = resolve_wait(repo, entry, comments)
+                    decisions = recorded_decisions(reader, resolution.record, owner, discussions, result["errors"]) if resolution.record else []
+                    if decisions:
+                        result["needs_status"].extend({**row, "next_actor": "agent", "recorded_decisions": decisions,
+                                                     "structured_wait": resolution.record,
+                                                     "next_action": "Read the recorded answers and reconcile the wait; preserve every other hold."}
+                                                    for row in waits)
+                    else:
+                        rows.extend(waits)
                 except (GitHubReadShapeError, ValueError, TypeError, KeyError) as error:
                     result["errors"].append({"scope": "search item", "error": str(error)})
             if read_count >= total or len(items) < min(bound, 100) or read_count >= bound:
@@ -248,7 +287,9 @@ def collect(reader, owner, terms, now, issue_limit=1000, *, include_archived=Fal
                                  discussions=discussions, recipient=query, recipient_term=term)
                    for term, query in github_plan_wait.recipient_queries(owner, terms))
     rows = {(row["repo"], row["number"]): row for report in reports for row in report["waits"]}
+    needs_status = {(row["repo"], row["number"]): row for report in reports for row in report["needs_status"]}
     return {"waits": sorted(rows.values(), key=lambda row: (row["repo"], row["number"])),
+            "needs_status": sorted(needs_status.values(), key=lambda row: (row["repo"], row["number"])),
             "complete": all(report["complete"] for report in reports),
             "errors": [error for report in reports for error in report["errors"]],
             "searches": [{key: report[key] for key in ("query", "total_count", "complete")} for report in reports],

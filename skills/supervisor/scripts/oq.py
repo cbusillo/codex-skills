@@ -13,8 +13,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-from skills.github.scripts.github_plan_status import questions as question_records
 from skills.github.scripts import github_identity
+from skills.github.scripts.github_plan_status import questions as question_records
 from skills.supervisor.scripts.check_changes import changes, fingerprint
 
 QUESTION_PREFIXES = question_records.QUESTION_PREFIXES
@@ -26,24 +26,23 @@ def fetch(item):
     match = ITEM.fullmatch(item)
     if not match:
         raise ValueError("item must be OWNER/REPO#NUMBER")
-    helper = Path(__file__).resolve().parents[2] / "github/scripts/gh-plan.py"
-    run = subprocess.run(
-        ["uv", "run", str(helper), "--repo", match[1], "show", match[2], "--full"],
-        capture_output=True,
-        text=True,
-        check=True,
-        timeout=120,
+    from skills.github.scripts.github_read import (
+        GitHubReader,
+        GitHubReadError,
+        GitHubReadShapeError,
+        automation_only_gh_prefix_args,
     )
-    result = json.loads(run.stdout)
-    if (result.get("ok") is not True
-            or result.get("outcome_certainty") not in {"confirmed", "not_applicable"}
-            or result.get("disposition") != "complete"
-            or result.get("exit_code") != 0):
-        raise ValueError("issue discussion read is incomplete")
-    comments = result["issue"]["comments"]
+
+    try:
+        comments = GitHubReader(operation="github.question.read", strict_actor=True,
+                                gh_prefix_args=automation_only_gh_prefix_args()).paged_json(
+            f"/repos/{match[1]}/issues/{match[2]}/comments", step_prefix="question_comments"
+        )
+    except (GitHubReadError, GitHubReadShapeError) as error:
+        raise ValueError(f"issue discussion read is incomplete: {error}") from error
     if not isinstance(comments, list) or not all(isinstance(c, dict) for c in comments):
         raise ValueError("issue discussion comments are malformed")
-    return comments
+    return [{**comment, "author": comment["user"]["login"], "url": comment["html_url"]} for comment in comments]
 
 
 def default_decision_authors() -> list[str]:
@@ -55,7 +54,7 @@ def default_decision_authors() -> list[str]:
 
 
 def main() -> int:
-    if len(sys.argv) > 1 and sys.argv[1] in {"create", "show-question"}:
+    if len(sys.argv) > 1 and sys.argv[1] in {"create", "update", "show-question"}:
         from question_record import main as record_main
         return record_main(sys.argv[1:], fetch)
     parser = argparse.ArgumentParser(description=__doc__)

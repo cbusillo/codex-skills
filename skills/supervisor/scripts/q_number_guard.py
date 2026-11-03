@@ -45,13 +45,10 @@ ANSWERED = re.compile(r"\s*[*_]*(yes|no|not yet)[*_]*\s*[,.;—–-]", re.IGNORE
 NEGATED = re.compile(r"\b(nothing|no|not|never)\b[^.!?\n]{0,20}$", re.IGNORECASE)
 COST = re.compile(r"\b(costs?|upkeep|maintenance|ongoing effort)\b", re.IGNORECASE)
 DEVELOPER = re.compile(r"\b(experienced|senior|sr\.?)\s+(professional\s+)?(developers?|devs?|engineers?)\b", re.IGNORECASE)
-QUESTION_GUIDANCE = Path(__file__).resolve().parents[2] / "references/talking-with-the-director.md"
-QUESTION_SECTION = "## Director Questions"
 REASON = (
-    "Your reply asks Chris to decide something but has no bold Q number. Every question "
-    "to him starts with a bold Q### from the shared counter (talking-with-the-director.md): "
-    "allocate one with `uv run <direction-skill-dir>/scripts/question_id.py next` and repeat "
-    "the reply with it. If the reply asks him nothing, end the turn again unchanged."
+    "Create the Director question with `oq.py create --record-file FILE --owner OWNER`, or revise an unanswered one with `oq.py update`.\n"
+    "Required record keys: version, issue, decision, basis, options (answer, changes, cost, next), recommendation, comparison, manual.\n"
+    "Send only the numbered question returned by the helper; do not repeat the whole reply. If no question was asked, end unchanged."
 )
 LOOKUP_TIMEOUT = 3
 API_HELPER = Path(__file__).resolve().parents[2] / "github/scripts/github_api.py"
@@ -71,13 +68,12 @@ def missing_context(message: str) -> str | None:
         return None
     has_context = bool(COST.search(text) and DEVELOPER.search(text))
     if not NUMBERED.search(text):
-        return REASON if has_context else f"{REASON} {director_question_rule()}"
+        return REASON
     if has_context:
         return None
     if not has_unnumbered_ask(text) and registered_records_cover(message):
         return None
-    return (f"{director_question_rule()} "
-            "Repeat the reply. If the reply asks nothing, end the turn again unchanged.")
+    return REASON
 
 
 def has_unnumbered_ask(text: str) -> bool:
@@ -161,14 +157,6 @@ def registered_records_cover(message: str) -> bool:
     except (OSError, ValueError, KeyError, TypeError, ImportError, AttributeError, SyntaxError, RuntimeError,
             IndexError, subprocess.SubprocessError):
         return False
-
-
-def director_question_rule() -> str:
-    try:
-        _, section = QUESTION_GUIDANCE.read_text(encoding="utf-8").split(f"\n{QUESTION_SECTION}\n", 1)
-    except (OSError, ValueError):
-        return f"Follow {QUESTION_GUIDANCE}#director-questions."
-    return " ".join(section.split("\n## ", 1)[0].split())
 
 
 def last_message(payload: Mapping) -> str | None:

@@ -62,7 +62,7 @@ class QuestionRecordTests(unittest.TestCase):
             "issue": question()["issue"],
         }
         self.storage = unittest.mock.create_autospec(record.QuestionStorage, instance=True)
-        self.storage.create.return_value = self.source["url"]
+        self.storage.create.return_value = self.source
         self.storage.read.return_value = self.source
         self.fetch = unittest.mock.Mock()
         self.actor = patch.object(record.github_comment, "authenticated_actor", return_value=AUTHOR)
@@ -120,10 +120,12 @@ class QuestionRecordTests(unittest.TestCase):
             self.assertNotIn("..", line)
         for field in ("decision", "basis", "comparison", "manual", "recommendation"):
             self.assertIn(view["record"][field], view["text"])
+        self.assertEqual(view["text"].count(view["record"]["comparison"]), 1)
         self.assertEqual(source["body"], original)
         self.assertEqual(view["url"], source["url"])
         self.storage.read.return_value = source
         self.args.decision_author.append(source["author"])
+        self.storage.create.return_value = source
         self.assertEqual(self.create(view["record"])["text"], view["text"])
         shown = StringIO()
         with redirect_stdout(shown):
@@ -149,10 +151,10 @@ class QuestionRecordTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.create(question())
         self.args.queue = None
-        with patch.object(record.github_comment, "authenticated_actor", return_value="untrusted"):
-            with self.assertRaises(ValueError):
-                self.create(question())
-        self.storage.create.assert_not_called()
+        self.source["author"] = "untrusted"
+        with self.assertRaises(ValueError):
+            self.create(question())
+        self.source["author"] = AUTHOR
 
     def test_oversize_and_unsafe_mentions_refuse_before_post(self) -> None:
         for value in (question() | {"basis": "x" * record.COMMENT_LIMIT}, question() | {"manual": "Ask @outsider"}):
@@ -161,6 +163,7 @@ class QuestionRecordTests(unittest.TestCase):
         self.storage.create.assert_not_called()
 
     def test_create_and_default_routine_reader_agree_on_open_questions(self) -> None:
+        self.actor.stop()
         self.args.queue = "example/direction#9"
         counter = record.question_id.counter_path()
         record.question_id.update(counter, seed=(300, ["fixture"]), allocate=False)
@@ -201,11 +204,13 @@ class QuestionRecordTests(unittest.TestCase):
             return api_success(dict(saved), operation="test.edit")
 
         def run(calls: list[dict]) -> None:
-            storage = record.GitHubComments(fetch)
+            storage = record.GitHubComments(record.delivery.oq.fetch)
+            first = record.create(question(), self.args, storage, record.delivery.oq.fetch)
+            self.assertLessEqual(len(calls), 10)
+            self.assertEqual(sum(c["path"] == "/user" for c in calls), 2)
             published = record.github_comment.comment(
                 "issue", 3, record.render(question(), legacy=True), repo="example/product", dedupe_body=True
             )
-            first = record.create(question(), self.args, storage, fetch)
             self.assertEqual(first["url"], published["url"])
             path = Path(self.temporary.name) / "question.json"
             path.write_text(json.dumps(question()))
@@ -239,6 +244,20 @@ class QuestionRecordTests(unittest.TestCase):
             self.assertEqual(queued["queue_length"], 1)
             self.assertEqual(queued["untrusted_records"], [])
             self.assertIn(first["url"], json.dumps(queued["questions"]))
+            prior = Path(self.temporary.name) / "prior.txt"
+            prior.write_text(storage.read(first["url"])["body"])
+            revised = question() | {"basis": "The runner's capacity has been checked again."}
+            path.write_text(json.dumps(revised))
+            update_output = StringIO()
+            before = len([c for c in calls if c["method"] == "POST"])
+            last_number = json.loads(counter.read_text())["last_id"]
+            with redirect_stdout(update_output):
+                self.assertEqual(record.main(["update", first["url"], "--record-file", str(path),
+                                               "--expected-body-file", str(prior), "--owner", self.args.owner], fetch), 0)
+            self.assertIn(revised["basis"], update_output.getvalue())
+            self.assertEqual(record.read_record(storage.read(first["url"]))["question_id"], first["question_id"])
+            self.assertEqual(len([c for c in calls if c["method"] == "POST"]), before)
+            self.assertEqual(json.loads(counter.read_text())["last_id"], last_number)
             threads[record.delivery.source_item(first["url"])].append({
                 "id": 100, "author": AUTHOR, "url": question()["issue"] + "#issuecomment-100",
                 "body": f"Director decision {first['question_id']}: reuse the runner, combined with Q299's testing decision.",
@@ -306,6 +325,33 @@ class QuestionRecordTests(unittest.TestCase):
                 with self.assertRaises(ValueError) as caught:
                     self.create(question())
                 self.assertIn(self.source["url"], str(caught.exception))
+
+    def test_update_preserves_identity_and_refuses_answers_or_stale_body(self) -> None:
+        prior = Path(self.temporary.name) / "prior.txt"
+        prior.write_text(self.source["body"])
+        self.args.url = self.source["url"]
+        self.args.expected_body_file = prior
+        revised = question() | {"basis": "The runner now has more spare capacity."}
+        self.source["id"] = 17
+        self.fetch.return_value = [self.source]
+        updated = {**self.source, "body": record.question_id.number_heading(record.render(revised, legacy=True), "Q5")}
+        self.storage.update.return_value = updated
+        with patch.object(record.delivery, "run_queue") as register:
+            result = record.update(revised, self.args, self.storage, self.fetch)
+        self.assertEqual((result["question_id"], result["url"]), ("Q5", self.source["url"]))
+        register.assert_not_called()
+        self.storage.create.assert_not_called()
+        self.storage.update.assert_called_once_with(self.source["url"], updated["body"], self.source["body"])
+        self.storage.update.reset_mock()
+        for author, body in (("example", "Agree"), (AUTHOR, "Director decision Q5: approved")):
+            self.fetch.return_value = [self.source, {"id": 18, "url": self.source["url"] + "1", "author": author, "body": body}]
+            with self.assertRaises(ValueError):
+                record.update(revised, self.args, self.storage, self.fetch)
+        self.fetch.return_value = [self.source]
+        prior.write_text("stale body")
+        with self.assertRaises(ValueError):
+            record.update(revised, self.args, self.storage, self.fetch)
+        self.storage.update.assert_not_called()
 
 
 if __name__ == "__main__":

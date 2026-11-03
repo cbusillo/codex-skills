@@ -287,6 +287,26 @@ class StructuredWaitTests(unittest.TestCase):
         self.assertTrue(result["complete"])
         self.assertEqual(result["waits"], [])
 
+    def test_live_recorded_answer_routes_stale_wait_to_agent_without_clearing_holds(self) -> None:
+        source = {"id": 10, "html_url": issue()["html_url"] + "#issuecomment-10", "user": {"login": "owner"},
+                  "body": "Director question: Q1183. Keep the archive?"}
+        wait = {"version": 1, "state": "waiting", "evidence": source["html_url"],
+                "waits": [{"waiting_for": "Director to decide", "ends_when": "Answer recorded"},
+                          {"waiting_for": "Client to finish testing", "ends_when": "Testing complete"}]}
+        held = wait_comment("owner", marker=director_waits.github_plan_wait.marker(wait))
+        answer = {"id": 12, "html_url": issue()["html_url"] + "#issuecomment-12", "user": {"login": "owner"},
+                  "body": f"Director decision: {source['html_url']} (Q1183), via Discord: Agree"}
+        for author, answered in (("owner", True), ("outsider", False)):
+            with self.subTest(author=author):
+                result = self.collect_one(issue(), [source, held, {**answer, "user": {"login": author}}])
+                self.assertTrue(result["complete"])
+                self.assertEqual(bool(result["needs_status"]), answered)
+                self.assertEqual(bool(result["waits"]), not answered)
+                if answered:
+                    row = result["needs_status"][0]
+                    self.assertEqual(row["structured_wait"], wait)
+                    self.assertEqual(row["recorded_decisions"][0]["answers"], [answer["html_url"]])
+
     def test_untrusted_clear_cannot_release_a_trusted_hold(self):
         comments = [wait_comment("owner", waiting_for="Director to approve", ends_when="Approved"),
                     wait_comment("mallory")]

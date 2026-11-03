@@ -1299,7 +1299,7 @@ def test_concurrent_numbering_reconciles_the_same_saved_body() -> None:
             if "/comments/" not in endpoint:
                 return success([])
             reads += 1
-            if reads == 2:
+            if reads == 1:
                 assigned = question_counter.update(path, question_url=saved["html_url"])
                 saved["body"] = question_counter.number_heading(saved["body"], f"Q{assigned}")
                 if changed_question:

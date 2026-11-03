@@ -86,7 +86,7 @@ def post(queue, body):
     # The maintained helper owns automation identity, body deduplication and
     # uncertain-write reconciliation. Never retry its unknown outcome here.
     try:
-        result = github_comment.comment("issue", int(match[2]), body, repo=match[1], dedupe_body=True)
+        result = github_comment.comment("issue", int(match[2]), body, repo=match[1], dedupe_body=True, include_body=True)
     except github_comment.CommentError as error:
         raise ValueError(str(error)) from error
     # Library payloads have no CLI `ok` envelope. A created/reused comment plus
@@ -260,13 +260,12 @@ def reconcile(args, fetch):
         if not question["delivery_url"]:
             writes.append(marker_body("delivered", args.ack, args.delivery_url))
     for body in writes:
-        post(args.queue, body)
-        # Read back each record before the next write. A missing record remains
-        # unacknowledged rather than being optimistically hidden.
-        queue_comments = fetch(args.queue)
-        if not any(c.get("body", "").strip().startswith(body.strip())
-                   and (c.get("author") or "").casefold() in trusted for c in queue_comments):
-            raise ValueError("question delivery record readback failed")
+        saved = post(args.queue, body).get("comment")
+        if (not isinstance(saved, dict) or not saved.get("body", "").strip().startswith(body.strip())
+                or (saved.get("author") or "").casefold() not in trusted
+                or source_item(saved.get("url", "")).casefold() != args.queue.casefold()):
+            raise ValueError("question delivery record confirmation failed")
+        queue_comments = [*queue_comments, saved]
     report = inventory(comments, queue_comments, args.owner, args.decision_author, question_urls=selected)
     return {"queue": args.queue, "scope": items, **report,
             "source_errors": errors, "complete": report["complete"] and not errors}

@@ -92,7 +92,7 @@ The terminal text and `show-question`'s `text` use this shape:
 - **Options:**
   - **<answer>:** <what changes>. Ongoing cost: <cost>. After this answer: <next>
 - **A senior developer would:** <comparison>
-- **Recommendation:** <recommended answer>. <comparison explaining why>
+- **Recommendation:** <recommended answer>
 - **You do:** <manual>
 
 Owning issue: <original issue URL>
@@ -113,6 +113,11 @@ recipient and says `not_configured`, never queued or delivered. `--dry-run`
 validates and renders without writes or allocation. Read the same source with
 `oq.py show-question ORIGINAL_URL`; it returns the validated record, text and
 source author without local counter state.
+Revise an unanswered question with `oq.py update ORIGINAL_URL --record-file FILE
+--expected-body-file PRIOR_BODY --owner OWNER`. Save the exact current comment
+body in `PRIOR_BODY` first. The update keeps the number, URL and queue registration,
+and refuses an answered question or a changed source. If the options changed
+meaning, confirm which version the Director answered before recording the decision.
 Keep the number hook until the Discord card adopts this source too. Existing
 prose comment, queue and acknowledgement commands remain available.
 

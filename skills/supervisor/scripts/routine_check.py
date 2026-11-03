@@ -200,6 +200,8 @@ def digest(sources: dict[str, dict], *, full: bool = False) -> str:
             lines.append(f"ERROR routing {pointer(row)}: {routing.get('audit_error') or routing.get('cause') or routing['status']}")
         untrusted = " (untrusted)" if row.get("attention_state") == "outbound_reply" else ""
         lines.append(f"COMMENT {pointer(row)}{untrusted}: {' '.join((row.get('body_excerpt') or row.get('body') or '').split())[:180]}")
+    for row in sources.get("waits", {}).get("needs_status", []):
+        lines.append(f"REVIEW {pointer(row)}: recorded answer needs wait reconciliation")
     foreign_waits = [row for row in sources.get("waits", {}).get("waits", []) if row.get("untrusted")]
     for row in [*comments.get("unasked_director_waits", []), *foreign_waits]:
         lines.append(f"WAIT {pointer(row)}{' (untrusted)' if row.get('untrusted') else ''}")
