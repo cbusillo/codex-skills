@@ -19,7 +19,7 @@ import time
 from datetime import UTC, datetime, timezone
 from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlsplit
 from unittest.mock import Mock
 
@@ -35,8 +35,12 @@ github_unanswered_comments = importlib.util.module_from_spec(MODULE_SPEC)
 assert MODULE_SPEC.loader is not None
 sys.modules[MODULE_SPEC.name] = github_unanswered_comments
 MODULE_SPEC.loader.exec_module(github_unanswered_comments)
-REAL_READ_DISCUSSION = github_unanswered_comments.github_read.read_discussion
-REAL_DISCUSSION_QUERY = github_unanswered_comments.github_read.discussion_query
+if TYPE_CHECKING:
+    from skills.github.scripts import github_read
+else:
+    github_read = github_unanswered_comments.github_read
+REAL_READ_DISCUSSION = github_read.read_discussion
+REAL_DISCUSSION_QUERY = github_read.discussion_query
 
 
 @pytest.fixture(autouse=True)
@@ -68,8 +72,8 @@ def no_host_people_index(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
             command.extend(["-F", f"after={variables['after']}"])
         return github_unanswered_comments.run_json(command)["data"]
 
-    monkeypatch.setattr(github_unanswered_comments.github_read, "read_discussion", discussion)
-    monkeypatch.setattr(github_unanswered_comments.github_read, "discussion_query", query)
+    monkeypatch.setattr(github_read, "read_discussion", discussion)
+    monkeypatch.setattr(github_read, "discussion_query", query)
 
 
 def comment(
@@ -865,7 +869,7 @@ def test_no_cutoff_classifies_comments_fetched_after_the_scan_end(monkeypatch) -
     posted = comment(comment_id=2, author="outside-user", body="Correction: use the new sheet.",
                      created_at="2026-07-25T18:00:01Z")
     monkeypatch.setattr(github_unanswered_comments, "authenticated_login", lambda: "fixture-automation")
-    monkeypatch.setattr(github_unanswered_comments, "collect_thread", lambda repo, number, _sources=None, _issue_id=None: (thread(), [reply, posted], []))
+    patch_radar(monkeypatch, "collect_thread", lambda repo, number, _sources=None, _issue_id=None: (thread(), [reply, posted], []))
     monkeypatch.setattr(github_unanswered_comments, "collect_candidate_reactions",
                         lambda comments, deadline: ({posted.global_key: []}, {}, []))
 
@@ -888,7 +892,7 @@ def test_reaction_failure_degrades_and_keeps_comment_visible(monkeypatch) -> Non
         created_at="2026-07-25T14:59:27Z",
     )
     monkeypatch.setattr(github_unanswered_comments, "authenticated_login", lambda: "fixture-automation")
-    monkeypatch.setattr(github_unanswered_comments, "collect_thread", lambda repo, number, _sources=None, _issue_id=None: (thread(), [external], []))
+    patch_radar(monkeypatch, "collect_thread", lambda repo, number, _sources=None, _issue_id=None: (thread(), [external], []))
     monkeypatch.setattr(
         github_unanswered_comments,
         "collect_candidate_reactions",
@@ -1631,7 +1635,7 @@ def test_director_login_keeps_another_accounts_own_comment_outside(monkeypatch, 
     by_thread_owner = comment(comment_id=1, author="example", body="Corrected sheet attached.",
                               created_at="2026-07-25T10:00:00Z")
     monkeypatch.setattr(github_unanswered_comments, "authenticated_login", lambda: authenticated)
-    monkeypatch.setattr(github_unanswered_comments, "collect_thread",
+    patch_radar(monkeypatch, "collect_thread",
                         lambda repo, number, _sources=None, _issue_id=None: (thread(), [by_thread_owner], []))
     monkeypatch.setattr(github_unanswered_comments, "collect_candidate_reactions",
                         lambda comments, deadline: ({by_thread_owner.global_key: []}, {}, []))
@@ -2334,7 +2338,7 @@ def test_wait_and_attention_read_unchanged_history_once_and_next_scan_sees_reply
 def test_graphql_pr_identity_and_bot_body_anchor_reply(
     monkeypatch: pytest.MonkeyPatch, scope: str, answered: bool,
 ) -> None:
-    issue = opening(number=7, author="outside", created_at="2026-07-25T00:00:00Z")
+    issue: dict[str, Any] = opening(number=7, author="outside", created_at="2026-07-25T00:00:00Z")
     issue_id, pull_id = issue["id"], 700
     empty = {"nodes": [], "totalCount": 0, "pageInfo": {"hasNextPage": False, "endCursor": None}}
     node = {"__typename": "PullRequest", "id": "PR_7", "databaseId": pull_id, "number": 7,
@@ -2350,11 +2354,11 @@ def test_graphql_pr_identity_and_bot_body_anchor_reply(
                  "author": {"__typename": "Bot", "login": "own-app"}, "reactions": empty}
         node["comments"] = {**empty, "nodes": [reply], "totalCount": 1}
     reader = Mock(deadline_at=None)
-    reader.graphql_json.return_value = github_unanswered_comments.github_read.github_api_core.ApiResult(
+    reader.graphql_json.return_value = github_read.github_api_core.ApiResult(
         ok=True, status=200, body={"data": {"repository": {"issueOrPullRequest": node}}})
     reader.get_json.return_value = {"id": issue_id}
-    monkeypatch.setattr(github_unanswered_comments.github_read, "read_discussion", REAL_READ_DISCUSSION)
-    monkeypatch.setattr(github_unanswered_comments.github_read, "discussion_query", REAL_DISCUSSION_QUERY)
+    monkeypatch.setattr(github_read, "read_discussion", REAL_READ_DISCUSSION)
+    monkeypatch.setattr(github_read, "discussion_query", REAL_DISCUSSION_QUERY)
     patch_radar(monkeypatch, "discussion_reader", lambda _repo: reader)
     patch_radar(monkeypatch, "run_json", FakeGitHub({"repos/example/repo/issues": [issue]}))
     settings = github_unanswered_comments.resolve_settings(args(

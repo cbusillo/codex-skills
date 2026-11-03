@@ -24,7 +24,7 @@ from dataclasses import dataclass, field, replace
 from functools import partial
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode
 
 
@@ -40,7 +40,10 @@ if str(IDENTITY_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(IDENTITY_SCRIPT_DIR))
 import director_mentions
 import github_identity
-import github_read
+if TYPE_CHECKING:
+    from skills.github.scripts import github_read
+else:
+    github_read = importlib.import_module("github_read")
 import github_direction_next
 import github_plan_wait
 import github_repository_scope as repository_scope

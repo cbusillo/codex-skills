@@ -696,8 +696,8 @@ def read_discussion(reader: GitHubReader, repo: str, number: int, *, issue_id: i
         + fields + " " + review_fields + " } } } rateLimit { cost } }"
     )
     data = discussion_query(reader, document, {"owner": owner, "name": name, "number": number})
-    repository = data.get("repository")
-    thread = repository.get("issueOrPullRequest") if isinstance(repository, dict) else None
+    repository_node = data.get("repository")
+    thread = repository_node.get("issueOrPullRequest") if isinstance(repository_node, dict) else None
     if not isinstance(thread, dict) or thread.get("__typename") not in {"Issue", "PullRequest"}:
         raise GitHubReadShapeError(f"GitHub did not expose {repo}#{number}")
     resolved_id = thread.get("databaseId")
