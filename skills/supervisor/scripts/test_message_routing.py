@@ -115,6 +115,7 @@ class MessageRoutingTests(unittest.TestCase):
                 watch.handle_message_hint(self.args, self.hint, self.reader)
             send.assert_called_once()
         self.assertEqual(json.loads(self.args.state.read_text())["watermarks"], {REPO: STAMP})
+        self.args.state.write_text(json.dumps({"watermarks": {REPO: "2026-11-01T00:00:00Z"}, "event_started_at": "2026-10-31T01:00:00Z"}))
         opening = {"html_url": URL.split("#")[0], "created_at": STAMP, "updated_at": "2026-11-01T00:00:00Z",
                    "body": "Request", "user": {"login": "client-agent[bot]", "type": "Bot"}}
         with patch_attr(watch, "read_message_hint", return_value=(REPO, opening)), patch_attr(watch, "recipient", return_value=(self.entry, False, "")), patch_attr(watch.review_notifications, "send") as send, redirect_stdout(io.StringIO()) as output:
@@ -122,7 +123,7 @@ class MessageRoutingTests(unittest.TestCase):
             watch.handle_message_hint(self.args, self.hint, self.reader)
         send.assert_called_once()
         self.assertEqual([len(json.loads(line)["notices"]) for line in output.getvalue().splitlines()], [1, 0])
-        self.assertEqual(json.loads(self.args.state.read_text())["watermarks"], {REPO: STAMP})
+        self.assertEqual(json.loads(self.args.state.read_text())["watermarks"], {REPO: "2026-11-01T00:00:00Z"})
 
     def test_gone_worker_uses_supervisor_only_after_certainly_unsent_result(self) -> None:
         with patch_attr(
@@ -414,7 +415,8 @@ class MessageRoutingTests(unittest.TestCase):
                    "updated_at": STAMP, "author": "unlisted[bot]", "comment_kind": "issue_body"}
         with patch_attr(watch, "recipient", return_value=(self.entry, False, "")), patch_attr(watch.review_notifications, "send") as send:
             watch.route_report(self.args, {"attention": [opening]}, self.reader, self.args.own_login)
-            watch.route_report(self.args, {"attention": [{**opening, "updated_at": "2026-11-01T00:00:00Z"}]}, self.reader, self.args.own_login)
+            with patch_attr(watch, "utc_now", return_value="2026-12-15T00:00:00Z"):
+                watch.route_report(self.args, {"attention": [{**opening, "updated_at": "2026-11-01T00:00:00Z"}]}, self.reader, self.args.own_login)
         send.assert_called_once()
         self.args.state.write_text(json.dumps({"event_started_at": "2026-10-31T03:00:00Z"}))
         with patch_attr(watch, "recipient", return_value=(self.supervisor, True, "owner_finished")), patch_attr(watch.review_notifications, "send"), patch_attr(watch, "audit_miss") as audit:

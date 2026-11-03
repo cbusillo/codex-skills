@@ -576,9 +576,7 @@ A foreign author stays `foreign` even when its comment has a review marker.
 Configure known service bots among own logins when their ordinary posts should
 not wake the Supervisor; no suffix rule silently excludes unknown posters.
 Read the canonical record before acting under existing authority. The watcher
-does not launch agents, post messages, grant access or widen briefs. New issue
-bodies, inline review comments and Discussions are outside this bounded comment
-feed; the existing work rollup still supplies broader discussion coverage.
+does not launch agents, post messages, grant access or widen briefs.
 
 A Launchplane notice for a Client's "Changes requested" decision on a pull
 request also carries `change_request`: the PR, the reviewed commit, the

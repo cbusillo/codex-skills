@@ -514,7 +514,7 @@ def load_deliveries(path: Path) -> dict[str, dict]:
     cutoff = timestamp(utc_now()) - timedelta(days=30)
     return {
         key: row for key, row in deliveries.items()
-        if row.get("status") == "attempted" or row.get("audit_status") in {"attempted", "pending"}
+        if row.get("kind") == "foreign_opened" or row.get("status") == "attempted" or row.get("audit_status") in {"attempted", "pending"}
         or timestamp(json.loads(key)[1]) >= cutoff
     }
 
@@ -561,14 +561,15 @@ def handle_message_hint(args: Any, hint: dict, reader: GitHubReader) -> None:
     repo, comment = source
     with watch_lock(args.state, wait=True):
         state = json.loads(args.state.read_text()) if args.state.exists() else {}
-        since = state.get("watermarks", {}).get(repo) or state.get("event_started_at") or hint["received_at"]
+        since = state.get("event_started_at") or hint["received_at"]
     notices = []
     for message in source_messages(comment, getattr(args, "client_agent_logins", ())):
-        if "#" not in message["html_url"] and message["updated_at"] == message["created_at"] and timestamp(message["created_at"]) < timestamp(since):
-            continue
         notice = make_notice(repo, message, args.own_login, args.launchplane_login)
-        if notice:
-            notices.append({**notice, "hook_received_at": hint["received_at"]})
+        if notice is None:
+            continue
+        if notice["kind"] == "foreign_opened" and timestamp(notice["updated_at"]) < timestamp(since):
+            continue
+        notices.append({**notice, "hook_received_at": hint["received_at"]})
     with watch_lock(args.state.with_name(args.state.name + ".routing"), wait=True):
         deliveries = load_deliveries(args.state)
         persist = lambda: save_deliveries(args.state, deliveries)
@@ -597,6 +598,8 @@ def make_notice(repo: str, comment: dict, own_logins: list[str], launchplane_log
     if not (is_question or is_launchplane or (login or "").casefold() not in own):
         return None
     is_opening = "#" not in url and updated == comment.get("created_at", updated)
+    if is_opening and (login or "").casefold() in own and not is_question:
+        return None
     notice = {
         "repository": repo,
         "author": login,
@@ -604,7 +607,7 @@ def make_notice(repo: str, comment: dict, own_logins: list[str], launchplane_log
         "url": url,
         "updated_at": updated,
         "excerpt": excerpt(body),
-        "kind": "director_question" if is_question else "launchplane" if is_launchplane else "foreign_opened" if is_opening else "foreign",
+        "kind": "director_question" if is_question else "foreign_opened" if is_opening else "launchplane" if is_launchplane else "foreign",
         "untrusted": True,
         "review_marker": marker is not None,
     }
@@ -796,6 +799,8 @@ def route_notices(args: Any, notices: list[dict], deliveries: dict, reader: GitH
         ):
             continue
         receipt = deliveries.setdefault(delivery_key(notice), {})
+        if notice["kind"] == "foreign_opened":
+            receipt["kind"] = "foreign_opened"
         if event:
             receipt["hook_seen"] = notice.get("hook_received_at") or utc_now()
         else:

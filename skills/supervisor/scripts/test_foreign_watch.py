@@ -182,12 +182,12 @@ class WatchTests(unittest.TestCase):
         reader = Mock()
         reader.request.return_value = SimpleNamespace(body={"items": [], "total_count": 0, "incomplete_results": False})
         reader.paged_json.side_effect = feeds([], opened_items=[
-            opened(), opened("director"), opened("client-agent[bot]", "Bot"), opened("dependabot[bot]", "Bot"), opened(created="2026-10-09T11:00:00Z")])
+            opened(), opened("director"), opened("client-agent[bot]", "Bot"), opened("dependabot[bot]", "Bot"), opened("delivery[bot]", "Bot"), opened("agent[bot]", "Bot"), opened(created="2026-10-09T11:00:00Z")])
         notices, errors, _ = self.scan(reader, {"client-agent[bot]"})
         self.assertEqual(errors, [])
         self.assertEqual([(n["author"], n["url"], n["excerpt"]) for n in notices],
                          [(author, "https://github.com/director/project/pull/50", "Add tvOS support")
-                          for author in ("client", "client-agent[bot]", "dependabot[bot]")])
+                          for author in ("client", "client-agent[bot]", "dependabot[bot]", "delivery[bot]")])
 
     def test_sweep_recovers_inline_and_bare_review_on_an_old_pull(self):
         reader = Mock()
