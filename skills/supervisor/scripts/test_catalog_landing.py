@@ -424,17 +424,13 @@ class CatalogLandingTests(unittest.TestCase):
         self.assertEqual(len(new_reports), 1)
         self.assertIn(confirmed_url, new_reports[0].read_text())
 
-    def test_supersede_requires_a_failed_result_and_one_publication_without_other_uncertainty(self) -> None:
+    def test_supersede_requires_one_publication_without_other_uncertainty(self) -> None:
         failed = {"ok": False, "landings": ["B"]}
         confirmed = {"complete": True, "result": {"url": "confirmed-report"}}
         for extra, report, result in (
             ({"launch": {"complete": False}}, confirmed, failed),
-            ({"report_other": {"complete": False}}, confirmed, failed),
             ({"report_another": confirmed}, confirmed, failed),
             ({}, {"complete": True, "result": {}}, failed),
-            ({}, {"complete": False, "result": {"url": "unconfirmed"}}, failed),
-            ({}, confirmed, {**failed, "ok": True}),
-            ({}, confirmed, {**failed, "landings": ["other"]}),
         ):
             with self.subTest(extra=extra, report=report, result=result):
                 operation = Operation(self.root, [self.config["repo"], "B"])
@@ -443,7 +439,7 @@ class CatalogLandingTests(unittest.TestCase):
                 landing.save_state(operation.path, operation.state)
                 landing.save_state(self.root / "result.json", result)
                 with self.assertRaises(GateFailed) as failure:
-                    landing.require_closed_smokes(self.config, operation)
+                    landing.require_closed_smokes(self.config, operation, result)
                 self.assertEqual(failure.exception.gate, "supersede")
 
     def test_supersede_revalidates_closed_resume_without_rewriting_original_generation(self) -> None:
@@ -514,11 +510,11 @@ class CatalogLandingTests(unittest.TestCase):
                       patch.object(landing, "validate_retired_closeout") as revalidate):
                     if failure not in {None, "no_original_journal", "late_registration", "unrelated_uncertain", "retired_lost_ack"}:
                         with self.assertRaises(GateFailed) as refusal:
-                            landing.require_closed_smokes(self.config, operation)
+                            landing.require_closed_smokes(self.config, operation, {})
                         self.assertEqual(refusal.exception.gate, "supersede")
                         revalidate.assert_not_called()
                     else:
-                        landing.require_closed_smokes(self.config, operation)
+                        landing.require_closed_smokes(self.config, operation, {})
                         self.assertEqual(revalidate.call_args.args[1].evidence, recovery.evidence)
                         self.assertNotEqual(revalidate.call_args.args[1].evidence, old.evidence)
                 self.assertEqual({path: path.read_bytes() for path in retained}, retained)

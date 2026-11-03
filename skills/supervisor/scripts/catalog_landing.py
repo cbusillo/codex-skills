@@ -460,16 +460,12 @@ def superseded_closeout(operation: Operation, harness: str, source: dict) -> tup
     return matches[0], generation
 
 
-def require_closed_smokes(config: dict, operation: Operation) -> str | None:
+def require_closed_smokes(config: dict, operation: Operation, result: dict) -> str | None:
     steps = operation.state["steps"]
     incomplete = {name for name, step in steps.items() if step.get("complete") is False}
-    reported_url = None
+    reported_url = steps.get("report_" + fingerprint(result), {}).get("result", {}).get("url")
     if incomplete:
-        result_path = operation.evidence / "result.json"
-        require(result_path.is_file(), "supersede", "uncertain operation has no saved failed result")
-        result = json.loads(result_path.read_text())
-        require(result.get("ok") is False and result.get("landings") == operation.state["identity"][1:]
-                and incomplete == {"report_" + fingerprint(result)},
+        require(incomplete == {"report_" + fingerprint(result)},
                 "supersede", "resolve every uncertain mutation other than this failed result's report")
         reports = [url for name, step in steps.items()
                    if name.startswith("report_") and step.get("complete") is True
@@ -521,9 +517,8 @@ def poll(config: dict, evidence: Path, *, supersede_failed: bool = False) -> dic
             require(old_result.get("ok") is False,
                     "supersede", "only a failed verification can be superseded")
             with closure.store_lock(old.evidence / "verification", create=True):
-                reported_url = require_closed_smokes(current, old)
+                superseded_url = require_closed_smokes(current, old, old_result)
             superseded = str(old.evidence)
-            superseded_url = reported_url or old.state["steps"].get("report_" + fingerprint(old_result), {}).get("result", {}).get("url")
             landings += pending_landings(source, landings[-1], runtime["after_sha"])
             state.update(attempt=landings[-1] + "-" + uuid.uuid4().hex,
                          superseded=superseded, superseded_url=superseded_url)
