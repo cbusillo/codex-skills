@@ -353,8 +353,11 @@ uv run skills/supervisor/scripts/oq.py --owner OWNER --queue OWNER/CATALOG#QUEUE
 
 Read one owning discussion with `oq.py OWNER/REPO#NUMBER --owner DIRECTOR_LOGIN
 --include-answers` when a consumer needs accepted answer text. Each question then
-includes its `number` and `answer_records` containing `answer` and the decision's
-`url`, selected by the same trusted matcher as the queue. Without this flag the
+includes a unique `number` and `decision_comments` with the original accepted
+comment's `body`, `url`, author and timestamps, selected by the same trusted matcher
+as the queue. Comments retain their source order; consumers use the last recorded
+answer, and its text is unchanged. Duplicate or absent numbers are `null`, so they
+cannot identify a card by number alone. Without this flag the
 existing JSON is unchanged. The login is the Director's, including for organization
 repositories; this mode reads only and does not register or acknowledge delivery.
 

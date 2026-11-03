@@ -10,6 +10,7 @@ import json
 import re
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
@@ -93,11 +94,17 @@ def main() -> int:
     reports = []
     for item in args.items:
         try:
+            comments = fetch(item)
+            found = questions(comments, args.owner, args.decision_author)
+            if args.include_answers:
+                numbers = Counter(question_records.heading_id(question["question"]) for question in found)
+                for question in found:
+                    number = question_records.heading_id(question["question"])
+                    question["number"] = number if number and numbers[number] == 1 else None
+                    question["decision_comments"] = [comment for comment in comments if comment["url"] in question["answers"]]
             report = {
                         "item": item,
-                        "questions": questions(
-                            fetch(item), args.owner, args.decision_author, include_answers=args.include_answers
-                        ),
+                        "questions": found,
                     }
             reports.append(report)
             if not args.changes_state:

@@ -28,8 +28,7 @@ DECISION_HEADING = re.compile(
 
 
 def questions(comments: list[dict[str, Any]], owner: str, decision_authors: Iterable[str],
-              related_comments: Iterable[dict[str, Any]] = (), *, recorded_decisions_only: bool = False,
-              include_answers: bool = False) -> list[dict[str, Any]]:
+              related_comments: Iterable[dict[str, Any]] = (), *, recorded_decisions_only: bool = False) -> list[dict[str, Any]]:
     owner = owner.casefold()
     decision_authors = {author.casefold() for author in decision_authors}
     numbers = Counter(heading_id(comment.get("body", "")) for comment in comments)
@@ -40,7 +39,6 @@ def questions(comments: list[dict[str, Any]], owner: str, decision_authors: Iter
             continue
         number = heading_id(body)
         answers = []
-        answer_records = []
         for answer in [*comments[i + 1 :], *related_comments]:
             author = (answer.get("author") or "").casefold()
             text = answer.get("body", "").lstrip().lstrip("*")
@@ -59,7 +57,6 @@ def questions(comments: list[dict[str, Any]], owner: str, decision_authors: Iter
             number_match = QUESTION.match(content)
             decision_number = heading_number or (number_match[0] if number_match else None)
             content = re.sub(r"^Q[1-9][0-9]*\s*[:=,.—-]?\s*", "", content)
-            display = content.split("\n\nQuestion:", 1)[0].split("\n\n<!--", 1)[0].strip()
             content = re.sub(r"https://\S+", "", content).strip()
             if recorded and re.fullmatch(r"(?i)(?:later|not now|not yet|waiting|pending)[\s.;!—-]*", content):
                 continue
@@ -73,7 +70,6 @@ def questions(comments: list[dict[str, Any]], owner: str, decision_authors: Iter
             )
             if authorized and (linked or numbered) and not text.startswith(QUESTION_PREFIXES):
                 answers.append(answer["url"])
-                answer_records.append({"url": answer["url"], "answer": display})
         results.append(
             {
                 "url": question["url"],
@@ -81,7 +77,6 @@ def questions(comments: list[dict[str, Any]], owner: str, decision_authors: Iter
                 "status": "answered" if answers else "needs_review",
                 "answers": answers,
                 "created_at": question.get("created_at"),
-                **({"number": number, "answer_records": answer_records} if include_answers else {}),
             }
         )
     return results
