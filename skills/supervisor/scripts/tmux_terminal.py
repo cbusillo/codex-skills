@@ -474,7 +474,7 @@ async def operate(args):
             terminal.run("set-option", "-p", "-t", pane, "@supervisor_identity", identity)
             sid = f"tmux:{args.tmux_socket}:{identity}"
             row = terminal.select(sid)
-            progress.update(session_id=sid)
+            progress.update(session_id=sid, pid=row["pid"])
             progress.update(submission="unknown", phase="submit_command")
             result = {key: row[key] for key in ("window_id", "tab_id", "session_id", "tty", "pid", "backend", "tmux_socket")}
             if choice:

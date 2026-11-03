@@ -295,7 +295,7 @@ def recover_supervisor(root: Path, config_path: Path, ledger: Path) -> dict:
                 row
                 for row in rows
                 if row.get("tab_id") == original.get("tab_id")
-                and (row["session_id"] != failed["session_id"] or row.get("pid") != original.get("pid"))
+                and (row["session_id"] != failed["session_id"] or row.get("pid") != failed.get("pid", original.get("pid")))
             ]
             if changed or len(matches) > 1:
                 raise ValueError("retained terminal generation changed; preserve it for reconciliation")

@@ -336,6 +336,28 @@ class SupervisorStartTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 supervisor.recover_supervisor(self.root, self.root / "services.json", workers)
 
+    def test_recovery_distinguishes_terminal_root_from_registered_native_child(self) -> None:
+        import tmux_terminal
+
+        attempt = self.root / "attempt"
+        attempt.mkdir()
+        terminal = {"session_id": "tmux:fixture:original", "tmux_socket": "fixture", "tab_id": "@2", "pid": 44}
+        native = {**terminal, "pid": 55}
+        supervisor.save_state(attempt / "receipt.json", {"failed_launch": {**terminal, "launch": native}})
+        supervisor.save_state(attempt / "launch.json", [{"session_id": "native"}])
+        supervisor.save_state(self.root / "start.json", {"attempt": str(attempt), "status": "launching"})
+        workers = self.root / "workers.json"
+        supervisor.save_state(workers, [])
+        with (
+            patch.object(tmux_terminal.Terminal, "list", return_value=[{**terminal, "dead": False}]),
+            patch.object(supervisor, "run_json", return_value={"native_session_id": "native"}) as register,
+            patch.object(supervisor.services, "bind_launched_supervisor", return_value={"session_id": "native"}),
+        ):
+            self.assertEqual(
+                supervisor.recover_supervisor(self.root, self.root / "services.json", workers)["session_id"], "native"
+            )
+            register.assert_called_once()
+
     def test_retry_after_unstarted_takeover_still_requires_takeover_for_existing_binding(self) -> None:
         supervisor.save_state(self.root / "start.json", {"status": "not_started"})
         with (
