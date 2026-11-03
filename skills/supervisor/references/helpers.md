@@ -2443,9 +2443,10 @@ Author session: NATIVE_SESSION_ID
 
 Prompt:
 Review the change and the surrounding files. Give a realistic trigger and
-severity for each finding, or none. Does this PR add a test that pins a literal,
-version, wording or config text? Your access is read-only; read whatever files
-you need, and do not modify anything.
+severity for each finding, or none. What does this change duplicate, and which
+existing path should it have extended? Which new test could not fail if the
+product broke, or pins a literal, version, wording or config text? Your access
+is read-only; read whatever files you need, and do not modify anything.
 ```
 
 The author keeps its session and claim open until the completed report is
