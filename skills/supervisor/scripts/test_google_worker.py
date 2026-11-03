@@ -38,6 +38,31 @@ def protobuf(values: dict[int, int | bytes]) -> bytes:
 
 
 class GoogleWorkerTests(unittest.TestCase):
+    def test_idle_wal_conversation_passes_its_first_read(self) -> None:
+        for reader in (session_record.session_status, session_record.posted_comments):
+            with self.subTest(reader=reader.__name__), tempfile.TemporaryDirectory() as folder:
+                session = "12345678-1234-1234-1234-123456789abc"
+                transcript = Path(folder) / f"{session}.db"
+                with sqlite3.connect(transcript) as database:
+                    database.execute("PRAGMA journal_mode=WAL")
+                    database.execute("CREATE TABLE trajectory_meta (cascade_id TEXT)")
+                    database.execute("INSERT INTO trajectory_meta VALUES (?)", (session,))
+                    database.execute(
+                        "CREATE TABLE steps (idx INTEGER, step_type INTEGER, status INTEGER, has_subtrajectory INTEGER, step_payload BLOB)"
+                    )
+                    metadata = protobuf({1: protobuf({1: 1}), 8: protobuf({1: 1})})
+                    response = protobuf({1: 15, 4: 3, 5: metadata, 20: protobuf({1: b"Safe to exit: yes"})})
+                    database.execute("INSERT INTO steps VALUES (0,15,3,0,?)", (response,))
+                database.close()
+                entry = {"session_id": session, "harness": "agy", "transcript": str(transcript)}
+                first = reader(entry)
+                if reader is session_record.session_status:
+                    self.assertTrue(first["safe_verdict"])
+                    self.assertEqual(first["background_tasks"], [])
+                else:
+                    self.assertEqual(first, [])
+                self.assertEqual(reader(entry), first)
+
     def test_completed_native_compaction_does_not_veto_final_verdict(self) -> None:
         fields = iterm_tab.claim_history.protobuf_fields
         metadata = protobuf({1: protobuf({1: 1})})

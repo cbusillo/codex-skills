@@ -2053,6 +2053,9 @@ closed blocks. Open, mismatched or indented fences/verdicts never qualify.
 Recognition supplies a candidate, not authority; use a standalone final
 `Safe to exit: yes` and keep every shutdown gate below.
 
+AGY transcript reads ignore empty SQLite WAL files, which a read-only connection
+can create. Database changes and nonempty WAL changes still refuse the read.
+
 ### Native shell-input proof
 
 `iterm_tab.py close --session-id <exact-iterm-id> --ledger <private-ledger.json>`
