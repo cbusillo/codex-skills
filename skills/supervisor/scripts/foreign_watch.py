@@ -401,6 +401,17 @@ def scan_mentions(args, repos, watermarks, seen, own_logins, started, reader):
     if gap:
         gaps.append({"lane": MENTIONS, "gap": f"mentions outside the watched list are not covered: {gap}"})
     errors = [{"repository": MENTIONS, "error": error, "retryable": True, "retry_at": None}] if error else []
+    for notice in fresh:
+        notice["author"] = None
+        try:
+            issue_url = f"https://api.github.com/repos/{notice['repository']}/issues/{notice['number']}"
+            comments = read_mention_discussion(issue_url, seen.get(notice["url"], since))
+            authors = {((comment.get("user") or {}).get("login") or "").casefold() for comment in comments}
+            newest = max((comment.get("updated_at", "") for comment in comments), default="")
+            if authors and (len(authors) == 1 or authors <= {login.casefold() for login in own_logins}) and newest == notice["updated_at"]:
+                notice["author"] = authors.pop()
+        except director_mentions.MentionSearchError as failure:
+            gaps.append({"lane": MENTIONS, "gap": str(failure)})
     return fresh, gaps, errors, watermarks if gap or error else {**watermarks, MENTIONS: started}, kept
 
 

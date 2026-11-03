@@ -103,13 +103,11 @@ class WatchTests(unittest.TestCase):
                     self.assertEqual(state["watermarks"][REPO], "2026-10-30T19:40:00Z")
 
     def test_own_questions_stay_logged_without_waking_and_bursts_settle_once(self) -> None:
-        for kind, author, wakes, settle_error in (("director_question", "agent[bot]", False, False),
-                                                  ("director_mention", "AGENT[bot]", False, False),
-                                                  ("director_mention", "client", True, False),
-                                                  ("foreign", "agent[bot]", True, False),
-                                                  ("foreign", "agent[bot]", True, True)):
+        for kind, wakes, settle_error in (("director_question", False, False),
+                                          ("foreign", True, False), ("foreign", True, True)):
             with self.subTest(kind=kind, settle_error=settle_error), tempfile.TemporaryDirectory() as directory:
                 clock = WatchClock()
+                author = "agent[bot]"
                 first = {"url": "first", "kind": kind, "author": author}
                 second = {**first, "url": "second"}
                 args = argparse.Namespace(owner="director", state=Path(directory) / "state.json", since=None,
@@ -129,6 +127,30 @@ class WatchTests(unittest.TestCase):
                 self.assertEqual(logged, [first, second])
                 self.assertEqual(clock.now, foreign_watch.NOTICE_SETTLE_SECONDS if wakes else 20)
                 self.assertEqual(json.loads(output.getvalue().splitlines()[-1])["errors"], errors)
+
+    def test_own_mentions_stay_logged_without_waking_on_thread_author_confusion(self) -> None:
+        for opener, authors in (("agent[bot]", ["AGENT[bot]"]), ("client", ["agent[bot]"]),
+                                ("agent[bot]", ["client"]), ("agent[bot]", ["client", "agent[bot]"]),
+                                ("agent[bot]", [])):
+            with self.subTest(opener=opener, authors=authors), tempfile.TemporaryDirectory() as directory:
+                clock = WatchClock()
+                reader = Mock()
+                thread = {**mention(REPO, 1), "user": {"login": opener}}
+                reader.request.return_value = SimpleNamespace(body={"items": [thread], "total_count": 1})
+                reader.paged_json.return_value = [{**comment(author, "@director please decide", STARTED)} for author in authors]
+                args = argparse.Namespace(owner="director", repo=["director/other"], state=Path(directory) / "state.json",
+                                          since=None, own_login=["agent[bot]"], launchplane_login=[],
+                                          interval=foreign_watch.NOTICE_SETTLE_SECONDS, once=False, persistent=True)
+                output = io.StringIO()
+                with (patch_attr(foreign_watch, "GitHubReader", return_value=reader),
+                      patch.object(foreign_watch, "scan", side_effect=lambda _repos, watermarks, *_: ([], [], watermarks)),
+                      patch.object(foreign_watch.time, "monotonic", side_effect=clock.monotonic),
+                      patch.object(foreign_watch.time, "sleep", side_effect=clock.sleep), redirect_stdout(output)):
+                    self.assertEqual(foreign_watch.watch(args, args.repo, SINCE, 20), 0)
+                notices = [notice for line in output.getvalue().splitlines() for notice in json.loads(line)["notices"]]
+                self.assertEqual([notice["url"] for notice in notices], [thread["html_url"]])
+                own_mention = bool(authors) and all(author.casefold() == "agent[bot]" for author in authors)
+                self.assertEqual(clock.now, 20 if own_mention else foreign_watch.NOTICE_SETTLE_SECONDS)
 
     def test_persistent_read_retry_preserves_watermark_and_provider_cooldown(self):
         with tempfile.TemporaryDirectory() as directory:
