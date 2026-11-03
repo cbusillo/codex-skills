@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "rollout-friction" / "scripts"))
 # PyCharm cannot follow the sys.path entry above to this module.
 # noinspection PyUnresolvedReferences
-from analyze_rollouts import iter_records, read_transcript, transcript_suffix  # noqa: E402
+from analyze_rollouts import parse_records, read_transcript, transcript_suffix  # noqa: E402
 from extract_rollout_memory import events_from_record  # noqa: E402
 
 SIGNALS = {
@@ -132,21 +132,18 @@ def scan(roots: list[Path], *, queries: list[str], signals: list[str], since: fl
     mirrors = 0
     for path in files:
         try:
-            if path.suffix.lower() == ".zst":
-                over = len(read_transcript(path, max_bytes + 1)) > max_bytes
-            else:
-                over = path.stat().st_size > max_bytes
-            if over:
-                limitations.append({"kind": "byte_limit", "source": str(path)})
+            data = read_transcript(path, max_bytes + 1)
         except OSError as exc:
             limitations.append({"kind": "file_io_error", "source": str(path), "error": str(exc)})
             continue
+        if len(data) > max_bytes:
+            limitations.append({"kind": "byte_limit", "source": str(path)})
         session = None
         provider = "unknown"
         sidechain = False
         candidates: list[dict] = []
         counts = {"unsupported_records": 0, "malformed_records": 0, "unknown_message_timestamps": 0}
-        for line, record in iter_records(path, max_bytes):
+        for line, record in parse_records(path, data[:max_bytes]):
             if not isinstance(record, dict):
                 counts["malformed_records"] += 1
                 continue

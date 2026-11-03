@@ -969,16 +969,25 @@ def read_transcript(path: Path, limit: int) -> bytes:
         import zstandard
     except ImportError as exc:
         raise OSError("reading .zst transcripts needs the zstandard package") from exc
+    decompressor = zstandard.ZstdDecompressor()
     chunks: list[bytes] = []
     remaining = limit
     try:
-        with path.open("rb") as raw, zstandard.ZstdDecompressor().stream_reader(raw, read_across_frames=True) as reader:
+        with path.open("rb") as raw, decompressor.stream_reader(raw, read_across_frames=True) as reader:
             while remaining > 0:
                 chunk = reader.read(min(remaining, 1 << 20))
                 if not chunk:
                     break
                 chunks.append(chunk)
                 remaining -= len(chunk)
+        # The whole stream fit, but the reader also ends quietly inside a cut-off frame.
+        pending = path.read_bytes() if remaining > 0 else b""
+        while pending:
+            frame = decompressor.decompressobj()
+            frame.decompress(pending)
+            if not frame.eof:
+                raise OSError("zstd data ends inside a frame")
+            pending = frame.unused_data
     except zstandard.ZstdError as exc:
         raise OSError(f"invalid zstd data: {exc}") from exc
     return b"".join(chunks)
@@ -992,9 +1001,10 @@ def iter_records(path: Path, max_bytes: int) -> Iterable[tuple[int, Any]]:
     except OSError as exc:
         yield 0, f"scanner_io_error unable to read file: {exc}"
         return
+    yield from parse_records(path, data[:max_bytes])
 
-    if len(data) > max_bytes:
-        data = data[:max_bytes]
+
+def parse_records(path: Path, data: bytes) -> Iterable[tuple[int, Any]]:
     text = data.decode(errors="replace")
     if transcript_suffix(path) == ".json":
         try:

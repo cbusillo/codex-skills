@@ -171,9 +171,12 @@ class SearchHistoryTests(unittest.TestCase):
         self.assertEqual(result["hits"][0]["source"], str(path))
         self.assertEqual(result["hits"][1]["position_kind"], "record_index")
         self.assertNotIn("byte_limit", {item["kind"] for item in result["limitations"]})
-        self.assertLess(path.stat().st_size, len(lines))
         limited = self.search(max_bytes=path.stat().st_size + 1)
         self.assertIn({"kind": "byte_limit", "source": str(path)}, limited["limitations"])
+        path.write_bytes(path.read_bytes()[:-3])
+        cut = self.search()
+        self.assertFalse(cut["coverage_complete"])
+        self.assertIn("file_io_error", {item["kind"] for item in cut["limitations"]})
 
     def test_json_array_uses_record_index(self):
         path = self.root / "transcript.json"
