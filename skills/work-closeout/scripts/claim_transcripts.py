@@ -8,6 +8,7 @@ import argparse
 import ast
 from contextlib import redirect_stderr, redirect_stdout
 import io
+import importlib.util
 import json
 import re
 import shlex
@@ -92,6 +93,24 @@ def handoff_command(text: str) -> argparse.Namespace | None:
                  or handoff_heredoc(redirect))
             for redirect in last.children_by_field_name("redirect")):
         return None
+    if argv[:2] == ["uv", "run"]:
+        argv = argv[2:]
+    if argv and Path(argv[0]).name == "gh-pr.py":
+        spec = importlib.util.spec_from_file_location("handoff_pr", Path(__file__).resolve().parents[2] / "github/scripts/gh-pr.py")
+        assert spec and spec.loader
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        try:
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                args = helper.build_parser().parse_args(argv[1:])
+            if args.command != "comment" or not str(args.pr).isdigit():
+                return None
+            args.kind, args.number = "pr", int(args.pr)
+            return args if (args.repo and claim_log.REPOSITORY_PATTERN.fullmatch(args.repo)
+                            and args.number > 0 and not args.edit_last and args.edit_comment is None
+                            and not args.attach and not args.create_if_none) else None
+        except (ArgumentParsingError, SystemExit):
+            return None
     if not argv or Path(argv[0]).name != "gh-comment" or any(flag in argv for flag in ("-h", "--help")):
         return None
     try:
@@ -147,7 +166,7 @@ def handoff_comments(source: dict) -> list[dict]:
             except (ValueError, TypeError):
                 continue
         if (not isinstance(result, dict) or result.get("ok") is not True or result.get("outcome_certainty") != "confirmed"
-                or result.get("operation") not in {"github.comment.issue", "github.comment.pr"}
+                or result.get("operation") not in {"github.comment.issue", "github.comment.pr", "github.pr.comment"}
                 or result.get("comment_action") != "created"):
             continue
         try:
@@ -157,10 +176,11 @@ def handoff_comments(source: dict) -> list[dict]:
             target = handoff_command(sources.commands[0].text)
         except (ValueError, TypeError):
             continue
-        if (target is not None and result.get("operation") == f"github.comment.{target.kind}"
+        if (target is not None and result.get("operation") in {f"github.comment.{target.kind}", "github.pr.comment" if target.kind == "pr" else "github.comment.issue"}
                 and str(result.get("repo") or "").casefold() == target.repo.casefold() and result.get("number") == target.number):
             found.append({"source_session": source["session_id"], "expected_actor": result.get("expected_actor"),
-                          "repository": target.repo.casefold(), "number": target.number, "comment": result.get("comment")})
+                          "repository": target.repo.casefold(), "number": target.number, "comment": result.get("comment"),
+                          "operation_marker": result.get("operation_marker")})
     return list({json.dumps(row, sort_keys=True): row for row in found}.values())
 
 

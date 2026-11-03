@@ -3769,7 +3769,7 @@ class HandoffProjectionTests(unittest.TestCase):
         incidents = [row for row in json.loads(fixture.read_text()) if not row.get("ended_at")]
         for incident in incidents:
             for harness in ("codex", "claude"):
-                for variant in (None, "case", "copied", "redirected", "outer_redirect", "extra_output", "wrong_target", "failed", "unconfirmed", "nested", "async", "child", "help", "malformed", "heredoc", "unquoted_heredoc", "header", "running", "heredoc_tabs", "heredoc_redirect", "heredoc_pipeline", "heredoc_and", "heredoc_or", "heredoc_args", "heredoc_async", "preparation_exec", "preparation_pipeline"):
+                for variant in ("pr_helper", None, "case", "copied", "redirected", "outer_redirect", "extra_output", "wrong_target", "failed", "unconfirmed", "nested", "async", "child", "help", "malformed", "heredoc", "unquoted_heredoc", "header", "running", "heredoc_tabs", "heredoc_redirect", "heredoc_pipeline", "heredoc_and", "heredoc_or", "heredoc_args", "heredoc_async", "preparation_exec", "preparation_pipeline"):
                     with self.subTest(worker=incident["token"], harness=harness, variant=variant):
                         result = json.loads(json.dumps(incident["posts"][0]))
                         number = incident["issue"] + (variant == "wrong_target")
@@ -3806,6 +3806,10 @@ class HandoffProjectionTests(unittest.TestCase):
                             result["outcome_certainty"] = "unknown"
                         elif variant == "nested":
                             result = {"ok": False, "body": result}
+                        if variant == "pr_helper":
+                            command = f"uv run /catalog/gh-pr.py --repo {repo} comment {number} --body-file /evidence/stop.md"
+                            result["operation"] = "github.pr.comment"
+                            result["operation_marker"] = {"operation_id": "own-operation"}
                         session = incident["session_id"]
                         output = json.dumps(result)
                         records = ([{"type": "session_meta", "payload": {"id": session}},
@@ -3840,7 +3844,7 @@ class HandoffProjectionTests(unittest.TestCase):
                         with contextlib.redirect_stdout(io.StringIO()) as captured:
                             projected = helper.history.handoff_comments(entry)
                         self.assertEqual(captured.getvalue(), "")
-                        self.assertEqual(bool(projected), variant in {None, "case", "heredoc", "heredoc_tabs", "header"} or (variant == "running" and harness == "claude"))
+                        self.assertEqual(bool(projected), variant in {None, "case", "heredoc", "heredoc_tabs", "header", "pr_helper"} or (variant == "running" and harness == "claude"))
                         if projected:
                             self.assertEqual(projected[0]["source_session"], session)
                             self.assertEqual(projected[0]["comment"]["url"], incident["comments"][0]["html_url"])

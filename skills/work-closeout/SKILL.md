@@ -309,11 +309,15 @@ before posting. Failed or interrupted attempts stay targets until GitHub
 readback accounts for them. Children claiming under the root session ID enter
 the same journal even when their output is absent from the root transcript.
 
-The result also projects `handoff_comments` from confirmed `gh-comment` writes
-bound to the source's native command and captured output. Normal Supervisor
-closeout can use an unchanged original comment for a no-claim stop. Reading a
-saved receipt does not establish a write, and this optional projection changes
-no claim-coverage verdict.
+The result also projects `handoff_comments` from confirmed `gh-comment` and
+`gh-pr.py comment` writes bound to the source's native command and captured
+output. Supervisor closeout accepts an unquoted native session ID in the
+comment text or an operation marker matched to that session's unchanged
+original comment write, including sessions that released claims. Discovery
+checks the ledger issue or PR; select an exact `--handoff-url` when ambiguous.
+Refusals identify the examined comment and missing proof. Reading a saved
+receipt does not establish a write, and this optional projection changes no
+claim-coverage verdict.
 
 For a session that began after the journal shipped (`JOURNAL_SHIPPED` in
 `check_claims.py`), the check decides journal coverage before running the
