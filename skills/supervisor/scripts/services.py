@@ -113,6 +113,11 @@ def verify_managed_supervisor(entry: dict) -> dict:
     return recipient
 
 
+def service_arguments(uv: str, config_path: Path, catalog: Path, name: str) -> list[str]:
+    return [uv, "run", "--no-project", "--no-cache", str(catalog.resolve() / "skills/supervisor/scripts/services.py"),
+            "run", "--config", str(config_path), "--service", name]
+
+
 def render(config_path, catalog, output):
     config_path = config_path.resolve()
     config = load_config(config_path)
@@ -127,8 +132,7 @@ def render(config_path, catalog, output):
         label = f"{LABEL_PREFIX}.{name}"
         job = {
             "Label": label,
-            "ProgramArguments": [config["uv"], "run", "--no-project", "--no-cache", str(runner),
-                                 "run", "--config", str(config_path), "--service", name],
+            "ProgramArguments": service_arguments(config["uv"], config_path, catalog, name),
             "WorkingDirectory": str(catalog.resolve()),
             "EnvironmentVariables": {"PATH": f"{Path(config['uv']).parent}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"},
             "RunAtLoad": True,
@@ -346,8 +350,7 @@ def prepare_service_host(config_path: Path, catalog: Path, output: Path, name: s
     config = load_config(config_path)
     logs = output / "logs"
     logs.mkdir(exist_ok=True, mode=0o700)
-    argv = [config["uv"], "run", "--no-project", "--no-cache", str(catalog / "skills/supervisor/scripts/services.py"),
-            "run", "--config", str(config_path), "--service", name]
+    argv = service_arguments(config["uv"], config_path, catalog, name)
     content = ("[Unit]\nDescription=Managed Supervisor reader\n[Service]\nType=exec\n"
                + "ExecStart=:" + " ".join(map(systemd_value, argv)) + "\n"
                + f"WorkingDirectory={str(catalog).replace(chr(37), chr(37) * 2)}\n"
