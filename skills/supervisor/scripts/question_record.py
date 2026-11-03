@@ -114,7 +114,7 @@ def render(record: dict[str, Any], *, legacy: bool = False) -> str:
         if legacy
         else [
             f"- **A senior developer would:** {text(record['comparison'])}",
-            f"- **Recommendation:** {text(recommended['answer'])}. {text(record['comparison'])}",
+            f"- **Recommendation:** {text(recommended['answer'])}",
             f"- **You do:** {text(record['manual'])}",
             "",
         ]
@@ -144,14 +144,27 @@ def read_record(source: dict[str, Any]) -> dict[str, Any]:
         "author": source["author"],
         "question_id": number,
         "url": source["url"],
+        "updated_at": source.get("updated_at"),
         "text": rendered.removeprefix("Director question: "),
     }
 
 
 class QuestionStorage(Protocol):
-    def create(self, issue: str, body: str) -> str: ...
+    def create(self, issue: str, body: str, trusted: set[str]) -> dict[str, Any]: ...
 
     def read(self, url: str) -> dict[str, Any]: ...
+
+    def update(self, url: str, body: str, expected_body: str, expected_updated_at: str) -> dict[str, Any]: ...
+
+
+def source_from_comments(url: str, comments: list[dict[str, Any]]) -> dict[str, Any]:
+    match = delivery.COMMENT_URL.fullmatch(url)
+    if match is None:
+        raise ValueError("invalid question URL")
+    source = next((comment for comment in comments if comment["url"] == url), None)
+    if source is None:
+        raise ValueError(f"source question is unavailable: {url}")
+    return {**source, "issue": f"https://github.com/{match[1]}/issues/{match[2]}"}
 
 
 class GitHubComments:
@@ -159,20 +172,70 @@ class GitHubComments:
         self.fetch = fetch
 
     @staticmethod
-    def create(issue: str, body: str) -> str:
+    def create(issue: str, body: str, trusted: set[str]) -> dict[str, Any]:
         match = ISSUE_URL.fullmatch(issue)
         if match is None:
             raise ValueError("invalid issue URL")
-        result = github_comment.comment("issue", int(match[2]), body, repo=match[1], dedupe_body=True)
-        return result["url"]
+        def validate_writer(actor: str) -> None:
+            if actor.casefold() not in trusted:
+                raise ValueError("question writer must be the Director or a configured --decision-author")
+
+        result = github_comment.comment("issue", int(match[2]), body, repo=match[1], dedupe_body=True,
+                                        validate_actor=validate_writer, include_body=True)
+        return {**result["comment"], "issue": issue}
 
     def read(self, url: str) -> dict[str, Any]:
-        source = next((c for c in self.fetch(delivery.source_item(url)) if c["url"] == url), None)
-        if source is None:
-            raise ValueError(f"source question is unavailable: {url}")
+        return source_from_comments(url, self.fetch(delivery.source_item(url)))
+
+    @staticmethod
+    def update(url: str, body: str, expected_body: str, expected_updated_at: str) -> dict[str, Any]:
         match = delivery.COMMENT_URL.fullmatch(url)
-        assert match is not None
-        return {**source, "issue": f"https://github.com/{match[1]}/issues/{match[2]}"}
+        if match is None:
+            raise ValueError("invalid question URL")
+        result = github_comment.comment(
+            "issue", int(match[2]), body, repo=match[1], edit_comment=int(match[3]), expected_body=expected_body,
+            expected_updated_at=expected_updated_at, include_body=True,
+        )
+        return {**result["comment"], "issue": f"https://github.com/{match[1]}/issues/{match[2]}"}
+
+
+def update(record: Any, args: argparse.Namespace, storage: QuestionStorage, fetch: DiscussionReader) -> dict[str, Any]:
+    errors = validation_errors(record)
+    if errors:
+        raise ValueError("Invalid Director question:\n" + "\n".join(errors))
+    with delivery.queue_lock():
+        item = delivery.source_item(args.url)
+        comments = fetch(item)
+        source = source_from_comments(args.url, comments)
+        view = read_record(source)
+        if not args.expected_updated_at or source.get("updated_at") != args.expected_updated_at:
+            raise ValueError("question changed; read its current version before revising")
+        if record["issue"] != view["record"]["issue"]:
+            raise ValueError("question cannot move to another issue")
+        trusted = {author.casefold() for author in [args.owner, *args.decision_author]}
+        if source["author"].casefold() not in trusted:
+            raise ValueError("question writer must be the Director or a configured --decision-author")
+        queue = question_id.configured_queue() or ""
+        related = []
+        if queue and queue != item:
+            related = fetch(queue)
+        question = next((q for q in delivery.oq.questions(comments, args.owner, args.decision_author, related)
+                         if q["url"] == args.url), None)
+        if question is None or question["answers"]:
+            raise ValueError("question is unavailable or already answered; do not revise it")
+        position = next(i for i, comment in enumerate(comments) if comment["url"] == args.url)
+        if any((comment.get("author") or "").casefold() == args.owner.casefold() for comment in comments[position + 1:]):
+            raise ValueError("Director replied after this question; confirm the answer before revising")
+        body = question_id.number_heading(render(record, legacy=True), view["question_id"])
+        repo = item.split("#", 1)[0]
+        github_comment.validate_question_mentions(body, repo)
+        github_comment.validate_planning_references(body, repo)
+        if len(body.encode()) + 128 > COMMENT_LIMIT:
+            raise ValueError("record and rendered text exceed the GitHub comment limit")
+        saved = read_record(storage.update(args.url, body, source["body"], args.expected_updated_at))
+        if saved["record"] != record or saved["question_id"] != view["question_id"] or saved["url"] != args.url:
+            raise ValueError(f"Question update at {args.url} disagrees with the requested record")
+        return {**saved, "registration": "unchanged"}
 
 
 def create(record: Any, args: argparse.Namespace, storage: QuestionStorage, fetch: DiscussionReader) -> dict[str, Any]:
@@ -200,20 +263,11 @@ def create(record: Any, args: argparse.Namespace, storage: QuestionStorage, fetc
     if args.dry_run:
         return {"text": render(record).split("<!-- director-question:record ", 1)[0].strip().removeprefix("Director question: "), "registration": "dry_run"}
     assert target is not None
-    repo = target[1]
-    actor = github_comment.authenticated_actor(
-        gh_cmd=github_comment.DEFAULT_GH,
-        operation="github.question.create",
-        expected_actor=github_comment.EXPECTED_ACTOR,
-        write_repository=repo,
-    )
     trusted = {author.casefold() for author in [args.owner, *args.decision_author]}
-    if actor.casefold() not in trusted:
-        raise ValueError("question writer must be the Director or a configured --decision-author")
     with delivery.queue_lock():
-        url = storage.create(record["issue"], body)
+        source = storage.create(record["issue"], body, trusted)
+        url = source["url"]
         try:
-            source = storage.read(url)
             view = read_record(source)
             if source["author"].casefold() not in trusted or view["record"] != record:
                 raise ValueError("saved question disagrees with the requested record or writer")
@@ -247,6 +301,12 @@ def main(argv: list[str], fetch: DiscussionReader) -> int:
     new.add_argument("--decision-author", action="append", default=delivery.oq.default_decision_authors())
     new.add_argument("--queue")
     new.add_argument("--dry-run", action="store_true")
+    revise = commands.add_parser("update")
+    revise.add_argument("url")
+    revise.add_argument("--record-file", type=Path, required=True)
+    revise.add_argument("--expected-updated-at", required=True)
+    revise.add_argument("--owner", required=True)
+    revise.add_argument("--decision-author", action="append", default=delivery.oq.default_decision_authors())
     show = commands.add_parser("show-question")
     show.add_argument("url")
     args = parser.parse_args(argv)
@@ -255,7 +315,8 @@ def main(argv: list[str], fetch: DiscussionReader) -> int:
         if args.command == "show-question":
             print(json.dumps(read_record(storage.read(args.url))))
             return 0
-        result = create(json.loads(args.record_file.read_text()), args, storage, fetch)
+        action = update if args.command == "update" else create
+        result = action(json.loads(args.record_file.read_text()), args, storage, fetch)
         print(result["text"])
         if result.get("url"):
             print(f"\nOriginal question: {result['url']}")
@@ -266,7 +327,7 @@ def main(argv: list[str], fetch: DiscussionReader) -> int:
     except github_comment.CommentError as error:
         print(
             json.dumps(
-                github_comment.terminal_failure(error, "github.question.create", expected_actor=github_comment.EXPECTED_ACTOR)
+                github_comment.terminal_failure(error, f"github.question.{args.command}", expected_actor=github_comment.EXPECTED_ACTOR)
             ),
             file=sys.stderr,
         )

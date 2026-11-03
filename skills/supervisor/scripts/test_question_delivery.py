@@ -59,7 +59,7 @@ class DeliveryTests(unittest.TestCase):
                               "author": self.authors[0],
                               "url": f"https://github.com/{self.queue.replace('#', '/issues/')}#issuecomment-{len(self.comments) + 1}",
                               "created_at": "2026-10-15T17:35:24Z"})
-        return self.comments[-1]
+        return {"comment": self.comments[-1]}
 
     def run_queue(self, **overrides):
         args = SimpleNamespace(queue=self.queue, owner=self.owner, decision_author=self.authors,
@@ -137,6 +137,19 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(report["queue_length"], len(self.questions))
         self.run_queue(ack=target, delivery_url=receipt)
         self.assertEqual(len(self.comments), len(self.questions) + 1)
+        source = next(q for q in self.sources[delivery.source_item(target)] if q["url"] == target)
+        source["updated_at"] = "2026-10-15T18:00:00Z"
+        revised = next(q for q in self.run_queue()["questions"] if q["url"] == target)
+        self.assertTrue(revised["resurface"])
+        self.assertIsNone(revised["delivery_url"])
+        self.assertEqual(revised["registration_url"], row["registration_url"])
+        acknowledged = self.run_queue(ack=target, delivery_url=receipt)
+        current = next(q for q in acknowledged["questions"] if q["url"] == target)
+        self.assertFalse(current["resurface"])
+        count = len(self.comments)
+        self.run_queue(ack=target, delivery_url=receipt)
+        self.assertEqual(len(self.comments), count)
+        source.pop("updated_at")
         # "Later" or a receipt from the owner must not become a decision.
         self.comments[-1]["author"] = self.owner
         self.assertEqual(self.run_queue(items=[])["queue_length"], len(self.questions))

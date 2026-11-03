@@ -102,6 +102,11 @@ class GuardTests(unittest.TestCase):
         self.assertEqual(self.run_hook(stop(last_assistant_message=NUMBERED)), "")
         self.assertEqual([r["verdict"] for r in self.logged()], ["pass"])
 
+    def test_unavailable_schema_import_still_blocks(self) -> None:
+        with mock.patch.dict("sys.modules", {"question_record": None}):
+            decision = json.loads(self.run_hook(stop(last_assistant_message=UNNUMBERED_ASK)))
+        self.assertEqual(decision["decision"], "block")
+
     def test_numbered_question_context_is_checked_once(self):
         for context in ("An experienced developer would keep the job.", "Ongoing cost: none.", ""):
             with self.subTest(context=context):
@@ -174,17 +179,6 @@ class GuardTests(unittest.TestCase):
             self.assertEqual(self.run_hook(stop(last_assistant_message=
                 f"**Q590 — Move the sync?** {other['url']} {source['url']}")), "")
 
-    def test_context_correction_uses_shared_guidance(self) -> None:
-        guidance = Path(self.home.name, "guidance.md")
-        for rule in ("Explain the recurring work and the alternative.", "Explain the upkeep and your recommendation."):
-            guidance.write_text(f"# Guidance\n\n{guard.QUESTION_SECTION}\n\n{rule}\n\n## Other Guidance\n\nUnrelated instructions.\n")
-            for message in ("**Q855** Should I move the sync?", "Should I move the sync?"):
-                with mock.patch.object(guard, "QUESTION_GUIDANCE", guidance):
-                    decision = json.loads(self.run_hook(stop(last_assistant_message=message)))
-                self.assertEqual(decision["decision"], "block")
-                self.assertIn(rule, decision["reason"])
-                self.assertNotIn("Unrelated instructions.", decision["reason"])
-
     def test_context_accepts_common_phrasings(self):
         for cost, developer in (("No ongoing cost.", "A senior dev would keep it."),
                                 ("Upkeep is one check a month.", "An experienced professional developer would simplify it."),
@@ -212,7 +206,6 @@ class GuardTests(unittest.TestCase):
     def test_unnumbered_recommendation_question_blocks_once(self):
         decision = json.loads(self.run_hook(stop(last_assistant_message=UNNUMBERED_QUESTION)))
         self.assertEqual(decision["decision"], "block")
-        self.assertIn("Q", decision["reason"])
         self.assertEqual(self.run_hook(stop(last_assistant_message=UNNUMBERED_QUESTION,
                                             stop_hook_active=True)), "")
         self.assertEqual([r["verdict"] for r in self.logged()], ["caught", "second-pass"])
@@ -266,17 +259,6 @@ class GuardTests(unittest.TestCase):
                         stop(last_assistant_message=None), {"hook_event_name": "SubagentStop",
                                                            "last_assistant_message": UNNUMBERED_ASK}):
             self.assertEqual(self.run_hook(payload), "")
-
-    def test_unavailable_guidance_still_blocks_and_logs(self) -> None:
-        guidance = Path(self.home.name, "missing-guidance.md")
-        for contents in (None, "# Guidance without a question section\n"):
-            if contents is not None:
-                guidance.write_text(contents)
-            with mock.patch.object(guard, "QUESTION_GUIDANCE", guidance):
-                decision = json.loads(self.run_hook(stop(last_assistant_message="**Q855** Should I proceed?")))
-            self.assertEqual(decision["decision"], "block")
-            self.assertIn(str(guidance), decision["reason"])
-        self.assertEqual([record["verdict"] for record in self.logged()], ["caught", "caught"])
 
     def test_unwritable_log_still_blocks(self):
         Path(self.home.name, "skill-data").write_text("a file where the directory should be")

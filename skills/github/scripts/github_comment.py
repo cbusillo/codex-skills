@@ -730,6 +730,7 @@ def _comment_payload(
         "author": author,
         "created_at": comment.get("created_at"),
         "updated_at": comment.get("updated_at"),
+        "body": comment.get("body"),
     }
     payload = {
         "kind": kind,
@@ -768,6 +769,8 @@ def _comment_impl(
     dedupe_body: bool = False,
     before_create: Callable[[dict[str, Any]], None] | None = None,
     retry_summaries: Optional[list[github_api_core.RetrySummary]] = None,
+    verified_actor: str | None = None,
+    validate_actor: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     operation = operation or f"github.comment.{kind}"
     expected_actor = effective_expected_actor(expected_actor)
@@ -835,13 +838,15 @@ def _comment_impl(
             failed_step="input_validation",
         )
     collected_retry_summaries = retry_summaries if retry_summaries is not None else []
-    actor = authenticated_actor(
+    actor = verified_actor or authenticated_actor(
         gh_cmd=gh_cmd,
         operation=operation,
         expected_actor=expected_actor,
         write_repository=resolved_repo,
         retry_summaries=collected_retry_summaries,
     )
+    if validate_actor is not None:
+        validate_actor(actor)
     if expected_actor:
         expected_actor = actor
     steps = list(completed_steps or [])
@@ -1339,6 +1344,8 @@ def comment(
     before_create: Callable[[dict[str, Any]], None] | None = None,
     attachments: list[str] | None = None,
     retry_summaries: Optional[list[github_api_core.RetrySummary]] = None,
+    include_body: bool = False,
+    validate_actor: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     collected_retry_summaries = retry_summaries if retry_summaries is not None else []
     try:
@@ -1354,7 +1361,7 @@ def comment(
                 ) from error
         if attachments:
             if (kind not in ("issue", "pr") or number <= 0 or edit_last or edit_comment is not None
-                    or expected_body is not None or expected_updated_at is not None or create_if_none or dedupe_body or before_create is not None):
+                    or expected_body is not None or expected_updated_at is not None or create_if_none or dedupe_body or before_create is not None or validate_actor is not None):
                 raise _local_error(
                     "--attach requires a new issue or PR comment with a positive target; editing and deduplication are unsupported",
                     operation=operation or f"github.comment.{kind}", cause="validation_error", failed_step="input_validation",
@@ -1382,6 +1389,7 @@ def comment(
                 dedupe_body=dedupe_body,
                 before_create=before_create,
                 retry_summaries=collected_retry_summaries,
+                validate_actor=validate_actor,
             )
         question_body = body.removeprefix(AGENT_POSTED_LINE).lstrip()
         if question_id.QUESTION_HEADING.match(question_body):
@@ -1395,6 +1403,8 @@ def comment(
                 payload["question_id"] = assigned
             else:
                 payload = _number_saved_question(payload, body, gh_cmd=gh_cmd, retry_summaries=collected_retry_summaries)
+        if not include_body:
+            payload["comment"].pop("body", None)
         return payload
     except (OSError, ValueError) as error:
         raise _local_error(str(error), operation=operation or f"github.comment.{kind}",
@@ -1419,16 +1429,10 @@ def _number_saved_question(payload: dict[str, Any], requested_body: str, *, gh_c
     assigned = None
     try:
         selected_id = payload["comment"]["id"]
-        result = _call_api(
-            "GET", f"/repos/{repo}/issues/comments/{selected_id}", None,
-            gh_cmd=gh_cmd, operation=operation, actor=payload["actor"],
-            expected_actor=payload["expected_actor"], completed_steps=steps,
-            failed_step="read_saved_question", is_write=False, retry_summaries=retry_summaries,
-        )
-        saved = result.body
+        saved = payload["comment"]
         if (not isinstance(saved, dict) or saved.get("id") != selected_id
-                or saved.get("html_url") != payload["url"]
-                or str((saved.get("user") or {}).get("login") or "").casefold() != payload["actor"].casefold()
+                or saved.get("url") != payload["url"]
+                or str(saved.get("author") or "").casefold() != payload["actor"].casefold()
                 or not isinstance(saved.get("body"), str)):
             raise ValueError("Saved question readback does not match the confirmed comment")
         saved_body = saved["body"]
@@ -1447,6 +1451,7 @@ def _number_saved_question(payload: dict[str, Any], requested_body: str, *, gh_c
                 expected_updated_at=saved.get("updated_at"), gh_cmd=gh_cmd,
                 expected_actor=payload["expected_actor"], operation=operation,
                 completed_steps=steps, retry_summaries=retry_summaries,
+                verified_actor=payload["actor"],
             )
         except CommentError as conflict:
             if conflict.failure.cause != "comment_conflict":

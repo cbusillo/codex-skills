@@ -209,6 +209,11 @@ never authority to act:
 uv run <skill-dir>/scripts/director_waits.py --owner OWNER
 ```
 
+Recorded answers on linked question threads appear in `needs_status` for agent
+reconciliation, with the original wait retained; they are no longer requests for
+another Director answer. Search discovers candidates; live discussions supply
+the decision evidence.
+
 Also report the standard setup each repository is missing, so a new
 repository is not forgotten:
 
