@@ -954,20 +954,57 @@ def top_level_json_records(value: Any) -> Iterable[tuple[int, Any]]:
         yield 1, value
 
 
+def transcript_suffix(path: Path) -> str:
+    suffix = path.suffix.lower()
+    return Path(path.stem).suffix.lower() if suffix == ".zst" else suffix
+
+
+def read_transcript(path: Path, limit: int) -> bytes:
+    if path.suffix.lower() != ".zst":
+        with path.open("rb") as handle:
+            return handle.read(limit)
+    try:
+        import zstandard
+    except ImportError as exc:
+        raise OSError("reading .zst transcripts needs the zstandard package") from exc
+    decompressor = zstandard.ZstdDecompressor()
+    frame = decompressor.decompressobj()
+    chunks: list[bytes] = []
+    remaining = limit
+    try:
+        with path.open("rb") as raw:
+            while remaining > 0:
+                pending = raw.read(1 << 16)
+                if not pending:
+                    if not frame.eof:
+                        raise OSError("zstd data ends inside a frame")
+                    break
+                while pending and remaining > 0:
+                    if frame.eof:
+                        frame = decompressor.decompressobj()
+                    output = frame.decompress(pending)[:remaining]
+                    chunks.append(output)
+                    remaining -= len(output)
+                    pending = frame.unused_data if frame.eof else b""
+    except zstandard.ZstdError as exc:
+        raise OSError(f"invalid zstd data: {exc}") from exc
+    return b"".join(chunks)
+
+
 def iter_records(path: Path, max_bytes: int) -> Iterable[tuple[int, Any]]:
     if max_bytes <= 0:
         return
     try:
-        with path.open("rb") as handle:
-            data = handle.read(max_bytes + 1)
+        data = read_transcript(path, max_bytes + 1)
     except OSError as exc:
         yield 0, f"scanner_io_error unable to read file: {exc}"
         return
+    yield from parse_records(path, data[:max_bytes])
 
-    if len(data) > max_bytes:
-        data = data[:max_bytes]
+
+def parse_records(path: Path, data: bytes) -> Iterable[tuple[int, Any]]:
     text = data.decode(errors="replace")
-    if path.suffix.lower() == ".json":
+    if transcript_suffix(path) == ".json":
         try:
             parsed = json.loads(text)
         except json.JSONDecodeError:
