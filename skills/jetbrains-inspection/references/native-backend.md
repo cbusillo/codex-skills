@@ -312,8 +312,11 @@ an independent GUI and older callers that take no ticket, is bounded by
 its one inspection; activation stops and journal holds still refuse it. An
 expired wait is `UNKNOWN/native_worker_busy` with no engine launch and the
 original no-retry policy. `--native-recover-only` never waits.
-The child has its own process group, nice 10, a 1,536 MiB JVM heap and two active
-processors. The latter is a JVM concurrency cap, not an OS CPU quota. System,
+The child has its own process group, nice 10, a 256 MiB initial JVM heap with a
+6,144 MiB maximum and two active processors. Native memory is additional;
+large assessments can use more than 6 GiB of RAM, and smaller hosts
+can experience memory pressure. The processor count is a JVM concurrency cap,
+not an OS CPU quota. System,
 cache, logs, temporary files and inspection results live in fresh private paths
 under the selected helper cache. Above load1 64, a request at the head of the
 queue waits for load to fall before taking any worker lock, within
