@@ -529,6 +529,23 @@ class OverdueTriggerTests(unittest.TestCase):
         self.assertIn(("aged_structured_wait", 8), others)
         self.assertFalse(any(number in {1, 2, 3, 4, 6, 7} for kind, number in others if kind == "aged_structured_wait"))
 
+    def test_waits_nothing_checks_are_listed_without_a_recheck_date_or_once_it_passes(self):
+        reviewed = sweep.github_plan_wait.reviewed
+        def waiting(number, **options):
+            record = reviewed(evidence="Recorded", waiting_for=options.pop("actor", "Scheduled binding refresh passes"),
+                              ends_when="The scheduled run passes", **options)
+            return self.issue(number, comments=[{"id": number, "user": {"login": "shiny-code-app[bot]"},
+                "created_at": (self.now - dt.timedelta(days=3)).isoformat(), "body": sweep.github_plan_wait.marker(record),
+                "html_url": f"https://github.com/example/catalog/issues/{number}#issuecomment-{number}"}])
+        day = dt.timedelta(days=1)
+        records = [waiting(1), waiting(2, recheck=(self.now - day).date().isoformat()),
+                   waiting(3, recheck=(self.now + day).date().isoformat()),
+                   waiting(4, not_before=(self.now + day).date().isoformat()), waiting(5, actor="Director"),
+                   waiting(6, actor="The upstream repository owner releases a fix", recheck=(self.now - day).date().isoformat())]
+        rows = {(r["kind"], r["number"]) for r in self.report(records)["findings"]
+                if r["kind"] in {"unchecked_wait", "wait_recheck_due"}}
+        self.assertEqual(rows, {("unchecked_wait", 1), ("wait_recheck_due", 2), ("wait_recheck_due", 6)})
+
     def test_supervisor_routing_uses_the_current_actor_instead_of_action_wording(self) -> None:
         for action in ("Route the reviewed change.", "Fix skills/supervisor/scripts/tool.py."):
             body = f"## Current Status\nNext actor: agent:supervisor\nNext action: {action}"

@@ -6160,11 +6160,12 @@ class ClaimTests(unittest.TestCase):
         self.args.waiting_for = "Chris's device test"
         self.args.ends_when = "Chris records the test result"
         self.args.evidence = "Director's recorded device-test request"
+        self.args.recheck = "2026-12-01"
         original = copy.deepcopy(self.issue)
         self.run_claim(command=PLAN.cmd_wait)
         with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
         self.assertEqual(self.issue, original)
-        self.args.waiting_for = self.args.ends_when = None
+        self.args.waiting_for = self.args.ends_when = self.args.recheck = None
         self.args.clear = True
         self.args.evidence = "Chris recorded acceptance of the device test"
         self.run_claim(command=PLAN.cmd_wait)
@@ -6205,17 +6206,35 @@ class ClaimTests(unittest.TestCase):
         self.args.waiting_for = "@mike-b to confirm the run"
         self.args.ends_when = "Mike replies on the issue"
         self.args.evidence = "Recorded request"
+        self.args.recheck = "2026-12-01"
         with self.assertRaises(PLAN.PlanError): self.run_claim(command=PLAN.cmd_wait)
         self.assert_no_writes()
         self.args.waiting_for = "<code>@mike-b</code> to confirm the run"
         self.run_claim(command=PLAN.cmd_wait)
-        self.args.waiting_for = self.args.ends_when = None
+        self.args.waiting_for = self.args.ends_when = self.args.recheck = None
         self.args.clear = True
         self.args.evidence = "Confirmed"
         self.run_claim(command=PLAN.cmd_wait)
         visible = [wait_record.without_records(comment["body"]).strip() for comment in self.comments[-2:]]
-        self.assertEqual(visible, ["Waiting for <code>@mike-b</code> to confirm the run. This ends when Mike replies on the issue.",
+        self.assertEqual(visible, ["Waiting for <code>@mike-b</code> to confirm the run. This ends when Mike replies on the issue. "
+                                   "An agent rechecks it on 2026-12-01.",
                                    "Nothing here is waiting on a person or event."])
+
+    def test_wait_nothing_checks_needs_a_recheck_date_that_never_ends_it(self):
+        self.wait = None
+        self.args.all = self.args.clear = False
+        self.args.waiting_for = ["Scheduled binding refresh passes", "Client price"]
+        self.args.ends_when = ["The scheduled run passes", "Price confirmed"]
+        self.args.evidence = "Recorded request"
+        with self.assertRaises(PLAN.PlanError) as caught: self.run_claim(command=PLAN.cmd_wait)
+        self.assertIn("--recheck", str(caught.exception))
+        self.assert_no_writes()
+        self.args.recheck = "2000-01-01"
+        self.run_claim(command=PLAN.cmd_wait)
+        record = self.emitted.call_args.args[0]["structured_wait"]
+        self.assertEqual([entry["recheck"] for entry in record["waits"]], ["2000-01-01", "2000-01-01"])
+        self.assertEqual(wait_record.project_dates(record), record)
+        with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
 
     def test_unasked_director_decision_wait_is_refused_before_any_write(self):
         self.args.all = self.args.clear = False
@@ -6252,7 +6271,7 @@ class ClaimTests(unittest.TestCase):
 
     def test_new_issue_creation_records_all_waits_or_reviewed_absence(self):
         for flags in (("--wait-clear",), ("--waiting-for", "Mike's device test", "--ends-when", "Test accepted",
-                      "--waiting-for", "Client price", "--ends-when", "Price confirmed"),
+                      "--waiting-for", "Client price", "--ends-when", "Price confirmed", "--recheck", "2026-12-01"),
                       ("--waiting-for", "Next release", "--ends-when", "Production includes fix",
                        "--release-product", "fixture", "--release-commit", "a" * 40,
                        "--release-next-action", "Next agent: verify production")):
@@ -6271,6 +6290,8 @@ class ClaimTests(unittest.TestCase):
                     PLAN.cmd_create(args)
                 wait = wait_record.records(create.call_args.args[1])[0]
                 self.assertEqual(len(wait["waits"]), len(args.waiting_for or []))
+                if args.recheck:
+                    self.assertIn(f"An agent rechecks it on {args.recheck}.", create.call_args.args[1])
                 self.assertEqual(wait["evidence"], args.wait_evidence)
                 if args.release_product:
                     hint = wait_record.release_event_hint(args.release_product, args.release_commit)

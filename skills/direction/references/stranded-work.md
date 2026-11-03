@@ -102,6 +102,11 @@ unknown), next actor and review requirement:
   using `wait --event`. Dates use the reopen-event checker. Prose dates are
   context, not a second event language. Completed events resolve only their
   own entry; a Client's acceptance or other independent wait remains.
+- Waits nothing checks (no ending event or release pointer, and not on the
+  Director) with no recheck date, or whose recheck
+  date has passed; a passed date bypasses the age threshold. A recheck never
+  ends the wait: the repository agent checks whether it ended, then clears it
+  or records it again with a new `--recheck` date.
 - Operational-register entries, for repositories whose `.github/github.json`
   names one under `docs.openOperationalIssues`. Each `### ` entry with
   `- **Field**:` bullets is read from the default branch. An entry is reported
