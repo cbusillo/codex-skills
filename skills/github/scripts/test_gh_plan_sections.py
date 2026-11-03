@@ -134,6 +134,8 @@ class SectionTests(unittest.TestCase):
         return code, json.loads(output.getvalue()), edit, errors.getvalue()
 
     def test_new_section_references_require_explicit_repositories_before_edit(self) -> None:
+        legacy_wait = PLAN.github_plan_wait.marker(PLAN.github_plan_wait.reviewed(evidence="Legacy parent #6"))
+        self.issue["body"] += "\n" + legacy_wait + "\n"
         for reference in ("#550", "other#550"):
             code, result, edit, _errors = self.run_update("--body", f"Next action: verify {reference}.")
             self.assertNotEqual(code, 0)
@@ -295,6 +297,14 @@ class SectionTests(unittest.TestCase):
         self.assert_records(body, wait)
         self.assertIn(operation, body)
         self.assertIn("State: Done.", PLAN.section_map(body)["Current Status"])
+
+    def test_copied_legacy_records_and_identical_fenced_example_survive_update(self) -> None:
+        wait = PLAN.github_plan_wait.reviewed(evidence="Legacy parent #6; owner/other#8")
+        records = "\n".join((PLAN.github_plan_claim.marker(CLAIM), PLAN.github_plan_wait.marker(wait)))
+        example = f"```text\n{PLAN.github_plan_wait.marker(wait)}\n```"
+        body = self.update_status(records, "State: Done.\n" + records + "\n" + example)
+        self.assert_records(body, wait)
+        self.assertIn(example, body)
 
     def test_waiting_status_correction_needs_no_claim_and_preserves_execution_holds(self) -> None:
         wait = PLAN.github_plan_wait.reviewed(evidence="Awaiting answer.", waiting_for="Chris", ends_when="He answers")

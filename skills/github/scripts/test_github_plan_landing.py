@@ -111,10 +111,23 @@ class LandingTests(unittest.TestCase):
 
     def test_keyword_closure_uses_real_close_cleanup_and_readback(self) -> None:
         self.issue["labels"].append({"name": "bug"})
+        markers = [
+            '<!-- github-plan:claim {"branch": "work/legacy", "session": "legacy", "worker": "fixture", "claimed_at": "2026-10-26T12:37:27-04:00"} -->',
+            github_plan_wait.marker(github_plan_wait.reviewed(evidence="Legacy parent #6; fixture/product#8")),
+            "<!-- github-skill-operation:abcdef -->",
+        ]
+        self.issue["body"] = (PLAN.PLAN_MANAGED_PROVENANCE_MARKER
+                              + "\n\n## Current Status\n\nSupervisor routes the PR.\n" + "\n".join(markers) + "\n")
+        before_markers = PLAN.section_machine_markers(self.issue["body"])
         result = self.run_landing()
-        self.assertTrue(result["ok"])
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["coverage"], "complete")
         self.assertEqual(result["issues"][0]["status"], "reconciled")
         self.assertIn(result["landing_sha"], PLAN.issue_plan_sections(self.issue)["Current Status"])
+        self.assertEqual(PLAN.section_machine_markers(self.issue["body"]), before_markers)
+        landed_body = self.issue["body"]
+        self.assertTrue(self.run_landing()["ok"])
+        self.assertEqual(self.issue["body"], landed_body)
         self.state.assert_not_called()
 
     def test_partial_pr_or_unrelated_merged_pr_does_not_complete_parent(self) -> None:
