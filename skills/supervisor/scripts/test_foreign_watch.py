@@ -103,11 +103,13 @@ class WatchTests(unittest.TestCase):
                     self.assertEqual(state["watermarks"][REPO], "2026-10-30T19:40:00Z")
 
     def test_own_questions_stay_logged_without_waking_and_bursts_settle_once(self) -> None:
-        for kind, wakes, settle_error in (("director_question", False, False),
-                                          ("foreign", True, False), ("foreign", True, True)):
+        for kind, author, wakes, settle_error in (("director_question", "agent[bot]", False, False),
+                                                  ("director_mention", "AGENT[bot]", False, False),
+                                                  ("director_mention", "client", True, False),
+                                                  ("foreign", "agent[bot]", True, False),
+                                                  ("foreign", "agent[bot]", True, True)):
             with self.subTest(kind=kind, settle_error=settle_error), tempfile.TemporaryDirectory() as directory:
                 clock = WatchClock()
-                author = "agent[bot]"
                 first = {"url": "first", "kind": kind, "author": author}
                 second = {**first, "url": "second"}
                 args = argparse.Namespace(owner="director", state=Path(directory) / "state.json", since=None,

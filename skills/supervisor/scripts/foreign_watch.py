@@ -1068,7 +1068,12 @@ def watch(args, repos, initial, deadline):
         persistent = getattr(args, "persistent", False)
         if errors and getattr(args, "events", False) and any(not error["retryable"] for error in errors):
             raise ValueError("Scheduled message source read is nonretryable; reconcile the service before restarting.")
-        wakes_supervisor = any(notice.get("kind") != "director_question" for notice in notices)
+        own_logins = {login.casefold() for login in args.own_login}
+        wakes_supervisor = any(
+            notice.get("kind") not in {"director_question", "director_mention"}
+            or (notice.get("author") or "").casefold() not in own_logins
+            for notice in notices
+        )
         if wakes_supervisor and not errors and settle_at is None:
             settle_at = min(deadline, time.monotonic() + NOTICE_SETTLE_SECONDS)
         settled = settle_at is not None and time.monotonic() >= settle_at

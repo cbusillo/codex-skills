@@ -102,8 +102,8 @@ decisions, statuses, board contents or narrative; open linked records for action
    available capacity, handle stale waits and deferred-question conditions,
    and read the stranded-work digest's oldest Supervisor actions and unasked
    Director waits. Nudge stalls with exact evidence and process finished
-   notices immediately. Polling watchers keep own automation question notices
-   in the log without exiting for them; other notices settle briefly into one
+   notices immediately. Polling watchers keep own automation question and mention
+   notices in the log without exiting for them; other notices settle briefly into one
    exit per burst. `--once` still performs one immediate poll.
    Re-arm bounded watchers; do not duplicate live services.
 
