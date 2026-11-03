@@ -604,13 +604,16 @@ processor, admission, load and custody bounds.
 
 By default the small baseline file is
 `~/.code/jetbrains-inspection/weekly-baselines.json`; `JB_WEEKLY_BASELINE` or
-`--baseline` selects another path. It records full-artifact category counts,
+`--baseline` selects another path; set `JB_WEEKLY_BASELINE` for the audit too
+when choosing an alternate CLI path. It records full-artifact category counts,
 including zero counts, existing findings and language advice, exact source/profile/helper/IDE
 provenance, evidence paths, the previous week's qualified observation and a
 ceiling that can only decrease, also shown with each top category. New categories have a zero ceiling after the
 initial observation. Incomplete runs never replace qualified counts or ceilings.
-Profile/helper/IDE changes or missing weeks leave trends unavailable. Discovery read failures are recorded without stopping future weekly firings.
-A failed latest attempt or evidence older than eight days makes the report UNKNOWN.
+Profile/helper/IDE changes or missing weeks leave trends unavailable. Partial discovery still runs known repositories and records unread adoption as
+UNKNOWN. Lock contention skips one firing. An unreadable baseline is preserved;
+these read failures do not stop future firings. Evidence write failures retain
+the existing service reconciliation hold. A failed latest attempt or evidence older than eight days makes the report UNKNOWN.
 A rise is a named category in the report, never a new gate or cleanup task.
 
 Schedule it as the optional `inspection` entry in the existing Supervisor

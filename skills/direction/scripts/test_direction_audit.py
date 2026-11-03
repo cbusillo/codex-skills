@@ -194,7 +194,7 @@ def test_cli_marker_failure_is_not_a_successful_or_silently_unmarked_audit() -> 
             parent.write_text("keep")
             marker = parent / "marker.json"
             output, errors = StringIO(), StringIO()
-            with (patch.dict(os.environ, {"DIRECTION_MARKER": str(marker), "JB_WEEKLY_BASELINE": str(marker.with_name("inspection.json"))}),
+            with (patch.dict(os.environ, {"DIRECTION_MARKER": str(marker)}),
                   patch.object(module, "merged_direction", return_value=DIRECTION),
                   patch.object(module, "gh_json", return_value={"login": "owner"}),
                   patch.object(module, "fetch_paginated", return_value=([], False)),
@@ -501,7 +501,7 @@ def test_archived_audit_with_direction_does_not_reenter_weekly_marker() -> None:
                 return {"archived": archived} if args[1] == "repos/o/r" else []
 
             output = StringIO()
-            with (patch.dict(os.environ, {"DIRECTION_MARKER": str(marker), "JB_WEEKLY_BASELINE": str(marker.with_name("inspection.json"))}),
+            with (patch.dict(os.environ, {"DIRECTION_MARKER": str(marker)}),
                   patch.dict(vars(module), {"merged_direction": lambda *_args, **_kwargs: DIRECTION,
                                             "gh_json": fetch}), redirect_stdout(output)):
                 module.main(["--repo", "o/r", "--automation", "bot", "--gh", "fixture-gh"])
@@ -522,7 +522,7 @@ def test_audit_that_confirms_archive_drops_the_repository_from_the_marker() -> N
         for archived in (None, True):
             marker.write_text(json.dumps(original))
             output = StringIO()
-            with (patch.dict(os.environ, {"DIRECTION_MARKER": str(marker), "JB_WEEKLY_BASELINE": str(marker.with_name("inspection.json"))}),
+            with (patch.dict(os.environ, {"DIRECTION_MARKER": str(marker)}),
                   patch.dict(vars(module), {"merged_direction": lambda *_args, **_kwargs: DIRECTION,
                                             "gh_json": lambda args, **_kwargs: {"archived": archived} if args[1] == "repos/o/r" else []}),
                   redirect_stdout(output)):

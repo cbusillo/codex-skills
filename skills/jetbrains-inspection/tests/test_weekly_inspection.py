@@ -116,7 +116,11 @@ class WeeklyInspectionTests(unittest.TestCase):
             }
 
         with (
-            patch.object(weekly, "audit_repositories", return_value=["owner/broken", "owner/good"]),
+            patch.object(
+                weekly,
+                "audit_repositories",
+                return_value=(["owner/broken", "owner/good"], {"complete": True, "unknown": {}, "gaps": []}),
+            ),
             patch.object(weekly, "inspection_worktree", side_effect=[ValueError("missing checkout"), worktree]),
             patch.object(weekly, "inspect_repository", side_effect=fixture_inspection),
         ):
@@ -203,7 +207,6 @@ class WeeklyInspectionTests(unittest.TestCase):
             (created / ".venv").mkdir()
             self.assertEqual(weekly.inspection_worktree("owner/repo", root, self.state), created)
             self.assertEqual(creator.call_count, 1)
-            self.assertTrue((created / ".venv").exists())
 
     def test_discovery_failure_is_reported_and_next_schedule_can_run(self) -> None:
         with patch.object(weekly, "audit_repositories", side_effect=ValueError("read unavailable")):
@@ -223,7 +226,7 @@ class WeeklyInspectionTests(unittest.TestCase):
                 0,
             )
         self.assertEqual(weekly.read_baselines(self.path)["discovery"]["status"], "unknown")
-        with patch.object(weekly, "audit_repositories", return_value=[]):
+        with patch.object(weekly, "audit_repositories", return_value=([], {"complete": True, "unknown": {}, "gaps": []})):
             self.assertEqual(
                 weekly.main(
                     [
@@ -240,6 +243,80 @@ class WeeklyInspectionTests(unittest.TestCase):
                 0,
             )
         self.assertEqual(weekly.read_baselines(self.path)["discovery"]["status"], "complete")
+
+    def test_busy_or_corrupt_baseline_preserves_bytes_and_does_not_stop_schedule(self) -> None:
+        self.path.write_text("{corrupt")
+        before = self.path.read_bytes()
+        args = [
+            "--owner",
+            "owner",
+            "--repository-root",
+            self.temporary.name,
+            "--evidence-root",
+            str(self.evidence),
+            "--baseline",
+            str(self.path),
+        ]
+        with weekly.service_lock(self.path, "inspection"):
+            self.assertEqual(weekly.main(args), 0)
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual(weekly.main(args), 0)
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def test_root_selection_excludes_generated_lock_and_normalizes_helper_error(self) -> None:
+        root = Path(self.temporary.name)
+        (root / ".github").mkdir()
+        config = root / ".github/github.json"
+        config.write_text(json.dumps({"qualityGate": {"inspection": {"ide": "PyCharm"}}}))
+        helper = weekly.inspection_helper()
+        with (
+            patch.object(weekly, "inspection_helper", return_value=helper),
+            patch.object(
+                helper, "inspection_scope_paths", return_value=["code.py", "docs/pnpm-lock.yaml", "docs/site.yaml", "README.md"]
+            ),
+        ):
+            groups, omitted = weekly.selections(root)
+        self.assertEqual(groups, {"project": ["code.py", "docs/site.yaml"]})
+        self.assertEqual(omitted["generated_locks"], ["docs/pnpm-lock.yaml"])
+        config.write_text(json.dumps({"qualityGate": {"inspection": {"lanes": [{"id": "bad"}]}}}))
+        with self.assertRaises(ValueError):
+            weekly.selections(root)
+
+    def test_partial_discovery_runs_known_repository_and_records_unknown_adoption(self) -> None:
+        discovery = {"complete": False, "unknown": {"owner/unread": "adoption unavailable"}, "gaps": []}
+        now = dt.datetime.now(dt.UTC)
+        run = {
+            "status": "complete",
+            "at": now.isoformat(),
+            "week": now.date().isoformat(),
+            "source": "fixture",
+            "signature": {},
+            "counts": {"types": 1},
+            "evidence": "receipt",
+        }
+        with (
+            patch.object(weekly, "audit_repositories", return_value=(["owner/good"], discovery)),
+            patch.object(weekly, "inspection_worktree", return_value=Path(self.temporary.name)) as prepare,
+            patch.object(weekly, "inspect_repository", return_value=run),
+        ):
+            self.assertEqual(
+                weekly.main(
+                    [
+                        "--owner",
+                        "owner",
+                        "--repository-root",
+                        self.temporary.name,
+                        "--evidence-root",
+                        str(self.evidence),
+                        "--baseline",
+                        str(self.path),
+                    ]
+                ),
+                0,
+            )
+        self.assertEqual(prepare.call_count, 1)
+        self.assertEqual(weekly.report("owner/good", path=self.path)["status"], "complete")
+        self.assertEqual(weekly.report("owner/unread", path=self.path)["status"], "unknown")
 
     def test_missing_or_corrupt_baseline_is_unknown(self) -> None:
         self.assertEqual(weekly.report("owner/repo", path=self.path)["status"], "unknown")

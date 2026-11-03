@@ -14,6 +14,7 @@ import re
 import subprocess
 import sys
 from collections import Counter
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +29,10 @@ def baseline_path() -> Path:
 
 
 def read_baselines(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text()) if path.exists() else {"repositories": {}}
+    state = json.loads(path.read_text()) if path.exists() else {"repositories": {}}
+    if not isinstance(state, dict) or not isinstance(state.get("repositories"), dict):
+        raise ValueError("baseline is not a repository map; preserve its bytes")
+    return state
 
 
 def category_counts(result: dict[str, Any]) -> dict[str, int]:
@@ -96,7 +100,7 @@ def report(repo: str, *, path: Path | None = None, now: dt.datetime | None = Non
             "status": "complete"
             if fresh
             and record.get("attempt", {}).get("status") == "complete"
-            and state.get("discovery", {}).get("status") != "unknown"
+            and not (state.get("discovery", {}).get("status") == "unknown" and not state["discovery"].get("repositories"))
             else "unknown",
             "at": latest["at"],
             "source": latest["source"],
@@ -108,8 +112,6 @@ def report(repo: str, *, path: Path | None = None, now: dt.datetime | None = Non
                 if comparable and count > previous["counts"].get(category, 0)
             ),
             "attempt": record.get("attempt"),
-            "discovery": state.get("discovery"),
-            "baseline_file": str(path or baseline_path()),
         }
     except (OSError, ValueError, KeyError, TypeError) as error:
         return {"status": "unknown", "reason": str(error)}
@@ -163,35 +165,39 @@ def inspection_helper() -> Any:
 
 def selections(worktree: Path) -> tuple[dict[str, list[str]], dict[str, Any]]:
     helper = inspection_helper()
-    metadata = json.loads((worktree / ".github/github.json").read_text())["qualityGate"]["inspection"]
-    lanes = helper.parse_inspection_lanes(metadata)
-    args = helper.build_parser().parse_args(["agent-inspect", "--scope", "whole_project"])
-    policy = {key: metadata.get(key) for key in ("ide", "lanes", "coveredBy")}
-    if not lanes:
-        paths = helper.inspection_scope_paths(args, worktree, "whole_project")
-        native = helper.native_backend_module()
-        product = native.common.configured_product_key(helper, metadata, set(paths))
-        suffixes = {
-            "pycharm": native.proof.NATIVE_PROVEN_SUFFIXES,
-            "webstorm": native.proof.WEBSTORM_PROVEN_SUFFIXES,
-            "intellij": native.proof.INTELLIJ_PROVEN_SUFFIXES,
-        }.get(product)
-        if not suffixes:
-            raise ValueError("no configured native IDE")
-        files = [file for file in paths if Path(file).suffix in suffixes]
-        return {"project": files}, {"unmatched": sorted(set(paths) - set(files)), "policy": policy}
-    selection = helper.resolve_inspection_lane_selection(
-        args, {"scope": "whole_project", "worktree_root": str(worktree), "_inspection_lanes": lanes}
-    )
-    groups = {lane.lane_id: [entry["file"] for entry in selection["lane_files"][lane.lane_id]] for lane in lanes}
-    generated = [file for files in groups.values() for file in files if Path(file).name == "pnpm-lock.yaml"]
-    groups = {lane: [file for file in files if file not in generated] for lane, files in groups.items()}
-    return groups, {
-        "excluded": selection["excluded_files"],
-        "unmatched": selection["unmatched_files"],
-        "generated_locks": generated,
-        "policy": policy,
-    }
+    try:
+        metadata = json.loads((worktree / ".github/github.json").read_text())["qualityGate"]["inspection"]
+        lanes = helper.parse_inspection_lanes(metadata)
+        args = helper.build_parser().parse_args(["agent-inspect", "--scope", "whole_project"])
+        policy = {key: metadata.get(key) for key in ("ide", "lanes", "coveredBy")}
+        if not lanes:
+            paths = helper.inspection_scope_paths(args, worktree, "whole_project")
+            native = helper.native_backend_module()
+            product = native.common.configured_product_key(helper, metadata, set(paths))
+            suffixes = next(
+                (suffixes for key, suffixes, *_ in native.ALTERNATE_WORKERS if key == product),
+                native.NATIVE_SUFFIXES if product == native.PYTHON_PRODUCT_KEY else None,
+            )
+            if not suffixes:
+                raise ValueError("no configured native IDE")
+            files = [file for file in paths if Path(file).suffix in suffixes]
+            groups = {"project": files}
+            selection = {"unmatched_files": sorted(set(paths) - set(files)), "excluded_files": []}
+        else:
+            selection = helper.resolve_inspection_lane_selection(
+                args, {"scope": "whole_project", "worktree_root": str(worktree), "_inspection_lanes": lanes}
+            )
+            groups = {lane.lane_id: [entry["file"] for entry in selection["lane_files"][lane.lane_id]] for lane in lanes}
+        generated = [file for files in groups.values() for file in files if Path(file).name == "pnpm-lock.yaml"]
+        groups = {lane: [file for file in files if file not in generated] for lane, files in groups.items()}
+        return groups, {
+            "excluded": selection["excluded_files"],
+            "unmatched": selection["unmatched_files"],
+            "generated_locks": generated,
+            "policy": policy,
+        }
+    except helper.InspectError as error:
+        raise ValueError(str(error)) from error
 
 
 def inspect_repository(worktree: Path, evidence: Path, now: dt.datetime) -> dict[str, Any]:
@@ -241,16 +247,62 @@ def inspect_repository(worktree: Path, evidence: Path, now: dt.datetime) -> dict
     }
 
 
-def audit_repositories(owner: str) -> list[str]:
+def audit_repositories(owner: str, repos: list[str] | None = None) -> tuple[list[str], dict[str, Any]]:
+    if repos is not None:
+        return repos, {"complete": True, "unknown": {}, "gaps": []}
     from skills.direction.scripts import direction_audit as audit
     from skills.github.scripts.github_next_reads import NextReads
 
     with NextReads(workers=4, seconds=0, label="weekly inspection") as reads:
         fetch = lambda args: audit.gh_json(args, gh=str(audit.WRAPPER))
         repos, discovery = audit.weekly_repositories(owner, fetch=fetch, reads=reads)
+    return repos, discovery
+
+
+def run_weekly(args: argparse.Namespace, state: dict[str, Any]) -> int:
+    started = dt.datetime.now(dt.UTC)
+    try:
+        args.evidence_root.resolve(strict=True)
+        repos, discovery = audit_repositories(args.owner, args.repo)
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        state["discovery"] = {"status": "unknown", "at": started.isoformat(), "reason": str(error)}
+        save_state(args.baseline, state)
+        print(json.dumps(state["discovery"]), flush=True)
+        return 0
+    unread = dict(discovery["unknown"])
     if not discovery["complete"]:
-        raise ValueError(f"weekly audit repository discovery incomplete: {discovery}")
-    return repos
+        for repo in state["repositories"]:
+            if repo not in repos:
+                unread.setdefault(repo, "repository absent from incomplete discovery")
+    state["discovery"] = {
+        "status": "complete" if discovery["complete"] else "unknown",
+        "at": started.isoformat(),
+        "repositories": repos,
+        "unknown": unread,
+        "gaps": discovery["gaps"],
+    }
+    save_state(args.baseline, state)
+    for repo in [*repos, *unread]:
+        evidence = args.evidence_root / started.strftime("%Y%m%dT%H%M%S%f") / repo.replace("/", "--")
+        try:
+            if repo in unread:
+                raise ValueError(f"adoption unknown: {unread[repo]}")
+            evidence.mkdir(parents=True, exist_ok=False)
+            worktree = inspection_worktree(repo, args.repository_root, state)
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, subprocess.SubprocessError) as error:
+            run = {"status": "unknown", "at": started.isoformat(), "evidence": str(evidence), "reason": str(error)}
+        else:
+            save_state(args.baseline, state)
+            try:
+                run = inspect_repository(worktree, evidence, started)
+            except (OSError, ValueError, KeyError, TypeError, AttributeError, subprocess.SubprocessError) as error:
+                run = {"status": "unknown", "at": started.isoformat(), "evidence": str(evidence), "reason": str(error)}
+        record_run(state, repo, run)
+        save_state(args.baseline, state)
+        if evidence.is_dir():
+            save_state(evidence / "summary.json", run)
+        print(json.dumps({"repo": repo, **report(repo, path=args.baseline)}), flush=True)
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -266,34 +318,18 @@ def main(argv: list[str] | None = None) -> int:
     ):
         parser.error("repositories must belong to --owner and use OWNER/REPO form")
     args.baseline.parent.mkdir(parents=True, exist_ok=True)
-    with service_lock(args.baseline, "inspection"):
-        state = read_baselines(args.baseline)
-        started = dt.datetime.now(dt.UTC)
+    with ExitStack() as stack:
         try:
-            args.evidence_root.resolve(strict=True)
-            repos = args.repo or audit_repositories(args.owner)
-        except (OSError, ValueError, subprocess.SubprocessError) as error:
-            state["discovery"] = {"status": "unknown", "at": started.isoformat(), "reason": str(error)}
-            save_state(args.baseline, state)
-            print(json.dumps(state["discovery"]), flush=True)
+            stack.enter_context(service_lock(args.baseline, "inspection"))
+        except ValueError:
+            print(json.dumps({"status": "busy", "reason": "another inspection owns the baseline; skipped"}), flush=True)
             return 0
-        state["discovery"] = {"status": "complete", "at": started.isoformat(), "repositories": repos}
-        save_state(args.baseline, state)
-        for repo in repos:
-            evidence = args.evidence_root / started.strftime("%Y%m%dT%H%M%S%f") / repo.replace("/", "--")
-            try:
-                evidence.mkdir(parents=True, exist_ok=False)
-                worktree = inspection_worktree(repo, args.repository_root, state)
-                save_state(args.baseline, state)
-                run = inspect_repository(worktree, evidence, started)
-            except (OSError, ValueError, KeyError, TypeError, AttributeError, subprocess.SubprocessError) as error:
-                run = {"status": "unknown", "at": started.isoformat(), "evidence": str(evidence), "reason": str(error)}
-            record_run(state, repo, run)
-            save_state(args.baseline, state)
-            if evidence.is_dir():
-                save_state(evidence / "summary.json", run)
-            print(json.dumps({"repo": repo, **report(repo, path=args.baseline)}), flush=True)
-    return 0
+        try:
+            state = read_baselines(args.baseline)
+        except (OSError, ValueError) as error:
+            print(json.dumps({"status": "unknown", "reason": str(error)}), flush=True)
+            return 0
+        return run_weekly(args, state)
 
 
 if __name__ == "__main__":
