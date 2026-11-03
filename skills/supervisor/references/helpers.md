@@ -351,11 +351,11 @@ uv run skills/supervisor/scripts/oq.py --owner OWNER --queue OWNER/CATALOG#QUEUE
 uv run skills/supervisor/scripts/oq.py --owner OWNER --queue OWNER/CATALOG#QUEUE --ack ORIGINAL_QUESTION_URL --delivery-url PRESENTATION_RECEIPT_URL
 ```
 
-Read one owning discussion with `oq.py OWNER/REPO#NUMBER --owner DIRECTOR_LOGIN
---include-answers` when a consumer needs accepted answer text. Each question then
+Read one owning discussion with `oq.py --include-answers`, the item
+`OWNER/REPO#NUMBER`, and `--owner DIRECTOR_LOGIN` when a consumer needs accepted answer text. Each question then
 includes a unique `number` and `decision_comments` with the original accepted
 comment's `body`, `url`, author and timestamps, selected by the same trusted matcher
-as the queue. This mode requires a recorded Director/Owner decision; ordinary
+as the queue. This mode requires a recorded decision heading; ordinary
 linked comments from the Director remain candidates in legacy reads. The original
 comment objects retain source order; consumers use the last listed accepted
 decision, and its text is unchanged. Duplicate or absent numbers are `null`, so they
