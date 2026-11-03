@@ -111,11 +111,36 @@ class LandingTests(unittest.TestCase):
 
     def test_keyword_closure_uses_real_close_cleanup_and_readback(self) -> None:
         self.issue["labels"].append({"name": "bug"})
+        markers = [
+            '<!-- github-plan:claim {"branch": "work/legacy", "session": "legacy", "worker": "fixture", "claimed_at": "2026-10-26T12:37:27-04:00"} -->',
+            github_plan_wait.marker(github_plan_wait.reviewed(evidence="Legacy parent #6; fixture/product#8")),
+            "<!-- github-skill-operation:abcdef -->",
+        ]
+        self.issue["body"] = (PLAN.PLAN_MANAGED_PROVENANCE_MARKER
+                              + "\n\n## Current Status\n\nSupervisor routes the PR.\n" + "\n".join(markers) + "\n")
+        before_markers = PLAN.section_machine_markers(self.issue["body"])
         result = self.run_landing()
-        self.assertTrue(result["ok"])
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["coverage"], "complete")
         self.assertEqual(result["issues"][0]["status"], "reconciled")
         self.assertIn(result["landing_sha"], PLAN.issue_plan_sections(self.issue)["Current Status"])
+        self.assertEqual(PLAN.section_machine_markers(self.issue["body"]), before_markers)
+        landed_body = self.issue["body"]
+        self.assertTrue(self.run_landing()["ok"])
+        self.assertEqual(self.issue["body"], landed_body)
         self.state.assert_not_called()
+
+    def test_landing_readback_rejects_changed_carried_marker(self) -> None:
+        self.issue["body"] += "\n<!-- github-skill-operation:abcdef -->\n"
+
+        def edit_with_changed_marker(repo: str, number: int, **kwargs: Any) -> tuple[str, dict]:
+            kwargs["body"] = kwargs["body"].replace("github-skill-operation:abcdef", "github-skill-operation:fedcba")
+            return self.edit_body(repo, number, **kwargs)
+
+        self.body.side_effect = edit_with_changed_marker
+        result = self.run_landing()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["coverage"], "partial")
 
     def test_partial_pr_or_unrelated_merged_pr_does_not_complete_parent(self) -> None:
         self.reader.graphql_json.return_value.body = graph()

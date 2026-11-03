@@ -2054,6 +2054,8 @@ malformed rather than ignoring its additional field.
   through the existing close relationship/Project/label/comment path, updates
   Current Status's state while preserving existing evidence/custody text,
   and verifies native state and status with fresh readback.
+  Historical machine markers are carried unchanged after authored-text
+  validation; readback checks the resulting status including those markers.
   Other retained source status fields are historical; the completed closure and
   reconciliation receipt are the current machine observation.
   Reference-only completed records retain their original Current Status and
