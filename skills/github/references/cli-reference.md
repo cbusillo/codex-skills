@@ -2054,8 +2054,6 @@ malformed rather than ignoring its additional field.
   through the existing close relationship/Project/label/comment path, updates
   Current Status's state while preserving existing evidence/custody text,
   and verifies native state and status with fresh readback.
-  Historical machine markers are carried unchanged after authored-text
-  validation; readback checks the resulting status including those markers.
   Other retained source status fields are historical; the completed closure and
   reconciliation receipt are the current machine observation.
   Reference-only completed records retain their original Current Status and
@@ -2133,8 +2131,10 @@ malformed rather than ignoring its additional field.
   stdin. Omitting both flags fails before reading stdin or writing, even with
   a pipe or heredoc. To intentionally clear a section, pass `--body ''` or an
   explicitly supplied empty file or stdin stream. Input is literal, including backslashes;
-  existing surrounding-whitespace normalization still applies. Body-read and
-  regex preparation failures return a structured `validation_error` with
+  existing surrounding-whitespace normalization still applies. Section
+  updates preserve planning marker identity before validating authored
+  references; unchanged historical records are excluded from that validation.
+  Body-read and regex preparation failures return a structured `validation_error` with
   `write_outcome=not_started` before any mutation. Ownership refusals and API
   write failures retain their existing classifications.
 - `link|unlink <issue> <rel> <target>`: Manage native `blocked-by`, `blocks`,

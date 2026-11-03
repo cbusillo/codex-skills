@@ -378,9 +378,7 @@ def reconcile_issue(plan: Any, repo: str, issue_number: int, pull: dict[str, Any
     if not result.get("ok") or (result.get("project") or {}).get("warning"):
         entry["status"] = "reconciliation_incomplete"
         return
-    previous_status = plan.issue_plan_sections(issue).get("Current Status", "").strip()
-    markers = {line for lines in plan.section_machine_markers(previous_status).values() for line in lines}
-    status = "\n".join(line for line in previous_status.splitlines() if line not in markers).strip()
+    status = plan.issue_plan_sections(issue).get("Current Status", "").strip()
     complete = "State: Complete; issue already closed as completed."
     if re.search(r"(?m)^State:", status):
         status = re.sub(r"(?m)^State:.*$", complete, status, count=1)
@@ -396,8 +394,7 @@ def reconcile_issue(plan: Any, repo: str, issue_number: int, pull: dict[str, Any
         entry["current_status_preserved"] = True
     verified, _, verified_wait = snapshot(plan, repo, issue_number)
     if (not plan.issue_matches_close_reason(verified, "completed")
-            or (closing and plan.issue_plan_sections(verified).get("Current Status", "").strip()
-                != plan.with_carried_markers(previous_status, status).strip())
+            or (closing and plan.issue_plan_sections(verified).get("Current Status", "").strip() != status.strip())
             or (not closing and verified.get("body") != issue.get("body"))
             or verified_wait != wait):
         raise ValueError("Planning metadata readback did not match")
