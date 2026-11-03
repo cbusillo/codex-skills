@@ -28,7 +28,6 @@ import github_plan_claim_log as claim_log
 import github_plan_release as release
 import github_plan_termination as termination
 import release_session_claims as sessions
-from github_api import parse_gh_api_args
 from github_read import (
     GitHubReader,
     GitHubReadError,
@@ -377,10 +376,23 @@ def is_claim_writer(command: str, native: str, posts: list[str]) -> bool:
     if position is None or position.index >= len(argv):
         return False
     argv = argv[position.index:]
-    if Path(argv[0]).name != "gh" or argv[1:2] != ["api"]:
+    if Path(argv[0]).name in {"sh", "bash", "zsh"} and len(argv) > 1 and Path(argv[1]).name == "gh-with-env-token":
+        argv = argv[1:]
+    executable = Path(argv[0]).name
+    if executable not in {"gh", "gh-with-env-token"}:
         return False
-    request = parse_gh_api_args(argv[2:])
-    return request is not None and request.sent_method == "POST" and request.endpoint.lstrip("/") in posts
+    argv = argv[1:]
+    if executable == "gh-with-env-token":
+        while argv and argv[0].startswith("--"):
+            argv = argv[2:] if argv[0] == "--write-actor-for" else argv[1:]
+    if argv[:1] != ["api"]:
+        return False
+    text = " ".join(argv[1:])
+    methods = re.findall(r"(?:^|\s)(?:--method(?:=|\s+)|-i*X(?:=|\s*))(\S+)", text)
+    method = methods[-1].upper() if methods else (
+        "POST" if re.search(r"(?:^|\s)(?:--(?:field|raw-field|input)(?:=|\s)|-i*[fF])", text) else "GET"
+    )
+    return method == "POST" and any(word.removeprefix("https://api.github.com/").lstrip("/") in posts for word in argv[1:])
 
 
 def live_claim_writers(native: str, targets: AbstractSet[tuple[str, int]]) -> list[str]:

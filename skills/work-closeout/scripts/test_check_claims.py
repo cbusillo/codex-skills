@@ -22,6 +22,7 @@ from typing import Any
 from unittest.mock import Mock, patch
 
 import check_claims as helper
+import github_api
 
 claim_logic: Any = importlib.import_module("github_plan_claim")
 claim_journal: Any = importlib.import_module("github_plan_claim_log")
@@ -2185,8 +2186,12 @@ class ClaimCloseoutTests(unittest.TestCase):
 
     def test_live_claim_writers_ignore_launcher_briefs_but_block_real_writes(self) -> None:
         pid = os.getpid()
-        orphaned_post = f"gh api --method POST --include /repos/{REPO}/issues/1/comments --input -"
+        post = github_api.build_gh_command("POST", f"/repos/{REPO}/issues/1/comments", gh_cmd="gh")
+        orphaned_post = " ".join(post)
         other_writes = [
+            " ".join(["/catalog/gh-with-env-token", "--write-actor-for", REPO, *post[1:]]),
+            " ".join(["/bin/bash", "/catalog/gh-with-env-token", "--write-actor-for", REPO, *post[1:]]),
+            f"gh api --method POST /repos/{REPO}/issues/1/comments -f body=claim text",
             f"gh api repos/{REPO}/issues/1/comments -f body=claim",
             f"gh api /repos/{REPO}/issues/1/comments --input -",
             f"gh api -X post /repos/{REPO}/issues/1/comments",
