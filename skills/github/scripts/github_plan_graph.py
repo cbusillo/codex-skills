@@ -74,9 +74,7 @@ def query_data(
         query,
         {},
         step=step,
-        retry_policy=github_read.github_api_core.RetryPolicy(
-            max_wait_seconds=30, max_attempts=1
-        ),
+        retry_policy=github_read.github_api_core.optional_batch_retry_policy(),
     )
     if not result.ok:
         raise github_read.GitHubReadError(

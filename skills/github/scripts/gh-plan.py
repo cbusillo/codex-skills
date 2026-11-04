@@ -228,7 +228,7 @@ def record_retry_metadata(result: dict[str, Any]) -> None:
             "outcome_certainty", "reconciliation", "recommended_next_action", "effective_deadline")
     if all(key in result for key in keys):
         record_retry_summary(github_api_core.RetrySummary(**{key: result[key] for key in keys},
-            exhausted_reason=result.get("retry_exhausted_reason")))
+            exhausted_reason=result.get("retry_exhausted_reason"), wait_cause=result.get("wait_cause")))
 
 
 def die(
