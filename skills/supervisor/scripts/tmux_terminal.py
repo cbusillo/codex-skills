@@ -42,7 +42,6 @@ def target_identity(row: dict) -> dict:
 
 
 def process_parents():
-    """Read ancestry only; missing or malformed process evidence preserves the pane."""
     result = subprocess.run(["ps", "-axo", "pid=,ppid="], check=True,
                             capture_output=True, text=True, timeout=10)
     parents = {}

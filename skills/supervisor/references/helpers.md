@@ -1929,9 +1929,8 @@ exit command reports `delivery: session_ended` once the matching harness
 processes observed on that TTY are gone, even if the pane disappears before
 readback. This result does not release claims or close the terminal. Wait at
 most 60 seconds, reading `read` for `dead: true` and checking that the matched
-agent PID and processes belonging to that pane have exited. If its TTY was
-reused, use the native close command's ownership proof below. Preserve a running or
-uncertain pane. Record/release native session claims under the existing
+original agent, launch and pane PIDs are absent. Preserve a running or uncertain
+pane. Record/release native session claims under the existing
 finished-session procedure before removing the terminal.
 
 ```sh
