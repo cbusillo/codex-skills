@@ -3490,7 +3490,7 @@ def test_find_project_item_falls_back_when_query_misses_exact_issue() -> None:
     assert "--query" not in item_lists[1], item_lists
 
 
-def test_label_defs_cover_planning_labels_without_generic_fallback() -> None:
+def test_label_defs_cover_planning_labels() -> None:
     plan = load_plan_module()
     config = plan.DEFAULT_CONFIG
     label_names = set(config["labels"].values())

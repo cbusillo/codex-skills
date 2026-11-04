@@ -28,7 +28,7 @@ import github_comment
 import github_identity as identity
 import github_issue
 import github_milestone
-from test_github_identity import test_private_key
+from test_github_identity import private_key
 from test_gh_plan_sections import PLAN
 
 
@@ -209,7 +209,7 @@ class ClientAppTests(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
         key = self.root / "synthetic.pem"
-        key.write_text(test_private_key())
+        key.write_text(private_key())
         key.chmod(0o600)
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), app_handler)
         thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)

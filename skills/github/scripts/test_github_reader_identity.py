@@ -24,7 +24,7 @@ import github_api as api
 import github_identity as identity
 import github_read
 import github_request_usage as usage
-from test_github_identity import test_private_key
+from test_github_identity import private_key
 
 
 class ReaderIdentityTests(unittest.TestCase):
@@ -47,7 +47,7 @@ class ReaderIdentityTests(unittest.TestCase):
 
     def credentials(self):
         key = self.root / 'synthetic.pem'
-        key.write_text(test_private_key())
+        key.write_text(private_key())
         key.chmod(0o600)
         os.environ.update({'GITHUB_READER_APP_ID': '54321',
                            'GITHUB_READER_APP_INSTALLATION_ID': '76543',
