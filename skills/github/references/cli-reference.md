@@ -89,6 +89,8 @@ Matrix-approved operations also report `attempts`, `elapsed_wait`,
 `reconciliation`, `recommended_next_action`, `effective_deadline`, and
 `retry_exhausted_reason`. Progress is concise and stderr-only, so stdout remains
 one parseable terminal envelope even while a helper waits.
+When a shared cooldown rejects a wait, optional `wait_cause` retains its observed
+origin alongside the stopping reason. Aggregates keep both from the same exhausted step.
 `gh-pr checks` aggregates those fields across all REST subrequests instead of
 reporting only the final status read. Composite diagnostic tools that do not use
 the terminal-envelope CLI contract expose the same aggregate under

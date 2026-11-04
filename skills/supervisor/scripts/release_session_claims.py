@@ -31,6 +31,7 @@ from session_liveness import inventory
 GITHUB = Path(__file__).resolve().parents[2] / "github/scripts"
 sys.path.insert(0, str(GITHUB))
 import github_identity
+import github_api
 import github_plan_claim as claim
 import github_plan_release as release
 import github_plan_closure as closure
@@ -421,7 +422,8 @@ def belongs_to_session(body: str, session: str) -> bool:
 def read_status_batch(reader: GitHubReader, repos: list[str], since: str) -> dict[str, list[dict] | Exception]:
     def selection(cursor: str | None) -> str:
         return (
-            f"issues(first:100,after:{json.dumps(cursor)},filterBy:{{since:{json.dumps(since)}}}) "
+            f"issues(first:100,after:{json.dumps(cursor)},filterBy:{{since:{json.dumps(since)}}},"
+            "orderBy:{field:CREATED_AT,direction:ASC}) "
             "{ totalCount nodes { number body } pageInfo { hasNextPage endCursor } }"
         )
 
@@ -437,11 +439,15 @@ def read_status_batch(reader: GitHubReader, repos: list[str], since: str) -> dic
         selection=selection,
         normalize=normalize,
         step="session_status_inventory",
+        retry_policy=github_api.optional_batch_retry_policy(),
     )
     for inventory in statuses.values():
         if isinstance(inventory, GitHubReadError):
             failure = inventory.result.failure
-            if failure is None or failure.cause not in {"network_provider_failure", "graphql_primary_rate_limited"}:
+            cause = failure.cause if failure else None
+            if cause == "deadline_exceeded" and inventory.result.retry_summary is not None:
+                cause = inventory.result.retry_summary.wait_cause
+            if cause not in {"network_provider_failure", "graphql_primary_rate_limited"}:
                 raise inventory
     return statuses
 

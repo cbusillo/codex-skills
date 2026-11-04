@@ -16,6 +16,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
+from dataclasses import replace
 from pathlib import Path
 import tempfile
 import unittest
@@ -1357,10 +1358,13 @@ class ReleaseTests(unittest.TestCase):
             "partial",
             "alias-error",
             "duplicate",
-            "unavailable",
             "identity",
             "transient",
             "limited",
+            "primary-cooldown",
+            "secondary-cooldown",
+            "cancelled",
+            "context",
         ):
             with self.subTest(mode=mode):
                 value = json.loads(json.dumps(connection))
@@ -1383,16 +1387,43 @@ class ReleaseTests(unittest.TestCase):
                 reader = Mock()
                 reader.batch_diagnostic = {}
                 reader.graphql_json.return_value = api.ApiResult(ok=True, status=200, body=body)
-                if mode in {"unavailable", "identity", "transient", "limited"}:
+                if mode in {"identity", "transient", "limited", "cancelled", "context"}:
                     causes = {
                         "identity": "actor_mismatch",
                         "transient": "network_provider_failure",
                         "limited": "graphql_primary_rate_limited",
+                        "cancelled": "cancelled",
+                        "context": "retry_context_changed",
                     }
                     cause = causes.get(mode)
                     failure = api.FailureDetail(cause, mode, False, False, "stop") if cause else None
                     reader.graphql_json.return_value = api.ApiResult(ok=False, status=503, body=None, failure=failure)
-                    if mode in {"unavailable", "identity"}:
+                    if mode in {"identity", "cancelled", "context"}:
+                        with self.assertRaises(helper.GitHubReadError):
+                            helper.discover(reader, "test", [self.entry], ["test/a", "test/b"])
+                        reader.paged_json.assert_not_called()
+                        continue
+                if mode in {"primary-cooldown", "secondary-cooldown"}:
+                    cause = "graphql_primary_rate_limited" if mode == "primary-cooldown" else "secondary_rate_limited"
+                    policy = replace(api.optional_batch_retry_policy(), state_dir=self.root / mode)
+                    store = api.SharedCooldownStore(policy.state_dir)
+                    store.publish(
+                        api._cooldown_key("github.com", ACTOR, "graphql"), ready_at=2000, cause=cause, now=1000, policy=policy
+                    )
+                    remote = Mock(side_effect=AssertionError("cooldown must suppress the GraphQL attempt"))
+                    runtime = api.RetryRuntime(now=lambda: 1000, sleep=Mock(side_effect=AssertionError("no wait is needed")))
+                    reader.graphql_json.return_value = api.run_with_retry(
+                        remote,
+                        operation="github.read",
+                        is_write=False,
+                        actor=ACTOR,
+                        expected_actor=ACTOR,
+                        bucket="graphql",
+                        deadline_at=1600,
+                        retry_policy=policy,
+                        retry_runtime=runtime,
+                    )
+                    if mode == "secondary-cooldown":
                         with self.assertRaises(helper.GitHubReadError):
                             helper.discover(reader, "test", [self.entry], ["test/a", "test/b"])
                         reader.paged_json.assert_not_called()
@@ -1415,7 +1446,7 @@ class ReleaseTests(unittest.TestCase):
                         return []
                     self.assertNotIn(scenario, {"complete", "paginated"}, "complete inventory must not reread REST")
                     if path == "/repos/test/b/issues":
-                        self.assertIn(scenario, {"partial", "transient", "limited"})
+                        self.assertIn(scenario, {"partial", "transient", "limited", "primary-cooldown"})
                         return []
                     return [status]
 

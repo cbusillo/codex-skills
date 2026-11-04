@@ -2326,8 +2326,11 @@ retry deadline reports `retryable: true`; rerun finish once GitHub is
 available, after `retry_at` when it is set.
 Discovery batches issue-number and body reads through the same reader's GraphQL
 transport and paginates each repository. Incomplete repositories or exhausted
-GraphQL/provider failures recover through existing paged REST status inventory;
-identity, authorization and shared cooldown failures remain read errors.
+GraphQL/provider failures recover through existing paged REST status inventory.
+The new enrichment uses the existing optional-batch retry policy. An early shared
+wait rejection recovers only when its retained cause identifies the provider or
+GraphQL-primary limit. Identity, authorization, cancellation, context changes and
+secondary or unknown cooldowns remain read errors.
 The `discovery` result reports GraphQL cost and any REST fallback repositories.
 The full repository comment inventory still covers closed issues and pull requests.
 Require `ok: true` and `needs_reconciliation: false` before guarded close and

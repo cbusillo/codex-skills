@@ -66,5 +66,5 @@ def scan(reader: GitHubReader, repositories: list[str]) -> dict[str, list[dict[s
         selection=selection,
         normalize=normalize,
         step="open_prs",
-        retry_policy=github_api.RetryPolicy(max_wait_seconds=30, max_attempts=1),
+        retry_policy=github_api.optional_batch_retry_policy(),
     )

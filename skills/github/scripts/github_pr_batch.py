@@ -37,7 +37,7 @@ def query(reader, document):
         document,
         {},
         step="pr_batch",
-        retry_policy=github_api.RetryPolicy(max_wait_seconds=30, max_attempts=1),
+        retry_policy=github_api.optional_batch_retry_policy(),
     )
     if not result.ok:
         raise github_read.GitHubReadError(
@@ -62,28 +62,7 @@ def query(reader, document):
     return result.body["data"]
 
 
-def page(value):
-    if not isinstance(value, dict):
-        raise github_read.GitHubReadShapeError("missing PR connection")
-    nodes, info, total = (
-        value.get("nodes"),
-        value.get("pageInfo"),
-        value.get("totalCount"),
-    )
-    if (
-        not isinstance(nodes, list)
-        or any(not isinstance(n, dict) for n in nodes)
-        or type(total) is not int
-        or total < 0
-        or not isinstance(info, dict)
-        or type(info.get("hasNextPage")) is not bool
-    ):
-        raise github_read.GitHubReadShapeError("invalid PR connection")
-    cursor = info.get("endCursor") if info["hasNextPage"] else None
-    if info["hasNextPage"] and (not nodes or not isinstance(cursor, str) or not cursor):
-        raise github_read.GitHubReadShapeError("PR cursor did not advance")
-    return nodes, cursor, total
-
+page = github_read.graphql_connection_page
 
 def commit_contexts(node):
     commits = node["commits"]["nodes"]
