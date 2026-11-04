@@ -11,8 +11,7 @@
 import argparse
 import asyncio
 from collections.abc import Awaitable, Callable, Coroutine, Iterator, Sequence
-from contextlib import contextmanager, nullcontext
-from contextvars import ContextVar
+from contextlib import contextmanager
 from functools import wraps
 import errno
 import json
@@ -48,7 +47,6 @@ CLAUDE_QUESTION_TOOL = "AskUserQuestion"
 # hook-review prompt until the brief's turn runs, within this bound.
 CODEX_PROMPT_WINDOW = 20.0
 LAUNCH_TIMEOUT = 30.0
-LEAD_LEDGER: ContextVar[Path | None] = ContextVar("lead_ledger", default=None)
 EXIT_READBACK_ATTEMPTS = 5
 EXIT_READBACK_INTERVAL = 0.2
 # The catalog's Chrome opt-in; with it, browser tools come only from the pinned server.
@@ -1321,7 +1319,7 @@ def read_launch_text(path: Path) -> str:
         return path.read_text(encoding="utf-8")
 
 
-def read_issue_brief(issue: str, header: str) -> str:
+def read_issue_brief(issue: str, header: str, lead_session_id: str | None = None) -> str:
     match = re.fullmatch(r"https://github\.com/([\w.-]+/[\w.-]+)/issues/[1-9]\d*", issue)
     if not match or not re.search(rf"(?m)^Anchor and claim: {re.escape(issue)}\s*$", header):
         raise ValueError("--brief-issue needs a full issue URL matching the header's Anchor and claim")
@@ -1338,8 +1336,9 @@ def read_issue_brief(issue: str, header: str) -> str:
         raise ValueError(f"{issue} needs a managed Current Status written through gh-plan.py update-section")
     status = status.replace("\r\n", "\n")
     opening = re.search(r"(?m)^Brief:[ \t]*\n(?P<fence>`{3,}|~{3,})(?:text)?[ \t]*\n", status)
-    if not opening or not re.search(r"(?m)^Next actor: agent:supervisor[ \t]*$", status[:opening.start()]):
-        raise ValueError(f"{issue} needs Next actor: agent:supervisor and a fenced Brief: in Current Status; use ###, not ##, inside briefs")
+    actor = "agent:" + (lead_session_id or "supervisor")
+    if not opening or not re.search(rf"(?m)^Next actor: {re.escape(actor)}[ \t]*$", status[:opening.start()]):
+        raise ValueError(f"{issue} needs Next actor: {actor} and a fenced Brief: in Current Status; use ###, not ##, inside briefs")
     content = status[opening.end():]
     fence = opening["fence"]
     closing = re.search(rf"(?m)^{re.escape(fence[0])}{{{len(fence)},}}[ \t]*$", content)
@@ -1500,7 +1499,8 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
     if brief_issues:
         if len(brief_issues) != len(files):
             raise ValueError("provide one --brief-issue per --command-file, in launch order")
-        briefs = [read_issue_brief(issue, header) for issue, header in zip(brief_issues, headers)]
+        briefs = [read_issue_brief(issue, header, getattr(args, "lead_session_id", None))
+                  for issue, header in zip(brief_issues, headers)]
     else:
         briefs = headers
     for brief in briefs:
@@ -1709,8 +1709,32 @@ def read_launch_ledger(path: Path) -> list[dict]:
 
 
 def lead_metadata(args: argparse.Namespace) -> dict:
-    return {name: value for name in ("lead_session_id", "worker_cap")
+    return {name: value for name in ("lead_session_id", "lead_launch_id", "worker_cap")
             if (value := getattr(args, name, None)) is not None}
+
+
+def lead_row(rows: list[dict], session: str) -> dict:
+    leads = [row for row in rows if row.get("session_id") == session and row.get("supervisor_owned") is True]
+    lead = leads[0] if len(leads) == 1 else {}
+    cap = lead.get("worker_cap")
+    pending = lead.setdefault("worker_launches", {})
+    if (type(cap) is not int or cap <= 0 or not isinstance(pending, dict)
+            or any(not isinstance(key, str) or not key or type(value) is not int or value <= 0
+                   for key, value in pending.items())):
+        raise ValueError("lead worker cap unavailable in the shared ledger; ask the Supervisor to assign it")
+    return lead
+
+
+def settle_lead_launch(args: argparse.Namespace, remaining: int) -> None:
+    from check_changes import save_state
+    from check_operation import closure
+    with closure.store_lock(args.ledger, create=True):
+        rows = read_launch_ledger(args.ledger)
+        pending = lead_row(rows, args.lead_session_id)["worker_launches"]
+        count = min(pending.pop(args.lead_launch_id, 0), remaining)
+        if count:
+            pending[args.lead_launch_id] = count
+        save_state(args.ledger, rows)
 
 
 def guard_lead_launch(operation: Callable[..., Coroutine[Any, Any, Any]]) -> Callable[..., Coroutine[Any, Any, Any]]:
@@ -1730,23 +1754,33 @@ def guard_lead_launch(operation: Callable[..., Coroutine[Any, Any, Any]]) -> Cal
                 raise ValueError("--worker-cap needs a positive cap assigned by the Supervisor to a lead")
             return await operation(*arguments)
         from check_operation import closure
+        from check_changes import save_state
         with closure.store_lock(ledger, create=True):
             rows = read_launch_ledger(ledger)
-            leads = [row for row in rows if row.get("session_id") == metadata["lead_session_id"]
-                     and row.get("supervisor_owned") is True]
-            cap = leads[0].get("worker_cap") if len(leads) == 1 else None
-            if type(cap) is not int or cap <= 0:
-                raise ValueError("lead worker cap unavailable in the shared ledger; ask the Supervisor to assign it")
+            lead = lead_row(rows, metadata["lead_session_id"])
+            cap, pending = lead["worker_cap"], lead["worker_launches"]
             files = getattr(args, "command_file", None) or []
             count = len(files) if isinstance(files, list) else 1
             active = sum(row.get("lead_session_id") == metadata["lead_session_id"] for row in rows)
-            if active + count > cap:
-                raise ValueError(f"lead worker cap {cap} exceeded: {active} active and {count} requested")
-            token = LEAD_LEDGER.set(ledger.resolve())
-            try:
-                return await operation(*arguments)
-            finally:
-                LEAD_LEDGER.reset(token)
+            if active + sum(pending.values()) + count > cap:
+                raise ValueError(f"lead worker cap {cap} exceeded: {active} active, {sum(pending.values())} pending and {count} requested")
+            if not count:
+                raise ValueError("lead launches need --command-file")
+            args.lead_launch_id = str(uuid.uuid4())
+            pending[args.lead_launch_id] = count
+            save_state(ledger, rows)
+        args.lead_launch_started = False
+        try:
+            result = await operation(*arguments)
+        except LaunchFailure as error:
+            settle_lead_launch(args, int(error.detail["failed_launch"].get("mutation_started", True)))
+            raise
+        except Exception:
+            if not args.lead_launch_started:
+                settle_lead_launch(args, 0)
+            raise
+        settle_lead_launch(args, 0)
+        return result
     return guarded
 
 
@@ -1759,10 +1793,18 @@ def append_launch_ledger(path: Path, entry: dict) -> None:
     if (entry.get("harness") not in {"codex", "claude", "agy"} or entry.get("supervisor_owned") is not True
             or not isinstance(entry.get("session_id"), str) or not entry["session_id"].strip()):
         raise ValueError("launch ledger append needs a native identity and explicit Supervisor ownership")
-    with nullcontext() if LEAD_LEDGER.get() == path.resolve() else github_plan_closure.store_lock(path, create=True):
+    with github_plan_closure.store_lock(path, create=True):
         entries = read_launch_ledger(path)
         if any(row.get("session_id") == entry["session_id"] for row in entries):
             raise ValueError("native session is already in the launch ledger; inspect before retry")
+        if entry.get("lead_session_id") is not None:
+            pending = lead_row(entries, entry["lead_session_id"])["worker_launches"]
+            launch = entry.get("lead_launch_id")
+            if launch not in pending:
+                raise ValueError("lead worker registration needs its retained launch reservation; preserve the receipt")
+            count = pending.pop(launch) - 1
+            if count:
+                pending[launch] = count
         save_state(path, [*entries, entry])
 
 
@@ -2099,6 +2141,7 @@ async def operate(app, args):
         if len(windows) != 1:
             raise ValueError("window id does not identify one window")
         command_texts, choices = prepare_launches(args)
+        args.lead_launch_started = True
         results = []
         for command_text, choice in zip(command_texts, choices):
             progress = {**lead_metadata(args), "window_id": windows[0].window_id, "tab_id": None,

@@ -69,6 +69,17 @@ class LaunchIssueTests(unittest.TestCase):
                     words = shlex.split(commands[0])
                     prompt = next(word.removeprefix("--prompt-interactive=") for word in words if word.startswith("--prompt-interactive="))
                     self.assertEqual(prompt, header.rstrip("\n") + "\n\n" + task)
+            args.lead_session_id = "milestone-lead"
+            payload["issue"]["recorded_current_status"] = status.replace("agent:supervisor", "agent:" + args.lead_session_id)
+            with patch.object(iterm_tab.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps(payload))):
+                words = shlex.split(iterm_tab.prepare_launches(args)[0][0])
+                prompt = next(word.removeprefix("--prompt-interactive=") for word in words if word.startswith("--prompt-interactive="))
+                self.assertEqual(prompt, header.rstrip("\n") + "\n\n" + task)
+            payload["issue"]["recorded_current_status"] = status
+            with patch.object(iterm_tab.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps(payload))):
+                with self.assertRaisesRegex(ValueError, "Next actor"):
+                    iterm_tab.prepare_launches(args)
+            del args.lead_session_id
             payload["issue"]["provenance"]["section_updates_allowed"] = False
             with patch.object(iterm_tab.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps(payload))):
                 with self.assertRaisesRegex(ValueError, "managed Current Status"):
@@ -399,14 +410,17 @@ class ProviderLaunchTests(unittest.TestCase):
     def test_lead_launch_records_its_owner_on_the_worker_ledger_row(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             ledger = Path(folder) / "ledger.json"
-            args = argparse.Namespace(ledger=ledger, lead_session_id="milestone-lead")
+            args = argparse.Namespace(ledger=ledger, lead_session_id="milestone-lead", lead_launch_id="launch")
+            ledger.write_text(json.dumps([{"session_id": args.lead_session_id, "supervisor_owned": True,
+                                          "worker_cap": 2, "worker_launches": {args.lead_launch_id: 1}}]))
             native = {"session_id": "worker", "transcript": str(Path(folder) / "worker.jsonl"),
                       "launch_pid": 123, "launch_generation": "generation", "launch_started_at": "started",
                       "codex_home": folder, "tty": "fixture"}
             receipt = {**native, "session_id": "terminal", "native_receipt": str(Path(folder) / "receipt.json")}
             with patch.object(codex_session_proxy, "read_launch_receipt", return_value=native):
                 asyncio.run(iterm_tab.register_fresh_launch(args, receipt, None))
-            self.assertEqual(json.loads(ledger.read_text())[0]["lead_session_id"], args.lead_session_id)
+            row = next(row for row in json.loads(ledger.read_text()) if row["session_id"] == native["session_id"])
+            self.assertEqual(row["lead_session_id"], args.lead_session_id)
             self.assertEqual(receipt["lead_session_id"], args.lead_session_id)
 
     def test_lead_cap_refuses_overflow_before_accounts_or_terminals_on_both_backends(self) -> None:
@@ -438,17 +452,38 @@ class ProviderLaunchTests(unittest.TestCase):
 
             @iterm_tab.guard_lead_launch
             async def register_worker(options: argparse.Namespace) -> None:
+                await asyncio.to_thread(iterm_tab.append_launch_ledger, options.ledger, {
+                    "session_id": "unrelated-worker", "harness": "codex", "supervisor_owned": True})
                 iterm_tab.append_launch_ledger(options.ledger, {
-                    **worker, "harness": "codex", "supervisor_owned": True})
+                    **worker, **iterm_tab.lead_metadata(options), "harness": "codex", "supervisor_owned": True})
 
             args.command_file = [Path(folder) / "absent"]
             ledger.write_text(json.dumps([lead, other]))
             asyncio.run(register_worker(args))
-            self.assertIn(worker["session_id"], [row["session_id"] for row in json.loads(ledger.read_text())])
+            rows = json.loads(ledger.read_text())
+            self.assertIn(worker["session_id"], [row["session_id"] for row in rows])
+            self.assertIn("unrelated-worker", [row["session_id"] for row in rows])
+            self.assertEqual(rows[0]["worker_launches"], {})
             for cap in (None, 0, True, "2"):
                 ledger.write_text(json.dumps([{**lead, "worker_cap": cap}, other]))
                 with self.subTest(cap=cap), self.assertRaisesRegex(ValueError, "worker cap unavailable"):
                     asyncio.run(register_worker(args))
+
+            @iterm_tab.guard_lead_launch
+            async def fail_after_submission(options: argparse.Namespace) -> None:
+                raise iterm_tab.LaunchFailure([], {"mutation_started": True,
+                    "launch": {**iterm_tab.lead_metadata(options), "session_id": "retained-worker",
+                               "harness": "codex", "supervisor_owned": True}}, ValueError("startup unknown"))
+
+            ledger.write_text(json.dumps([{**lead, "worker_cap": 1}, other]))
+            with self.assertRaises(iterm_tab.LaunchFailure) as failed:
+                asyncio.run(fail_after_submission(args))
+            with self.assertRaisesRegex(ValueError, "worker cap"):
+                asyncio.run(register_worker(args))
+            iterm_tab.append_launch_ledger(ledger, failed.exception.detail["failed_launch"]["launch"])
+            self.assertEqual(json.loads(ledger.read_text())[0]["worker_launches"], {})
+            with self.assertRaisesRegex(ValueError, "worker cap"):
+                asyncio.run(register_worker(args))
 
     def setUp(self):
         self.enterContext(patch.object(iterm_tab, "check_launch_issue"))

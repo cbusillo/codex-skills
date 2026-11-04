@@ -187,10 +187,12 @@ Rules for this brief (every Supervisor brief carries them):
   with a standalone, unqualified final line: Safe to exit: yes
 - Unless your brief delegates worker launches as a milestone lead, request a
   parallel session through the child's Current Status, updated
-  with `gh-plan.py update-section`: `Next actor: agent:supervisor`, its concrete
-  launch action, and `Brief:` followed by the bounded brief in a fenced `text`
+  with `gh-plan.py update-section`: `Next actor: agent:<launching-lead-native-id>`
+  when a lead launched you (its id is in your brief), otherwise
+  `Next actor: agent:supervisor`, its concrete launch action, and `Brief:`
+  followed by the bounded brief in a fenced `text`
   block. Use `###` or plain labels inside it, since `##` starts a plan section,
-  and a longer fence if it contains fences. The Supervisor launches it
+  and a longer fence if it contains fences. That lead or the Supervisor launches it
   [verbatim under the standard header](helpers.md#terminal-launches).
   Never post staffing lists or STAFF NOW on the Track board.
 <!-- brief-rules:end -->
@@ -221,7 +223,7 @@ Allowed accounts: __ACCOUNTS__
 How a lead works:
 1. Read the Director's overall and repository DIRECTION.md, the milestone's finish line, and gh-plan.py next. If a Track is supplied, read it and its native children too; do not claim the Track itself. Take only work belonging to this milestone.
 2. Brief workers for the next actionable items in that order: not waiting on a person or event, not natively blocked, not owned by another running session. Recheck ownership before dispatch; workers claim their own issues and use their own task worktrees. Choose the tier each slice needs under Q1199, rather than giving every slice the strongest tier.
-3. Launch through the existing iterm_tab.py launcher on either terminal backend, into the shared ledger, with --lead-session-id <your-native-session-id> and an explicit --account from the allowed accounts. The launcher enforces your assigned cap across repositories and batches. Never raise the cap or use another account yourself. Use the shared brief rules for each worker; do not send a staffing request to the Supervisor for launches within your assignment.
+3. Launch through the existing iterm_tab.py launcher on either terminal backend, into the shared ledger, with --lead-session-id <your-native-session-id> and an explicit --account from the allowed accounts. The launcher enforces your assigned cap across repositories and batches. Never raise the cap or use another account yourself. Put your native id in each worker brief and use the shared brief rules. Handle worker-originated requests with --brief-issue on their child issues; do not send staffing requests to the Supervisor for launches within your assignment.
 4. Watch and review workers through handoff comments, issue status and the optional board; leave diffs, CI logs, implementation, tests and the review of record to workers. Nudge stalls, record decisions and keep each issue's Current Status current. Close your workers with session_closeout.py on the same ledger, passing your native id as --supervisor-session; all existing claim, handoff, process and terminal checks apply. Recover a partial launch before dispatching more work. The Supervisor adopts your rows if you cannot continue.
 5. Idle at the native prompt between events so messages reach you. Reuse worker-finish notices, the existing foreign watch narrowed to the milestone's repositories, and native message delivery; use a rare backstop check every few hours, not a continuous turn or cache-warming schedule. On each wake, handle finished workers and new messages, then refill available capacity. Preserve coverage gaps as UNKNOWN.
 6. When an item needs a person, record its wait, follow the shared brief rules for Director questions and Asking a Client for Client questions, and move to independent milestone work. When nothing is actionable, keep waits and the next actor current and remain idle for events. When the assignment is done or handed off, close out with work-closeout and end with a standalone final line: Safe to exit: yes

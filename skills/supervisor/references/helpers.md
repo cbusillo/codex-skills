@@ -1517,10 +1517,13 @@ environment prefixes. `agy` uses its native `--prompt-interactive` option;
 Codex and Claude take one positional prompt after `--`. Keep prompt options
 out of the command file. Shell wrappers, extra commands, trailing shell punctuation
 and shell comments refuse because they may discard the prompt.
-For a worker's parallel-session request, add `--brief-issue <child-issue-url>`
+For a worker's parallel-session request, its lead or the Supervisor adds
+`--brief-issue <child-issue-url>`
 and put only the standard Supervisor header in `--brief-file`: trial token,
 `Anchor and claim:` with that same URL, admission and rules link. The child
-uses the shared brief rules' Current Status format. The launcher reads it
+uses the shared brief rules' Current Status format, naming the launching lead
+as next actor when `--lead-session-id` is supplied, otherwise the Supervisor.
+The launcher reads it
 through the planning helper and appends its brief verbatim under the header,
 normalizing CRLF line endings to LF for terminal transport. The header owns
 token, anchor, admission and rules; matching labels in the task are context only.
@@ -1529,11 +1532,17 @@ For a new milestone lead, the Supervisor adds `--ledger <shared-ledger>` and
 `--worker-cap <positive-count>`; registration saves `worker_cap` on its row.
 The lead launches workers with that same ledger, `--lead-session-id
 <lead-native-id>`, and an explicit allowed `--account` from its brief. Worker
-rows and retained launch receipts carry `lead_session_id`. Both backends hold
-the existing ledger lock across a lead's batch, checking its assigned cap
-before accounts or terminals and counting every row it launched until normal
-closeout removes it. A missing lead or cap refuses. Recover any partial launch
-with its retained receipt before launching more workers; never relaunch it.
+rows and retained launch receipts carry `lead_session_id` and `lead_launch_id`.
+The brief assigns accounts; the launcher enforces the cap. Both backends
+reserve the batch's capacity in `worker_launches` on the lead's existing row
+under the ledger's short lock before accounts or terminals. Registration
+atomically replaces each reserved slot with its worker row; normal closeout
+removes the row and frees that slot. A missing lead, cap or reservation refuses.
+Recover a partial launch with its retained receipt before launching more
+workers; never relaunch it. Interrupted launches keep their reservations.
+For an interrupted batch, the Supervisor verifies its receipts and terminals,
+registers submitted workers, and removes only that batch's unused reservation
+under the existing ledger-maintenance rule.
 Leads use the existing closeout helper with their own native id as
 `--supervisor-session`; the Supervisor can adopt a departed lead's workers.
 Change assigned caps only after launches and registrations on the ledger finish.

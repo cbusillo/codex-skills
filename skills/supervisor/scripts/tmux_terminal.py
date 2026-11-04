@@ -423,6 +423,7 @@ async def operate(args):
 
     terminal.verify_container(args.window_id)
     commands, choices = iterm_tab.prepare_launches(args)
+    args.lead_launch_started = True
     results = []
     for command, choice in zip(commands, choices):
         progress = {**iterm_tab.lead_metadata(args), "window_id": args.window_id, "tab_id": None, "session_id": None,
