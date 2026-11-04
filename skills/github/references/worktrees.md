@@ -75,7 +75,7 @@ After retirement, creation expires evidence older than 30 quiet days, stopping
 new units after five seconds without interrupting a unit. Failures keep evidence
 and report without blocking creation. Missing roots are empty sweeps; idle
 computers keep expired evidence until new work starts.
-Preview: `uv run <catalog>/skills/github/scripts/task_evidence_gc.py`; add
+Preview: `<catalog>/skills/github/scripts/dev-worktree sweep-evidence`; add
 `--apply` to expire. Unreadable units are kept, symlinks are not followed,
 and deletion requires symlink-resistant support. Renaming then remeasuring
 preserves observed concurrent refreshes and reused original names. Age-based

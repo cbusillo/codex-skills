@@ -33,9 +33,7 @@ def patch_attr(target: Any, name: str, *args: Any, **kwargs: Any) -> Any:
 
 class WorktreeTests(unittest.TestCase):
     def setUp(self):
-        sweep = mock.patch.object(dev_worktree, "sweep_evidence")
-        sweep.start()
-        self.addCleanup(sweep.stop)
+        self.enterContext(mock.patch.object(dev_worktree, "sweep_evidence"))
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.base = Path(self.temp.name).resolve()
@@ -97,7 +95,7 @@ class WorktreeTests(unittest.TestCase):
                     mock.patch.object(dev_worktree, "sweep_evidence", side_effect=lambda *_: events.append("evidence")), \
                     mock.patch.object(dev_worktree, "refresh_primary", side_effect=lambda *_: events.append("refresh")), \
                     mock.patch.object(dev_worktree, "create", side_effect=lambda *_: events.append("create")), \
-                    mock.patch.object(dev_worktree.os, "execv", side_effect=lambda *_: events.append("create")):
+                    mock.patch.object(dev_worktree.os, "execve", side_effect=lambda *_: events.append("create")):
                 dev_worktree.main([str(self.repo), "new-task", self.initial])
             self.assertEqual(events[:4], ["refresh", "retire", "evidence", "create"])
 
@@ -444,7 +442,11 @@ class WorktreeTests(unittest.TestCase):
     def test_configured_root_and_linked_source_keep_main_repo_name(self):
         root = self.base / "work tree root"
         self.settings({"root": str(root)})
+        evidence = self.home / "Developer/task-evidence" / self.repo.name / "old"
+        evidence.mkdir(parents=True)
+        os.utime(evidence, (0, 0))
         first = self.run_helper(self.repo, "one", "HEAD")
+        self.assertFalse(evidence.exists())
         self.assertEqual(first.returncode, 0, first.stderr)
         second = self.run_helper(first.stdout.strip(), "two", self.initial)
         self.assertEqual(second.returncode, 0, second.stderr)
@@ -580,11 +582,15 @@ class WorktreeTests(unittest.TestCase):
         host.chmod(0o700)
         root = self.base / "unmounted/tasks"
         config = self.settings({"root": str(root), "hostHelper": str(host)})
+        evidence = self.base / "task-evidence"
+        config = self.settings({"root": str(root), "hostHelper": str(host), "evidenceRoot": str(evidence)})
+        host.write_text(host.read_text().replace("import json, sys", "import json, os, sys").replace(
+            "json.dumps(sys.argv[1:])", "json.dumps([sys.argv[1:], os.environ.get('DEV_WORKTREE_EVIDENCE_ROOT')])"))
         before = config.read_bytes()
         args = (str(self.repo), "task", "HEAD~1")
         result = self.run_helper(*args)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(receipt.read_text()), list(args))
+        self.assertEqual(json.loads(receipt.read_text()), [list(args), str(evidence)])
         receipt.unlink()
         result = self.run_helper("retire", "--dry-run", str(root / "some task"))
         self.assertNotEqual(result.returncode, 0)
@@ -597,6 +603,7 @@ class WorktreeTests(unittest.TestCase):
         root = self.base / "unmounted/tasks"
         self.settings({"root": str(root), "hostHelper": str(host)})
         self.assert_refused(self.run_helper(self.repo, "task", "HEAD"))
+        self.settings({"root": str(root), "hostHelper": str(host), "evidenceMount": str(self.base / "absent")})
         host.write_text("#!/bin/sh\nexit 7\n")
         host.chmod(0o700)
         result = self.run_helper(self.repo, "task", "HEAD")
