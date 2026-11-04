@@ -824,6 +824,13 @@ The Supervisor installs and starts them after review; an executing session
 prepares and tests the helper without installing or starting these services.
 Use the installed runtime catalog, not a task worktree, as their source.
 
+The `enqueue` and `drive` services are retired, and a configuration that still
+names them is refused. To upgrade, boot out
+`com.codex-skills.supervisor.enqueue` and `com.codex-skills.supervisor.drive`,
+verify their children have ended, remove their plists from
+`~/Library/LaunchAgents/` and their entries from the configuration, then
+restart the remaining jobs.
+
 Keep one private configuration at a stable location, reusing the same
 foreign-watch state file across takeovers. Each service takes the existing
 bounded command as an argument array, an absolute working directory and a
