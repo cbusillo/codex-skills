@@ -3581,8 +3581,7 @@ class ExecutionReader:
             if path == self.unavailable:
                 raise gh_pr_watch.github_read.GitHubReadShapeError("fixture incomplete inventory")
             return self.pull
-        assert path.endswith("/status")
-        return {"state": "success"}
+        raise AssertionError(path)
 
     @staticmethod
     def invalid_response(_step: str, _message: str) -> None:
