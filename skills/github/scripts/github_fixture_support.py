@@ -3,16 +3,25 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Offline API fixtures shared by the issue and comment regression suites."""
 
 from __future__ import annotations
 
+import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Callable
 from unittest.mock import patch
 
 import github_api
+
+REAL_SUBPROCESS_RUN = subprocess.run
+
+
+def run_python_helper(script: Path, arguments: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+    return REAL_SUBPROCESS_RUN(
+        [sys.executable, str(script), *arguments], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs
+    )
 
 
 def api_success(
@@ -34,7 +43,11 @@ def api_success(
 
 
 def api_failure(
-    status: int, body: Any, *, operation: str, is_write: bool,
+    status: int,
+    body: Any,
+    *,
+    operation: str,
+    is_write: bool,
 ) -> github_api.ApiResult:
     detail = github_api.classify_error(status, {}, body, is_write=is_write)
     return github_api.ApiResult(
@@ -61,6 +74,7 @@ def with_call_stub(
         return callback(method, path, body, **kwargs)
 
     with tempfile.TemporaryDirectory() as temp_dir:
+
         def retry_policy() -> github_api.RetryPolicy:
             return github_api.RetryPolicy(
                 max_wait_seconds=10.0,
