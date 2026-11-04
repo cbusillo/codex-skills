@@ -1431,8 +1431,11 @@ identity, includes the native `Session:` field for closeout discovery, and reads
 it back; do not hand-write the release comment.
 Supply `--next-actor agent|agent:<session-or-role>|person:<login>|event:<observable>`
 or a `Next actor:` line in the handoff. Release requires an explicit actor,
-updates only that field in the issue's existing Current Status before releasing,
-and reads it back; failure leaves the claim owned. For PRs and issues without
+updates only that field in the selected Current Status before releasing,
+preserving literal handoff blocks and neighboring sections. Literal actors and
+claim examples remain non-authoritative. Selection still follows trusted status
+comments and the recorded body-edit time. The helper reads the actor back;
+failure leaves the claim owned. For PRs and issues without
 an editable managed status, the release comment carries Current Status instead.
 An already-released claim's supplemental handoff preserves any successor status.
 Claim writes `agent:<session>` automatically in its status; uneditable records
