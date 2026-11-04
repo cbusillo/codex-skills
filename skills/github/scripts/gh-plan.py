@@ -3003,7 +3003,7 @@ def claim_once(args: argparse.Namespace) -> None:
     previous_wait = ""
     planned_wait = ""
     ended_owners: list[dict[str, Any]] = []
-    resume_issue = getattr(args, "resume_issue", None)
+    resume_issue: tuple[str, int] | None = getattr(args, "resume_issue", None)
     resume_source_number: int | None = None
     if resume_issue is not None and (resume_issue[0].casefold(), resume_issue[1]) == (issue_repo.casefold(), number):
         resume_source_number, resume_issue = number, None
