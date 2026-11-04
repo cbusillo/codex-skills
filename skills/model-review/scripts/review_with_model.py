@@ -661,12 +661,17 @@ def result_destination(repo: Path, value: str) -> Path:
 
     requested = Path(value).expanduser().absolute()
     worktrees, _ = dev_worktree.configuration()
-    if not any(candidate.is_relative_to(root.resolve()) for root in (repo, worktrees)
-               for candidate in (requested, requested.resolve())):
+    if not any(
+        candidate.is_relative_to(root.resolve()) for root in (repo, worktrees) for candidate in (requested, requested.resolve())
+    ):
         return requested
     evidence, _ = dev_worktree.artifact_roots()
-    common = subprocess.run(["git", "-C", str(repo), "rev-parse", "--path-format=absolute", "--git-common-dir"],
-                            capture_output=True, text=True, check=True).stdout.strip()
+    common = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
     destination = evidence / Path(common).parent.name / repo.name / requested.name
     if any(parent.is_symlink() for parent in (destination, *destination.parents)):
         raise ValueError("review output path is redirected; choose a task-evidence destination")

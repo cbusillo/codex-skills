@@ -188,7 +188,24 @@ class ReviewWithModelTests(unittest.TestCase):
 
     def test_review_output_in_source_or_worktree_root_moves_to_task_evidence(self) -> None:
         self.install("claude", FAKE_CLAUDE)
-        subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
+        subprocess.run(["git", "init", "-q", "-b", "main", str(self.repo)], check=True)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(self.repo),
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "Initial",
+            ],
+            check=True,
+        )
         evidence = self.root / "task-evidence"
         worktrees = self.root / "worktrees"
         config = self.home / ".config/codex-skills/worktrees.json"
@@ -196,9 +213,18 @@ class ReviewWithModelTests(unittest.TestCase):
         config.write_text(json.dumps({"root": str(worktrees), "evidenceRoot": str(evidence)}))
         saved = []
         for requested in (self.repo / "a/review.md", self.repo / "b/review.md", worktrees / "review.md"):
-            code, result = self.run_helper("run", "--provider", "anthropic", "--repo", str(self.repo),
-                                           "--prompt-file", str(self.prompt), "--out", str(requested),
-                                           FAKE_CLAUDE_JSON=json.dumps({"result": completed("review fixture")}))
+            code, result = self.run_helper(
+                "run",
+                "--provider",
+                "anthropic",
+                "--repo",
+                str(self.repo),
+                "--prompt-file",
+                str(self.prompt),
+                "--out",
+                str(requested),
+                FAKE_CLAUDE_JSON=json.dumps({"result": completed("review fixture")}),
+            )
             self.assertEqual((code, result["ok"]), (0, True), result)
             destination = Path(result["response_file"])
             self.assertTrue(destination.is_relative_to(evidence / self.repo.name / self.repo.name))
@@ -207,8 +233,17 @@ class ReviewWithModelTests(unittest.TestCase):
             saved.append(destination)
         self.assertEqual(len(set(saved)), len(saved))
         config.write_text("invalid")
-        code, result = self.run_helper("run", "--provider", "anthropic", "--repo", str(self.repo),
-                                       "--prompt-file", str(self.prompt), "--out", str(self.repo / "review.md"))
+        code, result = self.run_helper(
+            "run",
+            "--provider",
+            "anthropic",
+            "--repo",
+            str(self.repo),
+            "--prompt-file",
+            str(self.prompt),
+            "--out",
+            str(self.repo / "review.md"),
+        )
         self.assertEqual((code, result["phase"]), (1, "output"))
 
     def test_standing_decision_blocks_primary_google_but_allows_supplementary(self) -> None:

@@ -379,12 +379,13 @@ class RepositoryTests(Fixture):
                 self.commit(path, "Squashed source")
                 self.git(path, "push", "origin", "HEAD:refs/pull/7/head")
 
-            def dispatch(args: list[str], *, case: str = cause, target: Path = path, **options: object) -> subprocess.CompletedProcess[str]:
+            def dispatch(
+                args: list[str], *, case: str = cause, target: Path = path, **options: object
+            ) -> subprocess.CompletedProcess[str]:
                 if args[0] == "lsof":
                     if case == "proof_unavailable":
                         raise FileNotFoundError("lsof")
-                    return subprocess.CompletedProcess(args, 0 if case == "in_use" else 1,
-                                                       "123\n" if case == "in_use" else "", "")
+                    return subprocess.CompletedProcess(args, 0 if case == "in_use" else 1, "123\n" if case == "in_use" else "", "")
                 if "remove-worktree" in args:
                     run(["git", "-C", str(self.repo), "worktree", "remove", str(target)], check=True, capture_output=True)
                     return subprocess.CompletedProcess(args, 0, "proved", "")
@@ -402,12 +403,16 @@ class RepositoryTests(Fixture):
 class StrayTests(Fixture):
     def sweep(self, *, apply: bool = False) -> list[dict]:
         original = subprocess.run
-        with mock.patch.object(dev_worktree, "configuration", return_value=(self.root, None)), \
-                mock.patch.object(landed_worktrees.subprocess, "run", wraps=subprocess.run) as run:
+        with (
+            mock.patch.object(dev_worktree, "configuration", return_value=(self.root, None)),
+            mock.patch.object(landed_worktrees.subprocess, "run", wraps=subprocess.run) as run,
+        ):
+
             def dispatch(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
                 if args[0] == "lsof":
                     return subprocess.CompletedProcess(args, 1, "", "")
                 return original(args, **kwargs)
+
             run.side_effect = dispatch
             return landed_worktrees.sweep_strays(self.repo, self.root, apply=apply)
 
@@ -432,8 +437,9 @@ class StrayTests(Fixture):
         fresh = parent / "new-inspection.json"
         fresh.write_text("{}")
         preview = self.sweep()
-        self.assertEqual({Path(r["path"]).name for r in preview if r["decision"] == "would_remove"},
-                         {"empty", "results", loose.name})
+        self.assertEqual(
+            {Path(r["path"]).name for r in preview if r["decision"] == "would_remove"}, {"empty", "results", loose.name}
+        )
         self.assertTrue(results.exists())
         applied = self.sweep(apply=True)
         self.assertEqual(sum(r["decision"] == "removed" for r in applied), 3)
@@ -453,10 +459,12 @@ class StrayTests(Fixture):
         folder.mkdir()
         os.utime(folder, (0, 0))
         original = subprocess.run
+
         def dispatch(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
             if args[-1] == "verify-root":
                 return subprocess.CompletedProcess(args, 1, "", "wrong volume")
             return original(args, **kwargs)
+
         with mock.patch.object(landed_worktrees.subprocess, "run", side_effect=dispatch):
             rows = landed_worktrees.sweep_strays(self.repo, self.root, apply=True)
         self.assertTrue(folder.exists())
@@ -471,19 +479,23 @@ class StrayTests(Fixture):
             path.write_text("original result")
             for item in (path, folder):
                 os.utime(item, (0, 0))
-            def dispatch(args: list[str], *, case: str = cause, directory: Path = folder,
-                         result: Path = path, **kwargs: object) -> subprocess.CompletedProcess[str]:
+
+            def dispatch(
+                args: list[str], *, case: str = cause, directory: Path = folder, result: Path = path, **kwargs: object
+            ) -> subprocess.CompletedProcess[str]:
                 if args[0] == "lsof":
                     if case == "changed":
                         result.write_text("changed")
                     elif case == "unknown_added":
                         (directory / "source.py").write_text("important")
-                    return subprocess.CompletedProcess(args, 0 if case == "open" else 1,
-                                                       "123" if case == "open" else "", "")
+                    return subprocess.CompletedProcess(args, 0 if case == "open" else 1, "123" if case == "open" else "", "")
                 return original(args, **kwargs)
-            with self.subTest(cause=cause), \
-                    mock.patch.object(dev_worktree, "configuration", return_value=(self.root, None)), \
-                    mock.patch.object(landed_worktrees.subprocess, "run", side_effect=dispatch):
+
+            with (
+                self.subTest(cause=cause),
+                mock.patch.object(dev_worktree, "configuration", return_value=(self.root, None)),
+                mock.patch.object(landed_worktrees.subprocess, "run", side_effect=dispatch),
+            ):
                 rows = landed_worktrees.sweep_strays(self.repo, self.root, apply=True)
             self.assertTrue(path.exists())
             if cause == "unknown_added":
@@ -509,6 +521,7 @@ class StrayTests(Fixture):
         for item in (folder, folder / "inspection.json"):
             os.utime(item, (0, 0))
         original = subprocess.run
+
         def dispatch(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
             if args[-1] == "verify-root":
                 self.assertIn("DEV_WORKTREE_DELEGATED", kwargs["env"])
@@ -516,6 +529,7 @@ class StrayTests(Fixture):
             if args[0] == "lsof":
                 return subprocess.CompletedProcess(args, 1, "", "")
             return original(args, **kwargs)
+
         with mock.patch.object(landed_worktrees.subprocess, "run", side_effect=dispatch):
             rows = landed_worktrees.sweep_strays(self.repo, self.root, apply=True)
         self.assertFalse(folder.exists())
@@ -528,12 +542,16 @@ class StrayTests(Fixture):
         os.utime(log, (0, 0))
         (path / "notes.py").write_text("unique work")
         original = subprocess.run
+
         def dispatch(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
             if args[0] == "lsof":
                 return subprocess.CompletedProcess(args, 1, "", "")
             return original(args, **kwargs)
-        with mock.patch.object(landed_worktrees.subprocess, "run", side_effect=dispatch), \
-                mock.patch.object(dev_worktree, "configuration", return_value=(self.root, None)):
+
+        with (
+            mock.patch.object(landed_worktrees.subprocess, "run", side_effect=dispatch),
+            mock.patch.object(dev_worktree, "configuration", return_value=(self.root, None)),
+        ):
             evidence = landed_worktrees.preserve_result_log(path)
         self.assertIsNotNone(evidence)
         self.assertEqual((evidence / "error.log").read_text(), "log evidence")
@@ -544,10 +562,15 @@ class StrayTests(Fixture):
 class MissingCommitTests(Fixture):
     def test_missing_commit_is_kept_and_other_read_failures_stay_errors(self) -> None:
         import github_read
+
         head = "a" * 40
         reader = mock.Mock()
-        for status, message in ((422, f"Validation failed: No commit found for SHA: {head}"),
-                                (403, "Forbidden"), (404, "Not Found"), (422, "other validation error")):
+        for status, message in (
+            (422, f"Validation failed: No commit found for SHA: {head}"),
+            (403, "Forbidden"),
+            (404, "Not Found"),
+            (422, "other validation error"),
+        ):
             reader.paged_json.side_effect = github_read.GitHubReadError(message, result=mock.Mock(status=status), diagnostics={})
             with self.subTest(status=status, message=message):
                 if "No commit found" in message:
@@ -575,10 +598,12 @@ class MissingCommitTests(Fixture):
         self.git(self.repo, "branch", "work/raced", head)
         later = self.commit(self.repo, "New local work")
         original = landed_worktrees.git
+
         def change_before_delete(checkout: Path, *args: str, **kwargs: object) -> subprocess.CompletedProcess[str]:
             if args[0] == "update-ref":
                 self.git(self.repo, "update-ref", "refs/heads/work/raced", later)
             return original(checkout, *args, **kwargs)
+
         with mock.patch.object(landed_worktrees, "git", side_effect=change_before_delete):
             self.assertIn("kept", landed_worktrees.delete_merged_branch(self.repo, "work/raced", head))
         self.assertEqual(self.git(self.repo, "rev-parse", "work/raced"), later)

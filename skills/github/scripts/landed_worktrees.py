@@ -196,9 +196,20 @@ def portable_retire(path: Path, *, dry_run: bool) -> subprocess.CompletedProcess
     head = git(path, "rev-parse", "HEAD").stdout.strip()
     branch = git(path, "symbolic-ref", "--short", "-q", "HEAD").stdout.strip() or None
     inspector = Path(__file__).parents[2] / "jetbrains-inspection/scripts/jb-inspect.py"
-    result = subprocess.run([sys.executable, str(inspector), "remove-worktree", "--offline-only", "--repo", str(path),
-                           *([] if dry_run else ["--no-dry-run"])], capture_output=True, text=True,
-                          env=dev_worktree.git_environment())
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(inspector),
+            "remove-worktree",
+            "--offline-only",
+            "--repo",
+            str(path),
+            *([] if dry_run else ["--no-dry-run"]),
+        ],
+        capture_output=True,
+        text=True,
+        env=dev_worktree.git_environment(),
+    )
     if result.returncode == 0 and not dry_run:
         if path.exists() or any(tree.path == path for tree in registered(common.parent)):
             return kept("worktree removal postcondition is incomplete")
@@ -247,10 +258,21 @@ def retire(rows: Iterable[dict], *, apply: bool, runner=None, deadline: float | 
 
 
 STRAY_RESULT_PATTERNS = (
-    "*-inspection*.json", "*-inspection*.err", "*-checks*.json", "*-snapshot*.json",
-    "*-watch*.json", "*-watch*.jsonl", "*-review*.json",
-    "*-validation*.log", "*-controller.log", "*-attention*.json",
-    "inspection.json", "inspection.err", "review.json", "error.log", ".DS_Store",
+    "*-inspection*.json",
+    "*-inspection*.err",
+    "*-checks*.json",
+    "*-snapshot*.json",
+    "*-watch*.json",
+    "*-watch*.jsonl",
+    "*-review*.json",
+    "*-validation*.log",
+    "*-controller.log",
+    "*-attention*.json",
+    "inspection.json",
+    "inspection.err",
+    "review.json",
+    "error.log",
+    ".DS_Store",
 )
 
 
@@ -260,11 +282,12 @@ def entry_state(info: os.stat_result) -> dict[str, int]:
 
 def stray_snapshot(directory: int) -> dict[str, dict[str, int]]:
     contents = {name: os.stat(name, dir_fd=directory, follow_symlinks=False) for name in os.listdir(directory)}
-    if any(not stat.S_ISREG(info.st_mode) or not any(fnmatch.fnmatchcase(name, pattern) for pattern in STRAY_RESULT_PATTERNS)
-           for name, info in contents.items()):
+    if any(
+        not stat.S_ISREG(info.st_mode) or not any(fnmatch.fnmatchcase(name, pattern) for pattern in STRAY_RESULT_PATTERNS)
+        for name, info in contents.items()
+    ):
         raise ValueError("unknown content; retained without deletion")
     return {name: entry_state(info) for name, info in contents.items()}
-
 
 
 def archive_results(repository: str, task: str, source_fd: int, contents: dict[str, dict[str, int]]) -> Path:
@@ -287,15 +310,20 @@ def archive_results(repository: str, task: str, source_fd: int, contents: dict[s
     return destination
 
 
-
 def verify_host_root(root: Path, deadline: float | None) -> None:
     _, helper = dev_worktree.configuration()
     if helper is None:
         return
-    verified = subprocess.run([str(helper), "verify-root"], capture_output=True, text=True,
-                              timeout=remaining_timeout(deadline, 30), env=dev_worktree.host_environment(["verify-root"]))
+    verified = subprocess.run(
+        [str(helper), "verify-root"],
+        capture_output=True,
+        text=True,
+        timeout=remaining_timeout(deadline, 30),
+        env=dev_worktree.host_environment(["verify-root"]),
+    )
     if verified.returncode or verified.stdout.strip() != str(root):
         raise ValueError("host worktree root verification unavailable; stray entries retained")
+
 
 def preserve_result_log(path: Path, *, deadline: float | None = None) -> Path | None:
     if not path.is_dir():
@@ -310,8 +338,9 @@ def preserve_result_log(path: Path, *, deadline: float | None = None) -> Path | 
     if not is_under(path, root):
         return None
     verify_host_root(root, deadline)
-    users = subprocess.run(["lsof", "-nP", "-t", "+D", str(path)], capture_output=True, text=True,
-                           timeout=remaining_timeout(deadline, 10))
+    users = subprocess.run(
+        ["lsof", "-nP", "-t", "+D", str(path)], capture_output=True, text=True, timeout=remaining_timeout(deadline, 10)
+    )
     if users.returncode not in {0, 1} or users.stdout.strip() or users.stderr.strip():
         return None
     common = Path(dev_worktree.git(path, "rev-parse", "--path-format=absolute", "--git-common-dir"))
@@ -375,19 +404,32 @@ def sweep_strays(checkout: Path, root: Path, *, apply: bool, deadline: float | N
                     raise ValueError("changed within the last two hours; may be in use")
                 if is_under(Path.cwd(), path) or is_under(Path(__file__), path):
                     raise ValueError("calling session uses this entry")
-                users = subprocess.run(["lsof", "-nP", "-t", *(["+D"] if directory_fd is not None else []), str(path)],
-                                       capture_output=True, text=True, timeout=remaining_timeout(deadline, 10))
+                users = subprocess.run(
+                    ["lsof", "-nP", "-t", *(["+D"] if directory_fd is not None else []), str(path)],
+                    capture_output=True,
+                    text=True,
+                    timeout=remaining_timeout(deadline, 10),
+                )
                 if users.returncode not in {0, 1} or users.stdout.strip() or users.stderr.strip():
                     raise ValueError("entry is in use or live-use proof is incomplete")
-                if (entry_state(os.stat(parent)) != entry_state(os.fstat(parent_fd))
-                        or entry_state(os.stat(name, dir_fd=parent_fd, follow_symlinks=False)) != entry_state(info)
-                        or any(tree.path.resolve() == path.resolve() for tree in registered(checkout))
-                        or directory_fd is not None and stray_snapshot(directory_fd) != contents):
+                if (
+                    entry_state(os.stat(parent)) != entry_state(os.fstat(parent_fd))
+                    or entry_state(os.stat(name, dir_fd=parent_fd, follow_symlinks=False)) != entry_state(info)
+                    or any(tree.path.resolve() == path.resolve() for tree in registered(checkout))
+                    or directory_fd is not None
+                    and stray_snapshot(directory_fd) != contents
+                ):
                     raise ValueError("entry changed during qualification; retained")
                 if apply:
                     if contents:
-                        row["evidence"] = str(archive_results(common.parent.name, name if directory_fd is not None else "stray",
-                                                              directory_fd if directory_fd is not None else parent_fd, contents))
+                        row["evidence"] = str(
+                            archive_results(
+                                common.parent.name,
+                                name if directory_fd is not None else "stray",
+                                directory_fd if directory_fd is not None else parent_fd,
+                                contents,
+                            )
+                        )
                     if directory_fd is not None:
                         os.rmdir(name, dir_fd=parent_fd)
                 row.update(decision="removed" if apply else "would_remove", files=len(contents))
@@ -753,9 +795,20 @@ def main(argv: list[str] | None = None) -> int:
             rows = [target_decision(args.path, args.checkout, preserve=args.preserve, reader=reader)]
         elif args.all:
             summary = {}
-            rows = repository_rows(reader, github_read, repo, args.checkout, root,
-                                   preserve={args.checkout.resolve(), Path.cwd().resolve(), Path(__file__).resolve(),
-                                             *(path.resolve() for path in args.preserve)}, deadline=retirement_deadline)
+            rows = repository_rows(
+                reader,
+                github_read,
+                repo,
+                args.checkout,
+                root,
+                preserve={
+                    args.checkout.resolve(),
+                    Path.cwd().resolve(),
+                    Path(__file__).resolve(),
+                    *(path.resolve() for path in args.preserve),
+                },
+                deadline=retirement_deadline,
+            )
         elif args.branch:
             summary, rows = branch_rows(reader, github_read, repo, args.branch, args.checkout, root)
         else:
