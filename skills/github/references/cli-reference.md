@@ -3230,8 +3230,11 @@ representation context cannot change while reusing a pass snapshot. GraphQL
 request and quota receipts remain in the reader diagnostics; the document's
 `rateLimit.cost` records query points.
 
-Actions runs, jobs, superseded-run selection, combined commit status, unresolved
-review threads and Client acceptance retain their existing reads and decisions.
+Combined commit status is derived from the complete latest status contexts
+already read, following [GitHub's combined-state rules](https://docs.github.com/en/rest/commits/statuses#get-the-combined-status-for-a-specific-reference).
+An unavailable status list leaves the combined state unknown. Actions runs,
+jobs, superseded-run selection, unresolved review threads and Client acceptance
+retain their existing reads and decisions.
 The batch does not make an enqueue or merge decision. The six-PR cold
 metadata/check/status slice measures eighteen REST requests versus one GraphQL
 request/point; unchanged REST revalidation still costs zero primary requests.

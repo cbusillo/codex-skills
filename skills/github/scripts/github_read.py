@@ -941,6 +941,13 @@ def latest_status_events(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [entry[1] for entry in sorted(latest.values(), key=lambda entry: entry[0], reverse=True)]
 
 
+def combined_status_state(statuses: list[dict[str, Any]]) -> str:
+    states = {item.get("state") for item in statuses}
+    if states & {"failure", "error"}:
+        return "failure"
+    return "success" if states == {"success"} else "pending"
+
+
 def normalize_issue(item: dict[str, Any]) -> dict[str, Any]:
     return {
         "number": item.get("number"),
@@ -1239,13 +1246,7 @@ def pull_request_checks(
     except (GitHubReadError, GitHubReadShapeError):
         availability["commitStatuses"] = False
         statuses = []
-    try:
-        combined = reader.get_json(f"/repos/{repo}/commits/{sha}/status", step="combined_status")
-        if not isinstance(combined, dict):
-            reader.invalid_response("combined_status", "GitHub combined status response was not an object")
-    except (GitHubReadError, GitHubReadShapeError):
-        availability["combinedStatus"] = False
-        combined = {}
+    availability["combinedStatus"] = availability["commitStatuses"]
     statuses = latest_status_events(statuses)
     normalized_checks = [normalize_check_run(item) for item in check_runs]
     superseded_checks = []
@@ -1291,7 +1292,7 @@ def pull_request_checks(
     )
     failed_statuses = [item for item in normalized_statuses if item.get("state") in {"failure", "error"}]
     pending_statuses = [item for item in normalized_statuses if item.get("state") == "pending"]
-    combined_state = combined.get("state")
+    combined_state = combined_status_state(statuses) if availability["commitStatuses"] else None
     counts_complete = all(available for name, available in availability.items() if name != "combinedStatus")
     unavailable_components = [name for name, available in availability.items() if not available]
     return {

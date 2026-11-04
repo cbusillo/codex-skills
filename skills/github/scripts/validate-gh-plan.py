@@ -3990,8 +3990,6 @@ def test_pr_checks_aggregates_retry_fields_across_reads() -> None:
             "  respond 200 4995 '{\"workflow_runs\":[]}'\n"
             "elif [[ \"$*\" == *'/statuses'* ]]; then\n"
             "  respond 200 4997 '[]'\n"
-            "elif [[ \"$*\" == *'/status'* ]]; then\n"
-            "  respond 200 4996 '{\"state\":\"success\"}'\n"
             "else\n"
             "  printf 'unexpected command: %s\\n' \"$*\" >&2\n"
             "  exit 1\n"
@@ -4514,8 +4512,6 @@ def test_pr_helper_uses_rest_endpoints_for_common_pr_work() -> None:
             "  printf '{\"workflow_runs\":[]}\\n'\n"
             "elif [[ \"$*\" == *'/repos/owner/repo/commits/head-sha/statuses'* ]]; then\n"
             "  printf '[]\\n'\n"
-            "elif [[ \"$*\" == *'/repos/owner/repo/commits/head-sha/status'* ]]; then\n"
-            "  printf '{\"state\":\"success\"}\\n'\n"
             "elif [[ \"$*\" == *'/rate_limit'* ]]; then\n"
             "  printf '{\"resources\":{\"core\":{\"remaining\":4999},\"graphql\":{\"remaining\":0}}}\\n'\n"
             "else\n"
@@ -4587,7 +4583,7 @@ def test_pr_helper_uses_rest_endpoints_for_common_pr_work() -> None:
     checks_payload = json.loads(checks.stdout)
     checks_summary = checks_payload["summary"]
     assert checks_summary["combinedState"] is None
-    assert checks_summary["combinedStateRaw"] == "success"
+    assert checks_summary["combinedStateRaw"] == "pending"
     assert checks_summary["legacyStatusesPresent"] is False
     assert checks_payload["readiness_evidence"] == {
         "state": "reads_complete", "head_sha": "head-sha", "unavailable_components": [],
@@ -5651,8 +5647,6 @@ def test_check_read_403_and_blocked_metadata_do_not_claim_merge_denial() -> None
             "  exit 1\n"
             "elif [[ \"$*\" == *'/statuses'* ]]; then\n"
             "  printf '[]\\n'\n"
-            "elif [[ \"$*\" == *'/status'* ]]; then\n"
-            "  printf '{\"state\":\"success\"}\\n'\n"
             "fi\n"
         )
         gh_path.chmod(0o755)
@@ -6438,8 +6432,6 @@ def test_pr_helper_preserves_url_repo_and_paginates_checks() -> None:
             "  else\n"
             "    printf '[{\"context\":\"legacy-1\",\"state\":\"success\"}]\\n'\n"
             "  fi\n"
-            "elif [[ \"$*\" == *'/repos/other/repo/commits/head-sha/status'* ]]; then\n"
-            "  printf '{\"state\":\"failure\"}\\n'\n"
             "else\n"
             "  printf '{}\\n'\n"
             "fi\n"

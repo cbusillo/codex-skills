@@ -61,8 +61,6 @@ class Reader:
         if path.endswith("/pulls/1"):
             self.pr_reads += 1
             return copy.deepcopy(self.current_pr if self.pr_reads > 1 and self.current_pr else self.pr)
-        if path.endswith("/status"):
-            return {"state": "success"}
         if f"/contents/{ready_handoff.REVIEW_CONFIG_PATH}?ref=main" in path:
             if self.config is None:
                 raise GitHubReadError("Not Found", result=ApiResult(ok=False, status=404, body=None), diagnostics={})

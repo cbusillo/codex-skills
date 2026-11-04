@@ -708,7 +708,6 @@ def test_pull_checks_share_paged_readers_and_ids() -> None:
         process(include_output(pull)),
         process(include_output(checks)),
         process(include_output([])),
-        process(include_output({"state": "success"})),
         process(include_output({"workflow_runs": []})),
     ]
     reader = github_read.GitHubReader(gh_cmd="fake-gh", operation="test.checks")
@@ -719,36 +718,41 @@ def test_pull_checks_share_paged_readers_and_ids() -> None:
     assert check["jobId"] == 33
     assert check["checkSuiteId"] == 44
     assert payload["summary"]["failingCount"] == 1
-    assert reader.completed_steps == ["pull_request", "check_runs_page_1", "commit_statuses_page_1", "combined_status", "check_workflow_runs_page_1"]
+    assert reader.completed_steps == ["pull_request", "check_runs_page_1", "commit_statuses_page_1", "check_workflow_runs_page_1"]
 
 
 def test_pull_checks_keep_only_latest_status_per_context() -> None:
-    pull_data = {
-        "number": 7,
-        "title": "Demo",
-        "state": "open",
-        "draft": False,
-        "html_url": "https://github.com/o/r/pull/7",
-        "head": {"sha": "abc", "ref": "feature", "repo": {"full_name": "o/r"}},
-        "base": {"ref": "main", "repo": {"full_name": "o/r"}},
-    }
-    statuses = [
-        {"id": 1, "context": "external-ci", "state": "failure", "updated_at": "2026-07-17T00:00:00Z"},
-        {"id": 2, "context": "external-ci", "state": "success", "updated_at": "2026-07-17T00:01:00Z"},
-    ]
-    responses = [
-        process(include_output(pull_data)),
-        process(include_output({"check_runs": []})),
-        process(include_output(statuses)),
-        process(include_output({"state": "success"})),
-        process(include_output({"workflow_runs": []})),
-    ]
-    reader = github_read.GitHubReader(gh_cmd="fake-gh", operation="test.statuses")
-    with patch("subprocess.run", side_effect=responses):
-        payload = github_read.pull_request_checks(reader, "o/r", 7)
-    assert len(payload["statuses"]) == 1
-    assert payload["statuses"][0]["state"] == "success"
-    assert payload["summary"]["failingCount"] == 0
+    for states, expected_state, failed, pending in [
+        ([], "pending", 0, 0),
+        (["success"], "success", 0, 0),
+        (["success", "pending"], "pending", 0, 1),
+        (["pending", "failure"], "failure", 1, 1),
+        (["success", "error"], "failure", 1, 0),
+    ]:
+        statuses = [
+            {"id": index + 2, "context": f"external-{index}", "state": state, "updated_at": "2026-07-17T00:01:00Z"}
+            for index, state in enumerate(states)
+        ]
+        if states:
+            statuses.append({"id": 1, "context": "external-0", "state": "failure", "updated_at": "2026-07-17T00:00:00Z"})
+        responses = {
+            "/repos/o/r/commits/abc/check-runs": {"check_runs": []},
+            "/repos/o/r/commits/abc/statuses": statuses,
+        }
+
+        def respond(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+            endpoint = next(arg for arg in command if arg.startswith("/repos/")).split("?")[0]
+            return process(include_output(responses[endpoint]))
+
+        reader = github_read.GitHubReader(gh_cmd="fake-gh", operation="test.statuses")
+        with patch("subprocess.run", side_effect=respond) as transport:
+            payload = github_read.pull_request_checks(reader, "o/r", 7, head_sha="abc", workflow_runs=[])
+        assert transport.call_count == len(responses)
+        assert len(payload["statuses"]) == len(states)
+        assert payload["summary"]["combinedStateRaw"] == expected_state
+        assert payload["summary"]["combinedState"] == (expected_state if states else None)
+        assert payload["summary"]["failingCount"] == failed
+        assert payload["summary"]["pendingCount"] == pending
 
 
 def test_pull_checks_preserve_check_runs_when_status_permission_is_missing() -> None:
@@ -765,7 +769,6 @@ def test_pull_checks_preserve_check_runs_when_status_permission_is_missing() -> 
         process(include_output(pull_data)),
         process(include_output({"check_runs": [{"id": 11, "name": "tests", "status": "completed", "conclusion": "failure"}]})),
         process(include_output({"message": "Resource not accessible by integration"}, status=403), returncode=1),
-        process(include_output({"state": "failure"})),
         process(include_output({"workflow_runs": []})),
     ]
     reader = github_read.GitHubReader(gh_cmd="fake-gh", operation="test.partial")
@@ -776,6 +779,8 @@ def test_pull_checks_preserve_check_runs_when_status_permission_is_missing() -> 
     assert payload["summary"]["countsComplete"] is False
     assert payload["summary"]["statusCount"] is None
     assert payload["summary"]["availability"]["commitStatuses"] is False
+    assert payload["summary"]["availability"]["combinedStatus"] is False
+    assert payload["summary"]["combinedStateRaw"] is None
     assert reader.diagnostics()["degraded"] is True
 
 
@@ -806,7 +811,7 @@ def test_direct_checks_inventory_workflows_before_job_checks() -> None:
             workflow_response = process(include_output({"message": "Resource not accessible by integration"}, status=403), returncode=1)
         responses = [process(include_output({"number": 7, "head": {"sha": sha}})),
                      process(include_output({"check_runs": []})), process(include_output([])),
-                     process(include_output({"state": "pending"})), workflow_response]
+                     workflow_response]
         with patch("subprocess.run", side_effect=responses) as transport:
             try:
                 payload = helper.cmd_checks(argparse.Namespace(repo="o/r", pr="7"))
