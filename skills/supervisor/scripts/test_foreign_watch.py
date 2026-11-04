@@ -382,7 +382,7 @@ class WatchTests(unittest.TestCase):
         reader.graphql_json.return_value = ApiResult(ok=True, status=200, body={"data": {"nodes": [None]}})
         notices, errors, watermarks = self.scan(reader)
         self.assertEqual((notices, errors), ([], []))
-        self.assertEqual(watermarks[REPO], SINCE)
+        self.assertEqual(watermarks[REPO], STARTED)
 
     def test_worker_questions_surface_on_the_next_scan_without_ordinary_own_posts(self) -> None:
         reader = Mock()

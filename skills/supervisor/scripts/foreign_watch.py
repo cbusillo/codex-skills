@@ -255,7 +255,8 @@ def read_comments(reader, repo: str, since: str) -> list[dict]:
     )
 
 
-def read_opened(reader, repo: str, since: str, client_agents=()) -> list[dict]:
+def read_opened(reader: GitHubReader, repo: str, since: str,
+                client_agents: Collection[str] = ()) -> tuple[list[dict], bool]:
     query_since = (timestamp(since) - timedelta(seconds=1)).isoformat()
     issues = reader.paged_json(
         f"repos/{repo}/issues",
@@ -275,7 +276,7 @@ def read_opened(reader, repo: str, since: str, client_agents=()) -> list[dict]:
                     bot_reviews.append({**review, "updated_at": review.get("submitted_at") or review["created_at"]})
                 else:
                     messages.append(review)
-    return [event for source in versioned_messages(reader, messages) for event in source_messages(source, client_agents)] + bot_reviews
+    return [event for source in versioned_messages(reader, messages) for event in source_messages(source, client_agents)] + bot_reviews, bool(issues)
 
 
 def source_messages(source: dict, client_agents: Any = ()) -> list[dict]:
@@ -366,7 +367,9 @@ def scan(repos: list[str], watermarks: dict[str, str], own_logins: list[str], la
         since = watermarks[repo]
         pending = []
         try:
-            messages = read_comments(reader, repo, since) + read_inline_comments(reader, repo, since) + read_opened(reader, repo, since, client_agents)
+            messages = read_comments(reader, repo, since) + read_inline_comments(reader, repo, since)
+            opened_messages, openings_present = read_opened(reader, repo, since, client_agents)
+            messages += opened_messages
             for comment in messages:
                 if timestamp(comment["updated_at"]) < timestamp(since):
                     continue
@@ -377,7 +380,7 @@ def scan(repos: list[str], watermarks: dict[str, str], own_logins: list[str], la
             errors.append(read_error(repo, error))
             continue
         notices.extend(pending)
-        if messages:
+        if messages or openings_present:
             next_watermarks[repo] = started
     return notices, errors, next_watermarks
 

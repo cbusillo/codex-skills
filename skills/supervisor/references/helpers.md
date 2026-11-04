@@ -573,9 +573,9 @@ quota retry time, whichever is later. Those notices remain readable in live outp
 Authentication, malformed-response and other nonretryable failures still stop.
 Wait until a reported quota retry time before a manual restart; increase the bounded deadline when a historical
 catch-up cannot finish. Partial pages never advance past a failed read.
-Successful repositories with messages advance to the pass start, with a
+Successful repositories whose feeds returned items advance to the pass start, with a
 one-second overlap on their next read. Empty scans keep their cursor so unchanged
-feeds can return free conditional responses. Own-login messages still advance it.
+feeds can return free conditional responses. Filtered or deleted items still advance it.
 
 Own-login comments starting with `Owner question:` or `Director question:`
 (including bold headings) produce `director_question` notices for the
