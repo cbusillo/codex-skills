@@ -1037,7 +1037,7 @@ def test_attachment_route_enforces_limits_through_real_wrapper() -> None:
             assert result.returncode == 0, (result.stdout, result.stderr)
             assert json.loads(result.stdout)["actor"] == owner
         positioned = ["issue", "--repo", repo, "comment", "42", "--body-file", "-", "--attach", str(image)]
-        result = subprocess.run([str(SCRIPT), *positioned], env=env, input=body, text=True, capture_output=True, timeout=15, check=False)
+        result = subprocess.run([str(SCRIPT), *positioned], env=env, input=body, text=True, capture_output=True, timeout=15, check=True)
         assert result.returncode == 0, (result.stdout, result.stderr)
         assert result.stdout.strip().endswith("#issuecomment-20")
         nonce = os.urandom(16).hex()
