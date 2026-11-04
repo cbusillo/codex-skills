@@ -283,6 +283,51 @@ class RepositoryTests(Fixture):
         self.assertEqual({row["path"]: row["decision"] for row in rows}, {
             str(done): "candidate", str(active): "kept", str(fresh): "kept", str(foreign): "kept"})
 
+    def open_pull_scan(self, task: str, *, at_pull_head: bool = False, own: bool = False,
+                       claimed_record: tuple[str, int] | None = None, single_tree: bool = False) -> dict:
+        path = self.worktree(task)
+        head = self.commit(path, "Folded into a larger branch")
+        os.utime(Path(self.git(path, "rev-parse", "--absolute-git-dir")) / "HEAD", (0, 0))
+        pull = {"number": 8, "state": "open", "title": "Roll up", "body": "Refs #41",
+                "head": {"ref": f"work/{task}" if own else "work/rollup", "sha": head if at_pull_head else "f" * 40}}
+        reader = mock.Mock()
+        reader.paged_json.side_effect = lambda route, **options: (
+            [pull] if own and options.get("params", {}).get("head", "").endswith(f":work/{task}")
+            else [pull] if route.endswith(f"commits/{head}/pulls") else [])
+        searched = []
+
+        def naming(_reader: object, _owner: str, branch: str) -> list[tuple[str, int]]:
+            searched.append(branch)
+            return []
+
+        def claims(_reader: object, _read: object, records: list[tuple[str, int]]) -> str:
+            return "held" if claimed_record in records else ""
+
+        with mock.patch.object(landed_worktrees, "issues_naming", side_effect=naming), \
+                mock.patch.object(landed_worktrees, "claims_on", side_effect=claims), \
+                mock.patch.object(landed_worktrees, "github_slug", return_value="o/sample"):
+            if single_tree:
+                row = landed_worktrees.target_decision(path, self.repo, reader=reader)
+            else:
+                rows = list(landed_worktrees.repository_rows(reader, mock.Mock(), "o/sample", self.repo, self.root))
+                row = next(row for row in rows if row["path"] == str(path))
+        row["searched"] = searched
+        return row
+
+    def test_tree_whose_commit_is_published_inside_another_branchs_open_pr_is_a_candidate(self) -> None:
+        for single_tree in (False, True):
+            row = self.open_pull_scan(f"folded-{single_tree}", single_tree=single_tree)
+            self.assertEqual(row["decision"], "candidate")
+            self.assertIn("work/rollup", row["searched"])
+
+    def test_open_pr_on_the_trees_own_branch_or_at_its_head_keeps_the_tree(self) -> None:
+        for task, options in (("own", {"own": True}), ("at-head", {"at_pull_head": True})):
+            self.assertEqual(self.open_pull_scan(task, **options)["decision"], "kept")
+
+    def test_open_claim_on_the_containing_pr_or_its_linked_issue_keeps_the_tree(self) -> None:
+        for record in (("o/sample", 8), ("o/sample", 41)):
+            self.assertEqual(self.open_pull_scan(f"claimed-{record[1]}", claimed_record=record)["decision"], "kept")
+
     def test_fork_commit_reads_its_merged_upstream_pr_in_the_upstream_repository(self) -> None:
         upstream = {"full_name": "up/sample", "default_branch": "main"}
         pull = {"number": 404, "state": "closed", "merged_at": "2026-11-03T16:32:11Z", "title": "Fix", "body": "",
