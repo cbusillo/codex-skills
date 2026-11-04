@@ -192,7 +192,7 @@ class LaunchFailure(ValueError):
         reason = str(error) if isinstance(error, ValueError) else type(error).__name__
         if isinstance(error, OSError):
             reason += f": {error}"
-        self.detail = {"status": "launch_failed", "reason": reason,
+        self.detail: dict[str, Any] = {"status": "launch_failed", "reason": reason,
                        "mutation_started": bool(launched) or failed.get("mutation_started", bool(failed.get("tab_id"))),
                        "launched": launched, "failed_launch": failed,
                        "next_action": "List and read these tabs before retrying; earlier launches may be running."}
