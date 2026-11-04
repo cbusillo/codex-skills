@@ -3,7 +3,6 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Offline behavioral checks for the bounded personal attachment route."""
 
 import importlib.util
 import io
