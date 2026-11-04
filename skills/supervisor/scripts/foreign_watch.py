@@ -20,7 +20,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Iterable
+from collections.abc import Collection
 from contextlib import ExitStack, contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -359,8 +359,8 @@ def read_error(repo: str, error: Exception) -> dict:
     }
 
 
-def scan(repos: list[str], watermarks: dict[str, str], own_logins: Iterable[str], launchplane_logins: Iterable[str],
-         started: str, reader: GitHubReader, client_agents: Iterable[str] = ()) -> tuple[list[dict], list[dict], dict[str, str]]:
+def scan(repos: list[str], watermarks: dict[str, str], own_logins: list[str], launchplane_logins: list[str],
+         started: str, reader: GitHubReader, client_agents: Collection[str] = ()) -> tuple[list[dict], list[dict], dict[str, str]]:
     notices, errors, next_watermarks = [], [], dict(watermarks)
     for repo in repos:
         since = watermarks[repo]
