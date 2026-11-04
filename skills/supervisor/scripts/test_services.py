@@ -60,7 +60,7 @@ class ServicesTests(unittest.TestCase):
         output = services.render(self.config, catalog, self.root / "jobs")
         jobs = list(output.glob("*.plist"))
         self.assertEqual(len(jobs), len(self.data["services"]))
-        with (output / f"{services.LABEL_PREFIX}.enqueue.plist").open("rb") as stream:
+        with (output / f"{services.LABEL_PREFIX}.foreign.plist").open("rb") as stream:
             job = plistlib.load(stream)
         result = subprocess.run(job["ProgramArguments"], cwd=job["WorkingDirectory"],
                                 capture_output=True, text=True, timeout=15)
@@ -76,7 +76,7 @@ class ServicesTests(unittest.TestCase):
         self.assertEqual((self.root / "passes.txt").read_text().splitlines(), ["pass"] * 3)
         cleared = subprocess.run(
             [sys.executable, str(Path(services.__file__)), "clear", "--config",
-             str(self.config), "--service", "enqueue"], capture_output=True, timeout=5,
+             str(self.config), "--service", "foreign"], capture_output=True, timeout=5,
         )
         self.assertEqual(cleared.returncode, 0)
         resumed = subprocess.run(job["ProgramArguments"], cwd=job["WorkingDirectory"],
@@ -206,10 +206,10 @@ class ServicesTests(unittest.TestCase):
         self.fixture.write_text("import os\nimport signal\nos.kill(os.getpid(), signal.SIGTERM)\n")
         self.save()
         argv = [sys.executable, str(Path(services.__file__)), "run", "--config",
-                str(self.config), "--service", "drive"]
+                str(self.config), "--service", "throughput"]
         result = subprocess.run(argv, capture_output=True, text=True, timeout=5)
         self.assertEqual(result.returncode, 1)
-        self.assertTrue(services.reconciliation_marker(self.config, "drive").exists())
+        self.assertTrue(services.reconciliation_marker(self.config, "throughput").exists())
         restarted = subprocess.run(argv, capture_output=True, text=True, timeout=5)
         self.assertEqual(restarted.returncode, 1)
         self.assertNotIn("started", [json.loads(line)["event"] for line in restarted.stdout.splitlines()])
@@ -220,7 +220,7 @@ class ServicesTests(unittest.TestCase):
         )
         self.save()
         argv = [sys.executable, str(Path(services.__file__)), "run", "--config",
-                str(self.config), "--service", "enqueue"]
+                str(self.config), "--service", "foreign"]
         runner = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         self.addCleanup(lambda: runner.kill() if runner.poll() is None else None)
         until = time.monotonic() + 5
@@ -230,16 +230,16 @@ class ServicesTests(unittest.TestCase):
         runner.terminate()
         stdout, _stderr = runner.communicate(timeout=5)
         self.assertEqual(runner.returncode, 1)
-        self.assertTrue(services.reconciliation_marker(self.config, "enqueue").exists())
+        self.assertTrue(services.reconciliation_marker(self.config, "foreign").exists())
         events = [json.loads(line) for line in stdout.splitlines()]
         self.assertEqual(events[-1]["event"], "reconciliation_required")
         self.assertLess(events[-1]["exit_code"], 0)
 
     def test_duplicate_service_refuses_before_launch(self):
         self.save()
-        with services.service_lock(self.config, "drive"):
+        with services.service_lock(self.config, "throughput"):
             with self.assertRaises(ValueError):
-                with services.service_lock(self.config, "drive"):
+                with services.service_lock(self.config, "throughput"):
                     self.fail("duplicate service acquired the lock")
 
     def test_managed_service_reuses_its_host_and_restarts_after_a_cleared_failure(self) -> None:
@@ -479,8 +479,8 @@ class ServicesTests(unittest.TestCase):
 
     def test_invalid_config_cannot_render_or_run(self):
         for change in (
-            lambda: self.data["services"]["enqueue"].update(argv="a shell command"),
-            lambda: self.data["services"]["drive"].update(restart_seconds=0),
+            lambda: self.data["services"]["foreign"].update(argv="a shell command"),
+            lambda: self.data["services"]["throughput"].update(restart_seconds=0),
             lambda: self.data["services"]["foreign"].update(cwd="relative"),
             lambda: self.data["services"]["foreign"].update(unexpected=[sys.executable]),
         ):

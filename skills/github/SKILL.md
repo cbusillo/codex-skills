@@ -1141,8 +1141,7 @@ failure and never causes a merge retry.
   as part of landing, and follow github-plan's
   [Close Or Hand Off](../github-plan/SKILL.md#close-or-hand-off) reconciliation.
   Run `uv run scripts/gh-plan.py --repo OWNER/REPO reconcile-landing --pr N --apply`
-  for closing-reference metadata when the train's planning receipt is absent
-  or incomplete; the [management reference](references/cli-reference.md#planning-management)
+  for closing-reference metadata; the [management reference](references/cli-reference.md#planning-management)
   owns its readback and review-required outcomes. The helper also discovers
   non-closing source references and reconciles native parent/dependent status
   from existing waits and blockers. Review any open source finish line in full;

@@ -1289,7 +1289,7 @@ def test_controller_block_and_reconciliation_preserve_durable_diagnostics() -> N
     assert _run_controller_response(response)[1]["result"]["active_record_id"] is None
 
 
-def test_controller_applied_block_reaches_driver_with_attribution_and_policy() -> None:
+def test_controller_applied_block_keeps_attribution_and_policy() -> None:
     block = {"status": "blocked", "repository": "example/repo", "base_branch": "main",
              "pull_request_number": 42, "blocked_label": "held", "train_should_continue": True,
              "detail": "Applied held to pull request #42."}
@@ -1301,15 +1301,6 @@ def test_controller_applied_block_reaches_driver_with_attribution_and_policy() -
     status, payload = _run_controller_response(response, mutate=True)
     assert status == 0
     assert payload["result"]["block_result"] == block
-    driver = load_module("launchplane-train-drive.py", "block_projection_driver")
-    settings = driver.DriveSettings(repository="example/repo", number=43)
-    assert driver._judge(settings, None, driver.DriveState(), payload["result"], "block") is None
-    block["train_should_continue"] = False
-    status, payload = _run_controller_response(response, mutate=True)
-    assert status == 0
-    outcome, detail = driver._judge(settings, None, driver.DriveState(), payload["result"], "block")
-    assert outcome == "needs_owner"
-    assert detail["blocking_pull_request_number"] == 42
 
 
 def test_controller_block_projection_rejects_unsafe_or_invalid_fields() -> None:
@@ -1371,13 +1362,6 @@ def test_controller_candidate_failure_isolated_block_is_a_confirmed_result() -> 
     assert result["block_result"] == response["result"]["block_result"]
     assert payload["summary"]["error_code"] == "merge_train_candidate_failure_isolated"
     assert "private" not in json.dumps(payload)
-    driver = load_module("launchplane-train-drive.py", "culprit_block_driver")
-    assert not driver._uncertain(payload)
-    # The held-out innocent PR keeps going; the culprit's own driver stops.
-    innocent = driver.DriveSettings(repository="example/repo", number=43)
-    assert driver._judge(innocent, None, driver.DriveState(), result, "block") is None
-    culprit = driver.DriveSettings(repository="example/repo", number=42)
-    assert driver._judge(culprit, None, driver.DriveState(), result, "block")[0] == "failed"
 
 
 def test_controller_land_batch_reports_landing_progress() -> None:

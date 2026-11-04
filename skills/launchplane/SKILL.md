@@ -49,9 +49,6 @@ resources:
   - path: references/launchplane-operator.local.example.json
     kind: reference
     description: Public-safe example for private admin helper configuration.
-  - path: scripts/launchplane-train-drive.py
-    kind: script
-    description: Drives one labeled pull request through the merge train to a landed, failed, needs_owner, or error outcome.
 commands:
   - name: launchplane-service-logs
     source: skill
@@ -1142,52 +1139,38 @@ merge path from missing metadata or a failed read. A Director without Launchplan
 uses the GitHub skill's [Merging](../github/SKILL.md#merging) procedure, which
 establishes configuration absence locally and skips this skill and train steps.
 
-Use Launchplane's controller route as the default merge-train workflow. Before
-advancing or diagnosing a train, read [merge-train execution](references/merge-train.md)
+Before diagnosing a train, read [merge-train execution](references/merge-train.md)
 for phase, stack, retry, and terminal evidence requirements. Label every PR
 in a stack that is ready to land, and never hand-collapse stacks.
 
-- **Preferred Route**: `POST /v1/work-graph/merge-train/controller/run-once`.
-- **Helper**: Use `scripts/launchplane-write-action.py
-merge-train-controller-run-once` instead of open-coding the route. Mutating
-  calls require an idempotency key.
-- **Driving To An Outcome**: To take a labeled PR through its train, run
-  `uv run scripts/launchplane-train-drive.py --repo OWNER/REPO --pr N` in the
-  background instead of writing a loop around the run-once helper. It pauses on
-  every non-terminal state, stops at a wall-clock deadline, reports every PR in
-  the landing batch, and exits `landed` (0), `failed` (1), `needs_owner` (2) or
-  `error` (3) with a JSONL `stop` event in `gh_pr_watch.py`'s shape. The
-  controller refreshes a behind-base PR itself when it can; pass
-  `--allow-branch-update` only for your own same-repository branches, for a
-  behind-base PR it reports without refreshing. Run one driver per repository
-  train, and keep a watcher on it while you report "waiting on the train".
-  When the landed repository is the skills catalog the driver lives in, its
-  landed `stop` event carries `runtime_reconciliation`, the runtime
-  reconciler's receipt for that landing; report it as the runtime outcome.
+- **Landing**: A current-head Ready handoff or the enqueue label is the whole
+  landing step. Launchplane's scheduled pass runs the controller every few
+  minutes for every enrolled target and lands the PR; run no driver or pass to
+  speed it up. Waiting on the train needs only reading the result with
+  `babysit-pr --once` or the PR's train comment.
+- **Diagnosis**: Use `scripts/launchplane-write-action.py
+  merge-train-controller-run-once` (`POST /v1/work-graph/merge-train/controller/run-once`)
+  instead of open-coding the route. Mutating calls require an idempotency key.
 - **Train Entry**: Read the target branch's enqueue label from the active
-  policy and put that label on the root PR and every stacked child ready to land
-  with it. Preserve a task's assigned Supervisor handoff instead of applying
-  labels when the task does not authorize train entry. A held child stays unlabeled or draft, and that stops the stack. Do not
-  hand-collapse stacks in GitHub.
-- **Supervisor Handoff**: When the task authorizes a Supervisor handoff, use
-  `uv run <github-skill-dir>/scripts/gh-pr.py --repo OWNER/REPO ready <pr>`
-  instead of writing the ready comment. Add `--waiting-for-client` until a
-  required Client acceptance covers the current head. Read the GitHub
+  policy. Use `uv run <github-skill-dir>/scripts/gh-pr.py --repo OWNER/REPO ready <pr>`
+  instead of writing the ready comment; the train admits a current-head Ready
+  without a label. Add `--waiting-for-client` until a required Client
+  acceptance covers the current head. Read the GitHub
   [ready handoff contract](../github/references/cli-reference.md#ready-handoffs)
-  for checks and stale-head handling. The assigned Supervisor owns train entry.
+  for checks and stale-head handling. A held PR or stack child gets the
+  waiting form, stays unlabeled or draft, and that stops the stack.
 - **Scheduled controller**: Read the active enrolled-target policy with
   `merge-train-policy-read`. For scheduler changes, use the producer's
   [operational policy path](https://github.com/cbusillo/launchplane/blob/main/docs/merge-train-policy.md#policy-changes-and-bindings)
   with its reviewed baseline and standing lane authority. Approval follows the direction files loaded under
   Rollout Plan Alignment and
   [Q297](https://github.com/cbusillo/launchplane/issues/2961#issuecomment-6177897575).
-- **Post-Merge Checkout Handoff**: After the controller confirms a final landing
-  commit, delegate post-merge default-branch freshness to `github` with the exact
-  final landing SHA from that terminal controller result and an explicit source
-  worktree belonging to the landed repository. Never substitute a PR head,
-  candidate, admission, observation, landing-plan, queued, or other intermediate
-  SHA, and never use an unrelated controller working directory as the source
-  worktree. That handoff uses the landed repo-local reconciler for a runtime-bound
+- **Post-Merge Checkout Handoff**: After the PR merges, delegate post-merge
+  default-branch freshness to `github` with the merged PR's `mergeCommitOid`
+  and an explicit source worktree belonging to the landed repository. Never
+  substitute a PR head, candidate, admission, observation, landing-plan, queued,
+  or other intermediate SHA, and never use an unrelated working directory as the
+  source worktree. That handoff uses the landed repo-local reconciler for a runtime-bound
   checkout and safely fast-forwards a unique clean non-runtime default checkout,
   or reports the stale-checkout hint when local state is unsafe. Preserve
   Launchplane landing success independently when local reconciliation is blocked
