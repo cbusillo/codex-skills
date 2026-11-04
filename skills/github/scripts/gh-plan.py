@@ -3068,7 +3068,7 @@ def claim_once(args: argparse.Namespace) -> None:
         ended: list[dict[str, Any]] = []
         family_comments: list[dict[str, Any]] = []
         checked: set[tuple[str, int]] = set()
-        family_records: tuple[tuple[str, int, str, list[dict[str, Any]]], ...] = tuple(phase_peers)
+        family_records = tuple(phase_peers)
         selected_source_number = resume_source_number
         if phase.get("source") is not None and selected_source_number is not None and selected_source_number != number:
             selected_snapshot = phase_records[(issue_repo.casefold(), selected_source_number)]
