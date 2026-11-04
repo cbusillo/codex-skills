@@ -107,12 +107,33 @@ class NewCommentsCheck(unittest.TestCase):
             ("Q418", True),
             ("https://example.invalid/decision", True),
         )
-        for reason, rejected in cases:
-            with self.subTest(reason=reason):
-                source = f"import requests\n# insecure-tls: {reason}\nrequests.get(url, verify=False)  # noqa: S501\n"
-                self.assert_allowed(source)
-                self.assertEqual(bool(tls_checker.findings(source)), rejected)
-        self.assertTrue(tls_checker.findings("import requests\nrequests.get(url, verify=False)  # noqa: S501\n"))
+        for spacing in (" ", "", "   "):
+            for reason, rejected in cases:
+                with self.subTest(reason=reason, spacing=spacing):
+                    source = f"import requests\n#{spacing}insecure-tls: {reason}\nrequests.get(url, verify=False)  # noqa: S501\n"
+                    self.assertEqual(
+                        self.findings({"app.py": BASE}, {"app.py": source}),
+                        {("app.py", 2, "comment")} if rejected else set(),
+                    )
+                    self.assertEqual(bool(tls_checker.findings(source)), rejected)
+
+    def test_tls_annotation_block_passes_only_at_its_choke_point(self) -> None:
+        source = (
+            "def fixture():\n"
+            "    # insecure-tls: isolated peer exercises certificate rejection.\n"
+            "    # Only this fixture disables verification.\n"
+            "    # Decision: https://example.invalid/issues/1#comment\n"
+            "    ctx.check_hostname = False\n"
+            "    ctx.verify_mode = ssl.CERT_NONE\n"
+        )
+        self.assert_allowed(source)
+        for unrelated in (
+            "# insecure-tls: calculate totals\nvalue = 1\n",
+            "value = 1  # insecure-tls: calculate totals\n",
+            "# insecure-tls: isolated peer\ndef fixture():\n    ctx.check_hostname = False\n",
+        ):
+            with self.subTest(source=unrelated):
+                self.assertTrue(self.findings({"app.py": BASE}, {"app.py": unrelated}))
 
     def test_shebang_and_script_metadata_pass(self) -> None:
         self.assert_allowed(
