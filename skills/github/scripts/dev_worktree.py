@@ -87,7 +87,7 @@ def artifact_roots() -> tuple[Path, Path]:
     if roots[0].name != "task-evidence":
         raise Refused("evidenceRoot must be named task-evidence.")
     for root in roots[:2]:
-        if any(parent.is_symlink() for parent in (root, *root.parents)):
+        if any(parent.is_symlink() for parent in (root, *root.parents)) or root != root.resolve():
             raise Refused(f"Artifact/worktree root is redirected or inside Git: {root}")
         verify_outside_repository(root)
         if Path.home().resolve().is_relative_to(root.resolve()):
@@ -159,13 +159,15 @@ def remove(name: str, parent_fd: int, cutoff: float, deadline: float) -> bool:
         return True
     finally:
         if quarantine in os.listdir(parent_fd):
-            if name in os.listdir(parent_fd):
-                print(f"kept concurrent evidence at {quarantine}; original name reused: {name}", file=sys.stderr)
-            else:
-                try:
+            try:
+                if stat.S_ISDIR(os.stat(quarantine, dir_fd=parent_fd, follow_symlinks=False).st_mode):
+                    os.mkdir(name, dir_fd=parent_fd)
                     os.rename(quarantine, name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
-                except OSError as exc:
-                    print(f"kept refreshed evidence at {quarantine}: {exc}", file=sys.stderr)
+                else:
+                    os.link(quarantine, name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd, follow_symlinks=False)
+                    os.unlink(quarantine, dir_fd=parent_fd)
+            except OSError as exc:
+                print(f"kept refreshed evidence at {quarantine}; original name {name}: {exc}", file=sys.stderr)
 
 
 def collect(parent_fd: int, path: Path, cutoff: float, deadline: float, apply: bool, *, repositories: bool = False) -> None:

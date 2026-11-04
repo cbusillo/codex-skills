@@ -125,7 +125,8 @@ class TaskEvidenceGcTest(unittest.TestCase):
         redirect = self.base / "redirect"
         redirect.symlink_to(self.root)
         for values in ({"retainedRoot": str(self.root / "retained")}, {"root": str(self.base)},
-                       {"evidenceRoot": str(redirect / "task-evidence")}, {"evidenceMount": str(self.base)}):
+                       {"evidenceRoot": str(redirect / "task-evidence")},
+                       {"evidenceRoot": str(self.base / "missing" / ".." / "task-evidence")}, {"evidenceMount": str(self.base)}):
             with self.subTest(values=values), mock.patch("os.path.ismount", return_value=False):
                 self.configure(**values)
                 self.assertNotEqual(run_gc("--apply")[0], 0)
