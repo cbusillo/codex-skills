@@ -62,6 +62,37 @@ local root. For external storage that requires mount identity checks, use the
 host integration below so an absent mount cannot become an internal directory.
 Follow any stricter host storage policy before using the helper.
 
+## Task evidence and retained items
+
+Configure `evidenceRoot` (default `~/Developer/task-evidence`) and
+`retainedRoot` (default `~/Developer/retained-artifacts`) beside `root`.
+Creation prints `<evidenceRoot>/<repo>/<task>` and retained root on stderr.
+Evidence roots must be named `task-evidence`, outside Git, without symlink ancestry,
+and disjoint from retained/worktree roots.
+Optional `evidenceMount` requires a mounted ancestor of the evidence root.
+
+After retirement, creation expires evidence older than 30 quiet days, stopping
+new units after five seconds without interrupting a unit. Failures keep evidence
+and report without blocking creation. Missing roots are empty sweeps; idle
+computers keep expired evidence until new work starts.
+Preview: `uv run <catalog>/skills/github/scripts/task_evidence_gc.py`; add
+`--apply` to expire. Unreadable units are kept, symlinks are not followed,
+and deletion requires symlink-resistant support. Renaming then remeasuring
+preserves observed concurrent refreshes and reused original names. Age-based
+expiry cannot lock writers: already-open files can change after measurement.
+Keep needed inputs and ongoing work in retained storage.
+
+Retained items use `<retainedRoot>/<group>/<repo>/<item>`, with a one-line note
+naming why, the relying issue/doc where applicable, and the deletion condition:
+
+- `history/`: history; delete when the Director decides.
+- `evidence/`: open-issue/doc evidence, including parked test inputs; delete
+  when no open issue or doc relies on it.
+- `recovery/`: only work/rollback copy; delete when adopted, discarded or replaced.
+
+The sweep never scans retained storage or migrates contents. Live tool state
+may stay outside these groups; activated worker homes stay put.
+
 ## Existing host helper integration
 
 A host with its own storage, lock and retirement policy can configure
@@ -97,24 +128,10 @@ through the common GitHub checks, then replaces the catalog process with the
 host executable for its full preview or apply. Its signal cleanup and existing
 `--offline-only` mode remain available. Preview changes no worktree.
 
-Chris-Studio keeps its existing host-local helper and external-volume checks
-with this configuration:
-
-```json
-{
-  "root": "/Volumes/Developer-Artifacts/worktrees",
-  "hostHelper": "/Users/cbusillo/.local/bin/dev-worktree"
-}
-```
-
-Verify this per-host setting before creation; the catalog entry delegates to
-the configured host helper. If it is absent, report the missing host configuration; the JSON above is
-the supported configuration route. Do not use the portable default on Chris-Studio. The existing helper verifies the volume identity before creating anything,
-locks registrations against unmounted-volume pruning. Use the catalog entry
-above with this host configuration, so creation also
-runs repository retirement. Keep the host helper unchanged; never make a
-replacement volume directory or fall back to internal storage. A catalog pull
-does not provision host storage or change runtime configuration.
+The catalog passes the validated evidence root as `DEV_WORKTREE_EVIDENCE_ROOT`
+on creation and both retirement routes. Direct host calls needing diagnostics
+must use the catalog command. Host instructions own volume/root configuration;
+keep existing storage, locks and signal guards without fallback.
 
 ## Retirement
 

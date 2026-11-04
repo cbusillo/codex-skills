@@ -33,6 +33,9 @@ def patch_attr(target: Any, name: str, *args: Any, **kwargs: Any) -> Any:
 
 class WorktreeTests(unittest.TestCase):
     def setUp(self):
+        sweep = mock.patch.object(dev_worktree, "sweep_evidence")
+        sweep.start()
+        self.addCleanup(sweep.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.base = Path(self.temp.name).resolve()
@@ -91,11 +94,12 @@ class WorktreeTests(unittest.TestCase):
             with mock.patch.dict(dev_worktree.os.environ, self.env, clear=True), \
                     mock.patch.object(dev_worktree, "configuration", return_value=(self.base, helper)), \
                     mock.patch.object(dev_worktree, "retire_finished", side_effect=lambda *_: events.append("retire")), \
+                    mock.patch.object(dev_worktree, "sweep_evidence", side_effect=lambda *_: events.append("evidence")), \
                     mock.patch.object(dev_worktree, "refresh_primary", side_effect=lambda *_: events.append("refresh")), \
                     mock.patch.object(dev_worktree, "create", side_effect=lambda *_: events.append("create")), \
                     mock.patch.object(dev_worktree.os, "execv", side_effect=lambda *_: events.append("create")):
                 dev_worktree.main([str(self.repo), "new-task", self.initial])
-            self.assertEqual(events[:3], ["refresh", "retire", "create"])
+            self.assertEqual(events[:4], ["refresh", "retire", "evidence", "create"])
 
     def test_unavailable_sweep_does_not_prevent_creation(self) -> None:
         for outcome in (subprocess.CompletedProcess([], 2, "", "unavailable"), FileNotFoundError("missing helper")):

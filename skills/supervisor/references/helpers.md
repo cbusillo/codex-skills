@@ -2452,7 +2452,8 @@ Use the same evidence directory for every invocation for this run:
 its launch journal prevents replay after interruption, failure or an uncertain
 comment write. This directory is durable operational state, not disposable
 task evidence. Keep it in a private run-state directory without automatic
-expiry, or an appropriate private directory on Retained-Artifacts. Never put
+expiry, or `<retainedRoot>/recovery/<repo>/<item>` under the
+[shared retention rule](../../github/references/worktrees.md#task-evidence-and-retained-items). Never put
 it under the auto-pruned Developer-Artifacts/task-evidence root, a temporary
 directory or any cleanup policy that can remove journals while requests remain
 open. Keep journals and results through handoffs and until every request is

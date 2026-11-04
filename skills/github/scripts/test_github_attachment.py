@@ -41,7 +41,9 @@ class AttachmentTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
-        self.root = pathlib.Path(self.directory.name)
+        self.root = pathlib.Path(self.directory.name).resolve()
+        config = self.root / "worktrees.json"
+        config.write_text(json.dumps({"evidenceRoot": str(self.root / "task-evidence")}))
         self.evidence = self.root / "task-evidence" / "product" / "task" / "download"
         self.login = "director"
         self.repository = "director/product"
@@ -58,6 +60,7 @@ class AttachmentTests(unittest.TestCase):
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
         self.stack.enter_context(patch.dict(os.environ, {
+            "DEV_WORKTREE_CONFIG": str(config),
             "CODEX_SKILLS_ENV_FILE": str(self.root / "missing.env"),
             "GH_WITH_ENV_TOKEN_OWN_USER": "1", "GH_WITH_ENV_TOKEN_OWN_USER_LOGIN": "director",
             "GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH": "0", "GH_HOST": "github.com",

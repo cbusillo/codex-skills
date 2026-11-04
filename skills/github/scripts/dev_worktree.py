@@ -11,12 +11,11 @@ import argparse
 import importlib.util
 import json
 import os
-from pathlib import Path
 import re
 import subprocess
 import sys
+from pathlib import Path
 from types import ModuleType
-
 
 DEFAULT_CONFIG_RELATIVE = Path(".config/codex-skills/worktrees.json")
 
@@ -61,22 +60,67 @@ def git(repo: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
-def configuration() -> tuple[Path, Path | None]:
+def settings() -> dict[str, str]:
     explicit = os.environ.get("DEV_WORKTREE_CONFIG")
     config = Path(explicit).expanduser() if explicit else Path.home() / DEFAULT_CONFIG_RELATIVE
     settings = json.loads(config.read_text()) if explicit or os.path.lexists(config) else {}
-    if not isinstance(settings, dict) or set(settings) - {"root", "hostHelper"}:
-        raise Refused("Expected a JSON object with root and optional hostHelper.")
-    root = settings.get("root", str(Path.home() / "Developer/worktrees"))
-    helper = settings.get("hostHelper")
-    if not isinstance(root, str):
-        raise Refused("root must be an absolute path.")
-    for value in (root, helper):
-        if value is not None and (not isinstance(value, str) or not value or not Path(value).expanduser().is_absolute()):
-            raise Refused("root and hostHelper must be absolute paths (a leading ~ is allowed).")
-    if "hostHelper" in settings and (helper is None or "root" not in settings):
+    keys = {"root", "hostHelper", "evidenceRoot", "retainedRoot", "evidenceMount"}
+    if not isinstance(settings, dict) or set(settings) - keys:
+        raise Refused(f"Expected a JSON object with keys from {sorted(keys)}.")
+    for value in settings.values():
+        if not isinstance(value, str) or not value or not Path(value).expanduser().is_absolute():
+            raise Refused("Configured paths must be absolute (a leading ~ is allowed).")
+    if "hostHelper" in settings and "root" not in settings:
         raise Refused("A hostHelper requires an explicit root and helper path.")
-    return Path(root).expanduser(), Path(helper).expanduser() if helper else None
+    return settings
+
+
+def configuration() -> tuple[Path, Path | None]:
+    values = settings()
+    return (Path(values.get("root", "~/Developer/worktrees")).expanduser(),
+            Path(values["hostHelper"]).expanduser() if "hostHelper" in values else None)
+
+
+def artifact_roots() -> tuple[Path, Path]:
+    values = settings()
+    roots = [Path(values.get(key, default)).expanduser().absolute() for key, default in (
+        ("evidenceRoot", "~/Developer/task-evidence"), ("retainedRoot", "~/Developer/retained-artifacts"),
+        ("root", "~/Developer/worktrees"))]
+    if roots[0].name != "task-evidence":
+        raise Refused("evidenceRoot must be named task-evidence.")
+    for root in roots:
+        if any(parent.is_symlink() or (parent / ".git").exists() or parent.name == ".git"
+               for parent in (root, *root.parents)):
+            raise Refused(f"Artifact/worktree root is redirected or inside Git: {root}")
+        if Path.home().resolve().is_relative_to(root.resolve()):
+            raise Refused(f"Root must not contain the home directory: {root}")
+    for index, root in enumerate(roots):
+        if any(root.resolve().is_relative_to(other.resolve()) or other.resolve().is_relative_to(root.resolve())
+               for other in roots[index + 1:]):
+            raise Refused("Evidence, retained and worktree roots must not overlap.")
+    mount = values.get("evidenceMount")
+    if mount and (not os.path.ismount(Path(mount).expanduser()) or not roots[0].is_relative_to(Path(mount).expanduser())):
+        raise Refused("evidenceMount must be mounted and contain evidenceRoot.")
+    return roots[0], roots[1]
+
+
+def host_environment(args: list[str]) -> dict[str, str]:
+    evidence, _ = artifact_roots()
+    return {**os.environ, "DEV_WORKTREE_EVIDENCE_ROOT": str(evidence),
+            "DEV_WORKTREE_DELEGATED": f"{os.getpid()}:{json.dumps(args)}"}
+
+
+def sweep_evidence(repo: Path, task: str) -> None:
+    import task_evidence_gc
+
+    try:
+        evidence, retained = artifact_roots()
+        task_evidence_gc.sweep(apply=True, budget_seconds=5)
+        name = Path(git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir")).parent.name
+        print(f"Task evidence: {evidence / name / task}; retained root: {retained}. "
+              "See skills/github/references/worktrees.md for retention.", file=sys.stderr)
+    except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+        print(f"dev-worktree: evidence sweep unavailable; creation continues: {exc}", file=sys.stderr)
 
 
 def create(repo_arg: str, task: str, start: str, root: Path) -> Path:
@@ -144,10 +188,11 @@ def main(argv: list[str] | None = None) -> int:
         if len(args) == 3 and args[0] != "retire":
             refresh_primary(Path(args[0]))
             retire_finished(Path(args[0]))
+            sweep_evidence(Path(args[0]), args[1])
         if helper:
             # The host owns volume identity, locks and retirement; do not mkdir or fall back.
             # Preserve the host's signal traps, including relocking during interrupted retirement.
-            os.environ["DEV_WORKTREE_DELEGATED"] = f"{os.getpid()}:{json.dumps(args)}"
+            os.environ.update(host_environment(args))
             os.execv(str(helper), [str(helper), *args])
         if len(args) != 3 or args[0] == "retire":
             raise Refused("Usage: dev-worktree REPOSITORY TASK-SLUG START-POINT; see --help for retirement.")
@@ -207,7 +252,7 @@ def retire_task(target: Path, *, dry_run: bool, offline_only: bool = False) -> i
             print(outcome.stderr, end="", file=sys.stderr)
         return outcome.returncode
     args = ["retire", *(["--dry-run"] if dry_run else []), *(["--offline-only"] if offline_only else []), str(target)]
-    os.environ["DEV_WORKTREE_DELEGATED"] = f"{os.getpid()}:{json.dumps(args)}"
+    os.environ.update(host_environment(args))
     os.execv(str(helper), [str(helper), *args])
     return 0
 
