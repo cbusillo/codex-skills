@@ -376,6 +376,10 @@ def test_context_pagination_and_statuses_remain_complete():
         observed.batch_diagnostic["cost"]
         == fixture["data"]["rateLimit"]["cost"] + more["data"]["rateLimit"]["cost"]
     )
+    second["state"] = "EXPECTED"
+    with patch.object(observed, "_transport_request", side_effect=[response(fixture), response(more)]):
+        assert batch.try_batch(observed, "owner/repo", [node["number"]]) is None
+    assert observed.batch_responses == {}
 
 
 def test_watcher_discussion_keeps_verified_publisher_fields_on_rest():

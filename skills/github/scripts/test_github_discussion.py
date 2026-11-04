@@ -6,12 +6,15 @@
 from __future__ import annotations
 
 import copy
+import os
+import time
 import unittest
 from typing import Any
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
+import github_api
 import github_read
-from github_api import ApiResult, FailureDetail
+from github_api import ApiResult, FailureDetail, RetryRuntime, remaining_retry_timeout_seconds
 from github_read import GitHubReadError, GitHubReadShapeError
 
 
@@ -53,6 +56,22 @@ def response(data: dict[str, Any], **fields: Any) -> ApiResult:
 
 
 class DiscussionTests(unittest.TestCase):
+    def test_discussion_preserves_inherited_deadline_and_retry_policy(self) -> None:
+        clock = 1000.0
+        runtime = RetryRuntime(now=lambda: clock)
+        with (
+            patch.dict(vars(time), {"time": lambda: clock}),
+            patch.dict(vars(github_api), {"default_retry_runtime": lambda: runtime}),
+            patch.dict(os.environ, {"GITHUB_RETRY_DEADLINE_AT": str(clock + 2)}),
+        ):
+            for deadline in (None, clock + 1):
+                reader = Mock(deadline_at=deadline)
+                reader.graphql_json.return_value = response({"repository": {}})
+                expected = clock + remaining_retry_timeout_seconds(deadline_at=deadline)
+                github_read.discussion_query(reader, "query { viewer { login } }", {})
+                self.assertLessEqual(reader.graphql_json.call_args.kwargs["deadline_at"], expected)
+                self.assertNotIn("retry_policy", reader.graphql_json.call_args.kwargs)
+
     def test_thread_comments_authors_edits_and_reactions_share_one_query(self) -> None:
         reader = Mock(deadline_at=None)
         reader.graphql_json.return_value = response({"repository": {"issueOrPullRequest": thread()}})

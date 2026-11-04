@@ -3232,7 +3232,9 @@ request and quota receipts remain in the reader diagnostics; the document's
 
 Combined commit status is derived from the complete latest status contexts
 already read, following [GitHub's combined-state rules](https://docs.github.com/en/rest/commits/statuses#get-the-combined-status-for-a-specific-reference).
-An unavailable status list leaves the combined state unknown. Actions runs,
+An unavailable status list leaves the combined state unknown. GraphQL `EXPECTED` contexts
+have no qualified REST-state parity; the optional adapter discards such a batch
+and recovers through its existing REST route instead of inventing pending status. Actions runs,
 jobs, superseded-run selection, unresolved review threads and Client acceptance
 retain their existing reads and decisions.
 The batch does not make an enqueue or merge decision. The six-PR cold

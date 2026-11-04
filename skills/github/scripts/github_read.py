@@ -638,8 +638,8 @@ def discussion_connection(field: str, fields: str, cursor: str | None = None) ->
 
 
 def discussion_query(reader: GitHubReader, document: str, variables: dict[str, Any]) -> dict[str, Any]:
-    result = reader.graphql_json(document, variables, step="discussion",
-                                 deadline_at=min(reader.deadline_at or float("inf"), time.time() + 60))
+    deadline = time.time() + min(60, github_api_core.remaining_retry_timeout_seconds(deadline_at=reader.deadline_at))
+    result = reader.graphql_json(document, variables, step="discussion", deadline_at=deadline)
     if not result.ok:
         message = result.failure.message if result.failure else "GitHub discussion query failed"
         raise GitHubReadError(message, result=result, diagnostics=reader.diagnostics())
