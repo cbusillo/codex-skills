@@ -455,7 +455,7 @@ class MainTests(Fixture):
                                            *(["--offline-only"] if offline_only else []), str(target)])
             else:
                 code = landed_worktrees.main(["--repo", repo, *landed, "--checkout", str(checkout or self.repo), "--apply"])
-            self.delegation_packet = os.environ.get("DEV_WORKTREE_DELEGATED")
+            self.delegation_packet = host.call_args.args[2].get("DEV_WORKTREE_DELEGATED") if host.called else None
         return code, json.loads(out.getvalue()) if out.getvalue() else {}, host if entrypoint else run
 
     def test_explicit_retirement_of_fresh_published_abandoned_work_reaches_host(self):

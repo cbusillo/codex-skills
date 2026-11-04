@@ -24,6 +24,13 @@ def age(path: Path, days: float) -> None:
     os.utime(path, (stamp, stamp), follow_symlinks=False)
 
 
+def run_gc( *args: str) -> tuple[int, str]:
+    output = io.StringIO()
+    with contextlib.redirect_stderr(output):
+        code = gc.main(["sweep-evidence", *args])
+    return code, output.getvalue()
+
+
 class TaskEvidenceGcTest(unittest.TestCase):
     def setUp(self) -> None:
         temp = tempfile.TemporaryDirectory()
@@ -44,12 +51,6 @@ class TaskEvidenceGcTest(unittest.TestCase):
         age(folder, days)
         return folder
 
-    def run_gc(self, *args: str) -> tuple[int, str]:
-        output = io.StringIO()
-        with contextlib.redirect_stderr(output):
-            code = gc.main(["sweep-evidence", *args])
-        return code, output.getvalue()
-
     def test_expiry_uses_newest_change_and_preview_preserves_everything(self) -> None:
         old = self.task()
         deep = old / "nested" / "deep"
@@ -63,16 +64,16 @@ class TaskEvidenceGcTest(unittest.TestCase):
         (outside / "keep").write_text("keep")
         link = old / "link"
         link.symlink_to(outside)
-        self.assertEqual(self.run_gc()[0], 0)
+        self.assertEqual(run_gc()[0], 0)
         self.assertTrue(stray.exists())
-        self.assertEqual(self.run_gc("--apply")[0], 0)
+        self.assertEqual(run_gc("--apply")[0], 0)
         self.assertTrue((deep / "new").exists())
         self.assertFalse(stray.exists())
         for path in (deep / "new", deep, deep.parent, link, old):
             age(path, 45)
         (deep / "new").chmod(0o444)
         deep.chmod(0o555)
-        self.assertEqual(self.run_gc("--apply")[0], 0)
+        self.assertEqual(run_gc("--apply")[0], 0)
         self.assertFalse((self.root / "repo").exists())
         self.assertTrue((outside / "keep").exists())
 
@@ -93,7 +94,7 @@ class TaskEvidenceGcTest(unittest.TestCase):
             return measure(name, parent_fd, cutoff, deadline)
 
         with mock.patch.object(gc, "expired", vanishing_measure):
-            code, output = self.run_gc("--apply")
+            code, output = run_gc("--apply")
         self.assertEqual(code, 0)
         self.assertTrue(blocked.exists())
         self.assertTrue(vanished.exists())
@@ -115,7 +116,7 @@ class TaskEvidenceGcTest(unittest.TestCase):
                     old.with_name(destination).joinpath("log").write_text("existing writer")
 
             with self.subTest(reused=reused), mock.patch.object(gc.os, "rename", side_effect=concurrent_write):
-                self.run_gc("--apply")
+                run_gc("--apply")
             self.assertTrue((old / ("new" if reused else "log")).exists())
             self.assertEqual(len(list(old.parent.glob(".expiring-*/log"))), int(reused))
 
@@ -127,16 +128,16 @@ class TaskEvidenceGcTest(unittest.TestCase):
                        {"evidenceRoot": str(redirect / "task-evidence")}, {"evidenceMount": str(self.base)}):
             with self.subTest(values=values), mock.patch("os.path.ismount", return_value=False):
                 self.configure(**values)
-                self.assertNotEqual(self.run_gc("--apply")[0], 0)
+                self.assertNotEqual(run_gc("--apply")[0], 0)
                 self.assertTrue(old.exists())
         self.configure()
         bare = self.base / "bare"
         subprocess.run(["git", "init", "--bare", "-q", str(bare)], check=True, env=gc.git_environment())
         self.configure(evidenceRoot=str(bare / "task-evidence"))
-        self.assertNotEqual(self.run_gc("--apply")[0], 0)
+        self.assertNotEqual(run_gc("--apply")[0], 0)
         self.configure()
         with mock.patch.object(shutil.rmtree, "avoids_symlink_attacks", False):
-            self.assertNotEqual(self.run_gc("--apply")[0], 0)
+            self.assertNotEqual(run_gc("--apply")[0], 0)
         gc.sweep(apply=True, budget_seconds=0)
         with mock.patch.object(gc.random, "shuffle"), mock.patch.object(gc.time, "monotonic", side_effect=[0, 0, 0, 6]):
             gc.sweep(apply=True, budget_seconds=5)
