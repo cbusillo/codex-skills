@@ -556,7 +556,6 @@ def test_fixture_ignores_inherited_live_cooldown() -> None:
         assert {path.name: path.read_bytes() for path in state_dir.iterdir()} == before
 
 
-
 def test_queued_replacement_remains_pending_in_diagnosis() -> None:
     responses = base_responses("https://github.com/o/r/actions/runs/22/job/11")
     check = responses["/repos/o/r/commits/abc/check-runs?per_page=100&page=1"]["body"]["check_runs"][0]
@@ -571,7 +570,6 @@ def test_queued_replacement_remains_pending_in_diagnosis() -> None:
     assert payload["failingCount"] == 0
     assert payload["pendingCount"] == 1
     assert payload["countsComplete"] is True
-
 
 
 def test_skipped_replacement_does_not_count_historical_failure() -> None:
@@ -596,33 +594,7 @@ def test_skipped_replacement_does_not_count_historical_failure() -> None:
 
 
 def main() -> None:
-    tests = [
-        test_unittest_failure_precedes_database_teardown_errors,
-        test_pytest_failure_summary_precedes_teardown_noise,
-        test_service_error_with_module_path_does_not_impersonate_pytest_summary,
-        test_failed_command_precedes_teardown_noise_without_test_summary,
-        test_small_snippet_keeps_selected_failure_marker,
-        test_short_excerpt_at_log_end_keeps_available_causal_context,
-        test_later_failed_command_outranks_earlier_continued_test_failure,
-        test_logs_without_test_summary_keep_bounded_fallbacks,
-        test_failed_command_keeps_earlier_generic_cause_before_teardown,
-        test_third_party_check_run_retains_failure_and_annotations,
-        test_synthetic_annotations_are_bounded_and_terminal_controls_removed,
-        test_synthetic_failure_preserves_annotations_without_actions_run_lookup,
-        test_synthetic_pending_stays_pending_without_actions_or_annotation_lookup,
-        test_unavailable_synthetic_annotations_keep_failure_evidence,
-        test_skipped_replacement_does_not_count_historical_failure,
-        test_queued_replacement_remains_pending_in_diagnosis,
-        test_fixture_ignores_inherited_live_cooldown,
-        test_failing_check_uses_rest_metadata_and_job_log,
-        test_job_reader_maps_check_name_when_url_has_no_job_id,
-        test_missing_run_permission_degrades_but_keeps_log_evidence,
-        test_missing_status_permission_keeps_check_runs_and_marks_counts_partial,
-        test_external_status_remains_explicit_without_actions_job_reads,
-        test_explicit_pr_url_does_not_require_origin_remote,
-        test_current_branch_pr_can_resolve_from_upstream_for_fork,
-        test_primary_branch_match_skips_inaccessible_upstream,
-    ]
+    tests = [test for name, test in globals().items() if name.startswith("test_") and callable(test)]
     failed: list[str] = []
     for test in tests:
         try:

@@ -10,7 +10,6 @@ from __future__ import annotations
 import importlib.util
 import copy
 import random
-import re
 import sys
 import urllib.parse
 from contextlib import contextmanager
@@ -2044,82 +2043,6 @@ def test_graph_wait_ancestry_keeps_intermediate_nodes_and_one_capacity_frontier(
         assert [row["number"] for row in blocked["discussion"]["parents"]] == [11, 10]
 
 
-TESTS = [
-    test_graph_wait_ancestry_keeps_intermediate_nodes_and_one_capacity_frontier,
-    test_active_timestamp_uncertainty_and_custom_labels_reach_selection_output,
-    test_bare_reference_missing_here_keeps_post_merge_evidence_complete,
-    test_active_post_merge_read_gaps_remain_visible_on_selection_candidates,
-    test_local_and_global_next_exclude_stale_landing_but_keep_split_work,
-    test_global_adjacent_notes_preserve_absence_and_pending_clauses,
-    test_global_wait_comments_named_actors_and_wrapped_urls_use_own_evidence,
-    test_global_no_wait_notes_do_not_park_active_work,
-    test_global_unowned_authorization_holds_never_become_candidates_or_stale,
-    test_global_cross_repo_link_label_does_not_create_a_local_reference,
-    test_global_parent_only_stale_wait_moves_out_of_current_waiting,
-    test_global_waits_belong_to_their_own_open_waiting_issue,
-    test_global_agent_only_waits_are_unowned_and_real_holds_stay_parked,
-    test_global_stale_wait_report_reuses_merged_pr_proof_and_refuses_capacity,
-    test_global_wait_reference_budget_and_auth_stop_are_explicit,
-    test_client_track_precedence_keeps_real_membership_and_completed_assignments,
-    test_client_requests_rank_with_product_without_changing_order_or_authority,
-    test_client_requests_inherit_native_product_track_and_still_need_reviews,
-    test_discovered_blocker_explains_its_native_link_to_waiting_track_work,
-    test_service_waypoint_evidence_cannot_be_inferred_from_ranking_map,
-    test_waypoint_evidence_does_not_change_repository_ranking_fallback,
-    test_global_native_summary_savings_reach_real_reader,
-    test_unvisited_track_ancestry_and_unparsed_repository_direction_context,
-    test_native_zero_totals_skip_reads_but_closed_history_and_unknowns_do_not,
-    test_overall_waypoint_context_requires_native_or_listed_direction_evidence,
-    test_skipped_repository_counts_exclude_graph_overlap_and_marked_incidents,
-    test_milestone_candidate_coverage_is_scoped_to_graph,
-    test_live_breakage_beyond_scan_window_ranks_first_without_granting_availability,
-    test_live_breakage_marker_preserves_holds_dependencies_waits_and_review,
-    test_live_breakage_inventory_finds_incident_beyond_repository_issue_bound,
-    test_local_next_inbound_scan_keeps_waits_and_reports_unevaluated_issues,
-    test_inbound_scan_bounds_and_partial_reads_are_explicit,
-    test_inbound_unclassified_failure_degrades_report_but_quota_stops,
-    test_portfolio_nonempty_unparsed_direction_and_local_only_flags_refuse,
-    test_portfolio_discovery_preserves_parent_waits_and_ancestry_discussions,
-    test_portfolio_empty_milestones_and_unspecified_wait_are_supported,
-    test_portfolio_nontrack_direction_issues_and_repository_milestone_order,
-    test_portfolio_repository_inventory_truncation_and_auth_failure,
-    test_portfolio_inventory_failure_and_scan_bound_never_claim_full_coverage,
-    test_next_beta_rc_stable_chain_respects_native_blockers,
-    test_next_excludes_non_actionable_states_with_reasons,
-    test_stale_project_focus_does_not_hide_ready_work,
-    test_next_closed_milestone_is_context_not_exclusion,
-    test_next_ranking_uses_direction_then_dependencies_then_oldest_created,
-    test_next_ranking_without_direction_uses_milestone_creation_order,
-    test_next_focus_context_normalizes_keys_and_reports_truncation,
-    test_cmd_next_is_bounded_read_only_and_explainable,
-    test_cmd_next_degrades_when_direction_is_unavailable_or_unparsed,
-    test_cmd_next_surfaces_dependency_degradation_and_skips_cheap_exclusions,
-    test_cmd_next_excludes_truncated_dependencies_with_only_closed_visible_blockers,
-    test_cmd_next_reraises_dependency_api_failures,
-    test_next_relationship_reads_are_bounded_and_report_truncation,
-    test_cmd_next_supports_milestone_scope_and_focus_degradation,
-    test_global_next_follows_cross_owner_blockers_and_reports_partial_waits,
-    test_global_waiting_milestone_hands_off_to_next_not_unlinked_tooling,
-    test_global_next_implicit_repository_and_explicit_repository_match,
-    test_global_cycles_unreadable_edges_and_scan_limits_are_incomplete,
-    test_global_shared_leaf_is_read_once_and_keeps_earliest_milestone,
-    test_global_missing_direction_refuses_instead_of_local_fallback,
-    test_global_missing_tracks_and_inventory_truncation_remain_visible,
-    test_global_relationship_truncation_and_permissions_do_not_create_candidates,
-    test_global_waits_use_current_status_and_never_reclassify_mentioned_work,
-    test_global_milestone_scope_and_direction_order_capacity_context,
-    test_global_whole_parent_wait_does_not_select_its_children_or_dependencies,
-    test_global_leaf_waiting_on_referenced_review_is_not_actionable,
-    test_global_closed_milestone_is_completed_not_missing,
-    test_global_stale_blocked_parent_is_a_finding_with_complete_coverage,
-    test_global_empty_tracks_are_not_reported_as_people_waits,
-    test_global_service_consumer_uses_the_same_classification_and_sort_as_cli,
-    test_global_placeholder_waits_do_not_park_actionable_work,
-    test_global_active_parent_partial_wait_need_not_name_an_issue,
-    test_global_shared_classifier_preserves_incomplete_relationship_evidence,
-]
-
-
 def test_milestone_order_wait_is_a_finding_and_remains_available() -> None:
     roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
     for reason in ("starts after milestones 'First' and 'Second'", "", "nothing", "TBD", "TBD; since 2026-08-20", "unknown; since 2026-08-20"):
@@ -2153,12 +2076,6 @@ def test_milestone_order_detection_preserves_additional_human_holds() -> None:
         assert not shared.milestone_wait_evidence(item, "Waiting for: " + reason, ["First", "Second", "v2_beta"])["valid"]
     assert shared.milestone_wait_evidence(item, "Waiting for: Alex to retest the build shipped since 2026-07-01", ["First"])["since"] is None
     assert shared.milestone_wait_evidence(item, "Waiting for: Alex to test; since 2026-08-20", ["First"])["since"] == "2026-08-20"
-
-
-TESTS.extend([
-    test_milestone_order_detection_preserves_additional_human_holds,
-    test_milestone_order_wait_is_a_finding_and_remains_available,
-])
 
 
 def test_discovered_milestone_wait_remains_available_and_cannot_admit_tooling() -> None:
@@ -2208,13 +2125,6 @@ def test_unmatched_local_milestone_keeps_its_recorded_wait() -> None:
         assert next(item for item in result["excluded"] if item["number"] == 120)["exclusion"] == "wait_review_required"
 
 
-TESTS.extend([
-    test_discovered_milestone_wait_remains_available_and_cannot_admit_tooling,
-    test_supported_wait_forms_and_person_work_do_not_become_ordering_findings,
-    test_unmatched_local_milestone_keeps_its_recorded_wait,
-])
-
-
 def test_invalid_discovered_parent_wait_delegates_to_its_child() -> None:
     parent = global_issue("someone/business", 120, wait_reviewed=False, labels=["plan:waiting"],
                           milestone=milestone_data(7, "First", created_at="2026-01-01"),
@@ -2230,9 +2140,6 @@ def test_invalid_discovered_parent_wait_delegates_to_its_child() -> None:
         assert not result["waiting"]
 
 
-TESTS.append(test_invalid_discovered_parent_wait_delegates_to_its_child)
-
-
 def test_multiline_wait_and_literal_milestone_wait_have_opposite_results() -> None:
     shared = load_module().github_direction_next
     for reason in ("Waiting for:\n- Alex to approve the copy.", "Waiting for: milestone review call with Alex on 2026-10-10.",
@@ -2241,9 +2148,6 @@ def test_multiline_wait_and_literal_milestone_wait_have_opposite_results() -> No
     for reason in ("Waiting for: Dogfood week to finish.", "Waiting for: the Thin fork decision milestone."):
         assert not shared.milestone_wait_evidence({"repo": "someone/business", "number": 10, "url": "https://github.com/someone/business/issues/10"}, reason, ["Launch", "Dogfood week", "Thin fork decision"])["valid"]
     assert not shared.milestone_wait_evidence({"repo": "someone/business", "number": 10, "url": "https://github.com/someone/business/issues/10"}, "State: Waiting on Alex", ["Launch"])["valid"]
-
-
-TESTS.extend([test_multiline_wait_and_literal_milestone_wait_have_opposite_results])
 
 
 def test_milestone_scope_still_recognizes_other_listed_milestone_waits() -> None:
@@ -2255,9 +2159,6 @@ def test_milestone_scope_still_recognizes_other_listed_milestone_waits() -> None
             module.cmd_next(next_args(milestone="First"))
         assert [item["number"] for item in result["candidates"]] == [120]
         assert result["findings"][0]["reason"] == "wait_names_another_milestone"
-
-
-TESTS.append(test_milestone_scope_still_recognizes_other_listed_milestone_waits)
 
 
 def test_discovery_preserves_valid_waits_above_invalid_child_or_parent_waits() -> None:
@@ -2304,12 +2205,6 @@ def test_blocked_wait_and_unknown_start_do_not_become_available_or_dated() -> No
         assert evidence["since"] == "2026-08-20"
 
 
-TESTS.extend([
-    test_discovery_preserves_valid_waits_above_invalid_child_or_parent_waits,
-    test_blocked_wait_and_unknown_start_do_not_become_available_or_dated,
-])
-
-
 def test_excluded_unrelated_wait_failure_preserves_ordinary_coverage() -> None:
     roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
     leaf = global_issue("someone/business", 10, labels=["plan:waiting"], body="## Current Status\nWaiting for: Alex to test.", waiting_for='Alex to test.')
@@ -2341,21 +2236,12 @@ def test_unmatched_parent_wait_does_not_emit_internal_exclusion() -> None:
         assert "_own_exclusion" not in item
 
 
-TESTS.extend([
-    test_excluded_unrelated_wait_failure_preserves_ordinary_coverage,
-    test_unmatched_parent_wait_does_not_emit_internal_exclusion,
-])
-
-
 def test_waiting_pr_does_not_become_an_invalid_issue_wait() -> None:
     root = track("someone/direction", 1, "First")
     pull = {**global_issue("someone/business", 120, wait_reviewed=False, labels=["plan:waiting"]), "pull_request": {}}
     with global_fixture([root], [pull], {(root["repo"], 1): relationships(sub_issues=[pull])}) as (module, result, _reads):
         module.cmd_next(next_args())
         assert not result["findings"] and not result["candidates"]
-
-
-TESTS.append(test_waiting_pr_does_not_become_an_invalid_issue_wait)
 
 
 def active_track(repo: str, number: int, title: str, status: str) -> dict[str, Any]:
@@ -2477,15 +2363,6 @@ def test_named_next_actor_or_absence_keeps_a_stated_precondition() -> None:
         assert next(item for item in result["excluded"] if item["number"] == 2)["exclusion"] == "wait_review_required"
 
 
-TESTS.extend([
-    test_milestone_agent_work_behind_bookkeeping_blocker_ranks_first,
-    test_global_scan_diagnostic_counts_all_allowances_and_limit_only_caps_results,
-    test_milestone_summary_names_each_wait_when_no_milestone_work_is_listed,
-    test_named_next_actor_or_absence_keeps_a_stated_precondition,
-    test_empty_track_scoping_uses_reviewed_records_instead_of_summary,
-])
-
-
 def test_incident_leaves_beyond_ordinary_scan_keep_native_priority_and_review() -> None:
     marker = load_module().github_direction_next.LIVE_BREAKAGE_LABEL
     incident = global_issue("someone/live", 90, labels=["plan", "plan:active", marker])
@@ -2536,12 +2413,6 @@ def test_incident_paths_stop_whole_parent_waits_and_report_bounds_and_cycles() -
             assert ("someone/live", 91) not in reads
 
 
-TESTS.extend([
-    test_incident_leaves_beyond_ordinary_scan_keep_native_priority_and_review,
-    test_incident_paths_stop_whole_parent_waits_and_report_bounds_and_cycles,
-])
-
-
 def test_incident_leaf_in_direction_inventory_is_not_a_track_exclusion() -> None:
     root = global_issue("someone/live", 90, labels=["plan", "plan:active", "Live-Breakage"])
     leaf = global_issue("someone/direction", 91)
@@ -2553,9 +2424,6 @@ def test_incident_leaf_in_direction_inventory_is_not_a_track_exclusion() -> None
         assert result["candidates"][0]["number"] == 91
         assert [step["number"] for step in result["candidates"][0]["incident_via"]] == [90, 91]
         assert not any(item["number"] == 91 for item in result["excluded"])
-
-
-TESTS.append(test_incident_leaf_in_direction_inventory_is_not_a_track_exclusion)
 
 
 def test_identity_refused_wait_keeps_independent_candidates() -> None:
@@ -2589,9 +2457,6 @@ def test_identity_refused_wait_keeps_independent_candidates() -> None:
                    for row in result["stale_wait_report"]["unavailable"])
         assert result["waiting"][0]["references"][0]["state"] == "unknown"
         assert all(method == "GET" for method, _path in calls)
-
-
-TESTS.append(test_identity_refused_wait_keeps_independent_candidates)
 
 
 def test_identity_refused_graph_node_keeps_other_milestone_candidates() -> None:
@@ -2642,12 +2507,6 @@ def test_local_identity_refused_relationships_degrade_and_credentials_stop() -> 
                     assert exc is error
                 else:
                     raise AssertionError("credential/actor failures must still stop selection")
-
-
-TESTS.extend([
-    test_identity_refused_graph_node_keeps_other_milestone_candidates,
-    test_local_identity_refused_relationships_degrade_and_credentials_stop,
-])
 
 
 def test_parallel_global_graph_preserves_selection_waits_and_coverage() -> None:
@@ -2890,20 +2749,6 @@ def test_global_milestone_backend_receipt_contributes_actual_attempts() -> None:
         assert module.CURRENT_RETRY_SUMMARY.elapsed_wait == backend.elapsed_wait
 
 
-TESTS.extend([
-    test_required_proof_root_preserves_provider_and_credential_stop_policy,
-    test_global_milestone_backend_receipt_contributes_actual_attempts,
-    test_graph_read_ahead_is_bounded_beyond_a_deep_scan_frontier,
-    test_enrollment_helper_does_not_launch_after_inherited_deadline,
-    test_global_read_wrapper_coalesces_gets_and_classifies_actual_deadlines,
-    test_one_worker_discovery_reads_each_discussion_once,
-    test_parallel_wait_reports_preserve_stale_frozen_and_unavailable_evidence,
-    test_global_reserves_final_evidence_time_without_claiming_a_complete_scan,
-    test_global_zero_comment_summary_avoids_only_proven_empty_discussion_read,
-    test_parallel_global_graph_preserves_selection_waits_and_coverage,
-])
-
-
 def test_waiting_and_stale_nodes_preserve_independent_native_work() -> None:
     root = track("cbusillo/direction", 5, "First")
     parent = global_issue("cbusillo/odoo-tenant-cm", 120, wait_reviewed=False, labels=["plan", "plan:waiting"])
@@ -2977,13 +2822,6 @@ def test_newly_reached_unread_relationships_degrade_coverage_with_issue_evidence
     assert bounded["truncated"] and not bounded["dependency_context"]["complete"]
 
 
-TESTS.extend([
-    test_waiting_and_stale_nodes_preserve_independent_native_work,
-    test_waited_route_does_not_hide_an_independently_linked_leaf,
-    test_newly_reached_unread_relationships_degrade_coverage_with_issue_evidence,
-])
-
-
 def test_explicit_independent_child_keeps_other_waits_and_ancestry() -> None:
     shared = load_module().github_direction_next
     child = {"repo": "other/source", "number": 3777, "url": "https://github.com/other/source/issues/3777"}
@@ -3002,9 +2840,6 @@ def test_explicit_independent_child_keeps_other_waits_and_ancestry() -> None:
                      f"{child['url']} is independently selectable only after Q362."]:
         parent["structured_wait"] = {"evidence": evidence}
         assert shared.parent_holds_child(parent, child)
-
-
-TESTS.append(test_explicit_independent_child_keeps_other_waits_and_ancestry)
 
 
 def test_explicit_whole_plan_wait_survives_prerequisites_of_held_children() -> None:
@@ -3029,9 +2864,6 @@ def test_explicit_whole_plan_wait_survives_prerequisites_of_held_children() -> N
         module.cmd_next(next_args(scan_limit=3))
         assert [row["number"] for row in result["candidates"]] == [20]
         assert result["truncated"]
-
-
-TESTS.append(test_explicit_whole_plan_wait_survives_prerequisites_of_held_children)
 
 
 def test_direct_blockers_preserve_legacy_and_explicit_whole_plan_holds() -> None:
@@ -3076,12 +2908,6 @@ def test_held_subtree_blocker_keeps_earliest_milestone_and_prefetch_order() -> N
         assert reads.count((blocker["repo"], 12)) == 1
 
 
-TESTS.extend([
-    test_direct_blockers_preserve_legacy_and_explicit_whole_plan_holds,
-    test_held_subtree_blocker_keeps_earliest_milestone_and_prefetch_order,
-])
-
-
 def test_tracking_wait_summary_does_not_hold_its_direct_blocker() -> None:
     root = track("someone/direction", 1, "First")
     leaf = global_issue("someone/product", 2)
@@ -3089,9 +2915,6 @@ def test_tracking_wait_summary_does_not_hold_its_direct_blocker() -> None:
         module.cmd_next(next_args())
         assert [row["number"] for row in result["candidates"]] == [2]
         assert reads == [(leaf["repo"], 2)]
-
-
-TESTS.append(test_tracking_wait_summary_does_not_hold_its_direct_blocker)
 
 
 def test_local_next_uses_current_wait_and_native_graph_over_old_labels() -> None:
@@ -3108,11 +2931,6 @@ def test_local_next_uses_current_wait_and_native_graph_over_old_labels() -> None
     waiting = next(item for item in result["excluded"] if item["number"] == 22)
     assert waiting["exclusion"] == "waiting", waiting
     assert waiting["derived"]["waits"] == person_wait["waits"], waiting
-
-
-TESTS.extend([
-    test_local_next_uses_current_wait_and_native_graph_over_old_labels,
-])
 
 
 def test_local_next_comment_limit_keeps_unread_discussion_under_review() -> None:
@@ -3178,12 +2996,6 @@ def test_local_next_comment_read_failure_is_wait_review_not_unknown_dependencies
     assert observed["wait_error"] and observed["discussion"]["complete"]
 
 
-TESTS.extend([
-    test_local_next_comment_limit_keeps_unread_discussion_under_review,
-    test_local_next_comment_read_failure_is_wait_review_not_unknown_dependencies,
-])
-
-
 def test_global_next_reads_milestone_proofs_before_a_descendant_uses_the_scan_budget() -> None:
     root = track("someone/direction", 3, "First")
     last = track("someone/direction", 102, "Second")
@@ -3202,9 +3014,6 @@ def test_global_next_reads_milestone_proofs_before_a_descendant_uses_the_scan_bu
         assert len(reviews) == 2, result
         assert reviews[0]["track_proof"] == proof, reviews
         assert result["graph_context"]["truncated"], result
-
-
-TESTS.append(test_global_next_reads_milestone_proofs_before_a_descendant_uses_the_scan_budget)
 
 
 def test_source_discovery_precedes_optional_proof_warmup() -> None:
@@ -3231,9 +3040,6 @@ def test_source_discovery_precedes_optional_proof_warmup() -> None:
         args.time_budget = 50
         module.cmd_next(args)
         assert [row['number'] for row in result['available_candidates']] == [source['number']], result
-
-
-TESTS.append(test_source_discovery_precedes_optional_proof_warmup)
 
 
 def test_next_output_summarizes_discussions_without_changing_selection_or_coverage() -> None:
@@ -3284,10 +3090,6 @@ def test_local_next_reuses_complete_discussion_for_ownership() -> None:
             assert result["available_candidates"][0]["discussion"]["comment_count"] == len(comments)
 
 
-TESTS.extend([test_next_output_summarizes_discussions_without_changing_selection_or_coverage,
-              test_local_next_reuses_complete_discussion_for_ownership])
-
-
 def test_recorded_answers_require_exact_trusted_source_and_preserve_all_conditions() -> None:
     module = load_module()
     source = issue(21)
@@ -3327,9 +3129,6 @@ def test_recorded_answers_require_exact_trusted_source_and_preserve_all_conditio
         assert not module.recorded_wait_decisions(wait, "owner/repo")
         assert not module.recorded_wait_decisions(wait, "owner/repo")
         module.get_issue.assert_called_once()
-
-
-TESTS.append(test_recorded_answers_require_exact_trusted_source_and_preserve_all_conditions)
 
 
 def test_answered_wait_is_reconciliation_in_local_and_global_selection_without_unblocking_dependents() -> None:
@@ -3391,9 +3190,6 @@ def test_answered_wait_is_reconciliation_in_local_and_global_selection_without_u
         assert not any(row["number"] == 21 and row["repo"] == repo for row in result["available_candidates"])
 
 
-TESTS.append(test_answered_wait_is_reconciliation_in_local_and_global_selection_without_unblocking_dependents)
-
-
 def test_parallel_answer_diagnostics_read_one_source_and_keep_a_successful_snapshot() -> None:
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier
@@ -3436,13 +3232,12 @@ def test_parallel_answer_diagnostics_read_one_source_and_keep_a_successful_snaps
     assert module.DECISION_DISCUSSIONS[("owner/repo", 21)]["complete"]
 
 
-TESTS.append(test_parallel_answer_diagnostics_read_one_source_and_keep_a_successful_snapshot)
-
 def main() -> None:
-    for test in TESTS:
+    tests = [test for name, test in globals().items() if name.startswith("test_") and callable(test)]
+    for test in tests:
         test()
         print(f"ok {test.__name__}")
-    print(f"\nAll {len(TESTS)} tests passed.")
+    print(f"\nAll {len(tests)} tests passed.")
 
 
 if __name__ == "__main__":
