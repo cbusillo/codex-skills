@@ -11,7 +11,6 @@ import os
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import urlencode
@@ -1611,44 +1610,7 @@ def test_prewrite_receipt_requires_nonce_and_stops_at_launch() -> None:
 
 
 def main() -> None:
-    tests: list[Callable[[], None]] = [
-        test_search_archive_scope_through_wrapper,
-        test_check_reports_app_identity_and_source,
-        test_write_actor_probe_preserves_repository_authorization,
-        test_write_actor_probe_rejects_non_probe_commands_before_authentication,
-        test_attachment_route_enforces_limits_through_real_wrapper,
-        test_comment_cli_selects_own_user_through_real_wrapper,
-        test_comment_cli_rejects_malformed_probe_once_before_authentication,
-        test_invalid_probe_does_not_wait_for_open_stdin,
-        test_check_preserves_user_token_fallback_when_app_is_absent,
-        test_user_token_write_verifies_actor_before_running_gh,
-        test_user_token_write_without_expected_login_refuses_before_actor_probe,
-        test_user_token_expected_login_override_takes_precedence,
-        test_user_token_get_and_head_delegate_without_actor_verification,
-        test_no_token_check_fails_explicitly_without_running_gh,
-        test_check_rejects_commands_before_active_auth_fallback,
-        test_no_token_command_preserves_authorized_active_auth_fallback,
-        test_active_cli_write_retains_selected_login_before_sending,
-        test_approved_active_fallback_keeps_the_default_automation_login_route,
-        test_partial_app_configuration_fails_closed,
-        test_app_auth_failure_never_falls_back_to_active_user,
-        test_empty_app_auth_response_fails_closed,
-        test_app_auth_takes_precedence_and_runs_write_as_verified_app,
-        test_app_installation_follows_the_target_repository,
-        test_api_write_checks_read_arguments_as_gh_does,
-        test_write_to_another_owners_repository_without_installation_runs_as_the_person_on_opt_in,
-        test_user_scoped_read_runs_as_the_person_on_opt_in,
-        test_personal_fork_runs_as_the_person_on_opt_in,
-        test_app_actor_probe_synthesizes_include_response_without_user_endpoint,
-        test_app_login_mismatch_fails_closed_for_write_and_check,
-        test_app_login_comparison_is_case_insensitive,
-        test_print_auth_account_reports_verified_app_without_gh_auth_status,
-        test_app_actor_probe_does_not_fabricate_other_paths_or_writes,
-        test_pr_create_validation_refusal_preserves_unknown_write_controls,
-        test_pr_edit_missing_label_stops_without_claiming_other_edits_did_not_apply,
-        test_permission_refusals_preserve_app_identity,
-        test_prewrite_receipt_requires_nonce_and_stops_at_launch,
-    ]
+    tests = [test for name, test in globals().items() if name.startswith("test_") and callable(test)]
     for test in tests:
         test()
         print(f"ok {test.__name__}")

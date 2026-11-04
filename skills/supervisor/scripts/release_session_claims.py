@@ -34,12 +34,21 @@ import github_identity
 import github_plan_claim as claim
 import github_plan_release as release
 import github_plan_closure as closure
-from github_read import GitHubReader, GitHubReadError, GitHubReadShapeError, automation_only_gh_prefix_args
 from github_comment import CommentError, comment
 
 if TYPE_CHECKING:
+    from skills.github.scripts import github_api
+    from skills.github.scripts.github_read import (
+        GitHubReader, GitHubReadError, GitHubReadShapeError, automation_only_gh_prefix_args,
+        read_repository_connections,
+    )
     from skills.github.scripts import github_plan_native as native_closure
 else:
+    import github_api
+    from github_read import (
+        GitHubReader, GitHubReadError, GitHubReadShapeError, automation_only_gh_prefix_args,
+        read_repository_connections,
+    )
     import github_plan_native as native_closure
 
 REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
@@ -415,8 +424,42 @@ def belongs_to_session(body: str, session: str) -> bool:
     )
 
 
-def discover(reader, owner, entries, repos=None):
-    """Complete paged comment inventory, including closed issues, since session start."""
+def read_status_batch(reader: GitHubReader, repos: list[str], since: str) -> dict[str, list[dict] | Exception]:
+    def selection(cursor: str | None) -> str:
+        return (
+            f"issues(first:100,after:{json.dumps(cursor)},filterBy:{{since:{json.dumps(since)}}},"
+            "orderBy:{field:CREATED_AT,direction:ASC}) "
+            "{ totalCount nodes { number body } pageInfo { hasNextPage endCursor } }"
+        )
+
+    def normalize(_repo: str, node: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(node.get("body"), str):
+            raise ValueError("status body unavailable")
+        return node
+
+    statuses = read_repository_connections(
+        reader,
+        repos,
+        field="issues",
+        selection=selection,
+        normalize=normalize,
+        step="session_status_inventory",
+        retry_policy=github_api.optional_batch_retry_policy(),
+    )
+    for status_rows in statuses.values():
+        if isinstance(status_rows, GitHubReadError):
+            failure = status_rows.result.failure
+            cause = failure.cause if failure else None
+            if cause == "deadline_exceeded" and status_rows.result.retry_summary is not None:
+                cause = status_rows.result.retry_summary.wait_cause
+            if cause not in {"network_provider_failure", "graphql_primary_rate_limited"}:
+                raise status_rows
+    return statuses
+
+
+def discover(
+    reader: GitHubReader, owner: str, entries: list[dict], repos: list[str] | None = None,
+) -> tuple[list[tuple[str, int]], list[str]]:
     if repos is None:
         repositories = reader.paged_json("/installation/repositories", collection_key="repositories",
                                          step_prefix="claim_repositories")
@@ -428,6 +471,7 @@ def discover(reader, owner, entries, repos=None):
         raise ValueError("repository inventory contains no repositories for this owner; verify scope and installation coverage")
     sessions = {e["session_id"] for e in entries}
     since = scan_start(entries)
+    statuses = read_status_batch(reader, repos, since)
     issues = set()
     for repo in repos:
         comments = reader.paged_json(f"/repos/{repo}/issues/comments", step_prefix="session_claim_inventory",
@@ -445,9 +489,12 @@ def discover(reader, owner, entries, repos=None):
                 if not match:
                     raise ValueError("claim comment has an unexpected canonical issue URL")
                 issues.add((repo, int(match[1])))
-        statuses = reader.paged_json(f"/repos/{repo}/issues", step_prefix="session_status_inventory",
-                                     params={"state": "all", "since": since}, required_query_params={"since": since})
-        for issue in statuses:
+        repo_statuses = statuses[repo]
+        if isinstance(repo_statuses, Exception):
+            reader.batch_diagnostic.setdefault("fallbackRepositories", []).append(repo)
+            repo_statuses = reader.paged_json(f"/repos/{repo}/issues", step_prefix="session_status_inventory",
+                                            params={"state": "all", "since": since}, required_query_params={"since": since})
+        for issue in repo_statuses:
             if "pull_request" not in issue and any(belongs_to_session(issue.get("body") or "", s) for s in sessions):
                 issues.add((repo, issue["number"]))
     return sorted(issues), repos
@@ -1065,7 +1112,7 @@ def main():
                                 "next_action": "inspect records before retry"})
         ok = not any("error" in r or r.get("issue_refusals") or r.get("pr_claim_handoffs") for r in reports)
         incomplete = [r for r in reports if "error" in r or r.get("issue_refusals") or r.get("pr_claim_handoffs")]
-        print(json.dumps({"ok": ok, "reports": reports, "repositories_checked": repos,
+        print(json.dumps({"ok": ok, "reports": reports, "repositories_checked": repos, "discovery": reader.batch_diagnostic,
                           "retryable": bool(incomplete) and all(r.get("retryable") is True for r in incomplete),
                           "needs_reconciliation": any(r.get("retained_status_claims") or r.get("issue_refusals") or r.get("pr_claim_handoffs") or "error" in r for r in reports),
                           "coverage": "exact verified inventory claims" if all(e.get("_inventory") for e in entries) else "explicit scope" if args.repo else "accessible repositories under the requested owner",
@@ -1074,15 +1121,38 @@ def main():
     except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError,
             GitHubReadError, GitHubReadShapeError, CommentError) as error:
         read = error.result.as_dict() if isinstance(error, GitHubReadError) else {}
-        retryable = (isinstance(error, closure.LeaseBusy)
-                     or read.get("recommended_next_action") in ("retry_after_reported_reset", "rerun_when_ready")) and all(
-            report.get("retryable") is True for report in reports
-            if "error" in report or report.get("issue_refusals") or report.get("pr_claim_handoffs"))
-        print(json.dumps({"ok": False, "error": str(error), "completed_sessions": reports,
-                          "retryable": retryable, "retry_at": read.get("retry_at"),
-                          "next_action": ("no release was posted; rerun finish once GitHub or the shared closure log is available"
-                                          if retryable else
-                                          "no release was posted; inspect the error and per-session reports before rerunning finish")}))
+        limited_batch = (
+            isinstance(error, GitHubReadError)
+            and (error.result.bucket == "graphql" or error.result.graphql_operation == "query")
+            and error.result.failure is not None
+            and error.result.failure.retryable
+            and error.result.failure.cause in github_api.PRIMARY_RATE_LIMIT_CAUSES | {"secondary_rate_limited"}
+        )
+        retryable = (
+            isinstance(error, closure.LeaseBusy)
+            or limited_batch
+            or read.get("recommended_next_action") in ("retry_after_reported_reset", "rerun_when_ready")
+        ) and all(
+            report.get("retryable") is True
+            for report in reports
+            if "error" in report or report.get("issue_refusals") or report.get("pr_claim_handoffs")
+        )
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": str(error),
+                    "completed_sessions": reports,
+                    "retryable": retryable,
+                    "retry_at": read.get("retry_at"),
+                    "next_action": (
+                        "no release was posted; rerun finish once GitHub or the shared closure log is available"
+                        if retryable
+                        else "no release was posted; inspect the error and per-session reports before rerunning finish"
+                    ),
+                }
+            )
+        )
         return 1
     finally:
         if lock_stream is not None:

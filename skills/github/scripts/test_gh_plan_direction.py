@@ -177,18 +177,9 @@ def test_reopen_of_a_listed_milestone_passes() -> None:
     assert calls["update"][-1]["state"] == "open"
 
 
-TESTS = [
-    test_titles_come_only_from_backticked_milestone_lines,
-    test_gate_reads_the_target_repo_not_the_checkout,
-    test_repo_without_direction_file_is_not_adopted,
-    test_unreadable_direction_file_refuses_instead_of_assuming_not_adopted,
-    test_create_rename_and_reopen_are_gated_before_any_write,
-    test_reopen_of_a_listed_milestone_passes,
-]
-
-
 def main() -> None:
-    for test in TESTS:
+    tests = [test for name, test in globals().items() if name.startswith("test_") and callable(test)]
+    for test in tests:
         test()
         print(f"ok {test.__name__}")
 

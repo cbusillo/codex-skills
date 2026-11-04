@@ -107,9 +107,10 @@ def test_readback_sends_review_binding_and_projects_match():
 
 
 @pytest.mark.parametrize("command", [DRY_RUN, READBACK])
-def test_instance_review_keeps_context_fallback_evidence(command: str) -> None:
+@pytest.mark.parametrize("absent_source", [{"source_after": None}, {}])
+def test_instance_review_keeps_context_fallback_evidence(command: str, absent_source: dict[str, object]) -> None:
     effects = [{"key": "OLD_FLAG", "source_after": "context", "effect": "unchanged"},
-               {"key": "LEGACY_URL", "source_after": None, "effect": "absent"}]
+               {"key": "LEGACY_URL", "effect": "absent", **absent_source}]
     reply = response("readback" if command == READBACK else "dry-run", scope="instance", instance="testing",
                      instance_plain_setting_effects=effects, context_values_sha256="d" * 64)
     scope = ("--product", "example", "--scope", "instance", "--context", "example-testing", "--instance", "testing")
@@ -132,6 +133,12 @@ def test_instance_review_keeps_context_fallback_evidence(command: str) -> None:
                                         {"key": "LEGACY_URL", "source_after": None, "effect": "absent"}]},
     {"instance_plain_setting_effects": [{"key": "OLD_FLAG", "source_after": None, "effect": "unchanged"},
                                         {"key": "LEGACY_URL", "source_after": None, "effect": "absent"}]},
+    {"instance_plain_setting_effects": [{"key": "OLD_FLAG", "effect": "changed"},
+                                        {"key": "LEGACY_URL", "effect": "absent"}]},
+    {"instance_plain_setting_effects": [{"key": "OLD_FLAG", "source_after": "context", "effect": "unchanged"},
+                                        {"effect": "absent"}]},
+    {"instance_plain_setting_effects": [{"key": "OLD_FLAG", "source_after": "context", "effect": "unchanged"},
+                                        {"key": "LEGACY_URL"}]},
     {"instance_plain_setting_effects": [{"key": "OLD_FLAG", "source_after": "context", "effect": "PRIVATE_SENTINEL"},
                                         {"key": "LEGACY_URL", "source_after": None, "effect": "absent"}]},
     {"scope": "context", "instance": ""},

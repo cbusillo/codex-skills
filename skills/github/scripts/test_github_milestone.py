@@ -554,34 +554,12 @@ def test_reconciliation_callbacks_match_only_verified_state() -> None:
     assert close_decision.outcome == "matched"
 
 
-TESTS = [
-    test_list_milestones_paginates_and_normalizes_due_on,
-    test_list_milestones_preserves_retry_evidence,
-    test_show_milestone_resolves_exact_title,
-    test_show_milestone_preserves_case_insensitive_title_fallback,
-    test_create_is_exact_title_idempotent_no_op,
-    test_create_rejects_conflicting_exact_title,
-    test_create_rejects_case_insensitive_title_conflict,
-    test_create_rejects_actor_mismatch_before_milestone_reads,
-    test_own_user_writes_retain_repository_writer,
-    test_repository_writer_probe_rejects_wrong_actor,
-    test_update_no_op_skips_patch,
-    test_update_verifies_success_response_and_clear_due_on,
-    test_update_accepts_server_coerced_due_on_time,
-    test_update_rejects_mismatched_success_response,
-    test_numeric_reference_preserves_title_lookup_compatibility,
-    test_update_rejects_close_state,
-    test_close_refuses_open_issue_and_pull_request,
-    test_close_patches_empty_milestone,
-    test_reconciliation_callbacks_match_only_verified_state,
-]
-
-
 def main() -> None:
-    for test in TESTS:
+    tests = [test for name, test in globals().items() if name.startswith("test_") and callable(test)]
+    for test in tests:
         test()
         print(f"ok {test.__name__}")
-    print(f"\nAll {len(TESTS)} tests passed.")
+    print(f"\nAll {len(tests)} tests passed.")
 
 
 if __name__ == "__main__":

@@ -24,7 +24,7 @@ from unittest.mock import patch
 import github_app_setup as setup
 import github_identity as identity
 import github_rulesets
-from test_github_identity import test_private_key
+from test_github_identity import private_key
 
 SCRIPTS = Path(__file__).resolve().parent
 OWNER = "fixture-owner"
@@ -34,7 +34,7 @@ SLUG = "fixture-automation"
 def registration(session):
     return setup.save_registration(session, OWNER, {
         "id": 7, "slug": SLUG, "owner": {"login": OWNER},
-        "pem": test_private_key(), "client_secret": "unused-secret",
+        "pem": private_key(), "client_secret": "unused-secret",
         "webhook_secret": "unused-hook"})
 
 
@@ -166,7 +166,7 @@ def test_manifest_callback_and_private_recovery():
 
         def exchange(code):
             exchanges.append(code)
-            return {"id": 7, "slug": SLUG, "owner": {"login": OWNER}, "pem": test_private_key(),
+            return {"id": 7, "slug": SLUG, "owner": {"login": OWNER}, "pem": private_key(),
                     "client_secret": "unused-secret", "webhook_secret": "unused-hook"}
 
         result = setup.register(session, OWNER, "Fixture", timeout=10, open_browser=browser, exchange=exchange)
@@ -298,7 +298,7 @@ def test_wrong_registration_owner_retains_key_and_missing_record_points_to_impor
         session = Path(directory)
         try:
             setup.save_registration(session, OWNER, {"id": 7, "slug": SLUG,
-                "owner": {"login": "different-owner"}, "pem": test_private_key()})
+                "owner": {"login": "different-owner"}, "pem": private_key()})
             raise AssertionError("wrong registration owner accepted")
         except setup.Error:
             assert (session / "app.pem").exists()
@@ -328,7 +328,7 @@ def test_cli_preflight_resume_and_import_routes():
                 ("GITHUB_", "GH_", "CODEX_", "CODE_HOME", "GIT_"))}
             env["HOME"] = str(home)
             source = root / "key.pem"
-            source.write_text(test_private_key())
+            source.write_text(private_key())
             source.chmod(0o600)
             real_config = identity.github_app_config
 
@@ -422,7 +422,7 @@ def test_owner_type_catches_missing_organization_option():
 
 
 if __name__ == "__main__":
-    tests = [value for name, value in list(globals().items()) if name.startswith("test_") and callable(value) and name != "test_private_key"]
+    tests = [value for name, value in list(globals().items()) if name.startswith("test_") and callable(value)]
     for test in tests:
         test()
     print(f"PASS: {len(tests)} guided App setup tests")

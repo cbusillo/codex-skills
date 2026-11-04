@@ -232,7 +232,7 @@ class FinishPreviewIntegrationTests(unittest.TestCase):
                     for identifier, body, timestamp in (
                         (1, "Claimed by trial\n\n" + helper.claim.marker(source), source["claimed_at"]),
                         (2, "Released claim 1", "2026-10-01T02:00:02Z"))]
-        reader = Mock()
+        reader = Mock(batch_diagnostic={})
         reader.get_json.return_value = {"body": "", "number": 42}
         def read(*_args, **_kwargs):
             if history:
@@ -289,7 +289,7 @@ class FinishPreviewIntegrationTests(unittest.TestCase):
                 argv += ["--ledger", str(ledger)] if mode == "finish" else ["--checkout-root", str(f.root)]
                 paths = (ledger, private, f.log, CLOSURE.lease_path(f.session))
                 before = {path: path.read_bytes() for path in paths}
-                reader = Mock()
+                reader = Mock(batch_diagnostic={})
                 output = io.StringIO()
                 with patch.object(f.release.sys, "argv", argv), \
                         patch.object(f.release.github_identity, "automation_login", return_value="fixture-bot"), \

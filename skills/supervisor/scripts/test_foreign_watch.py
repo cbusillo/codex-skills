@@ -305,6 +305,26 @@ class WatchTests(unittest.TestCase):
         for call in reader.paged_json.call_args_list:
             self.assertLess(foreign_watch.timestamp(call.kwargs["params"]["since"]), foreign_watch.timestamp(SINCE))
 
+    def test_empty_scans_reuse_cursor_until_a_message_arrives(self) -> None:
+        reader = Mock()
+        reader.paged_json.side_effect = feeds([], [], [comment("agent[bot]", updated=STARTED)], [comment(updated=STARTED)])
+        watermarks = {REPO: SINCE}
+        reads = []
+        for _ in range(2):
+            notices, errors, watermarks = foreign_watch.scan(
+                [REPO], watermarks, ["agent[bot]"], [], STARTED, reader)
+            self.assertEqual((notices, errors, watermarks), ([], [], {REPO: SINCE}))
+            reads.append(reader.paged_json.call_args_list)
+            reader.paged_json.reset_mock()
+        self.assertEqual(reads[0], reads[1])
+        notices, errors, watermarks = foreign_watch.scan(
+            [REPO], watermarks, ["agent[bot]"], [], STARTED, reader)
+        self.assertEqual((notices, errors, watermarks), ([], [], {REPO: STARTED}))
+        notices, errors, watermarks = foreign_watch.scan(
+            [REPO], watermarks, ["agent[bot]"], [], STARTED, reader)
+        self.assertEqual(errors, [])
+        self.assertEqual([notice["url"] for notice in notices], [comment()["html_url"]])
+
     def test_issue_or_pull_request_opened_by_an_outside_person_is_a_notice(self):
         reader = Mock()
         reader.request.return_value = SimpleNamespace(body={"items": [], "total_count": 0, "incomplete_results": False})
@@ -399,7 +419,7 @@ class WatchTests(unittest.TestCase):
     def test_failure_preserves_only_failed_repository_watermark(self):
         reader = Mock()
         reader.request.return_value = SimpleNamespace(body={"items": [], "total_count": 0, "incomplete_results": False})
-        reader.paged_json.side_effect = feeds(foreign_watch.GitHubReadShapeError("partial"), [])
+        reader.paged_json.side_effect = feeds(foreign_watch.GitHubReadShapeError("partial"), [comment("director", updated=STARTED)])
         notices, errors, watermarks = foreign_watch.scan(
             [REPO, "director/healthy"], {REPO: SINCE, "director/healthy": SINCE},
             ["director"], [], STARTED, reader)

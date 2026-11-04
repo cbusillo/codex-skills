@@ -573,8 +573,9 @@ quota retry time, whichever is later. Those notices remain readable in live outp
 Authentication, malformed-response and other nonretryable failures still stop.
 Wait until a reported quota retry time before a manual restart; increase the bounded deadline when a historical
 catch-up cannot finish. Partial pages never advance past a failed read.
-Successful repositories
-advance to the pass start, with a one-second overlap on their next read.
+Successful repositories whose feeds returned items advance to the pass start, with a
+one-second overlap on their next read. Empty scans keep their cursor so unchanged
+feeds can return free conditional responses. Filtered or deleted items still advance it.
 
 Own-login comments starting with `Owner question:` or `Director question:`
 (including bold headings) produce `director_question` notices for the
@@ -1929,9 +1930,8 @@ exit command reports `delivery: session_ended` once the matching harness
 processes observed on that TTY are gone, even if the pane disappears before
 readback. This result does not release claims or close the terminal. Wait at
 most 60 seconds, reading `read` for `dead: true` and checking that the matched
-agent PID and processes belonging to that pane have exited. If its TTY was
-reused, use the native close command's ownership proof below. Preserve a running or
-uncertain pane. Record/release native session claims under the existing
+original agent, launch and pane PIDs are absent. Preserve a running or uncertain
+pane. Record/release native session claims under the existing
 finished-session procedure before removing the terminal.
 
 ```sh
@@ -1948,11 +1948,10 @@ the server. A dead pane has no input consumer; a live shell cannot qualify
 from its screen appearance. Read back disappearance once. An uncertain close
 is retained for reconciliation rather than retried.
 
-If the dead pane's old TTY has been reused, close proceeds only when tmux
-identifies a different live pane on that TTY and process ancestry proves every
-current job there belongs to that new pane's PID tree. Unattributed jobs,
-missing ancestry, and either recorded PID still present preserve the dead
-pane. The live pane is never a close target, and no process is killed.
+A verified-dead pane's old TTY may belong to an unrelated process. Physical
+close checks the original PIDs are absent, without using current TTY ownership
+as evidence about the dead pane. The exact launch identity and dead state
+remain required; the unrelated terminal and its processes stay untouched.
 
 For the locked-screen acceptance proof, the Supervisor arranges a short test
 with the Director. Prepare one harmless real Codex or Claude launch with an
@@ -2324,6 +2323,15 @@ mutation lock. Busy closure/ownership locks report `retryable: true`; preserve
 records and retry after the holder finishes. A discovery read that stops at its
 retry deadline reports `retryable: true`; rerun finish once GitHub is
 available, after `retry_at` when it is set.
+Discovery batches issue-number and body reads through the same reader's GraphQL
+transport and paginates each repository. Incomplete repositories or exhausted
+GraphQL/provider failures recover through existing paged REST status inventory.
+An early shared wait rejection recovers only when its retained cause identifies the provider or
+GraphQL-primary limit. Identity, authorization, cancellation, context changes and
+secondary or unknown cooldowns remain read errors.
+Transient GraphQL quota stops remain retryable without switching transports.
+The `discovery` result reports GraphQL cost and any REST fallback repositories.
+The full repository comment inventory still covers closed issues and pull requests.
 Require `ok: true` and `needs_reconciliation: false` before guarded close and
 confirmed disappearance. Only then remove the unchanged active row under source
 ownership; finish retains its full source identity in the canonical log.
@@ -2451,11 +2459,9 @@ and recreate it on takeover. Stop it when this run ends.
 Use the same evidence directory for every invocation for this run:
 its launch journal prevents replay after interruption, failure or an uncertain
 comment write. This directory is durable operational state, not disposable
-task evidence. Keep it in a private run-state directory without automatic
-expiry, or an appropriate private directory on Retained-Artifacts. Never put
-it under the auto-pruned Developer-Artifacts/task-evidence root, a temporary
-directory or any cleanup policy that can remove journals while requests remain
-open. Keep journals and results through handoffs and until every request is
+task evidence. Use a private (0700) `<retainedRoot>/recovery/<repo>/<item>` under the
+[shared retention rule](../../github/references/worktrees.md#task-evidence-and-retained-items),
+without expiry while requests remain open. Keep journals and results through handoffs and until every request is
 resolved; a denied/spent request needs its journal for as long as that request
 could be discovered again. If state is lost, reconstruct it from retained
 evidence and reconcile remote delivery before apply; absence of a journal is

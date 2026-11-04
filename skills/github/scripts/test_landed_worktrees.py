@@ -206,7 +206,7 @@ class PreviewTests(Fixture):
             f"sys.path.insert(0, {str(Path(landed_worktrees.dev_worktree.__file__).parent)!r})\nimport dev_worktree\n"
             "if '--dry-run' in sys.argv:\n"
             "    child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
-            "    observation = {'pids': [os.getpid(), child.pid], 'callback_refused': dev_worktree.delegation_active(sys.argv[1:])}\n"
+            "    observation = {'pids': [os.getpid(), child.pid], 'callback_refused': dev_worktree.delegation_active(sys.argv[1:]), 'evidence': os.environ.get('DEV_WORKTREE_EVIDENCE_ROOT')}\n"
             f"    Path({str(receipt)!r}).write_text(json.dumps(observation))\n"
             "    time.sleep(60)\n"
             "else:\n"
@@ -218,6 +218,7 @@ class PreviewTests(Fixture):
             preview = landed_worktrees.run_retire(str(self.base / "target"), dry_run=True)
             self.assertNotEqual(preview.returncode, 0)
             observed = json.loads(receipt.read_text())
+            self.assertEqual(observed["evidence"], str(dev_worktree.artifact_roots()[0]))
             self.assertTrue(observed["callback_refused"])
             pids = observed["pids"]
             for pid in pids:
@@ -681,7 +682,7 @@ class MainTests(Fixture):
         with mock.patch.dict(os.environ, {"DEV_WORKTREE_CONFIG": str(config)}), \
                 mock.patch.dict("sys.modules", {"github_read": read_errors}), \
                 mock.patch.object(landed_worktrees, "run_retire") as run, \
-                mock.patch.object(dev_worktree.os, "execv") as host, redirect_stdout(out):
+                mock.patch.object(dev_worktree.os, "execve") as host, redirect_stdout(out):
             run.return_value = subprocess.CompletedProcess([], 0, "", "")
             landed = (["--path", str(target)] if target else ["--all"] if all_trees
                       else ["--branch", branch] if branch else ["--pr", "7"])
@@ -690,7 +691,7 @@ class MainTests(Fixture):
                                            *(["--offline-only"] if offline_only else []), str(target)])
             else:
                 code = landed_worktrees.main(["--repo", repo, *landed, "--checkout", str(checkout or self.repo), "--apply"])
-            self.delegation_packet = os.environ.get("DEV_WORKTREE_DELEGATED")
+            self.delegation_packet = host.call_args.args[2].get("DEV_WORKTREE_DELEGATED") if host.called else None
         return code, json.loads(out.getvalue()) if out.getvalue() else {}, host if entrypoint else run
 
     def test_sweep_failure_preserves_completed_retirement_receipts(self) -> None:
@@ -713,6 +714,7 @@ class MainTests(Fixture):
                 code, result, host = self.run_main(None, target=target, entrypoint=True)
                 self.assertEqual((code, result), (0, {}))
                 self.assertEqual(host.call_args.args[1][-1], str(target))
+                self.assertEqual(host.call_args.args[2]["DEV_WORKTREE_EVIDENCE_ROOT"], str(dev_worktree.artifact_roots()[0]))
                 self.assertEqual(self.git(target, "rev-parse", "HEAD"), head)
 
     def test_explicit_retirement_blocks_active_prs_and_foreign_portable_locks(self):

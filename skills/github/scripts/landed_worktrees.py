@@ -76,7 +76,6 @@ def registered(checkout: Path, *, include_primary: bool = False, timeout: float 
 
 
 def contained(checkout: Path, head: str, tip: str) -> bool:
-    """True when every commit at head is in tip; a tip missing locally proves nothing."""
     if head == tip:
         return True
     return (git(checkout, "cat-file", "-e", f"{tip}^{{commit}}").returncode == 0
@@ -125,7 +124,7 @@ def retirement_command(path: str, dry_run: bool) -> subprocess.CompletedProcess[
     if helper is None:
         return portable_retire(Path(path), dry_run=dry_run)
     args = [str(helper), "retire", *(["--dry-run"] if dry_run else []), path]
-    environment = {**os.environ, "DEV_WORKTREE_DELEGATED": f"{os.getpid()}:{json.dumps(args[1:])}"}
+    environment = dev_worktree.host_environment(args[1:])
     return subprocess.run(args, capture_output=True, text=True, env=environment)
 
 

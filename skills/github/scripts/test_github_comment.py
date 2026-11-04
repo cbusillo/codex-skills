@@ -1654,64 +1654,12 @@ def test_client_reply_refuses_outside_participants_and_mentions_before_writing()
             with_call_stub(callback, run)
 
 
-TESTS: list[Callable[[], None]] = [
-    test_client_reply_refuses_outside_participants_and_mentions_before_writing,
-    test_before_create_receives_the_original_operation_before_provider_effects,
-    test_planning_reference_boundaries_preserve_qualified_repository_names,
-    test_explicit_comment_commands_refuse_ambiguous_refs_before_posting,
-    test_attachment_limits_refuse_before_cli,
-    test_attachment_passthrough_and_failures_never_replay,
-    test_concurrent_numbering_reconciles_the_same_saved_body,
-    test_question_numbering_follows_confirmed_write_and_repairs_same_assignment,
-    test_numbered_questions_require_owned_source_or_unbound_reservation,
-    test_unowned_deduplicated_question_refuses_without_claiming_a_write,
-    test_question_refuses_live_mentions_of_anyone_but_the_owner,
-    test_only_an_unescaped_code_tag_quiets_a_mention,
-    test_ordinary_comment_keeps_its_mentions,
-    test_personal_question_uses_chat_id_before_exact_text_approval,
-    test_recent_reconciliation_includes_clock_skew_boundary_and_paginates,
-    test_append_filters_old_pages_but_dedupe_and_edit_last_keep_full_history,
-    test_own_user_actor_is_resolved_before_edit_selection_and_dedupe,
-    test_resolved_own_user_rejects_foreign_exact_comment_before_write,
-    test_resolved_own_user_failure_keeps_fingerprint_and_reconciliation_actor,
-    test_exact_edit_supports_enterprise_api_thread_urls,
-    test_exact_comment_cli_preserves_files_and_conflict_envelope,
-    test_exact_edits_keep_interleaved_session_comments_separate,
-    test_exact_edit_refuses_wrong_thread_author_and_stale_expectations,
-    test_exact_edit_accepts_matching_version_and_empty_prior_body,
-    test_exact_edit_never_replays_patch_or_creates_on_failure,
-    test_exact_edit_missing_target_never_selects_another_comment,
-    test_exact_edit_invalid_combinations_fail_before_network,
-    test_create_preserves_markdown_body,
-    test_dedupe_body_reuses_existing_actor_comment_without_write,
-    test_edit_last_paginates_and_selects_latest_actor_comment,
-    test_edit_last_without_existing_comment_fails_closed,
-    test_create_if_none_creates_only_when_initial_lookup_is_empty,
-    test_deletion_race_never_falls_back_to_create,
-    test_actor_mismatch_blocks_mutation,
-    test_own_user_write_reports_resolved_actor_and_rejects_wrong_author,
-    test_own_user_opt_in_does_not_override_automation_response_context,
-    test_own_user_invalid_response_reports_resolved_actor,
-    test_edit_preserves_comment_author_after_authorized_route_switch,
-    test_own_user_unknown_write_reconciles_without_duplicate,
-    test_create_if_none_requires_edit_last,
-    test_explicit_active_fallback_accepts_and_reports_actual_actor,
-    test_active_fallback_reports_response_actor_after_route_switch,
-    test_unknown_create_no_match_fails_closed_without_repeat,
-    test_rejected_create_retries_without_reconciliation,
-    test_create_unknown_outcome_returns_reconciled_comment_without_retry,
-    test_create_reconciliation_uses_explicit_fallback_actor_context,
-    test_create_reconciliation_rejects_concurrent_identical_comment,
-    test_create_reconciliation_excludes_preexisting_same_second_comment,
-    test_repo_resolution_launch_failure_is_structured,
-]
-
-
 def main() -> None:
-    for test in TESTS:
+    tests = [test for name, test in globals().items() if name.startswith("test_") and callable(test)]
+    for test in tests:
         test()
         print(f"ok {test.__name__}")
-    print(f"\nAll {len(TESTS)} tests passed.")
+    print(f"\nAll {len(tests)} tests passed.")
 
 
 if __name__ == "__main__":
