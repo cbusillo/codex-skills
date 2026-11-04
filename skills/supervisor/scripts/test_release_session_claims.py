@@ -1346,6 +1346,47 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             helper.discover(self.reader, "test", [self.entry], ["other/c"])
 
+    def test_status_batch_preserves_ownership_and_recovers_incomplete_repositories(self) -> None:
+        status = {"number": 9, "body": "Claimed by trial\nSession: source-session"}
+        connection = {
+            "totalCount": 1,
+            "nodes": [status],
+            "pageInfo": {"hasNextPage": False, "endCursor": None},
+        }
+        for mode in ("complete", "paginated", "partial", "duplicate", "unavailable"):
+            with self.subTest(mode=mode):
+                value = json.loads(json.dumps(connection))
+                empty = {**connection, "totalCount": 0, "nodes": []}
+                body: dict[str, Any] = {"data": {"r0": {"issues": value}, "r1": {"issues": empty}}}
+                if mode == "paginated":
+                    value.update(totalCount=2, pageInfo={"hasNextPage": True, "endCursor": "next"})
+                elif mode == "partial":
+                    body["errors"] = [{"message": "partial response"}]
+                elif mode == "duplicate":
+                    value.update(totalCount=2, nodes=value["nodes"] * 2)
+                reader = Mock()
+                reader.graphql_json.return_value = SimpleNamespace(ok=mode != "unavailable", body=body)
+                if mode == "unavailable":
+                    with self.assertRaises(helper.GitHubReadError):
+                        helper.discover(reader, "test", [self.entry], ["test/a", "test/b"])
+                    reader.paged_json.assert_not_called()
+                    continue
+
+                def paged(path: str, *, scenario: str = mode, **_kwargs: Any) -> list[dict]:
+                    if path == "/repos/test/b/issues/comments":
+                        return [{**self.source, "issue_url": "https://api.github.com/repos/test/b/issues/7"}]
+                    if path.endswith("/comments"):
+                        return []
+                    self.assertNotEqual(scenario, "complete", "complete status inventory must not reread REST")
+                    return [status] if path == "/repos/test/a/issues" else []
+
+                reader.paged_json.side_effect = paged
+                self.assertEqual(
+                    helper.discover(reader, "test", [self.entry], ["test/a", "test/b"])[0],
+                    [("test/a", status["number"]), ("test/b", 7)],
+                )
+                reader.graphql_json.assert_called_once()
+
     def test_complete_inventory_failure_does_not_become_empty(self):
         self.reader.paged_json.side_effect = helper.GitHubReadShapeError("partial page")
         with self.assertRaises(helper.GitHubReadShapeError):
