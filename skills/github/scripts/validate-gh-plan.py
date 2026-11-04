@@ -33,11 +33,12 @@ from unittest.mock import patch
 
 SCRIPT = Path(__file__).with_name("gh-plan.py")
 PR_SCRIPT = Path(__file__).with_name("gh-pr.py")
-REAL_SUBPROCESS_RUN = subprocess.run
 os.environ["GITHUB_RETRY_MAX_ATTEMPTS"] = "1"
 os.environ["CODEX_SKILLS_ENV_FILE"] = "/definitely/missing/codex-skills-test.env"
 os.environ["CODEX_AUTOMATION_LOGIN"] = "shiny-code-bot"
 os.environ["CODEX_AUTOMATION_EMAIL"] = "fixture-automation@example.invalid"
+
+from github_fixture_support import REAL_SUBPROCESS_RUN, run_python_helper
 
 
 def load_plan_module() -> Any:
@@ -3918,22 +3919,7 @@ def test_retried_pr_edit_emits_retry_fields_on_stdout() -> None:
             GITHUB_RETRY_JITTER_SECONDS="0",
             GITHUB_RETRY_STATE_DIR=str(temp_path / "state"),
         )
-        result = REAL_SUBPROCESS_RUN(
-            [
-                sys.executable,
-                str(PR_SCRIPT),
-                "--repo",
-                "owner/repo",
-                "edit",
-                "9",
-                "--body-file",
-                str(body_path),
-            ],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-        )
+        result = run_python_helper(PR_SCRIPT, ["--repo", "owner/repo", "edit", "9", "--body-file", str(body_path)], env=env)
     assert result.returncode == 0, result
     assert len([line for line in result.stdout.splitlines() if line.strip()]) == 1, result.stdout
     payload = json.loads(result.stdout)
@@ -3997,13 +3983,7 @@ def test_pr_checks_aggregates_retry_fields_across_reads() -> None:
             GITHUB_RETRY_JITTER_SECONDS="0",
             GITHUB_RETRY_STATE_DIR=str(temp_path / "state"),
         )
-        result = REAL_SUBPROCESS_RUN(
-            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "checks", "12"],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-        )
+        result = run_python_helper(PR_SCRIPT, ["--repo", "owner/repo", "checks", "12"], env=env)
         pr_attempts = int(counter_path.read_text())
     assert result.returncode == 0, result
     payload = json.loads(result.stdout)
@@ -4318,13 +4298,7 @@ def test_retried_project_list_emits_retry_fields_on_stdout() -> None:
             GITHUB_RETRY_JITTER_SECONDS="0",
             GITHUB_RETRY_STATE_DIR=str(temp_path / "state"),
         )
-        result = REAL_SUBPROCESS_RUN(
-            [sys.executable, str(SCRIPT), "project-list", "--owner", "owner"],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-        )
+        result = run_python_helper(SCRIPT, ["project-list", "--owner", "owner"], env=env)
     assert result.returncode == 0, result
     assert len([line for line in result.stdout.splitlines() if line.strip()]) == 1, result.stdout
     payload = json.loads(result.stdout)
@@ -4361,13 +4335,7 @@ def test_plan_cli_emits_shared_terminal_envelope() -> None:
             GH_PLAN_ALLOW_ACTIVE_FIRST="1",
             CODE_HOME=str(tmp_path / ".code"),
         )
-        result = REAL_SUBPROCESS_RUN(
-            [sys.executable, str(SCRIPT), "--repo", "owner/repo", "show", "1", "--full"],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-        )
+        result = run_python_helper(SCRIPT, ["--repo", "owner/repo", "show", "1", "--full"], env=env)
 
     assert result.returncode == 0, result
     assert len([line for line in result.stdout.splitlines() if line.strip()]) == 1, result.stdout
@@ -4409,13 +4377,7 @@ def test_plan_project_query_failure_is_not_a_write() -> None:
             CODE_HOME=str(tmp_path / ".code"),
             GITHUB_RETRY_MAX_ATTEMPTS="1",
         )
-        result = REAL_SUBPROCESS_RUN(
-            [sys.executable, str(SCRIPT), "project-list", "--owner", "owner"],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-        )
+        result = run_python_helper(SCRIPT, ["project-list", "--owner", "owner"], env=env)
 
     assert result.returncode == 1, result
     assert len([line for line in result.stdout.splitlines() if line.strip()]) == 1, result.stdout
@@ -4429,12 +4391,7 @@ def test_plan_project_query_failure_is_not_a_write() -> None:
 
 
 def test_python_helper_parser_failures_emit_envelopes() -> None:
-    pr_result = REAL_SUBPROCESS_RUN(
-        [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "comment", "1"],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+    pr_result = run_python_helper(PR_SCRIPT, ["--repo", "owner/repo", "comment", "1"])
     assert pr_result.returncode == 2, pr_result
     pr_payload = json.loads(pr_result.stdout)
     assert pr_payload["operation"] == "github.pr.comment", pr_payload
@@ -4442,12 +4399,7 @@ def test_python_helper_parser_failures_emit_envelopes() -> None:
     assert pr_payload["write_outcome"] == "not_started", pr_payload
     assert "required" in pr_result.stderr, pr_result.stderr
 
-    plan_result = REAL_SUBPROCESS_RUN(
-        [sys.executable, str(SCRIPT), "project-list"],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+    plan_result = run_python_helper(SCRIPT, ["project-list"])
     assert plan_result.returncode == 2, plan_result
     plan_payload = json.loads(plan_result.stdout)
     assert plan_payload["operation"] == "github.plan.project_list", plan_payload
@@ -4515,46 +4467,13 @@ def test_pr_helper_uses_rest_endpoints_for_common_pr_work() -> None:
         )
         gh_path.chmod(0o755)
         env = dict(os.environ, GH_PR_GH=str(gh_path), GH_PR_TEST_LOG=str(log_path))
-        view = REAL_SUBPROCESS_RUN(
-            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "view", "12"],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-            check=True,
+        view = run_python_helper(PR_SCRIPT, ["--repo", "owner/repo", "view", "12"], env=env, check=True)
+        list_result = run_python_helper(
+            PR_SCRIPT, ["--repo", "owner/repo", "list", "--state", "open", "--limit", "20"], env=env, check=True
         )
-        list_result = REAL_SUBPROCESS_RUN(
-            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "list", "--state", "open", "--limit", "20"],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-            check=True,
-        )
-        checks = REAL_SUBPROCESS_RUN(
-            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "checks", "12"],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-            check=True,
-        )
-        merge = REAL_SUBPROCESS_RUN(
-            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "merge", "12"],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-            check=True,
-        )
-        rate = REAL_SUBPROCESS_RUN(
-            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "rate-limit"],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-            check=True,
-        )
+        checks = run_python_helper(PR_SCRIPT, ["--repo", "owner/repo", "checks", "12"], env=env, check=True)
+        merge = run_python_helper(PR_SCRIPT, ["--repo", "owner/repo", "merge", "12"], env=env, check=True)
+        rate = run_python_helper(PR_SCRIPT, ["--repo", "owner/repo", "rate-limit"], env=env, check=True)
         calls = log_path.read_text()
     view_payload = json.loads(view.stdout)
     view_pr = view_payload["pr"]
@@ -4625,10 +4544,9 @@ def test_pr_helper_write_commands_route_through_configured_gh() -> None:
         )
         gh_path.chmod(0o755)
         env = dict(os.environ, GH_PR_GH=str(gh_path), GH_PR_TEST_LOG=str(log_path))
-        create = REAL_SUBPROCESS_RUN(
+        create = run_python_helper(
+            PR_SCRIPT,
             [
-                sys.executable,
-                str(PR_SCRIPT),
                 "--repo",
                 "owner/repo",
                 "create",
@@ -4641,42 +4559,17 @@ def test_pr_helper_write_commands_route_through_configured_gh() -> None:
                 "--head",
                 "feature",
             ],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
             env=env,
             check=True,
         )
-        edit = REAL_SUBPROCESS_RUN(
-            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "edit", "9", "--body-file", str(body_path)],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-            check=True,
+        edit = run_python_helper(
+            PR_SCRIPT, ["--repo", "owner/repo", "edit", "9", "--body-file", str(body_path)], env=env, check=True
         )
-        comment = REAL_SUBPROCESS_RUN(
-            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "comment", "9", "--body-file", str(body_path)],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-            check=True,
+        comment = run_python_helper(
+            PR_SCRIPT, ["--repo", "owner/repo", "comment", "9", "--body-file", str(body_path)], env=env, check=True
         )
-        create_without_body = REAL_SUBPROCESS_RUN(
-            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "create", "--title", "Missing body"],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-        )
-        edit_without_changes = REAL_SUBPROCESS_RUN(
-            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "edit", "9"],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-        )
+        create_without_body = run_python_helper(PR_SCRIPT, ["--repo", "owner/repo", "create", "--title", "Missing body"], env=env)
+        edit_without_changes = run_python_helper(PR_SCRIPT, ["--repo", "owner/repo", "edit", "9"], env=env)
         calls = log_path.read_text().splitlines()
     assert json.loads(create.stdout)["url"] == "https://github.com/owner/repo/pull/9"
     edit_payload = json.loads(edit.stdout)
@@ -4771,21 +4664,11 @@ def test_pr_helper_list_paginates_only_when_limit_exceeds_one_page() -> None:
         )
         gh_path.chmod(0o755)
         env = dict(os.environ, GH_PR_GH=str(gh_path), GH_PR_TEST_LOG=str(log_path))
-        small = REAL_SUBPROCESS_RUN(
-            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "list", "--state", "open", "--limit", "20"],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-            check=True,
+        small = run_python_helper(
+            PR_SCRIPT, ["--repo", "owner/repo", "list", "--state", "open", "--limit", "20"], env=env, check=True
         )
-        large = REAL_SUBPROCESS_RUN(
-            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "list", "--state", "open", "--limit", "250"],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-            check=True,
+        large = run_python_helper(
+            PR_SCRIPT, ["--repo", "owner/repo", "list", "--state", "open", "--limit", "250"], env=env, check=True
         )
         calls = log_path.read_text()
     assert [item["number"] for item in json.loads(small.stdout)["pullRequests"]] == [20]
@@ -4822,14 +4705,7 @@ def test_pr_helper_delete_branch_uses_rest_ref_delete() -> None:
         )
         gh_path.chmod(0o755)
         env = dict(os.environ, GH_PR_GH=str(gh_path), GH_PR_TEST_LOG=str(log_path))
-        merge = REAL_SUBPROCESS_RUN(
-            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "merge", "12", "--delete-branch"],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-            check=True,
-        )
+        merge = run_python_helper(PR_SCRIPT, ["--repo", "owner/repo", "merge", "12", "--delete-branch"], env=env, check=True)
         calls = log_path.read_text()
 
     payload = json.loads(merge.stdout)
@@ -5317,13 +5193,7 @@ def test_pr_helper_merge_404_includes_recovery_context() -> None:
         )
         gh_path.chmod(0o755)
         env = dict(os.environ, GH_PR_GH=str(gh_path))
-        result = REAL_SUBPROCESS_RUN(
-            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "merge", "12"],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-        )
+        result = run_python_helper(PR_SCRIPT, ["--repo", "owner/repo", "merge", "12"], env=env)
 
     assert result.returncode == 1, result
     payload = json.loads(result.stdout)
@@ -5359,13 +5229,7 @@ def test_pr_helper_merge_semantic_rejection_exits_nonzero() -> None:
         )
         gh_path.chmod(0o755)
         env = dict(os.environ, GH_PR_GH=str(gh_path))
-        result = REAL_SUBPROCESS_RUN(
-            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "merge", "12"],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-        )
+        result = run_python_helper(PR_SCRIPT, ["--repo", "owner/repo", "merge", "12"], env=env)
 
     assert result.returncode == 1, result
     payload = json.loads(result.stdout)
@@ -5545,14 +5409,7 @@ def test_ambiguous_405_reconciles_same_head_before_bounded_retry() -> None:
             GITHUB_RETRY_DRAIN_SECONDS="0",
             GITHUB_RETRY_STATE_DIR=str(tmp_path / "retry-state"),
         )
-        merged = REAL_SUBPROCESS_RUN(
-            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "merge", "12"],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-            check=True,
-        )
+        merged = run_python_helper(PR_SCRIPT, ["--repo", "owner/repo", "merge", "12"], env=env, check=True)
         calls = log_path.read_text(encoding="utf-8").splitlines()
 
     payload = json.loads(merged.stdout)
@@ -5586,22 +5443,7 @@ def test_pr_helper_rest_failure_preserves_diagnostics_and_redacts_secrets() -> N
         )
         gh_path.chmod(0o755)
         env = dict(os.environ, GH_PR_GH=str(gh_path))
-        result = REAL_SUBPROCESS_RUN(
-            [
-                sys.executable,
-                str(PR_SCRIPT),
-                "--repo",
-                "owner/repo",
-                "comment",
-                "9",
-                "--body-file",
-                str(body_path),
-            ],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-        )
+        result = run_python_helper(PR_SCRIPT, ["--repo", "owner/repo", "comment", "9", "--body-file", str(body_path)], env=env)
 
     assert result.returncode == 1, result
     assert "synthetic-secret" not in result.stdout + result.stderr, result
@@ -5647,10 +5489,8 @@ def test_check_read_403_and_blocked_metadata_do_not_claim_merge_denial() -> None
         gh_path.chmod(0o755)
         env = dict(os.environ, GH_PR_GH=str(gh_path))
         def invoke(command: str) -> subprocess.CompletedProcess[str]:
-            return REAL_SUBPROCESS_RUN(
-                [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", command, "12"],
-                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
-            )
+            return run_python_helper(PR_SCRIPT, ["--repo", "owner/repo", command, "12"], env=env)
+
         view = invoke("view")
         checks = invoke("checks")
         merge = invoke("merge")
@@ -5739,23 +5579,9 @@ def test_pr_helper_supersede_comments_neutralizes_and_closes() -> None:
             PR_JSON=pr_json,
             WINNER_JSON=winner_json,
         )
-        result = REAL_SUBPROCESS_RUN(
-            [
-                sys.executable,
-                str(PR_SCRIPT),
-                "--repo",
-                "owner/repo",
-                "supersede",
-                "12",
-                "--by",
-                "13",
-                "--reason",
-                "New PR has the agreed tests.",
-                "--delete-branch",
-            ],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+        result = run_python_helper(
+            PR_SCRIPT,
+            ["--repo", "owner/repo", "supersede", "12", "--by", "13", "--reason", "New PR has the agreed tests.", "--delete-branch"],
             env=env,
             check=True,
         )
@@ -5844,13 +5670,7 @@ def test_pr_helper_supersede_does_not_comment_when_close_fails() -> None:
         )
         gh_path.chmod(0o755)
         env = dict(os.environ, GH_PR_GH=str(gh_path), GH_PR_TEST_LOG=str(log_path), PR_JSON=pr_json, WINNER_JSON=winner_json)
-        result = REAL_SUBPROCESS_RUN(
-            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "supersede", "12", "--by", "13"],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-        )
+        result = run_python_helper(PR_SCRIPT, ["--repo", "owner/repo", "supersede", "12", "--by", "13"], env=env)
         calls = log_path.read_text()
 
     assert result.returncode == 1, result
@@ -5916,13 +5736,7 @@ def test_pr_helper_supersede_reports_comment_failure_after_close() -> None:
             PR_JSON=pr_json,
             WINNER_JSON=winner_json,
         )
-        result = REAL_SUBPROCESS_RUN(
-            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "supersede", "12", "--by", "13"],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-        )
+        result = run_python_helper(PR_SCRIPT, ["--repo", "owner/repo", "supersede", "12", "--by", "13"], env=env)
         calls = log_path.read_text().splitlines()
 
     assert result.returncode == 1, result
@@ -5988,14 +5802,7 @@ def test_pr_helper_supersede_warns_when_body_rewrite_fails_after_close() -> None
         )
         gh_path.chmod(0o755)
         env = dict(os.environ, GH_PR_GH=str(gh_path), GH_PR_TEST_LOG=str(log_path), PR_JSON=pr_json, WINNER_JSON=winner_json)
-        result = REAL_SUBPROCESS_RUN(
-            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "supersede", "12", "--by", "13"],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-            check=True,
-        )
+        result = run_python_helper(PR_SCRIPT, ["--repo", "owner/repo", "supersede", "12", "--by", "13"], env=env, check=True)
 
     payload = json.loads(result.stdout)
     assert payload["ok"] is True, payload
@@ -6130,23 +5937,8 @@ def test_pr_helper_supersede_warns_when_branch_delete_fails() -> None:
         )
         gh_path.chmod(0o755)
         env = dict(os.environ, GH_PR_GH=str(gh_path), PR_JSON=pr_json, WINNER_JSON=winner_json)
-        result = REAL_SUBPROCESS_RUN(
-            [
-                sys.executable,
-                str(PR_SCRIPT),
-                "--repo",
-                "owner/repo",
-                "supersede",
-                "12",
-                "--by",
-                "13",
-                "--delete-branch",
-            ],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-            check=True,
+        result = run_python_helper(
+            PR_SCRIPT, ["--repo", "owner/repo", "supersede", "12", "--by", "13", "--delete-branch"], env=env, check=True
         )
 
     payload = json.loads(result.stdout)
@@ -6217,23 +6009,8 @@ def test_pr_helper_supersede_skips_branch_delete_when_winner_uses_same_branch() 
         )
         gh_path.chmod(0o755)
         env = dict(os.environ, GH_PR_GH=str(gh_path), GH_PR_TEST_LOG=str(log_path), PR_JSON=pr_json, WINNER_JSON=winner_json)
-        result = REAL_SUBPROCESS_RUN(
-            [
-                sys.executable,
-                str(PR_SCRIPT),
-                "--repo",
-                "owner/repo",
-                "supersede",
-                "12",
-                "--by",
-                "13",
-                "--delete-branch",
-            ],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-            check=True,
+        result = run_python_helper(
+            PR_SCRIPT, ["--repo", "owner/repo", "supersede", "12", "--by", "13", "--delete-branch"], env=env, check=True
         )
         calls = log_path.read_text()
 
@@ -6298,13 +6075,8 @@ def test_pr_helper_supersede_skips_branch_delete_when_third_pr_uses_branch() -> 
         )
         gh_path.chmod(0o755)
         env = dict(os.environ, GH_PR_GH=str(gh_path), GH_PR_TEST_LOG=str(log_path), PR_JSON=pr_json, WINNER_JSON=winner_json)
-        result = REAL_SUBPROCESS_RUN(
-            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "supersede", "12", "--by", "13", "--delete-branch"],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-            check=True,
+        result = run_python_helper(
+            PR_SCRIPT, ["--repo", "owner/repo", "supersede", "12", "--by", "13", "--delete-branch"], env=env, check=True
         )
         calls = log_path.read_text()
 
@@ -6370,13 +6142,8 @@ def test_pr_helper_supersede_skips_branch_delete_for_default_branch() -> None:
         )
         gh_path.chmod(0o755)
         env = dict(os.environ, GH_PR_GH=str(gh_path), GH_PR_TEST_LOG=str(log_path), PR_JSON=pr_json, WINNER_JSON=winner_json)
-        result = REAL_SUBPROCESS_RUN(
-            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "supersede", "12", "--by", "13", "--delete-branch"],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-            check=True,
+        result = run_python_helper(
+            PR_SCRIPT, ["--repo", "owner/repo", "supersede", "12", "--by", "13", "--delete-branch"], env=env, check=True
         )
         calls = log_path.read_text()
 
@@ -6433,20 +6200,7 @@ def test_pr_helper_preserves_url_repo_and_paginates_checks() -> None:
         )
         gh_path.chmod(0o755)
         env = dict(os.environ, GH_PR_GH=str(gh_path), GH_PR_TEST_LOG=str(log_path))
-        checks = REAL_SUBPROCESS_RUN(
-            [
-                sys.executable,
-                str(PR_SCRIPT),
-                "--repo",
-                "owner/repo",
-                "checks",
-                "https://github.com/other/repo/pull/44",
-            ],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-        )
+        checks = run_python_helper(PR_SCRIPT, ["--repo", "owner/repo", "checks", "https://github.com/other/repo/pull/44"], env=env)
         calls = log_path.read_text()
 
     payload = json.loads(checks.stdout)
@@ -6511,14 +6265,7 @@ def test_pr_helper_view_reports_review_decisions_and_omits_unfetched_null() -> N
         def run_view(reviews: list[dict[str, Any]], *, fail_reviews: bool = False) -> dict[str, Any]:
             reviews_path.write_text(json.dumps(reviews) + "\n", encoding="utf-8")
             call_env = dict(env, GH_PR_REVIEWS_FAIL="1" if fail_reviews else "0")
-            result = REAL_SUBPROCESS_RUN(
-                [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "view", "12"],
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                env=call_env,
-                check=True,
-            )
+            result = run_python_helper(PR_SCRIPT, ["--repo", "owner/repo", "view", "12"], env=call_env, check=True)
             return json.loads(result.stdout)
 
         approved = run_view(
@@ -6593,14 +6340,7 @@ def test_pr_helper_current_branch_resolves_upstream_fork() -> None:
         )
         gh_path.chmod(0o755)
         env = dict(os.environ, GH_PR_GH=str(gh_path), GH_PR_TEST_LOG=str(log_path))
-        result = REAL_SUBPROCESS_RUN(
-            [sys.executable, str(PR_SCRIPT), "view"],
-            cwd=repo_path,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-        )
+        result = run_python_helper(PR_SCRIPT, ["view"], cwd=repo_path, env=env)
         calls = log_path.read_text()
 
     payload = json.loads(result.stdout)
@@ -6642,14 +6382,7 @@ def test_pr_helper_primary_match_skips_inaccessible_upstream() -> None:
         )
         gh_path.chmod(0o755)
         env = dict(os.environ, GH_PR_GH=str(gh_path), GH_PR_TEST_LOG=str(log_path))
-        result = REAL_SUBPROCESS_RUN(
-            [sys.executable, str(PR_SCRIPT), "view"],
-            cwd=repo_path,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-        )
+        result = run_python_helper(PR_SCRIPT, ["view"], cwd=repo_path, env=env)
         calls = log_path.read_text()
 
     payload = json.loads(result.stdout)
@@ -6678,13 +6411,7 @@ def test_pr_helper_paged_rest_failure_preserves_diagnostics() -> None:
         )
         gh_path.chmod(0o755)
         env = dict(os.environ, GH_PR_GH=str(gh_path))
-        result = REAL_SUBPROCESS_RUN(
-            [sys.executable, str(PR_SCRIPT), "--repo", "owner/repo", "checks", "12"],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-        )
+        result = run_python_helper(PR_SCRIPT, ["--repo", "owner/repo", "checks", "12"], env=env)
 
     assert result.returncode == 1, result
     assert "synthetic-paged" not in result.stdout + result.stderr, result
@@ -6713,14 +6440,7 @@ def test_pr_helper_accepts_enterprise_pr_urls() -> None:
         )
         gh_path.chmod(0o755)
         env = dict(os.environ, GH_PR_GH=str(gh_path), GH_PR_TEST_LOG=str(log_path))
-        view = REAL_SUBPROCESS_RUN(
-            [sys.executable, str(PR_SCRIPT), "view", "https://ghe.example.com/enterprise/repo/pull/5"],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-            check=True,
-        )
+        view = run_python_helper(PR_SCRIPT, ["view", "https://ghe.example.com/enterprise/repo/pull/5"], env=env, check=True)
         calls = log_path.read_text()
     payload = json.loads(view.stdout)
     assert payload["repo"] == "enterprise/repo", payload
