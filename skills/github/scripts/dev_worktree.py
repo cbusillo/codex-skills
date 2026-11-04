@@ -3,7 +3,6 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Create a linked task worktree, or route to an explicitly configured host helper."""
 
 from __future__ import annotations
 
@@ -11,20 +10,21 @@ import argparse
 import importlib.util
 import json
 import os
-from pathlib import Path
+import random
 import re
+import shutil
+import stat
 import subprocess
 import sys
+import time
+import uuid
+from pathlib import Path
 from types import ModuleType
-
 
 DEFAULT_CONFIG_RELATIVE = Path(".config/codex-skills/worktrees.json")
 
 
 def git_environment() -> dict[str, str]:
-    # These are local operations on an explicit repository. Do not inherit a
-    # hook caller's discovery, object storage, or command-scoped configuration.
-    # Normal repository/user/system config files still apply.
     return {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
 
 
@@ -33,11 +33,8 @@ def delegation_active(args: list[str]) -> bool:
     if not marker:
         return False
     pid, separator, request = marker.partition(":")
-    # Identical inherited callbacks remain loops even after a shim detaches.
     if not separator or request == json.dumps(args):
         return True
-    # A different request can start after the exec'd host has exited.
-    # Keep the old conservative guard where POSIX signal-zero probing is absent.
     if os.name != "posix" or not pid.isdecimal() or int(pid) <= 0:
         return True
     try:
@@ -61,22 +58,182 @@ def git(repo: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
-def configuration() -> tuple[Path, Path | None]:
+def settings() -> dict[str, str]:
     explicit = os.environ.get("DEV_WORKTREE_CONFIG")
     config = Path(explicit).expanduser() if explicit else Path.home() / DEFAULT_CONFIG_RELATIVE
     settings = json.loads(config.read_text()) if explicit or os.path.lexists(config) else {}
-    if not isinstance(settings, dict) or set(settings) - {"root", "hostHelper"}:
-        raise Refused("Expected a JSON object with root and optional hostHelper.")
-    root = settings.get("root", str(Path.home() / "Developer/worktrees"))
-    helper = settings.get("hostHelper")
-    if not isinstance(root, str):
-        raise Refused("root must be an absolute path.")
-    for value in (root, helper):
-        if value is not None and (not isinstance(value, str) or not value or not Path(value).expanduser().is_absolute()):
-            raise Refused("root and hostHelper must be absolute paths (a leading ~ is allowed).")
-    if "hostHelper" in settings and (helper is None or "root" not in settings):
+    keys = {"root", "hostHelper", "evidenceRoot", "retainedRoot", "evidenceMount"}
+    if not isinstance(settings, dict) or set(settings) - keys:
+        raise Refused(f"Expected a JSON object with keys from {sorted(keys)}.")
+    for value in settings.values():
+        if not isinstance(value, str) or not value or not Path(value).expanduser().is_absolute():
+            raise Refused("Configured paths must be absolute (a leading ~ is allowed).")
+    if "hostHelper" in settings and "root" not in settings:
         raise Refused("A hostHelper requires an explicit root and helper path.")
-    return Path(root).expanduser(), Path(helper).expanduser() if helper else None
+    return settings
+
+
+def configuration() -> tuple[Path, Path | None]:
+    values = settings()
+    return (Path(values.get("root", "~/Developer/worktrees")).expanduser(),
+            Path(values["hostHelper"]).expanduser() if "hostHelper" in values else None)
+
+
+def artifact_roots() -> tuple[Path, Path]:
+    values = settings()
+    roots = [Path(values.get(key, default)).expanduser().absolute() for key, default in (
+        ("evidenceRoot", "~/Developer/task-evidence"), ("retainedRoot", "~/Developer/retained-artifacts"),
+        ("root", "~/Developer/worktrees"))]
+    if roots[0].name != "task-evidence":
+        raise Refused("evidenceRoot must be named task-evidence.")
+    for root in roots[:2]:
+        if any(parent.is_symlink() for parent in (root, *root.parents)) or root != root.resolve():
+            raise Refused(f"Artifact root must be canonical and not redirected: {root}")
+        verify_outside_repository(root)
+        if Path.home().resolve().is_relative_to(root.resolve()):
+            raise Refused(f"Root must not contain the home directory: {root}")
+    for index, root in enumerate(roots):
+        if any(root.resolve().is_relative_to(other.resolve()) or other.resolve().is_relative_to(root.resolve())
+               for other in roots[index + 1:]):
+            raise Refused("Evidence, retained and worktree roots must not overlap.")
+    mount = values.get("evidenceMount")
+    if mount and (not os.path.ismount(Path(mount).expanduser()) or not roots[0].is_relative_to(Path(mount).expanduser())):
+        raise Refused("evidenceMount must be mounted and contain evidenceRoot.")
+    return roots[0], roots[1]
+
+
+def host_environment(args: list[str]) -> dict[str, str]:
+    environment = {**os.environ, "DEV_WORKTREE_DELEGATED": f"{os.getpid()}:{json.dumps(args)}"}
+    environment.pop("DEV_WORKTREE_EVIDENCE_ROOT", None)
+    try:
+        environment["DEV_WORKTREE_EVIDENCE_ROOT"] = str(artifact_roots()[0])
+    except (OSError, ValueError) as exc:
+        print(f"dev-worktree: diagnostic root unavailable: {exc}", file=sys.stderr)
+    return environment
+
+
+def sweep_evidence(repo: Path, task: str) -> None:
+    try:
+        evidence, retained = artifact_roots()
+        name = Path(git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir")).parent.name
+        print(f"Task evidence: {evidence / name / task}; retained root: {retained}. "
+              "See skills/github/references/worktrees.md for retention.", file=sys.stderr)
+        sweep(apply=True, budget_seconds=5)
+    except (ImportError, OSError, ValueError, subprocess.CalledProcessError) as exc:
+        print(f"dev-worktree: evidence sweep unavailable; creation continues: {exc}", file=sys.stderr)
+
+
+RETENTION_SECONDS = 30 * 86400
+
+
+def raise_walk_error(error: OSError) -> None:
+    raise error
+
+
+def expired(name: str, parent_fd: int, cutoff: float) -> bool:
+    info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    if info.st_mtime >= cutoff:
+        return False
+    if stat.S_ISDIR(info.st_mode):
+        for _, directories, files, directory_fd in os.fwalk(name, dir_fd=parent_fd, onerror=raise_walk_error):
+            if any(os.stat(entry, dir_fd=directory_fd, follow_symlinks=False).st_mtime >= cutoff for entry in directories + files):
+                return False
+    return True
+
+
+def remove(name: str, parent_fd: int, cutoff: float) -> bool:
+    quarantine = f".expiring-{uuid.uuid4().hex}"
+    os.rename(name, quarantine, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+    try:
+        if not expired(quarantine, parent_fd, cutoff):
+            return False
+        info = os.stat(quarantine, dir_fd=parent_fd, follow_symlinks=False)
+        if stat.S_ISDIR(info.st_mode):
+            for _, _, _, directory_fd in os.fwalk(quarantine, dir_fd=parent_fd):
+                os.fchmod(directory_fd, os.fstat(directory_fd).st_mode | stat.S_IWUSR)
+            shutil.rmtree(quarantine, dir_fd=parent_fd)
+        else:
+            os.unlink(quarantine, dir_fd=parent_fd)
+        return True
+    finally:
+        if quarantine in os.listdir(parent_fd):
+            try:
+                if stat.S_ISDIR(os.stat(quarantine, dir_fd=parent_fd, follow_symlinks=False).st_mode):
+                    os.mkdir(name, dir_fd=parent_fd)
+                    os.rename(quarantine, name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+                else:
+                    os.link(quarantine, name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd, follow_symlinks=False)
+                    os.unlink(quarantine, dir_fd=parent_fd)
+            except OSError as exc:
+                print(f"kept refreshed evidence at {quarantine}; original name {name}: {exc}", file=sys.stderr)
+
+
+def collect(parent_fd: int, path: Path, cutoff: float, deadline: float, apply: bool, *, repositories: bool = False) -> None:
+    names = os.listdir(parent_fd)
+    random.shuffle(names)
+    for name in names:
+        if time.monotonic() >= deadline:
+            print("evidence sweep budget exhausted; remaining units kept", file=sys.stderr)
+            return
+        try:
+            if repositories and stat.S_ISDIR(os.stat(name, dir_fd=parent_fd, follow_symlinks=False).st_mode):
+                repo_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+                try:
+                    collect(repo_fd, path / name, cutoff, deadline, apply)
+                finally:
+                    os.close(repo_fd)
+            elif expired(name, parent_fd, cutoff) and (not apply or remove(name, parent_fd, cutoff)):
+                print(f"{'removed' if apply else 'would remove'} {path / name}", file=sys.stderr)
+        except OSError as exc:
+            print(f"kept, could not measure/remove {path / name}: {exc}", file=sys.stderr)
+
+
+def open_directory(path: Path) -> int:
+    descriptor = os.open(path.anchor, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for part in path.parts[1:]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+        return descriptor
+    except OSError:
+        os.close(descriptor)
+        raise
+
+
+def sweep(*, apply: bool = False, budget_seconds: float = float("inf")) -> int:
+    import fcntl
+
+    root, _ = artifact_roots()
+    if apply and not shutil.rmtree.avoids_symlink_attacks:
+        raise ValueError("symlink-resistant deletion is unavailable; evidence kept")
+    if not root.exists():
+        return 0
+    deadline = time.monotonic() + budget_seconds
+    cutoff = time.time() - RETENTION_SECONDS
+    root_fd = open_directory(root)
+    try:
+        fcntl.flock(root_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        collect(root_fd, root, cutoff, deadline, apply, repositories=True)
+    except BlockingIOError:
+        print("evidence sweep already running; kept evidence", file=sys.stderr)
+    finally:
+        os.close(root_fd)
+    return 0
+
+
+def verify_outside_repository(path: Path) -> None:
+    ancestor = path
+    while not ancestor.exists():
+        ancestor = ancestor.parent
+    probe = subprocess.run(
+        ["git", "-C", str(ancestor), "rev-parse", "--git-dir"],
+        capture_output=True, text=True, env={**git_environment(), "LC_ALL": "C"},
+    )
+    if probe.returncode == 0:
+        raise Refused("Configured paths must be outside repositories and Git metadata.")
+    if "not a git repository" not in probe.stderr:
+        raise Refused("Cannot verify that the destination is outside repositories; inspect the Git probe failure.")
 
 
 def create(repo_arg: str, task: str, start: str, root: Path) -> Path:
@@ -88,25 +245,13 @@ def create(repo_arg: str, task: str, start: str, root: Path) -> Path:
     for component in (main.name, task):
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", component):
             raise Refused(f"Invalid repository/task slug: {component}")
-    # Resolve aliases (including macOS /var) before checking repository containment.
     root = root.resolve()
     if root.is_relative_to(main) or root.is_relative_to(repo):
         raise Refused("The worktree root must be outside the source repository.")
     parent = root / main.name
     if parent.is_symlink():
         raise Refused("The repository worktree parent must not be a symlink.")
-    # A root outside repositories can still contain an existing same-named checkout.
-    ancestor = parent
-    while not ancestor.exists():
-        ancestor = ancestor.parent
-    probe = subprocess.run(
-        ["git", "-C", str(ancestor), "rev-parse", "--git-dir"],
-        capture_output=True, text=True, env={**git_environment(), "LC_ALL": "C"},
-    )
-    if probe.returncode == 0:
-        raise Refused("The worktree destination must be outside repositories and Git metadata.")
-    if "not a git repository" not in probe.stderr:
-        raise Refused("Cannot verify that the destination is outside repositories; inspect the Git probe failure.")
+    verify_outside_repository(parent)
     destination = parent / task
     if os.path.lexists(destination):
         raise Refused(f"Destination already exists: {destination}")
@@ -117,7 +262,6 @@ def create(repo_arg: str, task: str, start: str, root: Path) -> Path:
     if f"refs/heads/{branch}" in refs:
         raise Refused(f"Branch already exists: {branch}; choose a new task slug.")
     parent.mkdir(parents=True, exist_ok=True)
-    # Git also refuses stale registered destinations and branch races. Never force or prune.
     git(repo, "worktree", "add", "-b", branch, str(destination), commit)
     return destination
 
@@ -125,9 +269,13 @@ def create(repo_arg: str, task: str, start: str, root: Path) -> Path:
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     if args in (["--help"], ["-h"]):
-        print(f"Usage: dev-worktree REPOSITORY TASK-SLUG START-POINT\n       dev-worktree retire [--dry-run] [--offline-only] PATH\nConfig: ~/{DEFAULT_CONFIG_RELATIVE} (override: DEV_WORKTREE_CONFIG)\nSee skills/github/references/worktrees.md for host integration and cleanup.")
+        print(f"Usage: dev-worktree REPOSITORY TASK-SLUG START-POINT\n       dev-worktree retire [--dry-run] [--offline-only] PATH\n       dev-worktree sweep-evidence [--apply]\nConfig: ~/{DEFAULT_CONFIG_RELATIVE} (override: DEV_WORKTREE_CONFIG)\nSee skills/github/references/worktrees.md for host integration and cleanup.")
         return 0
     try:
+        if args[:1] == ["sweep-evidence"]:
+            parser = argparse.ArgumentParser(prog="dev-worktree sweep-evidence")
+            parser.add_argument("--apply", action="store_true")
+            return sweep(apply=parser.parse_args(args[1:]).apply)
         root, helper = configuration()
         if helper:
             if delegation_active(args):
@@ -144,16 +292,14 @@ def main(argv: list[str] | None = None) -> int:
         if len(args) == 3 and args[0] != "retire":
             refresh_primary(Path(args[0]))
             retire_finished(Path(args[0]))
+            sweep_evidence(Path(args[0]), args[1])
         if helper:
-            # The host owns volume identity, locks and retirement; do not mkdir or fall back.
-            # Preserve the host's signal traps, including relocking during interrupted retirement.
-            os.environ["DEV_WORKTREE_DELEGATED"] = f"{os.getpid()}:{json.dumps(args)}"
-            os.execv(str(helper), [str(helper), *args])
+            os.execve(str(helper), [str(helper), *args], host_environment(args))
         if len(args) != 3 or args[0] == "retire":
             raise Refused("Usage: dev-worktree REPOSITORY TASK-SLUG START-POINT; see --help for retirement.")
         print(create(*args, root))
         return 0
-    except (Refused, OSError, UnicodeError, json.JSONDecodeError, subprocess.CalledProcessError) as exc:
+    except (ImportError, OSError, ValueError, subprocess.CalledProcessError) as exc:
         detail = exc.stderr.strip() if isinstance(exc, subprocess.CalledProcessError) and exc.stderr else str(exc)
         print(f"dev-worktree: {detail}", file=sys.stderr)
         return 1
@@ -207,8 +353,7 @@ def retire_task(target: Path, *, dry_run: bool, offline_only: bool = False) -> i
             print(outcome.stderr, end="", file=sys.stderr)
         return outcome.returncode
     args = ["retire", *(["--dry-run"] if dry_run else []), *(["--offline-only"] if offline_only else []), str(target)]
-    os.environ["DEV_WORKTREE_DELEGATED"] = f"{os.getpid()}:{json.dumps(args)}"
-    os.execv(str(helper), [str(helper), *args])
+    os.execve(str(helper), [str(helper), *args], host_environment(args))
     return 0
 
 

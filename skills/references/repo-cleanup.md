@@ -126,31 +126,17 @@ reconciliation remain separate outcomes.
 
 ## Task artifacts and retention
 
-Write task output (logs, review prompts, screenshots, watch state) in the
-session scratchpad or the system temporary directory. When it must outlive the
-session, use the location the host names, for example in its worktree helper's
-output. Never write it at a volume root, in the shared worktree parent, or in
-the home folder. When creating a task output directory, choose its purpose and
-expected lifetime once for the group. At closeout, account for the actual files the task created;
-a brief list in the existing task record is enough. No per-file issue, running
-ledger, manifest or retention service is required.
-
-| Class | Disposition |
-| --- | --- |
-| Disposable | Task-owned scratch or generated output whose purpose is complete; remove within existing authority after checking contents and live use. |
-| Acceptance evidence | Keep what is still needed to substantiate review/acceptance; publish a redacted conclusion or suitable durable artifact before discarding the only evidence. |
-| Recovery | Keep until the preserved work is adopted, explicitly discarded, or another verified durable copy replaces it. |
-| Private configuration | Preserve; an ignored/generated name does not grant disposal authority. |
-| Ambiguous | Retain until ownership, contents and intended use are resolved. |
-
-For each retained group, record a holder, reason and review/disposal trigger
-(such as acceptance recorded or the Director adopts the parked change), not an arbitrary
-expiration. Use the existing issue/PR for public-safe summaries. A necessary
-private record belongs in an owner-only local location outside removal targets,
-with mode 0600; never commit or publish private paths, contents or raw manifests.
-Temporary helper-manifest validity below is independent of valuable-artifact
-retention. Do not gate routine disposable-output removal on issue capability,
-remote publication, or parking checks.
+Use the [shared roots and retention](../github/references/worktrees.md#task-evidence-and-retained-items)
+for output that must outlive a session; otherwise use session scratch or system temp.
+Never write task output at a volume root, in a shared worktree parent, or directly in home.
+Choose each group's purpose/lifetime once; account for its files at closeout in the existing task record.
+Remove disposable output within existing authority after checking contents and live use.
+Preserve acceptance evidence until a redacted conclusion or suitable durable artifact replaces it;
+recovery copies follow shared retention. Preserve private configuration and ambiguous contents:
+ignored/generated names do not grant disposal authority. Record retained groups' holders on the issue/PR;
+necessary private records stay owner-only outside removal targets with mode 0600.
+Never publish private paths, contents or raw manifests. Helper-manifest validity below is independent
+of valuable-artifact retention; routine disposable removal needs no issue, publication or parking gate.
 
 Report what was **removed**, **retained** (with reason/trigger), **blocked**
 (specific evidence or authority missing), and **unexamined** (coverage limits).

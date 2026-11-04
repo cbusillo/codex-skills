@@ -3,7 +3,6 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Offline behavioral checks for the bounded personal attachment route."""
 
 import importlib.util
 import io
@@ -18,7 +17,9 @@ import unittest
 import urllib.error
 from contextlib import ExitStack, redirect_stdout
 from email.message import Message
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+
+import dev_worktree
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 spec = importlib.util.spec_from_file_location("attachment", pathlib.Path(__file__).with_name("gh-attachment.py"))
@@ -41,7 +42,9 @@ class AttachmentTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
-        self.root = pathlib.Path(self.directory.name)
+        self.root = pathlib.Path(self.directory.name).resolve()
+        config = self.root / "worktrees.json"
+        config.write_text(json.dumps({"evidenceRoot": str(self.root / "task-evidence")}))
         self.evidence = self.root / "task-evidence" / "product" / "task" / "download"
         self.login = "director"
         self.repository = "director/product"
@@ -58,6 +61,7 @@ class AttachmentTests(unittest.TestCase):
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
         self.stack.enter_context(patch.dict(os.environ, {
+            "DEV_WORKTREE_CONFIG": str(config),
             "CODEX_SKILLS_ENV_FILE": str(self.root / "missing.env"),
             "GH_WITH_ENV_TOKEN_OWN_USER": "1", "GH_WITH_ENV_TOKEN_OWN_USER_LOGIN": "director",
             "GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH": "0", "GH_HOST": "github.com",
@@ -65,6 +69,7 @@ class AttachmentTests(unittest.TestCase):
         reader = self.stack.enter_context(patch.object(attachment.github_read, "GitHubReader"))
         self.reader_factory = reader
         reader.return_value.get_json.side_effect = lambda path, **_: self.comment if "/comments/" in path else self.repo
+        self.stack.enter_context(patch.object(dev_worktree, "subprocess", Mock(run=subprocess.run)))
         self.run = self.stack.enter_context(patch.object(attachment.subprocess, "run", return_value=
             subprocess.CompletedProcess([], 0, self.token.encode(), b"")))
         self.opener_factory = self.stack.enter_context(patch.object(attachment.urllib.request, "build_opener"))

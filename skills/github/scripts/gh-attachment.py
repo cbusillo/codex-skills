@@ -21,10 +21,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+import dev_worktree
+import director_mentions
 import github_identity
 import github_read
-import director_mentions
-
 
 APPROVAL_REPOSITORY = "cbusillo/codex-skills"
 APPROVAL_COMMENT = 6241276473
@@ -230,10 +230,10 @@ def evidence_directory(value: str, repository: str) -> pathlib.Path:
     path = pathlib.Path(value).expanduser()
     if not path.is_absolute():
         raise AttachmentError("--evidence-dir must be an absolute private task-evidence directory")
-    roots = [parent for parent in path.parents if parent.name == "task-evidence"]
-    if not roots:
-        raise AttachmentError("downloads must stay under task-evidence/REPO/TASK")
-    root = roots[0].resolve()
+    try:
+        root, _ = dev_worktree.artifact_roots()
+    except (OSError, ValueError) as exc:
+        raise AttachmentError(str(exc)) from exc
     resolved = path.resolve()
     try:
         relative = resolved.relative_to(root)
