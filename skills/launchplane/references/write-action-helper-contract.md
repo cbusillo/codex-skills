@@ -901,12 +901,20 @@ installed local helper bindings.
   `blocker_codes`, `blocker_keys` by code, `blocker_count`, `warning_count`,
   the current target's `env_keys`, `required_volume_keys_missing` and
   `latest_deployment_status`, and each
-  step's `step_id` and `status`. Every key list keeps names that match
+  step's `step_id` and `status`. The existing env-key lists keep names that match
   `[A-Za-z_][A-Za-z0-9_]*` only. Blocker, step and warning text, the next
   target's name and domains, the approval issue URL, and the current target's
   id, name, domains and live volume values are dropped and listed in
   `dropped_field_paths`, as are names that are not env keys. A secret-looking
   value in a kept field fails the read.
+  When reported, the current target also keeps `compose_matches_generated`
+  (strict boolean or null) and `override_environment_keys` (complete names-only
+  list or null, using the producer's existing printable stored-name rule). Missing fields remain omitted and provide no evidence; null
+  stays unknown, and a valid empty list stays empty. Malformed fields or any
+  invalid or over-bound override-name list refuse the read rather than returning
+  a partial list. These advisory provider observations do not qualify a removal;
+  [the producer guide](https://github.com/cbusillo/launchplane/blob/main/docs/reviewed-retirement.md)
+  owns their runtime and rollback limits.
   Provider deployment status is a bounded code from the latest reported
   deployment; omitted, null or whitespace-only status stays `null` (unknown).
   Malformed status is dropped to `null` with its path recorded, retaining the

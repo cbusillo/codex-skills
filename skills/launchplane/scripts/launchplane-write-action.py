@@ -4328,6 +4328,22 @@ def _project_target_replacement_current_target(
         name: _project_env_key_names(target.get(name), path=f"plan.current_target.{name}", drops=drops)
         for name in TARGET_REPLACEMENT_CURRENT_TARGET_KEY_LISTS
     }
+    if "compose_matches_generated" in target:
+        projected["compose_matches_generated"] = _optional_bool(target["compose_matches_generated"])
+    if "override_environment_keys" in target:
+        from launchplane_runtime_setting_removal import printable_key
+
+        names = target["override_environment_keys"]
+        if names is None:
+            projected["override_environment_keys"] = None
+        elif (
+            not isinstance(names, list)
+            or len(names) > TARGET_REPLACEMENT_PLAN_MAX_LIST_ITEMS
+            or not all(printable_key(name) for name in names)
+        ):
+            raise LaunchplaneSafetyError("invalid_response")
+        else:
+            projected["override_environment_keys"] = names.copy()
     deployment_status = target.get("latest_deployment_status")
     if isinstance(deployment_status, str):
         deployment_status = deployment_status.strip()

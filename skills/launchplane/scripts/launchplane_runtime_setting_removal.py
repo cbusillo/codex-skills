@@ -73,7 +73,7 @@ def _is_hex64(value: object) -> bool:
     return isinstance(value, str) and HEX64_RE.fullmatch(value) is not None
 
 
-def _printable_key(value: object) -> bool:
+def printable_key(value: object) -> bool:
     return (isinstance(value, str) and KEY_RE.fullmatch(value) is not None
             and TOKEN_RE.search(value) is None)
 
@@ -104,7 +104,7 @@ def intent(h: Any, args: argparse.Namespace) -> tuple[dict[str, object], dict[st
     keys = list(args.key)
     if not 1 <= len(keys) <= MAX_KEYS or len(set(keys)) != len(keys):
         raise ValueError("invalid_runtime_setting_removal_keys")
-    if not all(_printable_key(key) for key in keys):
+    if not all(printable_key(key) for key in keys):
         raise ValueError("invalid_runtime_setting_removal_keys")
     reason = args.reason
     # Readback must repeat the saved reason exactly, so accept what the service accepts.
@@ -167,7 +167,7 @@ def _context_comparison(h: Any, result: dict[str, Any], body: dict[str, Any]) ->
     keys = []
     for effect in effects:
         if (not isinstance(effect, dict) or effect.keys() != {"key", "source_after", "effect"}
-                or not _printable_key(effect["key"])
+                or not printable_key(effect["key"])
                 or not ((effect["source_after"] == "context" and effect["effect"] in ("unchanged", "changed"))
                         or (effect["source_after"] is None and effect["effect"] == "absent"))):
             raise h.LaunchplaneSafetyError("invalid_response")

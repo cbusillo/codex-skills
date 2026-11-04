@@ -5717,6 +5717,47 @@ def test_target_replacement_plan_read_keeps_key_names_and_drops_text() -> None:
         assert private not in rendered, private
 
 
+@pytest.mark.parametrize("match", [True, False, None])
+@pytest.mark.parametrize("names", [None, [], ["EXAMPLE_INPUT", "web.base.url", "MY-SETTING"]])
+def test_plan_read_preserves_optional_complete_current_target_evidence(
+    match: bool | None, names: list[str] | None
+) -> None:
+    response = _target_replacement_plan_response()
+    response["result"]["current_target"].update(
+        compose_matches_generated=match, override_environment_keys=names
+    )
+    status, output, _calls = _run_plan_read(PLAN_READ_ARGV, response)
+    assert status == 0
+    target = output["result"]["current_target"]
+    assert target["compose_matches_generated"] is match
+    assert target["override_environment_keys"] == names
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("compose_matches_generated", 1),
+        ("compose_matches_generated", "true"),
+        ("compose_matches_generated", {}),
+        ("override_environment_keys", "EXAMPLE_INPUT"),
+        ("override_environment_keys", ["EXAMPLE_INPUT", "BAD KEY=private-value"]),
+        ("override_environment_keys", ["EXAMPLE_INPUT", {"value": "private-value"}]),
+        (
+            "override_environment_keys",
+            ["EXAMPLE_INPUT"] * (write_action.TARGET_REPLACEMENT_PLAN_MAX_LIST_ITEMS + 1),
+        ),
+    ],
+)
+def test_plan_read_refuses_malformed_or_partial_current_target_evidence(
+    field: str, value: object
+) -> None:
+    response = _target_replacement_plan_response()
+    response["result"]["current_target"][field] = value
+    status, output, _calls = _run_plan_read(PLAN_READ_ARGV, response)
+    assert status == 1 and not output["result"]
+    assert "private-value" not in json.dumps(output)
+
+
 def test_target_replacement_plan_read_marks_missing_key_lists_as_unreported() -> None:
     response = _target_replacement_plan_response()
     result = response["result"]
