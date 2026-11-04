@@ -12,6 +12,7 @@ import base64
 import json
 import multiprocessing
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -993,8 +994,6 @@ def test_graphql_reviews_preserve_feedback_and_rest_publisher_provenance(monkeyp
         }
         for i, review in enumerate(reviews)
     ]
-    first = {"repository": {"pullRequest": {"__typename": "PullRequest", "id": "pull", "reviews": connection(nodes[:10], "next")}}}
-    more = {"node": {"reviews": {**connection(nodes[10:]), "totalCount": len(reviews)}}}
     queries = []
     broken = ""
 
@@ -1002,9 +1001,19 @@ def test_graphql_reviews_preserve_feedback_and_rest_publisher_provenance(monkeyp
         queries.append(variables)
         if broken in {"retryable", "denied"}:
             return SimpleNamespace(ok=False, failure=SimpleNamespace(message=broken, retryable=broken == "retryable"))
-        return SimpleNamespace(
-            ok=True, body={"data": more if "id" in variables else first, **({"errors": [{"message": "partial"}]} if broken else {})}
+        arguments = next(re.finditer(r"reviews\s*\(([^)]*)\)", _document))[1]
+        count = int(next(re.finditer(r"first\s*:\s*(\d+)", arguments))[1])
+        cursor = json.loads(next(re.finditer(r'after\s*:\s*(null|"[^"]*")', arguments))[1])
+        offset = int(cursor or 0)
+        page = nodes[offset : offset + count]
+        next_cursor = str(offset + len(page)) if offset + len(page) < len(nodes) else None
+        page_connection = {**connection(page, next_cursor), "totalCount": len(nodes)}
+        data = (
+            {"node": {"reviews": page_connection}}
+            if "id" in variables
+            else {"repository": {"pullRequest": {"__typename": "PullRequest", "id": "pull", "reviews": page_connection}}}
         )
+        return SimpleNamespace(ok=True, body={"data": data, **({"errors": [{"message": "partial"}]} if broken else {})})
 
     reader = ReviewReader()
     monkeypatch.setattr(reader, "graphql_json", graphql)
@@ -1013,8 +1022,14 @@ def test_graphql_reviews_preserve_feedback_and_rest_publisher_provenance(monkeyp
     assert gh_pr_watch.fetch_new_review_items(sample_pr(), state, True, reader=reader) == before
     assert [item["author"] for item in before if item["kind"] == "review_comment"] == ["codex[bot]"]
     assert gh_pr_watch.fetch_new_review_items(sample_pr(), state, False, reader=reader) == []
-    assert len(queries) == 4
+    assert len(queries) == 2
     assert calls == ["repos/openai/codex/issues/123/comments"] * 2
+    nodes.extend([dict(nodes[-1], id=f"overflow-{i}", databaseId=1000 + i) for i in range(190)])
+    queries.clear()
+    overflow = gh_pr_watch.fetch_new_review_items(sample_pr(), {}, True, reader=reader)
+    assert {item["id"] for item in overflow if item["kind"] == "review"} == {str(node["databaseId"]) for node in nodes}
+    assert len(queries) <= 3
+    nodes[:] = nodes[: len(reviews)]
     for broken in ("partial", "retryable"):
         assert gh_pr_watch.fetch_new_review_items(sample_pr(), {}, True, reader=reader) == before
         assert calls[-2:] == ["repos/openai/codex/pulls/123/comments", "repos/openai/codex/pulls/123/reviews"]

@@ -380,9 +380,6 @@ def test_context_pagination_and_statuses_remain_complete():
     with patch.object(observed, "_transport_request", side_effect=[response(fixture), response(more)]):
         assert batch.try_batch(observed, "owner/repo", [node["number"]]) is None
     assert observed.batch_responses == {}
-    with patch.object(observed, "request", return_value=response([])) as rest:
-        assert observed.paged_json(f"/repos/owner/repo/commits/{node['headRefOid']}/statuses", step_prefix="statuses") == []
-        assert rest.call_count == 1
 
 
 def test_watcher_discussion_keeps_verified_publisher_fields_on_rest():

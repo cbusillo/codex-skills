@@ -3195,15 +3195,14 @@ shared GraphQL transport by default.
 `--no-batch-read` selects conditional REST for unchanged polling or diagnostics.
 For an explicitly cold or changing repository workload, `gh-plan.py next --batch-read`
 collects issue metadata, labels and native relationships through the same transport.
-Every `show` mode also collects every comment. Every requested connection is paged;
+Every requested connection is paged;
 a partial/error response discards the entire enrichment and recovers through
 the ordinary same-actor REST route. Claims and mutation preflights are unchanged.
 Global next retains its existing REST discovery.
 
 REST remains `next`'s default and the route for unchanged observations: its
 authenticated conditional cache can cost zero primary requests, while GraphQL
-costs points on every refresh. Select batching for cold/changed passes, rather
-than replacing free idle polling. The recorded library slice (`planning_graph(reader, repo, limit=20,
+costs points on every refresh. The recorded library slice (`planning_graph(reader, repo, limit=20,
 page_size=20)`) uses one GraphQL request versus at least twelve cold REST calls; this excludes direction,
 ownership, inbound visibility and PR evidence. `next --batch-read` reads its
 whole bounded inventory with 100-issue pages and can cost multiple requests
@@ -3228,6 +3227,9 @@ current-head query. This shifts two cold REST requests to one GraphQL query;
 unchanged cycles still spend that query's points while their REST reads can return 304.
 Incomplete review graphs and retryable query failures recover through the existing
 same-reader REST feeds; identity or authorization failures still stop.
+Lean review pages use 100 entries; the rich discussion reader keeps its smaller
+pages. Both preserve the shared retry policy and inherited operation deadline.
+Each review query/page retains the existing 60-second cap before REST recovery.
 The check-batch flag defaults off: unchanged check polling
 keeps its authenticated conditional REST savings. There is no persisted GraphQL
 body cache or credential/actor change.

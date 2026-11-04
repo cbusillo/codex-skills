@@ -636,15 +636,18 @@ def discussion_connection(field: str, fields: str, cursor: str | None = None, *,
 
 
 def discussion_query(reader: GitHubReader, document: str, variables: dict[str, Any]) -> dict[str, Any]:
+    deadline = time.time() + min(60, github_api_core.remaining_retry_timeout_seconds(deadline_at=reader.deadline_at))
     result = reader.graphql_json(document, variables, step="discussion",
-                                 deadline_at=min(reader.deadline_at or float("inf"), time.time() + 60))
+                                 deadline_at=deadline)
     if not result.ok:
         message = result.failure.message if result.failure else "GitHub discussion query failed"
         raise GitHubReadError(message, result=result, diagnostics=reader.diagnostics())
     return graphql_data(result)
 
 
-def discussion_nodes(reader: GitHubReader, parent: dict[str, Any], field: str, fields: str) -> list[dict[str, Any]]:
+def discussion_nodes(
+    reader: GitHubReader, parent: dict[str, Any], field: str, fields: str, *, page_size: int | None = None
+) -> list[dict[str, Any]]:
     value = parent[field]
     result: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -663,7 +666,7 @@ def discussion_nodes(reader: GitHubReader, parent: dict[str, Any], field: str, f
             raise GitHubReadShapeError(f"Discussion {field} pagination did not advance")
         seen.add(cursor)
         document = ("query($id:ID!) { node(id:$id) { ... on " + parent["__typename"] + " { "
-                    + discussion_connection(field, fields, cursor) + " } } rateLimit { cost } }")
+                    + discussion_connection(field, fields, cursor, page_size=page_size) + " } } rateLimit { cost } }")
         data = discussion_query(reader, document, {"id": parent["id"]})
         node = data.get("node")
         if not isinstance(node, dict):
@@ -704,9 +707,10 @@ def read_discussion(
     )
     message_fields = DISCUSSION_MESSAGE_FIELDS + " authorAssociation" if reviews_only else DISCUSSION_COMMENT_FIELDS
     inline_fields = message_fields + " replyTo { databaseId }" + (" path line originalLine" if reviews_only else "")
+    review_page_size = 100 if reviews_only else None
     review_fields = message_fields + " submittedAt " + discussion_connection("comments", inline_fields, page_size=100 if reviews_only else 10)
     selection = (
-        "pullRequest(number:$number) { __typename id " + discussion_connection("reviews", review_fields) + " }"
+        "pullRequest(number:$number) { __typename id " + discussion_connection("reviews", review_fields, page_size=review_page_size) + " }"
         if reviews_only
         else "issueOrPullRequest(number:$number) { ... on Issue { "
         + fields
@@ -752,7 +756,7 @@ def read_discussion(
         )
     if thread["__typename"] == "PullRequest":
         result["pull_request"] = {"url": f"https://api.github.com/repos/{repo}/pulls/{number}"}
-        for review in discussion_nodes(reader, thread, "reviews", review_fields):
+        for review in discussion_nodes(reader, thread, "reviews", review_fields, page_size=review_page_size):
             result["reviews"].append(discussion_comment(review, repo, number))
             result["review_comments"].extend(
                 discussion_comment(node, repo, number) for node in discussion_nodes(reader, review, "comments", inline_fields)
