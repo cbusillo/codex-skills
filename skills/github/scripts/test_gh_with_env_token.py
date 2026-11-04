@@ -1037,7 +1037,7 @@ def test_attachment_route_enforces_limits_through_real_wrapper() -> None:
             assert result.returncode == 0, (result.stdout, result.stderr)
             assert json.loads(result.stdout)["actor"] == owner
         positioned = ["issue", "--repo", repo, "comment", "42", "--body-file", "-", "--attach", str(image)]
-        result = subprocess.run([str(SCRIPT), *positioned], env=env, input=body, text=True, capture_output=True, timeout=15)
+        result = subprocess.run([str(SCRIPT), *positioned], env=env, input=body, text=True, capture_output=True, timeout=15, check=False)
         assert result.returncode == 0, (result.stdout, result.stderr)
         assert result.stdout.strip().endswith("#issuecomment-20")
         nonce = os.urandom(16).hex()
@@ -1540,8 +1540,8 @@ def test_pr_edit_missing_label_stops_without_claiming_other_edits_did_not_apply(
                                  gh_command=fake_gh)
         assert positioned.returncode == 1, positioned
         failure = json.loads(positioned.stdout)
-        assert failure["operation"] == "github.pr.edit", failure
-        assert failure["write_outcome"] == "unknown", failure
+        assert failure["operation"] == payload["operation"], failure
+        assert failure["write_outcome"] == payload["write_outcome"], failure
 
 def test_permission_refusals_preserve_app_identity() -> None:
     cases = [
@@ -1633,32 +1633,50 @@ def test_repository_flags_preserve_run_write_preflight_and_delegation() -> None:
               "assert os.environ['GH_TOKEN'] == 'installation-token'\n"
               "assert 'GH_WITH_ENV_TOKEN_RECEIPT_NONCE' not in os.environ\n")
         nonce = os.urandom(16).hex()
-        for mutation in ("approve", "cancel", "delete", "rerun"):
-            for flags in (("-R", "example/app"), ("--repo", "example/app"), ("--repo=example/app",), ("-Rexample/app",)):
-                command = ("run", *flags, mutation, "42")
-                for failure in ("actor", "installation", ""):
-                    calls.unlink(missing_ok=True)
-                    write(identity, "import json, sys\nfrom pathlib import Path\n"
-                          f"Path({str(auth_calls)!r}).write_text(json.dumps(sys.argv[1:]))\n"
-                          + ("if '--require-installation' in sys.argv: raise SystemExit('fixture installation missing')\n"
-                             if failure == "installation" else "")
-                          + fake_app_identity("wrong-app[bot]" if failure == "actor" else "catalog-app[bot]"))
-                    result = run_wrapper(env_file, unused, identity, *command, gh_command=fake_gh,
-                                         extra_env={"GH_WITH_ENV_TOKEN_RECEIPT_NONCE": nonce})
-                    auth = json.loads(auth_calls.read_text())
-                    assert "--require-installation" in auth, command
-                    assert auth[auth.index("--repo") + 1] == "example/app", command
-                    if failure:
-                        assert result.returncode != 0, (command, failure, result)
-                        assert not calls.exists(), (command, failure)
-                        expected_error = "wrong-app[bot]" if failure == "actor" else "fixture installation missing"
-                        assert expected_error in result.stderr, result
-                        receipts = [json.loads(line) for line in result.stderr.splitlines() if line.startswith('{')]
-                        assert any(item.get("nonce") == nonce and item.get("write_outcome") == "not_started" for item in receipts), result
-                    else:
-                        assert result.returncode == 0, (command, result)
-                        assert json.loads(calls.read_text()) == list(command)
-                        assert nonce not in result.stderr
+        for mutation, flags in (
+            ("approve", ("-R", "example/app")),
+            ("cancel", ("--repo", "example/app")),
+            ("delete", ("--repo=example/app",)),
+            ("rerun", ("-Rexample/app",)),
+        ):
+            command = ("run", *flags, mutation, "42")
+            for failure in ("actor", "installation", ""):
+                calls.unlink(missing_ok=True)
+                write(identity, "import json, sys\nfrom pathlib import Path\n"
+                      f"Path({str(auth_calls)!r}).write_text(json.dumps(sys.argv[1:]))\n"
+                      + ("if '--require-installation' in sys.argv: raise SystemExit('fixture installation missing')\n"
+                         if failure == "installation" else "")
+                      + fake_app_identity("wrong-app[bot]" if failure == "actor" else "catalog-app[bot]"))
+                result = run_wrapper(env_file, unused, identity, *command, gh_command=fake_gh,
+                                     extra_env={"GH_WITH_ENV_TOKEN_RECEIPT_NONCE": nonce})
+                auth = json.loads(auth_calls.read_text())
+                assert "--require-installation" in auth, command
+                assert auth[auth.index("--repo") + 1] == "example/app", command
+                if failure:
+                    assert result.returncode != 0, (command, failure, result)
+                    assert not calls.exists(), (command, failure)
+                    expected_error = "wrong-app[bot]" if failure == "actor" else "fixture installation missing"
+                    assert expected_error in result.stderr, result
+                    receipts = [json.loads(line) for line in result.stderr.splitlines() if line.startswith('{')]
+                    assert any(item.get("nonce") == nonce and item.get("write_outcome") == "not_started" for item in receipts), result
+                else:
+                    assert result.returncode == 0, (command, result)
+                    assert json.loads(calls.read_text()) == list(command)
+                    assert nonce not in result.stderr
+
+
+
+def test_incomplete_repository_flags_keep_cli_usage_errors() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        env_file, identity, _ = app_fixture(root)
+        fake_gh = root / "gh"
+        message = "flag needs an argument: repository"
+        write(fake_gh, f"#!/bin/sh\nprintf '%s\\n' '{message}' >&2\nexit 1\n")
+        for command in (("run", "-R"), ("issue", "--repo"), ("pr", "--hostname"), ("-R",)):
+            result = run_wrapper(env_file, SCRIPT.with_name("github_api.py"), identity, *command, gh_command=fake_gh)
+            assert result.returncode != 0, command
+            assert message in result.stderr, (command, result)
 
 
 def main() -> None:

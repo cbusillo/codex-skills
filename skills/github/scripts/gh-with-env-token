@@ -200,7 +200,8 @@ set_command_context() {
 	while [ "$#" -gt 0 ]; do
 		case "${1:-}" in
 		-R | --repo | --hostname)
-			shift 2 || return 1
+			[ "$#" -ge 2 ] || break
+			shift 2
 			;;
 		--repo=* | --hostname=*)
 			shift
@@ -224,7 +225,10 @@ set_command_context() {
 	fi
 	while [ "$#" -gt 0 ]; do
 		case "$1" in
-		-R | --repo | --hostname) shift 2 || return 1 ;;
+		-R | --repo | --hostname)
+			[ "$#" -ge 2 ] || break
+			shift 2
+			;;
 		--repo=* | --hostname=* | -R?*) shift ;;
 		*) break ;;
 		esac

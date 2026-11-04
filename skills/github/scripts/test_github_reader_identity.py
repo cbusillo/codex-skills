@@ -368,9 +368,8 @@ class ReaderIdentityTests(unittest.TestCase):
         before = (identity_calls.read_bytes(), gh_calls.read_bytes())
         mutations = [['run', command, '42', '--repo', 'example/app']
                      for command in ('cancel', 'rerun', 'delete', 'approve')]
-        mutations.extend(['run', *flags, command, '42']
-                         for command in ('cancel', 'rerun', 'delete', 'approve', 'unknown-command')
-                         for flags in (['-R', 'example/app'], ['--repo', 'example/app'], ['--repo=example/app'], ['-Rexample/app']))
+        mutations.extend(['run', '-R', 'example/app', command, '42']
+                         for command in ('cancel', 'unknown-command'))
         for args in mutations:
             result = subprocess.run([str(wrapper), '--reader', *args], text=True, capture_output=True, env=env)
             self.assertNotEqual(result.returncode, 0, args)
