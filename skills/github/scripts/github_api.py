@@ -1005,25 +1005,30 @@ def parse_gh_api_args(args: list[str]) -> Optional[GhApiCommand]:
     )
 
 
-def infer_gh_command_context(args: list[str], *, input_text: Optional[str] = None) -> CommandContext:
-    """Infer transport and mutation posture for a delegated gh command."""
+def _skip_gh_context_flags(args: list[str]) -> list[str]:
     tokens = list(args)
     while tokens:
         token = tokens[0]
         if token in ("-R", "--repo", "--hostname") and len(tokens) >= 2:
             tokens = tokens[2:]
             continue
-        if token.startswith("--repo=") or token.startswith("--hostname="):
+        if token.startswith(("--repo=", "--hostname=", "-R")):
             tokens = tokens[1:]
             continue
         if token == "--":
             tokens = tokens[1:]
         break
+    return tokens
+
+
+def infer_gh_command_context(args: list[str], *, input_text: Optional[str] = None) -> CommandContext:
+    tokens = _skip_gh_context_flags(args)
     if not tokens:
         return CommandContext(False, "gh_cli", "unknown")
 
     command = tokens[0]
-    subcommand = tokens[1] if len(tokens) > 1 else ""
+    subcommands = _skip_gh_context_flags(tokens[1:])
+    subcommand = subcommands[0] if subcommands else ""
     if command == "api":
         parsed = parse_gh_api_args(tokens[1:])
         if parsed is None:
