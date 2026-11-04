@@ -1380,7 +1380,9 @@ Search claim comments for `Lease takeover:` to count crash takeovers.
 An exact authored release also establishes ended claim ownership. Its retained
 branches, worktrees and closed-PR artifacts no longer block an independent claim;
 the result names them in `retained_artifacts` and leaves them intact. Automatic reconciliation grants no
-artifact adoption: use a new task branch. For retained PRs, use the explicit
+artifact adoption. This includes exact authored releases in the verified
+same-repository native handoff family; the result keeps their source claim,
+release and work-record provenance. Use a new task branch. For retained PRs, use the explicit
 `--resume-from` source-recovery route. Open PRs keep their separate handoff
 and wait checks. Unreleased or uncertain holders refuse with `coordination`
 entries identifying the worker, native session, branch and work-record contact
