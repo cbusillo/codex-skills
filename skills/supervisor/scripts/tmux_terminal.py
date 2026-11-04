@@ -42,7 +42,6 @@ def target_identity(row: dict) -> dict:
 
 
 def process_parents():
-    """Read ancestry only; missing or malformed process evidence preserves the pane."""
     result = subprocess.run(["ps", "-axo", "pid=,ppid="], check=True,
                             capture_output=True, text=True, timeout=10)
     parents = {}
@@ -340,22 +339,10 @@ class Terminal:
 
         panes = self.list()
         row = self.dead_pane(identity, entry, panes=panes)
-        rows = session_liveness.inventory()
-        tty = row["tty"].removeprefix("/dev/")
-        jobs = [pid for pid, job_tty, _ in rows if job_tty == tty]
-        replacement = None
-        if jobs:
-            owners = [pane for pane in panes if pane["pane_id"] != row["pane_id"]
-                      and not pane["dead"] and pane["tty"].removeprefix("/dev/") == tty]
-            if len(owners) != 1 or owners[0]["pid"] not in jobs:
-                raise ValueError("TTY ownership is uncertain; terminal kept")
-            parents = process_parents()
-            replacement = lambda pid: belongs_to(pid, owners[0]["pid"], parents)
+        pids = (entry.get("pid"), entry.get("launch_pid"), row["pid"])
+        rows = [process for process in session_liveness.inventory() if process[0] in pids]
         session_liveness.verify_process_exit(
-            {**entry, "_terminal_pid": row["pid"]}, rows=rows,
-            ended_at=datetime.fromisoformat(row["exited_at"]) if row["exited_at"] else None,
-            replacement_owner=replacement, scope="terminal")
-        # A dead pane has no input consumer. Never kill a live shell to clear it.
+            {**entry, "_terminal_pid": row["pid"]}, rows=rows, scope="terminal")
         return row
 
     def close(self, identity, ledger):

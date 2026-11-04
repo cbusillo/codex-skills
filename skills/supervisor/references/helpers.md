@@ -1929,9 +1929,8 @@ exit command reports `delivery: session_ended` once the matching harness
 processes observed on that TTY are gone, even if the pane disappears before
 readback. This result does not release claims or close the terminal. Wait at
 most 60 seconds, reading `read` for `dead: true` and checking that the matched
-agent PID and processes belonging to that pane have exited. If its TTY was
-reused, use the native close command's ownership proof below. Preserve a running or
-uncertain pane. Record/release native session claims under the existing
+original agent, launch and pane PIDs are absent. Preserve a running or uncertain
+pane. Record/release native session claims under the existing
 finished-session procedure before removing the terminal.
 
 ```sh
@@ -1948,11 +1947,10 @@ the server. A dead pane has no input consumer; a live shell cannot qualify
 from its screen appearance. Read back disappearance once. An uncertain close
 is retained for reconciliation rather than retried.
 
-If the dead pane's old TTY has been reused, close proceeds only when tmux
-identifies a different live pane on that TTY and process ancestry proves every
-current job there belongs to that new pane's PID tree. Unattributed jobs,
-missing ancestry, and either recorded PID still present preserve the dead
-pane. The live pane is never a close target, and no process is killed.
+A verified-dead pane's old TTY may belong to an unrelated process. Physical
+close checks the original PIDs are absent, without using current TTY ownership
+as evidence about the dead pane. The exact launch identity and dead state
+remain required; the unrelated terminal and its processes stay untouched.
 
 For the locked-screen acceptance proof, the Supervisor arranges a short test
 with the Director. Prepare one harmless real Codex or Claude launch with an
