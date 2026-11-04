@@ -3098,14 +3098,11 @@ def claim_once(args: argparse.Namespace) -> None:
                 repo=issue_repo, number=number, trusted=wait_authors(issue_repo), worker=claim["worker"], session=claim["session"],
                 ended_claims={entry["claim_id"] for entry in ended_owners}):
             conflicts.append(recipient)
-        family_ended, _ = family_artifact_context(inventory)
         current_branch_reused = any(entry["branch"] == claim["branch"] and entry["branch"] in branches
                                     and entry["claim_id"] != args.resume_from for entry in ended_owners)
-        family_branch_reused = (selection is None or selection["mode"] != "next") and any(
-            entry["branch"] == claim["branch"] and entry["branch"] in branches for entry in family_ended)
         phase["branch_error"] = (ClassifiedPlanError("claim_ended_branch_reused",
             "Ended ownership requires a new task branch; preserve the retained source branch and worktree")
-            if current_branch_reused or family_branch_reused else None)
+            if current_branch_reused else None)
         return conflicts, owned
 
     def check_wait(waiting_issue: dict[str, Any], waiting_status: str) -> bool:
@@ -3728,12 +3725,24 @@ def claim_once(args: argparse.Namespace) -> None:
         if phase_family_error is not None:
             raise phase_family_error
 
+    def check_family_branch_use(permitted: set[str]) -> None:
+        source = phase.get("source")
+        if claim["branch"] in permitted or source is not None and claim["branch"] == source["record"]["branch"]:
+            return
+        family_ended, _ = family_artifact_context(inventory)
+        present = (claim["branch"] in inventory["local_branches"] or claim["branch"] in inventory["remote_branches"]
+                   or any(tree["branch"] == claim["branch"] for tree in inventory["worktrees"]))
+        if present and any(entry["branch"] == claim["branch"] for entry in family_ended):
+            raise ClassifiedPlanError("claim_ended_branch_reused",
+                "Ended ownership requires a new task branch; preserve the retained source branch and worktree")
+
     def handoff_preflight(current_comments: list[dict[str, Any]], current_status: str, prepared) -> set[str]:
         nonlocal retained_waits
         if phase["branch_error"] is not None:
             raise phase["branch_error"]
         if prepared is None:
             check_phase_peers(inventory)
+            check_family_branch_use(set())
             return set()
         if prepared["error"] is not None:
             raise prepared["error"]
@@ -3835,6 +3844,7 @@ def claim_once(args: argparse.Namespace) -> None:
             )
             if competing:
                 refuse(competing)
+        check_family_branch_use(permitted)
         return permitted
 
     agent = github_agent.running_agent(getattr(args, "agent", None))

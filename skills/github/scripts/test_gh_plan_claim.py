@@ -2064,23 +2064,70 @@ class ClaimTests(unittest.TestCase):
         self.args.branch = self.pulls[0]["head"]["ref"]
         return source
 
+    def ended_family_peer_fixture(self, branch: str) -> None:
+        source = CLAIM.records(self.target_comments["/repos/owner/repo/issues/41/comments"][0]["body"])[0]
+        peer = {**source, "branch": branch, "resume_from": "1",
+                "retained_handoff": CLAIM.handoff_url("owner/repo", 41, self.handoff_id)}
+        self.targets["43"] = {**copy.deepcopy(self.issue), "number": 43}
+        self.children.setdefault("/repos/owner/repo/issues/41/sub_issues", []).append(self.targets["43"])
+        self.target_comments["/repos/owner/repo/issues/43/comments"] = [
+            {"id": 88, "body": CLAIM.marker(peer), "user": {"login": TEST_BOT}, "created_at": peer["claimed_at"]},
+            {"id": 89, "body": "Released claim 88", "user": {"login": TEST_BOT}, "created_at": "2026-10-02T00:00:00Z"}]
+
     def test_qualified_native_next_head_can_continue_after_its_family_peer_released(self) -> None:
         self.parent_handoff_fixture()
         source = CLAIM.records(self.target_comments["/repos/owner/repo/issues/41/comments"][0]["body"])[0]
         self.args.worker, self.args.session = source["worker"], source["session"]
         self.args.branch = self.pulls[0]["head"]["ref"]
-        peer = {**source, "branch": self.args.branch, "resume_from": "1",
-                "retained_handoff": CLAIM.handoff_url("owner/repo", 41, self.handoff_id)}
-        self.targets["43"] = {**copy.deepcopy(self.issue), "number": 43}
-        self.children["/repos/owner/repo/issues/41/sub_issues"].append(self.targets["43"])
-        self.target_comments["/repos/owner/repo/issues/43/comments"] = [
-            {"id": 88, "body": CLAIM.marker(peer), "user": {"login": TEST_BOT}, "created_at": peer["claimed_at"]},
-            {"id": 89, "body": "Released claim 88", "user": {"login": TEST_BOT}, "created_at": "2026-10-02T00:00:00Z"}]
+        self.ended_family_peer_fixture(self.args.branch)
         with patch.dict(os.environ, {"CODEX_THREAD_ID": self.args.session, "CODEX_SESSION_ID": self.args.session}):
             self.run_claim()
         result = self.emitted.call_args.args[0]
         self.assertIn("metadata_readback", result["completed_steps"])
         self.assertEqual(result["claim"]["branch"], self.pulls[0]["head"]["ref"])
+
+    def test_released_native_next_claim_can_resume_its_own_pr_branch(self) -> None:
+        self.parent_handoff_fixture()
+        source = CLAIM.records(self.target_comments["/repos/owner/repo/issues/41/comments"][0]["body"])[0]
+        self.args.worker, self.args.session = source["worker"], source["session"]
+        self.args.branch = self.pulls[0]["head"]["ref"]
+        self.ended_family_peer_fixture(self.args.branch)
+        self.targets["41"].update(state="closed", state_reason="completed", labels=[])
+        self.targets["42"] = copy.deepcopy(self.issue)
+        self.target_comments["/repos/owner/repo/issues/42/comments"] = []
+        self.issue = self.targets.pop("99")
+        self.comments = []
+        self.target_comments.pop("/repos/owner/repo/issues/99/comments")
+        self.args.issue = "99"
+        self.args.resume_from = CLAIM.handoff_url("owner/repo", 41, 1)
+        self.comment_id_offset = 1000
+        original_args = vars(self.args).copy()
+        with patch.dict(os.environ, {"CODEX_THREAD_ID": self.args.session, "CODEX_SESSION_ID": self.args.session}):
+            self.run_claim()
+            first = copy.deepcopy(self.emitted.call_args.args[0])
+            self.assertIn("metadata_readback", first["completed_steps"])
+            claimed = self.comments[-1]
+            self.comments.append({"id": claimed["id"] + 1, "body": f"Released claim {claimed['id']}",
+                                  "user": {"login": TEST_BOT}, "created_at": datetime.now().astimezone().isoformat()})
+            self.args = Namespace(**{**original_args, "resume_from": claimed["id"]})
+            self.run_claim()
+        result = self.emitted.call_args.args[0]
+        self.assertIn("metadata_readback", result["completed_steps"])
+        self.assertEqual(result["claim"]["branch"], first["claim"]["branch"])
+
+    def test_fresh_claim_cannot_reuse_an_unreferenced_ended_family_branch(self) -> None:
+        self.inherited_ended_artifact_fixture()
+        branch = "work/archived-family"
+        self.ended_family_peer_fixture(branch)
+        self.args.resume_from = None
+        self.args.branch = branch
+        self.pulls, self.closed_pulls = [], {}
+        self.inventory.update(local_branches=[branch], remote_branches=[branch],
+                              worktrees=[{"branch": branch, "path": "/retained/archive"}])
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_claim()
+        self.assertEqual(caught.exception.code, "claim_ended_branch_reused")
+        self.assert_no_writes()
 
     def test_retained_pr_secondary_scan_does_not_reject_an_accounted_closed_artifact(self) -> None:
         self.ordinary_handoff_fixture()
