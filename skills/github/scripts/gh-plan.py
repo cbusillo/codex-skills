@@ -3727,7 +3727,7 @@ def claim_once(args: argparse.Namespace) -> None:
             raise phase_family_error
 
     def check_family_branch_use(permitted: set[str]) -> None:
-        source = phase.get("source")
+        source: dict[str, Any] | None = phase.get("source")
         if claim["branch"] in permitted:
             return
         if source is not None and claim["branch"] == source["record"]["branch"]:
