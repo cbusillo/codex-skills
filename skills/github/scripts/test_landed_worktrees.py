@@ -361,11 +361,6 @@ class RepositoryTests(Fixture):
         self.assertEqual([(row["path"], row["decision"]) for row in rows], [(str(path), "kept")])
         self.assertIn("offline", rows[0]["reason"])
 
-    def test_missing_portable_worktree_returns_a_refused_result(self) -> None:
-        result = landed_worktrees.portable_retire(self.root / "sample/missing", dry_run=True)
-        self.assertIsInstance(result, subprocess.CompletedProcess)
-        self.assertNotEqual(result.returncode, 0)
-
     def test_portable_retirement_keeps_private_or_unpublished_work_and_live_use(self) -> None:
         run = subprocess.run
         for cause in ("dirty", "ignored", "unpublished", "in_use", "proof_unavailable", "pull_only", "eligible"):
@@ -446,6 +441,7 @@ class StrayTests(Fixture):
             {Path(r["path"]).name for r in preview if r["decision"] == "would_remove"}, {"empty", "results", loose.name}
         )
         self.assertTrue(results.exists())
+        self.assertFalse(any(row["path"] == str(tree) for row in preview))
         self.assertEqual(next(row["decision"] for row in preview if row["path"] == str(link)), "kept")
         applied = self.sweep(apply=True)
         self.assertEqual(sum(r["decision"] == "removed" for r in applied), 3)

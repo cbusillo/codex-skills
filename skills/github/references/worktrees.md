@@ -156,6 +156,8 @@ Creation checks each registered linked worktree through `landed_worktrees.py`.
 The same pass previews or removes empty unregistered folders and moves recognizable
 stray result files older than two hours into task evidence, including loose results
 beside worktrees. Existing evidence expiry owns their eventual deletion.
+`STRAY_RESULT_PATTERNS` in [landed_worktrees.py](../scripts/landed_worktrees.py)
+defines recognized result names; other contents remain reported and kept.
 It never descends into nested folders: unknown content, symlinks, open files,
 recent changes and incomplete proof keep the entry with a reason. The pass repeats
 registration and filesystem checks before deletion. A configured host helper

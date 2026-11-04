@@ -173,8 +173,6 @@ def portable_retire(path: Path, *, dry_run: bool) -> subprocess.CompletedProcess
     def kept(reason: str) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess([], 1, "", f"{reason}; follow work-closeout before retrying")
 
-    if not path.is_dir():
-        return kept("worktree folder is missing")
     status = git(path, "status", "--porcelain", "--ignored", "--untracked-files=all")
     if status.returncode or status.stdout.strip():
         return kept("uncommitted, untracked or ignored files remain")
@@ -367,7 +365,7 @@ def sweep_strays(checkout: Path, root: Path, *, apply: bool, deadline: float | N
         parent_fd = dev_worktree.open_directory(parent)
         names = os.listdir(parent_fd)
         registered_paths = {
-            tree.path.resolve() for tree in registered(checkout, include_primary=True, timeout=remaining_timeout(deadline, 30))
+            tree.path.absolute() for tree in registered(checkout, include_primary=True, timeout=remaining_timeout(deadline, 30))
         }
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         if parent_fd is not None:
