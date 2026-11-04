@@ -229,6 +229,7 @@ class CloseConfigTests(unittest.TestCase):
                      admission_links: list[str] | None = None, milestone: dict | None = None,
                      track: dict | None = None, actor: str | None = None, worker: str | None = None, body_time: str | None = None,
                      dispatch_recipient: str | None = None,
+                     source_number: int = 6,
                      ancestry: set[tuple[str, int]] | None = None) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
         target = "fixture/target"
         configs = {repo: copy.deepcopy(PLAN.DEFAULT_CONFIG) for repo in ("fixture/local", target)}
@@ -252,7 +253,7 @@ class CloseConfigTests(unittest.TestCase):
         elif enrichment is not None:
             relationships.return_value = ("fixture-bot", enrichment)
         output = io.StringIO()
-        parent = {**issue, "number": 6}
+        parent = {**issue, "number": source_number, "html_url": f"https://github.com/{target}/issues/{source_number}"}
         with patch.multiple(PLAN, default_repo=Mock(return_value="fixture/local"),
                 load_config=Mock(side_effect=lambda repo, **_: configs[repo]),
                 api_json=Mock(side_effect=AssertionError("Unexpected API call in read-only show")),
@@ -358,6 +359,27 @@ class CloseConfigTests(unittest.TestCase):
             result, _, _ = self.show_fixture(launch=True, pulls=[retained], source_comments=owner_comments,
                 resume="https://github.com/fixture/target/issues/6#issuecomment-2")
             self.assertEqual(result["issue"]["launch_check"]["allowed"], allowed)
+
+    def test_retained_launch_resolves_same_record_urls_without_inheriting_other_source_recipients(self) -> None:
+        lead = "01970242-7941-7f0c-b461-16aa5723fb52"
+        source = {"worker": "codex", "session": "source", "branch": "work/export", "claimed_at": "2026-10-01T00:00:00Z"}
+        comments = [{"id": 2, "user": {"login": "fixture"}, "created_at": source["claimed_at"],
+                     "body": github_plan_claim.marker(source)},
+                    {"id": 3, "user": {"login": "fixture"}, "created_at": "2026-10-02T00:00:00Z",
+                     "body": "Released claim 2\nRetained PR: https://github.com/fixture/target/pull/80"},
+                    {"id": 4, "user": {"login": "fixture"}, "created_at": "2026-10-03T00:00:00Z",
+                     "body": f"## Current Status\nNext actor: agent:{lead}\nBrief:\n```text\nImplement the export.\n```\n"}]
+        retained = {"number": 80, "state": "open", "user": {"login": "fixture"}, "body": "Refs #7\nRefs #6",
+                    "head": {"ref": source["branch"], "repo": {"full_name": "fixture/target"}},
+                    "base": {"repo": {"full_name": "fixture/target"}}}
+        for repo, number in (("fixture/target", 7), ("fixture/target", 6)):
+            with self.subTest(repo=repo, number=number):
+                result, _, _ = self.show_fixture(launch=True, worker="fresh-worker", source_number=number,
+                    body_time="2026-10-01T00:00:00Z", comments_extra=comments, source_comments=comments, pulls=[retained],
+                    dispatch_recipient=lead, resume=f"https://github.com/{repo}/issues/{number}#issuecomment-2")
+                check = result["issue"]["launch_check"]
+                self.assertEqual(check["allowed"], number == 7)
+                if number != 7: self.assertEqual(check["resume_source"]["recipients"][0]["worker"], lead)
 
     def test_launch_checks_the_claims_milestone_admission_without_writes(self) -> None:
         claim_options = ["--worker", "worker", "--session", "session", "--branch", "work/native",

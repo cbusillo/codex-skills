@@ -998,8 +998,10 @@ selection is unchanged.
   source's authored release and qualifies a handoff to exempt current
   retained artifacts. With no current artifacts, dispatch can proceed and the
   worker's claim validates full merged/plain lineage. It never releases a
-  different claim holder. Numeric IDs select the anchor's own claims; another source
-  uses its full issue-comment URL and retains its current ownership checks.
+  different claim holder. A same-issue claim URL stays bound to that issue's
+  source claim and reuses its retained-source checks; it cannot select a parent's
+  claim. Another source uses its full issue-comment URL and retains its current
+  ownership checks.
   Target waits remain authoritative. Unknown coverage refuses dispatch, while
   the full read remains available. This writes no claim or new state record;
   a launched worker still claims independently.
