@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import copy
 import os
+import time
 import unittest
 from typing import Any
 from unittest.mock import Mock, patch
 
+import github_api
 import github_read
 from github_api import ApiResult, FailureDetail, RetryRuntime, remaining_retry_timeout_seconds
 from github_read import GitHubReadError, GitHubReadShapeError
@@ -58,8 +60,8 @@ class DiscussionTests(unittest.TestCase):
         clock = 1000.0
         runtime = RetryRuntime(now=lambda: clock)
         with (
-            patch("github_read.time.time", return_value=clock),
-            patch("github_api.default_retry_runtime", return_value=runtime),
+            patch.dict(vars(time), {"time": lambda: clock}),
+            patch.dict(vars(github_api), {"default_retry_runtime": lambda: runtime}),
             patch.dict(os.environ, {"GITHUB_RETRY_DEADLINE_AT": str(clock + 2)}),
         ):
             for deadline in (None, clock + 1):
@@ -69,42 +71,6 @@ class DiscussionTests(unittest.TestCase):
                 github_read.discussion_query(reader, "query { viewer { login } }", {})
                 self.assertLessEqual(reader.graphql_json.call_args.kwargs["deadline_at"], expected)
                 self.assertNotIn("retry_policy", reader.graphql_json.call_args.kwargs)
-
-    def test_worker_reviews_include_every_inline_location_and_submission(self) -> None:
-        inline = comment(10, "PullRequestReviewComment", authorAssociation="CONTRIBUTOR", path="app.py", line=None, originalLine=12)
-        review = comment(
-            9,
-            "PullRequestReview",
-            authorAssociation="CONTRIBUTOR",
-            state="CHANGES_REQUESTED",
-            submittedAt="2026-11-01T02:00:00Z",
-            comments=connection([inline], "inline", 2),
-        )
-        reader = Mock(deadline_at=None)
-        another = dict(
-            review, id="review-20", databaseId=20, comments=connection([dict(inline, id="node-11", databaseId=11, line=14)])
-        )
-        reader.graphql_json.side_effect = [
-            response(
-                {
-                    "repository": {
-                        "pullRequest": {"id": "pull", "__typename": "PullRequest", "reviews": connection([review, another])}
-                    }
-                }
-            ),
-            response({"node": {"comments": connection([dict(inline, id="node-13", databaseId=13, line=15)], total=2)}}),
-        ]
-        result = github_read.read_discussion(reader, "example/repo", 7, reviews_only=True)
-        self.assertEqual(result["reviews"][0]["submitted_at"], review["submittedAt"])
-        self.assertEqual(
-            [(row["id"], row["line"], row["original_line"]) for row in result["review_comments"]],
-            [(10, None, 12), (11, 14, 12), (13, 15, 12)],
-        )
-        self.assertEqual(result["review_comments"][0]["author_association"], inline["authorAssociation"])
-        self.assertEqual(reader.graphql_json.call_count, 2)
-        reader.graphql_json.side_effect = [response({"repository": {"pullRequest": None}}, errors=[{"message": "partial"}])]
-        with self.assertRaises(GitHubReadShapeError):
-            github_read.read_discussion(reader, "example/repo", 7, reviews_only=True)
 
     def test_thread_comments_authors_edits_and_reactions_share_one_query(self) -> None:
         reader = Mock(deadline_at=None)

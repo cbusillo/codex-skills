@@ -1238,21 +1238,8 @@ def fetch_new_review_items(pr, state, fresh_state, authenticated_login=None, rea
 
     extra = {"reader": reader} if reader is not None else {}
     issue_payload = gh_api_list_paginated(endpoints["issue_comment"], repo=repo, **extra)
-    reviews: dict[str, Any] | None = None
-    if reader is not None:
-        try:
-            reviews = github_read.read_discussion(reader, repo, pr_number, reviews_only=True)
-        except github_read.GitHubReadShapeError:
-            reviews = None
-        except github_read.GitHubReadError as error:
-            if not error.result.failure or not error.result.failure.retryable:
-                raise
-    if reviews is None:
-        review_comment_payload = gh_api_list_paginated(endpoints["review_comment"], repo=repo, **extra)
-        review_payload = gh_api_list_paginated(endpoints["review"], repo=repo, **extra)
-    else:
-        review_comment_payload = reviews["review_comments"]
-        review_payload = reviews["reviews"]
+    review_comment_payload = gh_api_list_paginated(endpoints["review_comment"], repo=repo, **extra)
+    review_payload = gh_api_list_paginated(endpoints["review"], repo=repo, **extra)
 
     issue_items = normalize_issue_comments(issue_payload)
     review_comment_items = normalize_review_comments(review_comment_payload)
@@ -2329,7 +2316,7 @@ def main():
     except PrHelperReadError as err:
         print_event("read_error", err.payload)
         return 1
-    except (github_read.GitHubReadShapeError, GhCommandError, RuntimeError, ValueError, OSError) as err:
+    except (GhCommandError, RuntimeError, ValueError, OSError) as err:
         sys.stderr.write(f"gh_pr_watch.py error: {err}\n")
         return 1
     except KeyboardInterrupt:

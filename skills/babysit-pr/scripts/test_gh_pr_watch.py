@@ -12,7 +12,6 @@ import base64
 import json
 import multiprocessing
 import os
-import re
 import signal
 import subprocess
 import sys
@@ -106,7 +105,6 @@ def sample_rest_view(**overrides):
 class ReviewReader:
     def __init__(self, body=None, *, degraded_reasons=None):
         self.body = body
-        self.deadline_at = None
         self.results = []
         self.requests = [{"ok": True, "status": 200}]
         self.degraded_reasons = list(degraded_reasons or [])
@@ -915,129 +913,6 @@ def test_fetch_new_review_items_surfaces_unknown_external_human(monkeypatch):
     assert [(item["author"], item["author_association"]) for item in items] == [
         ("new-contributor", "NONE")
     ]
-
-
-def test_graphql_reviews_preserve_feedback_and_rest_publisher_provenance(monkeypatch: pytest.MonkeyPatch) -> None:
-    issue: dict[str, Any] = {
-        "id": 1,
-        "body": "Question",
-        "user": {"login": "person", "id": 27},
-        "performed_via_github_app": {"id": 45},
-        "author_association": "CONTRIBUTOR",
-    }
-    inline = {
-        "id": 2,
-        "body": "Fix",
-        "user": {"login": "codex[bot]"},
-        "path": "app.py",
-        "line": None,
-        "original_line": 12,
-        "author_association": "CONTRIBUTOR",
-        "created_at": "2026-11-01T00:00:00Z",
-    }
-    reviews: list[dict[str, Any]] = [
-        {
-            "id": 100 + i,
-            "body": "Needs work",
-            "user": {"login": "person"},
-            "submitted_at": "2026-11-01T01:00:00Z",
-            "author_association": "CONTRIBUTOR",
-        }
-        for i in range(11)
-    ]
-    calls = []
-
-    def rest(endpoint: str, **_kwargs: Any) -> list[dict[str, Any]]:
-        calls.append(endpoint)
-        if "/issues/" in endpoint:
-            return [issue]
-        return reviews if endpoint.endswith("/reviews") else [inline]
-
-    monkeypatch.setattr(gh_pr_watch, "gh_api_list_paginated", rest)
-    monkeypatch.setattr(gh_pr_watch, "fetch_review_threads", lambda *_a: {"status": "available", "threads": []})
-    before = gh_pr_watch.fetch_new_review_items(sample_pr(), {}, True)
-
-    def connection(page_nodes: list[dict[str, Any]], cursor: str | None = None) -> dict[str, Any]:
-        return {
-            "nodes": page_nodes,
-            "totalCount": len(reviews) if cursor else len(page_nodes),
-            "pageInfo": {"hasNextPage": cursor is not None, "endCursor": cursor},
-        }
-
-    inline_node = {
-        "__typename": "PullRequestReviewComment",
-        "id": "inline-2",
-        "databaseId": inline["id"],
-        "body": inline["body"],
-        "author": {"__typename": "Bot", "login": "codex"},
-        "authorAssociation": inline["author_association"],
-        "createdAt": inline["created_at"],
-        "updatedAt": inline["created_at"],
-        "url": "",
-        "path": inline["path"],
-        "line": inline["line"],
-        "originalLine": inline["original_line"],
-    }
-    nodes = [
-        {
-            "__typename": "PullRequestReview",
-            "id": f"review-{review['id']}",
-            "databaseId": review["id"],
-            "body": review["body"],
-            "author": {"__typename": "User", "login": review["user"]["login"]},
-            "authorAssociation": review["author_association"],
-            "createdAt": "2026-11-01T00:00:00Z",
-            "updatedAt": "2026-11-01T00:00:00Z",
-            "submittedAt": review["submitted_at"],
-            "url": "",
-            "comments": connection([inline_node] if i == 0 else []),
-        }
-        for i, review in enumerate(reviews)
-    ]
-    queries = []
-    broken = ""
-
-    def graphql(_document: str, variables: dict[str, Any], **_kwargs: Any) -> SimpleNamespace:
-        queries.append(variables)
-        if broken in {"retryable", "denied"}:
-            return SimpleNamespace(ok=False, failure=SimpleNamespace(message=broken, retryable=broken == "retryable"))
-        arguments = next(re.finditer(r"reviews\s*\(([^)]*)\)", _document))[1]
-        count = int(next(re.finditer(r"first\s*:\s*(\d+)", arguments))[1])
-        cursor = json.loads(next(re.finditer(r'after\s*:\s*(null|"[^"]*")', arguments))[1])
-        offset = int(cursor or 0)
-        page = nodes[offset : offset + count]
-        next_cursor = str(offset + len(page)) if offset + len(page) < len(nodes) else None
-        page_connection = {**connection(page, next_cursor), "totalCount": len(nodes)}
-        data = (
-            {"node": {"reviews": page_connection}}
-            if "id" in variables
-            else {"repository": {"pullRequest": {"__typename": "PullRequest", "id": "pull", "reviews": page_connection}}}
-        )
-        return SimpleNamespace(ok=True, body={"data": data, **({"errors": [{"message": "partial"}]} if broken else {})})
-
-    reader = ReviewReader()
-    monkeypatch.setattr(reader, "graphql_json", graphql)
-    calls.clear()
-    state = {}
-    assert gh_pr_watch.fetch_new_review_items(sample_pr(), state, True, reader=reader) == before
-    assert [item["author"] for item in before if item["kind"] == "review_comment"] == ["codex[bot]"]
-    assert gh_pr_watch.fetch_new_review_items(sample_pr(), state, False, reader=reader) == []
-    assert len(queries) == 2
-    assert calls == ["repos/openai/codex/issues/123/comments"] * 2
-    nodes.extend([dict(nodes[-1], id=f"overflow-{i}", databaseId=1000 + i) for i in range(190)])
-    queries.clear()
-    overflow = gh_pr_watch.fetch_new_review_items(sample_pr(), {}, True, reader=reader)
-    assert {item["id"] for item in overflow if item["kind"] == "review"} == {str(node["databaseId"]) for node in nodes}
-    assert len(queries) <= 3
-    nodes[:] = nodes[: len(reviews)]
-    for broken in ("partial", "retryable"):
-        assert gh_pr_watch.fetch_new_review_items(sample_pr(), {}, True, reader=reader) == before
-        assert calls[-2:] == ["repos/openai/codex/pulls/123/comments", "repos/openai/codex/pulls/123/reviews"]
-    broken = "denied"
-    calls.clear()
-    with pytest.raises(getattr(sys.modules["github_read"], "GitHubReadError"), match="denied"):
-        gh_pr_watch.fetch_new_review_items(sample_pr(), {}, True, reader=reader)
-    assert calls == ["repos/openai/codex/issues/123/comments"]
 
 
 def test_fetch_new_review_items_ignores_own_automation_comment(monkeypatch):
@@ -2177,7 +2052,6 @@ def test_security_threads_survive_seen_comments(monkeypatch, resolved, outdated,
     pr = sample_pr()
     comment = {"id": 17, "user": {"login": "github-advanced-security[bot]"}, "body": "CodeQL finding", "commit_id": comment_sha}
     monkeypatch.setattr(gh_pr_watch, "gh_api_list_paginated", lambda endpoint, **kwargs: [comment] if endpoint.endswith("/comments") and "/pulls/" in endpoint else [])
-    monkeypatch.setitem(vars(sys.modules["github_read"]), "read_discussion", lambda *_a, **_kw: {"reviews": [], "review_comments": [comment]})
     body = {"data": {"repository": {"nameWithOwner": pr["repo"], "pullRequest": {
         "number": pr["number"], "url": pr["url"], "headRefOid": pr["head_sha"],
         "reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": [{
@@ -2276,7 +2150,6 @@ def test_resolved_comments_do_not_replay_after_graphql_failure(monkeypatch):
     pr = sample_pr()
     comment = {"id": 17, "user": {"login": "github-advanced-security[bot]"}, "body": "CodeQL finding"}
     monkeypatch.setattr(gh_pr_watch, "gh_api_list_paginated", lambda endpoint, **kwargs: [comment] if endpoint.endswith("/comments") and "/pulls/" in endpoint else [])
-    monkeypatch.setitem(vars(sys.modules["github_read"]), "read_discussion", lambda *_a, **_kw: {"reviews": [], "review_comments": [comment]})
     body = {"data": {"repository": {"nameWithOwner": pr["repo"], "pullRequest": {
         "number": pr["number"], "url": pr["url"], "headRefOid": pr["head_sha"],
         "reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": [{
