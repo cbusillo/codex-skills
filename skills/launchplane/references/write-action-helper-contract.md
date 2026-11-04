@@ -2579,6 +2579,16 @@ on a dry run or missing ones on readback, or a token-shaped surviving name
 returns `invalid`. On readback the review id and digest must also equal the
 ones sent.
 
+Non-preview instance reviews also preserve `instance_plain_setting_effects`
+and the opaque `context_values_sha256` binding when supplied by the service.
+Each selected name appears once, with a context fallback marked `unchanged`
+or `changed`, or no context fallback marked `absent`. Malformed or incomplete
+comparisons fail the read. Older responses without these optional fields and
+null comparisons supply no fallback evidence. This compares stored plain
+settings only, excludes global settings, and does not establish runtime use,
+provider equality, target overlays, secret resolution or rollback qualification.
+Readback returns the saved review's comparison, not a fresh fallback observation.
+
 Readback must reuse the dry run's exact keys, reason, review id and digest;
 the service compares the saved review's intent with the request.
 `readback_matches: false` means drift or the removal is not applied yet. It
