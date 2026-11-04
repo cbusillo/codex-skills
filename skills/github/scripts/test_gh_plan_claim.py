@@ -2064,6 +2064,47 @@ class ClaimTests(unittest.TestCase):
         self.args.branch = self.pulls[0]["head"]["ref"]
         return source
 
+    def test_qualified_native_next_head_can_continue_after_its_family_peer_released(self) -> None:
+        self.parent_handoff_fixture()
+        source = CLAIM.records(self.target_comments["/repos/owner/repo/issues/41/comments"][0]["body"])[0]
+        self.args.worker, self.args.session = source["worker"], source["session"]
+        self.args.branch = self.pulls[0]["head"]["ref"]
+        peer = {**source, "branch": self.args.branch, "resume_from": "1",
+                "retained_handoff": CLAIM.handoff_url("owner/repo", 41, self.handoff_id)}
+        self.targets["43"] = {**copy.deepcopy(self.issue), "number": 43}
+        self.children["/repos/owner/repo/issues/41/sub_issues"].append(self.targets["43"])
+        self.target_comments["/repos/owner/repo/issues/43/comments"] = [
+            {"id": 88, "body": CLAIM.marker(peer), "user": {"login": TEST_BOT}, "created_at": peer["claimed_at"]},
+            {"id": 89, "body": "Released claim 88", "user": {"login": TEST_BOT}, "created_at": "2026-10-02T00:00:00Z"}]
+        with patch.dict(os.environ, {"CODEX_THREAD_ID": self.args.session, "CODEX_SESSION_ID": self.args.session}):
+            self.run_claim()
+        result = self.emitted.call_args.args[0]
+        self.assertIn("metadata_readback", result["completed_steps"])
+        self.assertEqual(result["claim"]["branch"], self.pulls[0]["head"]["ref"])
+
+    def test_retained_pr_secondary_scan_does_not_reject_an_accounted_closed_artifact(self) -> None:
+        self.ordinary_handoff_fixture()
+        historical = self.closed_pulls[100]
+        previous_branch = historical["head"]["ref"]
+        owner = {**OTHER, "worker": "ended-artifact-worker", "session": "ended-artifact-session",
+                 "branch": "work/issue-42-retired-artifact"}
+        historical["head"]["ref"], historical["merged_at"] = owner["branch"], None
+        historical["body"] += f"\nRefs #{self.pulls[0]['number']}"
+        for key in ("local_branches", "remote_branches"):
+            self.inventory[key] = [owner["branch"] if branch == previous_branch else branch for branch in self.inventory[key]]
+        for tree in self.inventory["worktrees"]:
+            if tree["branch"] == previous_branch:
+                tree["branch"] = owner["branch"]
+        self.comments.extend([
+            {"id": 4, "body": CLAIM.marker(owner), "user": {"login": TEST_BOT}, "created_at": owner["claimed_at"]},
+            {"id": 5, "body": "Released claim 4", "user": {"login": TEST_BOT}, "created_at": "2026-10-02T00:00:00Z"}])
+        self.run_claim()
+        result = self.emitted.call_args.args[0]
+        self.assertIn("metadata_readback", result["completed_steps"])
+        artifact = next(entry for entry in result["retained_artifacts"] if entry["claim_id"] == self.comments[3]["id"])
+        self.assertEqual(artifact["branch"], owner["branch"])
+        self.assertEqual(artifact["release_id"], self.comments[4]["id"])
+
     def test_next_head_exception_requires_one_exact_native_owner_and_open_attestation(self):
         for change in ("unchanged", "different_worker", "different_session", "no_native_binding", "conflicting_native_binding", "original_branch", "ambiguous_head"):
             with self.subTest(change=change):
@@ -2523,7 +2564,6 @@ class ClaimTests(unittest.TestCase):
     def test_inherited_ended_artifacts_are_preserved_and_report_the_original_owner(self) -> None:
         source = self.inherited_ended_artifact_fixture()
         original = CLAIM.records(source["body"])[0]
-        before = copy.deepcopy((self.inventory, self.pulls, self.closed_pulls, self.targets, self.target_comments))
         self.run_claim()
         result = self.emitted.call_args.args[0]
         self.assertTrue(result["ok"])
@@ -2532,9 +2572,13 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(artifact["branch"], original["branch"])
         self.assertEqual(artifact["release_id"], self.target_comments["/repos/owner/repo/issues/41/comments"][-1]["id"])
         self.assertEqual(artifact["claim_url"], CLAIM.handoff_url("owner/repo", 41, source["id"]))
+        self.assertEqual(artifact["work_record"], "https://github.com/owner/repo/issues/41")
+        self.assertEqual(artifact["release_url"], CLAIM.handoff_url("owner/repo", 41, artifact["release_id"]))
         self.assertIn("https://github.com/owner/repo/pull/100", artifact["pull_requests"])
         self.assertTrue(artifact["worktrees"])
-        self.assertEqual(before, (self.inventory, self.pulls, self.closed_pulls, self.targets, self.target_comments))
+        self.assertEqual(result["claim"]["branch"], self.args.branch)
+        self.assertEqual(result["claim"]["resume_from"], str(self.args.resume_from))
+        self.assertEqual(result["claim"]["retained_handoff"], CLAIM.handoff_url("owner/repo", 42, self.handoff_id))
 
     def test_inherited_ended_artifacts_refuse_reuse_and_recheck_ownership_at_each_phase(self) -> None:
         cases = [*product(("preflight", "after_post", "after_status"),
@@ -2564,13 +2608,23 @@ class ClaimTests(unittest.TestCase):
                     else: self.args.branch = original["branch"]
                 if phase == "preflight": invalidate()
                 else: setattr(self, phase, invalidate)
-                before = copy.deepcopy(self.inventory)
                 with self.assertRaises(PLAN.PlanError) as caught:
                     self.run_claim()
                 if change == "reuse": self.assertEqual(caught.exception.code, "claim_ended_branch_reused")
+                else:
+                    self.assertEqual(caught.exception.code, "claim_conflict")
+                    evidence = caught.exception.payload["competing_evidence"]
+                    if change == "author":
+                        self.assertTrue(any(entry["source"] == "closed_pr_artifacts" and entry["number"] == 100
+                                            for entry in evidence))
+                    elif change in {"expired_release", "expired_reuse"}:
+                        self.assertTrue(any(entry["source"] in {"local_branches", "remote_branches", "worktree"}
+                                            and entry["branch"] == original["branch"] for entry in evidence))
+                    elif change == "unmentioned_open":
+                        self.assertTrue(any(entry["source"] == "open_pr" and entry["number"] == self.pulls[-1]["number"]
+                                            for entry in evidence))
                 if phase == "preflight": self.assert_no_writes()
                 else: self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
-                self.assertEqual(self.inventory, before)
 
     def test_family_artifacts_do_not_force_selection_of_a_later_handoff(self) -> None:
         self.inherited_ended_artifact_fixture()

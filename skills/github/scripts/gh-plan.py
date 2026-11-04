@@ -3070,9 +3070,7 @@ def claim_once(args: argparse.Namespace) -> None:
         checked: set[tuple[str, int]] = set()
         for peer_repo, peer_number, _, peer_comments in phase_peers:
             key = (peer_repo.casefold(), peer_number)
-            if key in checked or key not in phase_owners or peer_repo.casefold() != issue_repo.casefold():
-                continue
-            if peer_repo.casefold() != target_repo.casefold():
+            if key in checked or key not in phase_owners or not (key[0] == issue_repo.casefold() == target_repo.casefold()):
                 continue
             checked.add(key)
             comments.extend(peer_comments)
@@ -3101,11 +3099,13 @@ def claim_once(args: argparse.Namespace) -> None:
                 ended_claims={entry["claim_id"] for entry in ended_owners}):
             conflicts.append(recipient)
         family_ended, _ = family_artifact_context(inventory)
+        current_branch_reused = any(entry["branch"] == claim["branch"] and entry["branch"] in branches
+                                    and entry["claim_id"] != args.resume_from for entry in ended_owners)
+        family_branch_reused = (selection is None or selection["mode"] != "next") and any(
+            entry["branch"] == claim["branch"] and entry["branch"] in branches for entry in family_ended)
         phase["branch_error"] = (ClassifiedPlanError("claim_ended_branch_reused",
             "Ended ownership requires a new task branch; preserve the retained source branch and worktree")
-            if any(entry["branch"] == claim["branch"] and entry["branch"] in branches
-                   and (entry in family_ended or entry["claim_id"] != args.resume_from)
-                   for entry in [*ended_owners, *family_ended]) else None)
+            if current_branch_reused or family_branch_reused else None)
         return conflicts, owned
 
     def check_wait(waiting_issue: dict[str, Any], waiting_status: str) -> bool:
@@ -3508,9 +3508,6 @@ def claim_once(args: argparse.Namespace) -> None:
         def usable(candidate: dict[str, Any]) -> bool:
             if record_kind == "pr" and not any(pull["number"] == number for pull in candidate["qualified"]):
                 return False
-            # Selection uses the existing artifact rules on raw checkout facts.
-            # Fresh native/peer authority remains with the phase observer and
-            # admission checks; this predicate grants no ownership.
             raw_inventory = phase["inventory"]
             candidate_claim, own = candidate_owners[candidate["url"]]
             scopes = {(issue_repo.casefold(), number): (issue_repo, current_comments, current_status),
@@ -3910,7 +3907,7 @@ def claim_once(args: argparse.Namespace) -> None:
 
     def check_pr_artifacts(status_to_check: str, current_comments: list[dict[str, Any]]) -> None:
         fresh_inventory = inventory
-        fresh_pulls = phase.get("artifact_pulls", phase["open_pulls"])
+        fresh_pulls = phase["open_pulls"]
         permitted_issues = {f"https://github.com/{issue_repo}/issues/{number}".casefold()} if record_kind == "issue" else set()
         if retained_mode and record_kind == "pr":
             permitted_issues.add(f"https://github.com/{issue_repo}/issues/{resume_source_number}".casefold())
