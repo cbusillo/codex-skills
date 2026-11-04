@@ -36,10 +36,11 @@ DIGEST_FIELDS = ("record_sha256", "authority_sha256", "plan_sha256")
 FLAG_FIELDS = ("record_deleted", "requires_compatible_readers_and_rollback")
 COUNT_FIELDS = ("unprintable_survivor_count", "surviving_value_count", "retirement_intent_count")
 READBACK_FIELDS = frozenset({"readback_matches", "current_record_present"})
+COMPARISON_FIELDS = frozenset({"instance_plain_setting_effects", "context_values_sha256"})
 APPLY_ONLY_FIELDS = frozenset({"applied_at", "audit_review_id", "replayed"})
 RESULT_FIELDS = frozenset({
     "product", "scope", "context", "instance", "removed_keys", "updated_at", "surviving_keys",
-    "applied", "review_id", *DIGEST_FIELDS, *FLAG_FIELDS, *COUNT_FIELDS, *READBACK_FIELDS,
+    "applied", "review_id", *DIGEST_FIELDS, *FLAG_FIELDS, *COUNT_FIELDS, *READBACK_FIELDS, *COMPARISON_FIELDS,
 })
 STALE_CODES = frozenset({"runtime_setting_removal_unverified"})
 STALE_RECOMMENDATION = (
@@ -154,6 +155,28 @@ def _surviving_keys(h: Any, value: object, drops: Any) -> list[str]:
     return kept
 
 
+def _context_comparison(h: Any, result: dict[str, Any], body: dict[str, Any]) -> dict[str, object]:
+    effects = result.get("instance_plain_setting_effects")
+    digest = result.get("context_values_sha256")
+    if effects is None and digest is None:
+        return {}
+    if (body["scope"] != "instance" or body["instance"] == "preview"
+            or not isinstance(effects, list) or len(effects) != len(body["keys"])
+            or not _is_hex64(digest)):
+        raise h.LaunchplaneSafetyError("invalid_response")
+    keys = []
+    for effect in effects:
+        if (not isinstance(effect, dict) or effect.keys() != {"key", "source_after", "effect"}
+                or not _printable_key(effect["key"])
+                or not ((effect["source_after"] == "context" and effect["effect"] in ("unchanged", "changed"))
+                        or (effect["source_after"] is None and effect["effect"] == "absent"))):
+            raise h.LaunchplaneSafetyError("invalid_response")
+        keys.append(effect["key"])
+    if sorted(keys) != sorted(body["keys"]):
+        raise h.LaunchplaneSafetyError("invalid_response")
+    return {"instance_plain_setting_effects": effects, "context_values_sha256": digest}
+
+
 def project(h: Any, response: object, body: dict[str, Any]) -> tuple[dict[str, object], dict[str, object]]:
     source = h._require_dict(response)
     if source.keys() - RESPONSE_FIELDS or source.get("status") != "ok":
@@ -199,6 +222,7 @@ def project(h: Any, response: object, body: dict[str, Any]) -> tuple[dict[str, o
         "review_id": result["review_id"],
         "applied": False,
         "apply_supported": False,
+        **_context_comparison(h, result, body),
     }
     h._report_dropped_fields(result, prefix="result", kept=set(RESULT_FIELDS),
                              known=RESULT_FIELDS, drops=drops)
