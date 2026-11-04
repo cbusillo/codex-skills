@@ -283,6 +283,32 @@ class RepositoryTests(Fixture):
         self.assertEqual({row["path"]: row["decision"] for row in rows}, {
             str(done): "candidate", str(active): "kept", str(fresh): "kept", str(foreign): "kept"})
 
+    def open_pull_scan(self, task: str, *, at_pull_head: bool = False, own: bool = False, claim: str = "") -> dict:
+        path = self.worktree(task)
+        head = self.commit(path, "Folded into a larger branch")
+        os.utime(Path(self.git(path, "rev-parse", "--absolute-git-dir")) / "HEAD", (0, 0))
+        pull = {"number": 8, "state": "open", "head": {"ref": "work/rollup", "sha": head if at_pull_head else "f" * 40}}
+        reader = mock.Mock()
+        reader.paged_json.side_effect = lambda route, **options: (
+            [pull] if own and options.get("params", {}).get("head", "").endswith(f":work/{task}")
+            else [pull] if route.endswith(f"commits/{head}/pulls") else [])
+        with mock.patch.object(landed_worktrees, "issues_naming", return_value=[]), \
+                mock.patch.object(landed_worktrees, "claims_on", return_value=claim):
+            rows = list(landed_worktrees.repository_rows(reader, mock.Mock(), "o/sample", self.repo, self.root))
+        return next(row for row in rows if row["path"] == str(path))
+
+    def test_tree_whose_commit_is_published_inside_another_branchs_open_pr_is_a_candidate(self) -> None:
+        row = self.open_pull_scan("folded")
+        self.assertEqual((row["decision"], row.get("published_in")), ("candidate", [8]))
+
+    def test_open_pr_on_the_trees_own_branch_or_at_its_head_keeps_the_tree(self) -> None:
+        self.assertEqual(self.open_pull_scan("own", own=True)["reason"], "branch or commit has an open PR")
+        self.assertEqual(self.open_pull_scan("at-head", at_pull_head=True)["reason"], "branch or commit has an open PR")
+
+    def test_open_claim_naming_the_folded_branch_keeps_the_tree(self) -> None:
+        row = self.open_pull_scan("claimed", claim="claim held")
+        self.assertEqual((row["decision"], row["reason"]), ("kept", "associated work has an open claim"))
+
     def test_fork_commit_reads_its_merged_upstream_pr_in_the_upstream_repository(self) -> None:
         upstream = {"full_name": "up/sample", "default_branch": "main"}
         pull = {"number": 404, "state": "closed", "merged_at": "2026-11-03T16:32:11Z", "title": "Fix", "body": "",

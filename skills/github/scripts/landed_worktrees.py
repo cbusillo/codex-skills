@@ -336,6 +336,13 @@ def ownership_decision(reader, github_read, repo: str, pulls: Iterable[dict], br
     return {"decision": "candidate"}
 
 
+def published_in_open_pull(reader, github_read, repo: str, tree: Worktree, open_pulls: list[dict]) -> dict:
+    ownership = ownership_decision(reader, github_read, repo, [], [tree.branch] if tree.branch else [])
+    if ownership["decision"] == "kept":
+        return ownership
+    return {"decision": "candidate", "published_in": sorted(pull["number"] for pull in open_pulls)}
+
+
 def target_decision(target: Path, checkout: Path, *, preserve: Iterable[Path] = (), reader: Any = None) -> dict:
     row = {"path": str(target), "decision": "kept"}
     try:
@@ -482,13 +489,20 @@ def repository_rows(reader: Any, github_read: Any, repo: str, checkout: Path, ro
                 elif tree.branch is None and tree.head in default_starts:
                     row["reason"] = "detached HEAD may be a fresh start on the default branch"
                 else:
-                    pulls = reader.paged_json(f"repos/{repo}/pulls", step_prefix="retirement_repository_pulls",
-                                              params={"state": "all", "head": f"{repo.split('/')[0]}:{tree.branch}"}) if tree.branch else []
+                    own_pulls = reader.paged_json(f"repos/{repo}/pulls", step_prefix="retirement_repository_pulls",
+                                                  params={"state": "all", "head": f"{repo.split('/')[0]}:{tree.branch}"}) if tree.branch else []
+                    pulls = own_pulls
                     if not pulls and (not tree.branch or not tip or not contained(checkout, tree.head, tip)):
                         pulls = reader.paged_json(f"repos/{repo}/commits/{tree.head}/pulls",
                                                   step_prefix="retirement_commit_pulls")
-                    if any(pull.get("state") != "closed" for pull in pulls):
+                    open_pulls = [pull for pull in pulls if pull.get("state") != "closed"]
+                    if open_pulls and (own_pulls or any((pull.get("head") or {}).get("sha") == tree.head
+                                                        for pull in open_pulls)):
                         row["reason"] = "branch or commit has an open PR"
+                    elif open_pulls:
+                        row = keep_fresh_starts([{**row, **published_in_open_pull(reader, github_read, repo, tree,
+                                                                                  open_pulls)}],
+                                                dt.datetime.now(dt.timezone.utc))[0]
                     else:
                         if pulls:
                             pull = max(pulls, key=lambda item: item.get("closed_at") or "")
