@@ -13,7 +13,6 @@ from collections.abc import Mapping
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-import check_insecure_tls as tls_checker
 import check_new_comments as checker
 
 BASE = "def total(values: list[int]) -> int:\n    return sum(values)\n"
@@ -115,7 +114,6 @@ class NewCommentsCheck(unittest.TestCase):
                         self.findings({"app.py": BASE}, {"app.py": source}),
                         {("app.py", 2, "comment")} if rejected else set(),
                     )
-                    self.assertEqual(bool(tls_checker.findings(source)), rejected)
 
     def test_tls_annotation_block_passes_only_at_its_choke_point(self) -> None:
         source = (
@@ -127,6 +125,12 @@ class NewCommentsCheck(unittest.TestCase):
             "    ctx.verify_mode = ssl.CERT_NONE\n"
         )
         self.assert_allowed(source)
+        for changed, row in (
+            (source.replace("    # insecure-tls:", "    # Unrelated prose.\n    # insecure-tls:"), 2),
+            (source.replace("    ctx.verify_mode", "    # Unrelated prose.\n    ctx.verify_mode"), 6),
+        ):
+            with self.subTest(source=changed):
+                self.assertEqual(self.findings({"app.py": BASE}, {"app.py": changed}), {("app.py", row, "comment")})
         for unrelated in (
             "# insecure-tls: calculate totals\nvalue = 1\n",
             "value = 1  # insecure-tls: calculate totals\n",

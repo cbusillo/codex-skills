@@ -45,7 +45,8 @@ unclear code stand by explaining it.
   tool or license requires also stays.
 - The TLS checker's `# insecure-tls:` annotation keeps its required reason;
   see [TLS verification lint](../../README.md#tls-verification-lint). The
-  comment gate recognizes the directive; the TLS gate validates the reason.
+  comment gate accepts the annotation block only where the TLS gate accepts
+  its reason.
 - The one other comment allowed is a single line that links to an outside
   source no name can hold: a vendor document, a specification, or an upstream
   bug. It is a link, not prose.

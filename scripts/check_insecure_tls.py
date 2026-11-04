@@ -72,7 +72,6 @@ def unsafe(node: ast.AST, imports: dict[str, str]) -> bool:
 
 def reason_rows(lines: list[str], line: int, column: int, assignment_ends: dict[tuple[int, int], int]) -> set[int]:
     comments = []
-    rows = set()
     index = line - 2
     while index >= 0:
         text = lines[index]
@@ -81,13 +80,18 @@ def reason_rows(lines: list[str], line: int, column: int, assignment_ends: dict[
             continue
         if len(text) - len(text.lstrip()) != column or not text.lstrip().startswith("#"):
             break
-        comments.append(text.lstrip()[1:].strip())
-        rows.add(index + 1)
+        comments.append((index + 1, text.lstrip()[1:].strip()))
         index -= 1
-    for comment in reversed(comments):
+    for row, comment in reversed(comments):
         if comment.startswith("insecure-tls:"):
             reason = comment.partition(":")[2].strip()
-            return rows if reason and not re.fullmatch(r"Q\d+|https?://\S+", reason) else set()
+            if not reason or re.fullmatch(r"Q\d+|https?://\S+", reason):
+                return set()
+            rows = {number for number, _ in comments}
+            end = row
+            while end in rows:
+                end += 1
+            return set(range(row, end))
     return set()
 
 
