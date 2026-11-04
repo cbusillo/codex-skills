@@ -162,10 +162,11 @@ replies. Chris's scope is recorded in
 and his overall direction.
 
 Limit the reply to clarifying questions, status, evidence and read-only
-diagnostic results about the repository it is posted in or that repository's Client's
-product. Never include host, infrastructure or credential details, local paths,
-or another Client's product or data. Start every reply with a line saying
-`Supervisor reply for <Director>`, including when using a personal account.
+diagnostic results about the repository it is posted in or its Client's product.
+Never include host, infrastructure or credential details, local paths, or
+another Client's product or data. Start the reply body with a line saying
+`Supervisor reply for <Director>`, including when using a personal account;
+preserve any identity notice the posting helper adds above it.
 Read the full thread, independently verify its addressee, link the
 original question and resolve the asking Director's login through `people` or
 verified identity context before mentioning them. A bot is not its Director.
@@ -177,7 +178,7 @@ proposed diagnostics against the receiving Director's own direction and stop
 boundaries before acting. This flow authorizes a comment only, never a requested
 diagnostic, system action or a new outreach thread. Apply
 [Public Safety](#public-safety) and preserve message-specific holds. Send at most
-one reply per open question until a verified human comments or the question's
+one reply per open question until a person comments or the question's
 recorded state changes. A Supervisor's comment alone never restarts the
 exchange; posting from a personal account does not prove a human turn.
 
@@ -186,8 +187,9 @@ Post with `gh-comment issue NUMBER --repo OWNER/REPO --body-file FILE` under
 chooses their own posting identity with existing access. The per-command opt-in
 selects that approved identity, not fresh approval of each reply in an adopted flow.
 
-If a follow-up cannot be answered from the evidence, or the reply needs a
-Director decision, including missing authorization or access, put it on the
+If a follow-up cannot be answered from the evidence or sent under the reply
+limit, including uncertain authorship or question-state change, or needs a
+Director decision such as missing authorization or access, put it on the
 replying Director's own existing direction/handoff issue, linking the outside
 question. Use [Director Questions](#director-questions) and the existing
 [queue rules and unconfigured fallback](#decisions-holds-and-work-state).
@@ -199,18 +201,16 @@ their own Supervisor; do not grant access, change tokens or install an App.
 To adopt the flow:
 
 1. Update the catalog and verify the chosen identity can read the issue and
-   all comments and post a comment on each shared repository. Missing access
-   stays UNKNOWN and goes to the Director's own queue as above.
+   all comments and post a comment on each shared repository.
 2. Name the peer Directors in the replying Director's direction, resolving
    their logins through `people` or verified identity context.
-3. Have that Director approve this literal sentence for their direction and
+3. Have that Director approve one sentence for their direction and
    standing instructions, reconciling any conflicting approval rule through
-   the existing instruction sync route:
+   the existing instruction sync route. For example:
 
    > My Supervisor may answer a named peer Director on the issue where they asked, under the catalog's same-issue Supervisor reply flow, in its own labeled words without approval per reply.
 
-Existing approval requirements remain until adoption and reconciliation are
-complete. Before widening Chris's flow, record one proved exchange in each
+Before widening Chris's flow, record one proved exchange in each
 direction between Chris's Supervisor and another named Director's Supervisor
 on [catalog#3302](https://github.com/cbusillo/codex-skills/issues/3302).
 
