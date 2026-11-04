@@ -1238,11 +1238,19 @@ def fetch_new_review_items(pr, state, fresh_state, authenticated_login=None, rea
 
     extra = {"reader": reader} if reader is not None else {}
     issue_payload = gh_api_list_paginated(endpoints["issue_comment"], repo=repo, **extra)
-    if reader is None:
-        review_comment_payload = gh_api_list_paginated(endpoints["review_comment"], repo=repo)
-        review_payload = gh_api_list_paginated(endpoints["review"], repo=repo)
+    reviews: dict[str, Any] | None = None
+    if reader is not None:
+        try:
+            reviews = github_read.read_discussion(reader, repo, pr_number, reviews_only=True)
+        except github_read.GitHubReadShapeError:
+            reviews = None
+        except github_read.GitHubReadError as error:
+            if not error.result.failure or not error.result.failure.retryable:
+                raise
+    if reviews is None:
+        review_comment_payload = gh_api_list_paginated(endpoints["review_comment"], repo=repo, **extra)
+        review_payload = gh_api_list_paginated(endpoints["review"], repo=repo, **extra)
     else:
-        reviews = github_read.read_pull_request_reviews(reader, repo, pr_number)
         review_comment_payload = reviews["review_comments"]
         review_payload = reviews["reviews"]
 

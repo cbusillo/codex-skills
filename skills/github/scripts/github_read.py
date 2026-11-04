@@ -623,17 +623,15 @@ def graphql_comment(node: dict[str, Any]) -> dict[str, Any]:
 DISCUSSION_REACTIONS = """reactions(first:10, orderBy:{field:CREATED_AT,direction:ASC}) {
  totalCount nodes { content createdAt user { login } } pageInfo { hasNextPage endCursor }
 }"""
-DISCUSSION_COMMENT_FIELDS = f"""__typename id databaseId body createdAt updatedAt url author {{ __typename login }}
+DISCUSSION_MESSAGE_FIELDS = "__typename id databaseId body createdAt updatedAt url author { __typename login }"
+DISCUSSION_COMMENT_FIELDS = f"""{DISCUSSION_MESSAGE_FIELDS}
  ... on Comment {{ lastEditedAt editor {{ login }} }}
  ... on Reactable {{ {DISCUSSION_REACTIONS} }}"""
-DISCUSSION_INLINE_FIELDS = DISCUSSION_COMMENT_FIELDS + " replyTo { databaseId }"
-DISCUSSION_REVIEW_FIELDS = DISCUSSION_COMMENT_FIELDS + " submittedAt " + (
-    "comments(first:10) { totalCount nodes { " + DISCUSSION_INLINE_FIELDS + " } pageInfo { hasNextPage endCursor } }"
-)
 
 
-def discussion_connection(field: str, fields: str, cursor: str | None = None) -> str:
-    return (f"{field}(first:{10 if field == 'reviews' else 100}, after:{json.dumps(cursor)}) {{ totalCount nodes {{ {fields} }}"
+def discussion_connection(field: str, fields: str, cursor: str | None = None, *, page_size: int | None = None) -> str:
+    count = page_size if page_size is not None else 10 if field == "reviews" else 100
+    return (f"{field}(first:{count}, after:{json.dumps(cursor)}) {{ totalCount nodes {{ {fields} }}"
             " pageInfo { hasNextPage endCursor } }")
 
 
@@ -677,81 +675,90 @@ def discussion_comment(node: dict[str, Any], repo: str, number: int) -> dict[str
     if type(node.get("databaseId")) is not int:
         raise GitHubReadShapeError("Discussion message identity is unavailable")
     return {
-        **graphql_comment(node), "node_id": node["id"],
+        **graphql_comment(node),
+        "node_id": node["id"],
         "issue_url": f"https://api.github.com/repos/{repo}/issues/{number}",
         "pull_request_url": f"https://api.github.com/repos/{repo}/pulls/{number}",
         "in_reply_to_id": (node.get("replyTo") or {}).get("databaseId"),
         "submitted_at": node.get("submittedAt"),
+        **{
+            target: node[source]
+            for source, target in (
+                ("authorAssociation", "author_association"),
+                ("path", "path"),
+                ("line", "line"),
+                ("originalLine", "original_line"),
+            )
+            if source in node
+        },
         "_graphql": {key: node[key] for key in ("lastEditedAt", "editor", "reactions") if key in node},
     }
 
 
-def read_discussion(reader: GitHubReader, repo: str, number: int, *, issue_id: int | None = None) -> dict[str, Any]:
+def read_discussion(
+    reader: GitHubReader, repo: str, number: int, *, issue_id: int | None = None, reviews_only: bool = False
+) -> dict[str, Any]:
     owner, name = repo.split("/")
-    fields = DISCUSSION_COMMENT_FIELDS + " number title state closedAt " + discussion_connection("comments", DISCUSSION_COMMENT_FIELDS)
-    review_fields = discussion_connection("reviews", DISCUSSION_REVIEW_FIELDS)
+    fields = (
+        DISCUSSION_COMMENT_FIELDS + " number title state closedAt " + discussion_connection("comments", DISCUSSION_COMMENT_FIELDS)
+    )
+    message_fields = DISCUSSION_MESSAGE_FIELDS + " authorAssociation" if reviews_only else DISCUSSION_COMMENT_FIELDS
+    inline_fields = message_fields + " replyTo { databaseId }" + (" path line originalLine" if reviews_only else "")
+    review_fields = message_fields + " submittedAt " + discussion_connection("comments", inline_fields, page_size=100 if reviews_only else 10)
+    selection = (
+        "pullRequest(number:$number) { __typename id " + discussion_connection("reviews", review_fields) + " }"
+        if reviews_only
+        else "issueOrPullRequest(number:$number) { ... on Issue { "
+        + fields
+        + " } ... on PullRequest { "
+        + fields
+        + " "
+        + discussion_connection("reviews", review_fields)
+        + " } }"
+    )
     document = (
         "query($owner:String!,$name:String!,$number:Int!) { repository(owner:$owner,name:$name) { "
-        "issueOrPullRequest(number:$number) { ... on Issue { " + fields + " } ... on PullRequest { "
-        + fields + " " + review_fields + " } } } rateLimit { cost } }"
+        + selection
+        + " } rateLimit { cost } }"
     )
     data = discussion_query(reader, document, {"owner": owner, "name": name, "number": number})
     repository_node = data.get("repository")
-    thread = repository_node.get("issueOrPullRequest") if isinstance(repository_node, dict) else None
+    thread = (
+        repository_node.get("pullRequest" if reviews_only else "issueOrPullRequest") if isinstance(repository_node, dict) else None
+    )
     if not isinstance(thread, dict) or thread.get("__typename") not in {"Issue", "PullRequest"}:
         raise GitHubReadShapeError(f"GitHub did not expose {repo}#{number}")
-    resolved_id = thread.get("databaseId")
-    if thread["__typename"] == "PullRequest":
-        resolved_id = issue_id if issue_id is not None else reader.get_json(
-            f"/repos/{repo}/issues/{number}", step="discussion_issue_identity"
-        )["id"]
-    result: dict[str, Any] = {
-        **discussion_comment({**thread, "databaseId": resolved_id}, repo, number), "number": thread["number"], "title": thread["title"],
-        "state": "closed" if thread["state"] in {"CLOSED", "MERGED"} else "open",
-        "closed_at": thread["closedAt"],
-        "comments": [discussion_comment(node, repo, number) for node in discussion_nodes(reader, thread, "comments", DISCUSSION_COMMENT_FIELDS)],
-        "reviews": [], "review_comments": [],
-    }
+    result: dict[str, Any] = {"reviews": [], "review_comments": []}
+    if not reviews_only:
+        resolved_id = thread.get("databaseId")
+        if thread["__typename"] == "PullRequest":
+            resolved_id = (
+                issue_id
+                if issue_id is not None
+                else reader.get_json(f"/repos/{repo}/issues/{number}", step="discussion_issue_identity")["id"]
+            )
+        result.update(
+            {
+                **discussion_comment({**thread, "databaseId": resolved_id}, repo, number),
+                "number": thread["number"],
+                "title": thread["title"],
+                "state": "closed" if thread["state"] in {"CLOSED", "MERGED"} else "open",
+                "closed_at": thread["closedAt"],
+                "comments": [
+                    discussion_comment(node, repo, number)
+                    for node in discussion_nodes(reader, thread, "comments", DISCUSSION_COMMENT_FIELDS)
+                ],
+            }
+        )
     if thread["__typename"] == "PullRequest":
         result["pull_request"] = {"url": f"https://api.github.com/repos/{repo}/pulls/{number}"}
-        for review in discussion_nodes(reader, thread, "reviews", DISCUSSION_REVIEW_FIELDS):
+        for review in discussion_nodes(reader, thread, "reviews", review_fields):
             result["reviews"].append(discussion_comment(review, repo, number))
             result["review_comments"].extend(
-                discussion_comment(node, repo, number) for node in discussion_nodes(reader, review, "comments", DISCUSSION_INLINE_FIELDS)
+                discussion_comment(node, repo, number) for node in discussion_nodes(reader, review, "comments", inline_fields)
             )
-    return result
-
-
-def read_pull_request_reviews(reader: GitHubReader, repo: str, number: int) -> dict[str, Any]:
-    owner, name = repo.split("/")
-    fields = "__typename id databaseId body createdAt updatedAt url author { __typename login } authorAssociation"
-    inline_fields = fields + " path line originalLine"
-    review_fields = fields + " submittedAt " + discussion_connection("comments", inline_fields)
-    document = (
-        "query($owner:String!,$name:String!,$number:Int!) { repository(owner:$owner,name:$name) { "
-        "pullRequest(number:$number) { __typename id "
-        + discussion_connection("reviews", review_fields)
-        + " } } rateLimit { cost } }"
-    )
-    data = discussion_query(reader, document, {"owner": owner, "name": name, "number": number})
-    repository_node = data.get("repository")
-    pull = repository_node.get("pullRequest") if isinstance(repository_node, dict) else None
-    if not isinstance(pull, dict):
-        raise GitHubReadShapeError(f"GitHub did not expose {repo}#{number}")
-    result: dict[str, Any] = {"reviews": [], "review_comments": []}
-    for review in discussion_nodes(reader, pull, "reviews", review_fields):
-        result["reviews"].append({**discussion_comment(review, repo, number), "author_association": review["authorAssociation"]})
-        for node in discussion_nodes(reader, review, "comments", inline_fields):
-            result["review_comments"].append(
-                {
-                    **discussion_comment(node, repo, number),
-                    "path": node["path"],
-                    "line": node["line"],
-                    "original_line": node["originalLine"],
-                    "author_association": node["authorAssociation"],
-                }
-            )
-    result["review_comments"].sort(key=lambda comment: comment["id"])
+        if reviews_only:
+            result["review_comments"].sort(key=lambda comment: comment["id"])
     return result
 
 
@@ -787,8 +794,8 @@ def request_diagnostic(
         "lastBucket": payload.get("last_bucket"),
         "reconciliation": payload.get("reconciliation"),
         "effectiveDeadline": payload.get("effective_deadline"),
-            "retryExhaustedReason": payload.get("retry_exhausted_reason"),
-            "cache": result.headers.get("x-codex-cache"),
+        "retryExhaustedReason": payload.get("retry_exhausted_reason"),
+        "cache": result.headers.get("x-codex-cache"),
     }
     if result.failure:
         diagnostic["cause"] = result.failure.cause

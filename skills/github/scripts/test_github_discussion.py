@@ -77,7 +77,7 @@ class DiscussionTests(unittest.TestCase):
             ),
             response({"node": {"comments": connection([dict(inline, id="node-13", databaseId=13, line=15)], total=2)}}),
         ]
-        result = github_read.read_pull_request_reviews(reader, "example/repo", 7)
+        result = github_read.read_discussion(reader, "example/repo", 7, reviews_only=True)
         self.assertEqual(result["reviews"][0]["submitted_at"], review["submittedAt"])
         self.assertEqual(
             [(row["id"], row["line"], row["original_line"]) for row in result["review_comments"]],
@@ -87,7 +87,7 @@ class DiscussionTests(unittest.TestCase):
         self.assertEqual(reader.graphql_json.call_count, 2)
         reader.graphql_json.side_effect = [response({"repository": {"pullRequest": None}}, errors=[{"message": "partial"}])]
         with self.assertRaises(GitHubReadShapeError):
-            github_read.read_pull_request_reviews(reader, "example/repo", 7)
+            github_read.read_discussion(reader, "example/repo", 7, reviews_only=True)
 
     def test_thread_comments_authors_edits_and_reactions_share_one_query(self) -> None:
         reader = Mock(deadline_at=None)

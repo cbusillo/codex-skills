@@ -3189,8 +3189,9 @@ retry and exact-head reconciliation.
 
 ### Planning Graph Batches
 
-`gh-plan.py show N --full` collects issue metadata, labels, comments and native
-relationships through the existing shared GraphQL transport by default.
+Every `gh-plan.py show N` mode, including `--full` and `--launch-check`, collects
+issue metadata, labels, comments and native relationships through the existing
+shared GraphQL transport by default.
 `--no-batch-read` selects conditional REST for unchanged polling or diagnostics.
 For an explicitly cold or changing repository workload, `gh-plan.py next --batch-read`
 collects issue metadata, labels and native relationships through the same transport.
@@ -3225,6 +3226,8 @@ It retains issue comments on conditional REST so publisher IDs and App provenanc
 keep their verification path. Review-thread resolution retains its separate
 current-head query. This shifts two cold REST requests to one GraphQL query;
 unchanged cycles still spend that query's points while their REST reads can return 304.
+Incomplete review graphs and retryable query failures recover through the existing
+same-reader REST feeds; identity or authorization failures still stop.
 The check-batch flag defaults off: unchanged check polling
 keeps its authenticated conditional REST savings. There is no persisted GraphQL
 body cache or credential/actor change.
