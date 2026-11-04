@@ -2790,8 +2790,7 @@ without a query, fragment or extra path segment. Images use the same checks and
 transport as file attachments; saved images are named `asset-UUID`, without a
 server-selected filename or extension.
 
-On Chris-Studio, use the host's `/Volumes/Developer-Artifacts/task-evidence/`
-root. `COMMENT_ID` is the numeric ID in `#issuecomment-...`. For a file attached
+Use the shared configured [evidence root](worktrees.md#task-evidence-and-retained-items). `COMMENT_ID` is the numeric ID in `#issuecomment-...`. For a file attached
 to an issue body, replace `--comment COMMENT_ID` with `--issue ISSUE_NUMBER`.
 The helper verifies that exact issue and rejects pull requests; the same
 author, exact-link, approval, credential and storage checks apply. The helper checks
@@ -2821,7 +2820,7 @@ Binary downloads use a bounded transport without retries or identity fallback;
 redirects go only to supported GitHub asset hosts over HTTPS, with Authorization
 removed. Automation-only mode continues to refuse personal authentication.
 
-Output must be under `task-evidence/REPO/TASK`, outside Git checkouts, with
+Output must be under the configured `<evidenceRoot>/REPO/TASK`, outside Git checkouts, with
 `REPO` matching the requested repository name. Symlink escapes are refused.
 The leaf directory must belong to the running user and be mode 0700; an absent
 directory is created. Files are mode 0600, named by attachment ID and sanitized

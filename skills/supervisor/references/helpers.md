@@ -2459,11 +2459,9 @@ and recreate it on takeover. Stop it when this run ends.
 Use the same evidence directory for every invocation for this run:
 its launch journal prevents replay after interruption, failure or an uncertain
 comment write. This directory is durable operational state, not disposable
-task evidence. Keep it in a private run-state directory without automatic
-expiry, or an appropriate private directory on Retained-Artifacts. Never put
-it under the auto-pruned Developer-Artifacts/task-evidence root, a temporary
-directory or any cleanup policy that can remove journals while requests remain
-open. Keep journals and results through handoffs and until every request is
+task evidence. Use a private (0700) `<retainedRoot>/recovery/<repo>/<item>` under the
+[shared retention rule](../../github/references/worktrees.md#task-evidence-and-retained-items),
+without expiry while requests remain open. Keep journals and results through handoffs and until every request is
 resolved; a denied/spent request needs its journal for as long as that request
 could be discovered again. If state is lost, reconstruct it from retained
 evidence and reconcile remote delivery before apply; absence of a journal is

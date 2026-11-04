@@ -54,7 +54,7 @@ def main() -> int:
     if failures:
         print(
             f"{failures} undefined storage location(s); name the session "
-            "scratchpad or the host's task-evidence location as described in "
+            "scratchpad or the configured evidence root as described in "
             "skills/references/repo-cleanup.md#task-artifacts-and-retention.",
             file=sys.stderr,
         )

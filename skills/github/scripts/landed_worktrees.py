@@ -6,25 +6,24 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
 import datetime as dt
-import json
 import importlib.util
+import json
 import math
 import os
 import random
-from pathlib import Path
 import subprocess
 import sys
 import time
 from collections.abc import Iterable, Iterator
-from urllib.parse import urlencode
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 import dev_worktree
 import github_plan_claim
 import github_plan_release
-
 
 ANY_CLAIM = {"worker": "", "session": "", "branch": "", "claimed_at": ""}
 NO_WORKTREES = {"worktrees": []}
@@ -47,7 +46,6 @@ def git(checkout: Path, *args: str, input_text: str | None = None) -> subprocess
 
 
 def registered(checkout: Path) -> list[Worktree]:
-    """Linked worktrees of the checkout's repository; the main checkout is never listed."""
     result = git(checkout, "worktree", "list", "--porcelain", "-z")
     if result.returncode:
         raise ValueError(result.stderr.strip() or "git worktree list failed")
@@ -69,7 +67,6 @@ def registered(checkout: Path) -> list[Worktree]:
 
 
 def contained(checkout: Path, head: str, tip: str) -> bool:
-    """True when every commit at head is in tip; a tip missing locally proves nothing."""
     if head == tip:
         return True
     return (git(checkout, "cat-file", "-e", f"{tip}^{{commit}}").returncode == 0
@@ -118,7 +115,7 @@ def retirement_command(path: str, dry_run: bool) -> subprocess.CompletedProcess[
     if helper is None:
         return portable_retire(Path(path), dry_run=dry_run)
     args = [str(helper), "retire", *(["--dry-run"] if dry_run else []), path]
-    environment = {**os.environ, "DEV_WORKTREE_DELEGATED": f"{os.getpid()}:{json.dumps(args[1:])}"}
+    environment = dev_worktree.host_environment(args[1:])
     return subprocess.run(args, capture_output=True, text=True, env=environment)
 
 
