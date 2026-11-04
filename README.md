@@ -989,6 +989,8 @@ Configure the automation role separately from the token:
 When App authentication is enabled, set `CODEX_AUTOMATION_LOGIN` to the App's
 bot login (normally the App slug followed by `[bot]`) so write preflight and the
 identity probe verify the intended actor.
+Repository flags (`-R`, `--repo`, and their attached-value forms) keep the same
+write checks before or after a command-group subcommand.
 
 The `CODEX_` prefix on these, and the `CODE_HOME` and `CODEX_HOME` names, are
 historical. They are stable names that mean the same thing on every host and are

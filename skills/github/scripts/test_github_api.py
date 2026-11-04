@@ -1410,6 +1410,31 @@ def test_gh_api_short_flag_groups_are_classified_as_gh_reads_them() -> None:
     assert mutation.is_write is True
 
 
+
+def test_repository_flags_do_not_hide_command_group_mutations() -> None:
+    for group, mutation, read in (
+        ("run", "cancel", "view"),
+        ("run", "rerun", "list"),
+        ("run", "delete", "download"),
+        ("run", "approve", "watch"),
+        ("issue", "comment", "view"),
+        ("pr", "merge", "view"),
+        ("workflow", "run", "view"),
+        ("release", "delete", "view"),
+        ("repo", "edit", "view"),
+        ("label", "create", "list"),
+        ("secret", "set", "list"),
+        ("variable", "set", "list"),
+        ("gist", "delete", "view"),
+    ):
+        for flags in (["-R", "example/app"], ["--repo", "example/app"], ["--repo=example/app"], ["-Rexample/app"]):
+            for command in (mutation, read):
+                baseline = _api.infer_gh_command_context([group, command, "42", *flags])
+                positioned = _api.infer_gh_command_context([group, *flags, command, "42"])
+                assert baseline.is_write is (command == mutation), (group, command)
+                assert positioned == baseline, (group, flags, command, positioned)
+
+
 def test_legacy_gh_usage_error_is_a_local_argument_failure() -> None:
     # gh 2.102's stderr for `gh repo fork OWNER/REPO --remote=false`, shortened.
     usage = (

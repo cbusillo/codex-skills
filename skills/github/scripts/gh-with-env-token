@@ -202,7 +202,7 @@ is_write_command() {
 		-R | --repo | --hostname)
 			shift 2 || return 1
 			;;
-		--repo=* | --hostname=*)
+		--repo=* | --hostname=* | -R?*)
 			shift
 			;;
 		--)
@@ -218,7 +218,19 @@ is_write_command() {
 		esac
 	done
 
-	case "${1:-}" in
+	write_command_group=${1:-}
+	if [ "$#" -gt 0 ]; then
+		shift
+	fi
+	while [ "$#" -gt 0 ]; do
+		case "$1" in
+		-R | --repo | --hostname) shift 2 || return 1 ;;
+		--repo=* | --hostname=* | -R?*) shift ;;
+		*) break ;;
+		esac
+	done
+
+	case "$write_command_group" in
 	api)
 		case $api_sent_method in
 		GET | HEAD) return 1 ;;
@@ -226,70 +238,70 @@ is_write_command() {
 		return 0
 		;;
 	issue)
-		case "${2:-}" in
+		case "${1:-}" in
 		create | edit | close | comment | delete | develop | transfer | pin | unpin | lock | unlock | reopen)
 			return 0
 			;;
 		esac
 		;;
 	pr)
-		case "${2:-}" in
+		case "${1:-}" in
 		assign | close | comment | convert-to-draft | create | edit | label | lock | merge | ready | reopen | request-review | review | unlock | update-branch)
 			return 0
 			;;
 		esac
 		;;
 	run)
-		case "${2:-}" in
+		case "${1:-}" in
 		approve | cancel | delete | rerun)
 			return 0
 			;;
 		esac
 		;;
 	workflow)
-		case "${2:-}" in
+		case "${1:-}" in
 		disable | enable | run)
 			return 0
 			;;
 		esac
 		;;
 	release)
-		case "${2:-}" in
+		case "${1:-}" in
 		create | upload | edit | delete | delete-asset)
 			return 0
 			;;
 		esac
 		;;
 	repo)
-		case "${2:-}" in
+		case "${1:-}" in
 		create | edit | delete | archive | unarchive | fork | deploy-key | autolink | sync)
 			return 0
 			;;
 		esac
 		;;
 	project)
-		case "${2:-}" in
+		case "${1:-}" in
 		create | edit | delete | close | reopen | item-add | item-archive | item-create | item-delete | item-edit)
 			return 0
 			;;
 		esac
 		;;
 	label)
-		case "${2:-}" in
+		case "${1:-}" in
 		create | edit | delete | clone)
 			return 0
 			;;
 		esac
 		;;
 	secret | variable)
-		case "${2:-}" in
+		case "${1:-}" in
 		set | delete)
 			return 0
 			;;
 		esac
 		;;
 	gist)
-		case "${2:-}" in
+		case "${1:-}" in
 		create | edit | delete)
 			return 0
 			;;
