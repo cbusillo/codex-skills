@@ -71,10 +71,13 @@ class LaunchIssueTests(unittest.TestCase):
                     self.assertEqual(prompt, header.rstrip("\n") + "\n\n" + task)
             args.lead_session_id = "milestone-lead"
             payload["issue"]["recorded_current_status"] = status.replace("agent:supervisor", "agent:" + args.lead_session_id)
-            with patch.object(iterm_tab.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps(payload))):
+            with patch.object(iterm_tab.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps(payload))) as reader:
                 words = shlex.split(iterm_tab.prepare_launches(args)[0][0])
                 prompt = next(word.removeprefix("--prompt-interactive=") for word in words if word.startswith("--prompt-interactive="))
-                self.assertEqual(prompt, header.rstrip("\n") + "\n\n" + task)
+                self.assertEqual(prompt, header.rstrip("\n") +
+                                 f"\nFor this issue's gh-plan.py claim, pass --dispatch-recipient {args.lead_session_id}.\n\n" + task)
+                argv = reader.call_args.args[0]
+                self.assertEqual(argv[argv.index("--dispatch-recipient") + 1], args.lead_session_id)
             payload["issue"]["recorded_current_status"] = status
             with patch.object(iterm_tab.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps(payload))):
                 with self.assertRaisesRegex(ValueError, "Next actor"):

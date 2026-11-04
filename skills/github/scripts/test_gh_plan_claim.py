@@ -85,13 +85,26 @@ class ClaimMarkerTests(unittest.TestCase):
         actor = "agent:01970242-7941-7f0c-b461-16aa5723fb52"
         request = f"Next actor: {actor}\nBrief:\n````text\nTask.\n```sh\necho example\n```\n````\n"
         for status in (request, request.replace("\n", "\r\n")):
-            self.assertIsNone(CLAIM.recipient_evidence(status, [], repo="owner/repo", number=42, trusted={"owner"}))
+            self.assertIsNone(CLAIM.recipient_evidence(status, [], repo="owner/repo", number=42, trusted={"owner"},
+                                                      dispatch_recipient=actor.removeprefix("agent:")))
+            for recipient in ("", "different-session"):
+                self.assertIsNotNone(CLAIM.recipient_evidence(status, [], repo="owner/repo", number=42, trusted={"owner"},
+                                                              dispatch_recipient=recipient))
         for status in (f"Next actor: {actor}\n", request.removesuffix("````\n"),
                        f"Next actor: {actor}\nBrief:\n```text\n \n```\n",
                        f"Next actor: {actor}\n> Brief:\n> ```text\n> Task.\n> ```\n",
                        f"Next actor: {actor}\n`````text\n{request}`````\n"):
             with self.subTest(status=status):
-                self.assertIsNotNone(CLAIM.recipient_evidence(status, [], repo="owner/repo", number=42, trusted={"owner"}))
+                self.assertIsNotNone(CLAIM.recipient_evidence(status, [], repo="owner/repo", number=42, trusted={"owner"},
+                                                              dispatch_recipient=actor.removeprefix("agent:")))
+
+    def test_fenced_claim_examples_never_become_holders_or_recorded_branches(self) -> None:
+        for opening, closing in (("~~~text", "~~~"), ("````text", "````")):
+            with self.subTest(opening=opening):
+                example = f"{opening}\n```sh\necho example\n```\n{CLAIM.marker(OTHER)}\n{closing}\n"
+                self.assertEqual(CLAIM.discussion_evidence(example, [], OWNER), ([], []))
+                self.assertEqual(CLAIM.recorded_claim_branches(example, []), set())
+                self.assertEqual(CLAIM.recorded_claim_branches(example + CLAIM.marker(OWNER), []), {OWNER["branch"]})
 
     def test_recipient_routing_uses_existing_identity_records(self) -> None:
         recipient = "launchplane-engineer"
@@ -6198,7 +6211,7 @@ class ClaimTests(unittest.TestCase):
 
     def test_lead_launch_request_allows_a_fresh_worker_but_keeps_claims_and_waits(self) -> None:
         lead = "01970242-7941-7f0c-b461-16aa5723fb52"
-        for mode in ("clear", "competitor", "wait"):
+        for mode in ("clear", "competitor", "wait", "redirected", "no-dispatch"):
             with self.subTest(mode=mode):
                 self.setUp()
                 self.issue["body"] += (
@@ -6206,6 +6219,9 @@ class ClaimTests(unittest.TestCase):
                     "Brief:\n```text\nAnchor and claim: https://github.com/owner/repo/issues/42\n"
                     "Implement the export in a new worktree.\n```\n"
                 )
+                self.args.dispatch_recipient = lead if mode != "no-dispatch" else None
+                if mode == "redirected":
+                    self.issue["body"] = self.issue["body"].replace(lead, "01970242-7941-7f0c-b461-16aa5723fb53")
                 if mode == "competitor":
                     self.compete()
                 if mode == "wait":
@@ -6217,7 +6233,7 @@ class ClaimTests(unittest.TestCase):
                 else:
                     with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
                         self.run_claim()
-                    self.assertEqual(caught.exception.code, "claim_conflict" if mode == "competitor" else "claim_wait_unresolved")
+                    self.assertEqual(caught.exception.code, "claim_wait_unresolved" if mode == "wait" else "claim_conflict")
                     self.assert_no_writes()
 
     def test_role_actor_does_not_reserve_execution_without_a_claim(self) -> None:

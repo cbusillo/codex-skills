@@ -586,6 +586,7 @@ def discussion_evidence(
 
 def recipient_evidence(status: str, comments: list[dict[str, Any]], *,
                        repo: str, number: int, trusted: set[str], worker: str = "", session: str = "",
+                       dispatch_recipient: str = "",
                        ended_claims: set[int] | None = None) -> dict[str, Any] | None:
     try:
         actor = next_actor.read(status)
@@ -594,7 +595,7 @@ def recipient_evidence(status: str, comments: list[dict[str, Any]], *,
     recipient = actor.removeprefix("agent:") if actor and actor.startswith("agent:") else None
     if not recipient or recipient.casefold() in {worker.casefold(), session.casefold()}:
         return None
-    if next_actor.launch_brief(status) is not None:
+    if recipient == dispatch_recipient and next_actor.launch_brief(status) is not None:
         return None
     texts = [status, *(comment.get("body") or "" for comment in comments
                       if str((comment.get("user") or {}).get("login") or "").casefold() in trusted)]

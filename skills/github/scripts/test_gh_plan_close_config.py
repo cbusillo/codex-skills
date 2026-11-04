@@ -228,6 +228,7 @@ class CloseConfigTests(unittest.TestCase):
                      source_comments: list[dict] | None = None, admission: str | None = None,
                      admission_links: list[str] | None = None, milestone: dict | None = None,
                      track: dict | None = None, actor: str | None = None, worker: str | None = None, body_time: str | None = None,
+                     dispatch_recipient: str | None = None,
                      ancestry: set[tuple[str, int]] | None = None) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
         target = "fixture/target"
         configs = {repo: copy.deepcopy(PLAN.DEFAULT_CONFIG) for repo in ("fixture/local", target)}
@@ -270,6 +271,7 @@ class CloseConfigTests(unittest.TestCase):
             PLAN.cmd_show(PLAN.build_parser().parse_args(["--repo", "fixture/local", "show", "fixture/target#7", "--full",
                                                         *(["--launch-check"] if launch else []),
                                                         *(["--worker", worker] if worker else []),
+                                                        *(["--dispatch-recipient", dispatch_recipient] if dispatch_recipient else []),
                                                         *(["--resume-from", str(resume)] if resume else []),
                                                         *(["--read-only"] if read_only else []),
                                                         *(["--admission", admission] if admission else []),
@@ -429,6 +431,7 @@ class CloseConfigTests(unittest.TestCase):
         for blocker in (None, held, owner):
             with self.subTest(blocker=blocker):
                 result, _, _ = self.show_fixture(launch=True, worker="fresh-worker", admission="spare-capacity",
+                                                dispatch_recipient=actor.removeprefix("agent:"),
                                                 body_time="2026-10-01T00:00:00Z",
                                                 comments_extra=[request, *([blocker] if blocker else [])])
                 check = result["issue"]["launch_check"]
@@ -438,6 +441,13 @@ class CloseConfigTests(unittest.TestCase):
                     self.assertTrue(check["ownership"]["conflicts"])
                 if blocker is held:
                     self.assertEqual(check["error"]["code"], "claim_wait_unresolved")
+        for recipient in (None, "different-session"):
+            result, _, _ = self.show_fixture(launch=True, worker="fresh-worker", admission="spare-capacity",
+                                            dispatch_recipient=recipient, body_time="2026-10-01T00:00:00Z",
+                                            comments_extra=[request])
+            self.assertFalse(result["issue"]["launch_check"]["allowed"])
+            self.assertEqual(result["issue"]["launch_check"]["ownership"]["recipients"][0]["worker"],
+                             actor.removeprefix("agent:"))
 
     def test_launch_uses_body_edit_time_for_the_current_assignment(self) -> None:
         result, _, _ = self.show_fixture(launch=True, actor="agent:old-worker", worker="new-worker",
