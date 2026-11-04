@@ -20,6 +20,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Iterable
 from contextlib import ExitStack, contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -358,13 +359,15 @@ def read_error(repo: str, error: Exception) -> dict:
     }
 
 
-def scan(repos, watermarks, own_logins, launchplane_logins, started, reader, client_agents=()):
+def scan(repos: list[str], watermarks: dict[str, str], own_logins: Iterable[str], launchplane_logins: Iterable[str],
+         started: str, reader: GitHubReader, client_agents: Iterable[str] = ()) -> tuple[list[dict], list[dict], dict[str, str]]:
     notices, errors, next_watermarks = [], [], dict(watermarks)
     for repo in repos:
         since = watermarks[repo]
         pending = []
         try:
-            for comment in read_comments(reader, repo, since) + read_inline_comments(reader, repo, since) + read_opened(reader, repo, since, client_agents):
+            messages = read_comments(reader, repo, since) + read_inline_comments(reader, repo, since) + read_opened(reader, repo, since, client_agents)
+            for comment in messages:
                 if timestamp(comment["updated_at"]) < timestamp(since):
                     continue
                 notice = make_notice(repo, comment, own_logins, launchplane_logins)
@@ -374,7 +377,8 @@ def scan(repos, watermarks, own_logins, launchplane_logins, started, reader, cli
             errors.append(read_error(repo, error))
             continue
         notices.extend(pending)
-        next_watermarks[repo] = started
+        if messages:
+            next_watermarks[repo] = started
     return notices, errors, next_watermarks
 
 
