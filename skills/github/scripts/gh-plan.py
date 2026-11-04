@@ -2818,9 +2818,7 @@ def cmd_claim(args: argparse.Namespace) -> None:
             if not match:
                 raise PlanError("--resume-from requires a positive claim comment ID or an exact source issue claim URL")
             args.resume_from = int(match[3])
-            target_repo, target_number = issue_ref(claim_reference(args).issue, default_repo(args.repo))
-            if (match[1].casefold(), int(match[2])) != (target_repo.casefold(), target_number):
-                args.resume_issue = (match[1], int(match[2]))
+            args.resume_issue = (match[1], int(match[2]))
     claim_once(claim_reference(args))
 
 
@@ -3005,7 +3003,10 @@ def claim_once(args: argparse.Namespace) -> None:
     previous_wait = ""
     planned_wait = ""
     ended_owners: list[dict[str, Any]] = []
+    resume_issue = getattr(args, "resume_issue", None)
     resume_source_number: int | None = None
+    if resume_issue is not None and (resume_issue[0].casefold(), resume_issue[1]) == (issue_repo.casefold(), number):
+        resume_source_number, resume_issue = number, None
     retained_ended_sources: set[str] = set()
     expired_sources: set[str] = set()
     source_ownership = ExitStack()
@@ -3132,7 +3133,7 @@ def claim_once(args: argparse.Namespace) -> None:
         current_comments: list[dict[str, Any]], current_status: str,
     ) -> tuple[int, list[dict[str, Any]], str]:
         nonlocal resume_source_number
-        explicit_issue = getattr(args, "resume_issue", None)
+        explicit_issue = resume_issue
         if explicit_issue is not None:
             source_repo, source_number = explicit_issue
             if source_repo.casefold() != issue_repo.casefold() or source_number == number:
@@ -3594,7 +3595,7 @@ def claim_once(args: argparse.Namespace) -> None:
                 raise github_plan_claim.ClaimProofError("claim_handoff_pr_required", "Released retained work has no qualified handoff")
             if record_kind == "pr" and not any(pull["number"] == number for pull in handoff["qualified"]):
                 raise github_plan_claim.ClaimProofError("claim_handoff_pr_required", "Source release must retain the claimed PR")
-            if record_kind == "issue" and getattr(args, "resume_issue", None):
+            if record_kind == "issue" and resume_issue:
                 open_retained = [pull for pull in handoff["qualified"] if pull.get("state") == "open"]
                 canonical_pulls = [pull for pull in open_retained
                                    if github_plan_claim.pr_issue_reference(pull, number, repo=issue_repo)]
@@ -3677,17 +3678,17 @@ def claim_once(args: argparse.Namespace) -> None:
         phase["inventory"] = github_plan_claim.local_inventory(target_repo, number)
         inherited_source = any(record.get("retained_handoff") for text in [current_status, *(comment.get("body") or "" for comment in current_comments)]
                                for record in github_plan_claim.records(text))
-        if record_kind == "issue" or getattr(args, "resume_issue", None) or inherited_source:
+        if record_kind == "issue" or resume_issue or inherited_source:
             traversal = {}
             try:
                 check_inherited_sources(current_comments, current_status,
                                         node_issue=current_issue, traversal=traversal)
-                if (handoff_id or args.resume_from) and (record_kind == "issue" or getattr(args, "resume_issue", None)):
+                if (handoff_id or args.resume_from) and (record_kind == "issue" or resume_issue):
                     source_number, source_comments, source_status = source_info
                     source_issue = read_record(source_number, issue_repo, allow_closed=True)[0]
                     check_handoff_successors(source_number, source_comments=source_comments,
                                              source_status=source_status, source_issue=source_issue, traversal=traversal,
-                                             sibling_parent=number if record_kind == "issue" and getattr(args, "resume_issue", None) else None)
+                                             sibling_parent=number if record_kind == "issue" and resume_issue else None)
             except ClassifiedPlanError as error:
                 if error.code not in {"claim_resume_lineage_invalid", "claim_child_history_invalid"}:
                     raise
@@ -3721,7 +3722,7 @@ def claim_once(args: argparse.Namespace) -> None:
                 if subject["number"] == number:
                     phase["canonical_issues"] = read_canonical_issues(subject)
                     break
-        elif record_kind == "issue" and getattr(args, "resume_issue", None):
+        elif record_kind == "issue" and resume_issue:
             phase["canonical_issues"] = list(dict.fromkeys(url for pull in phase["open_pulls"]
                 if pull["number"] in phase.get("retained_pr_numbers", ()) for url in read_canonical_issues(pull)))
         phase["canonical_issue"] = next(iter(phase["canonical_issues"]), None)

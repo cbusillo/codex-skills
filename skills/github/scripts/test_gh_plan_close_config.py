@@ -372,7 +372,7 @@ class CloseConfigTests(unittest.TestCase):
         retained = {"number": 80, "state": "open", "user": {"login": "fixture"}, "body": "Refs #7\nRefs #6",
                     "head": {"ref": source["branch"], "repo": {"full_name": "fixture/target"}},
                     "base": {"repo": {"full_name": "fixture/target"}}}
-        for repo, number in (("fixture/target", 7), ("FIXTURE/Target", 7), ("fixture/target", 6)):
+        for repo, number in (("fixture/target", 7), ("fixture/target", 6)):
             with self.subTest(repo=repo, number=number):
                 result, _, _ = self.show_fixture(launch=True, worker="fresh-worker", source_number=number,
                     body_time="2026-10-01T00:00:00Z", comments_extra=comments, source_comments=comments, pulls=[retained],

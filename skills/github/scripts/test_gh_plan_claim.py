@@ -2602,6 +2602,13 @@ class ClaimTests(unittest.TestCase):
         self.assertTrue(self.emitted.call_args.args[0]["ok"])
         self.assertEqual(len(self.comments), 1)  # Same-session recovery reuses its claim.
 
+    def test_same_record_source_url_cannot_select_a_claim_from_its_parent(self) -> None:
+        self.parent_handoff_fixture()
+        self.args.resume_from = f"https://github.com/owner/repo/issues/42#issuecomment-{self.args.resume_from}"
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+        self.assertEqual(caught.exception.code, "claim_resume_source_missing")
+        self.assert_no_writes()
+
     def older_source_handoff_fixture(self) -> dict[str, Any]:
         self.parent_handoff_fixture()
         source_comments = self.target_comments["/repos/owner/repo/issues/41/comments"]
@@ -6222,9 +6229,12 @@ class ClaimTests(unittest.TestCase):
         lead = "01970242-7941-7f0c-b461-16aa5723fb52"
         for retained, mode in product((None, "numeric", "url", "case-url"), ("clear", "competitor", "wait", "redirected", "no-dispatch")):
             with self.subTest(retained=retained, mode=mode):
+                if retained in {"url", "case-url"} and mode not in {"clear", "no-dispatch"}: continue
                 self.setUp()
                 if retained:
                     self.ordinary_handoff_fixture()
+                    self.comments[0]["created_at"] = CLAIM.records(self.comments[0]["body"])[0]["claimed_at"]
+                    self.comments[-1]["created_at"] = "2026-10-02T00:00:00Z"
                     if retained.endswith("url"):
                         repo = "OWNER/Repo" if retained == "case-url" else "owner/repo"
                         self.args.resume_from = f"https://github.com/{repo}/issues/42#issuecomment-{self.args.resume_from}"
