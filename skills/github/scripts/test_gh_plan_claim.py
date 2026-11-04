@@ -6220,9 +6220,10 @@ class ClaimTests(unittest.TestCase):
 
     def test_lead_launch_request_allows_a_fresh_worker_but_keeps_claims_and_waits(self) -> None:
         lead = "01970242-7941-7f0c-b461-16aa5723fb52"
-        for mode in ("clear", "competitor", "wait", "redirected", "no-dispatch"):
-            with self.subTest(mode=mode):
+        for retained, mode in product((False, True), ("clear", "competitor", "wait", "redirected", "no-dispatch")):
+            with self.subTest(retained=retained, mode=mode):
                 self.setUp()
+                if retained: self.ordinary_handoff_fixture()
                 self.issue["body"] += (
                     f"Next actor: agent:{lead}\nNext action: Launch the bounded worker.\n"
                     "Brief:\n```text\nAnchor and claim: https://github.com/owner/repo/issues/42\n"

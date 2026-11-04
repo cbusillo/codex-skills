@@ -2139,6 +2139,8 @@ def cmd_show(args: argparse.Namespace) -> None:
                 source_item["discussion"]["body_recorded_at"] = next_status_body_time(source_item, wait_authors(target[0]))
                 source_facts = github_next_queue.ownership_facts(source_item,
                     observed if target[0] == issue["repo"] else read_queue_ownership(target[0]), trusted=wait_authors(target[0]),
+                    dispatch_recipient=(getattr(args, "dispatch_recipient", None) or ""
+                                        if (target[0].casefold(), target[1]) == (issue["repo"].casefold(), issue["number"]) else ""),
                     expired_sessions=github_plan_claim.expired_lease_sessions(source_comments), worker=getattr(args, "worker", None) or "")
                 resume_id = target[2]
         facts = github_next_queue.ownership_facts(candidate, observed,
