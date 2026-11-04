@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import re
 
-from .waits import agent_step, live_lines
+from .discussion import unquoted_lines
+from .waits import agent_step
 
 
 def validate(actor: str) -> str:
@@ -20,7 +21,7 @@ def validate(actor: str) -> str:
 
 def fields(text: str) -> list[tuple[int, str]]:
     result = []
-    for index, line in live_lines(text, prefix=""):
+    for index, line in unquoted_lines(text):
         match = re.match(r"^ {0,3}(?:[-*][ \t]+)?(?:\*\*)?Next actor(?:\*\*)?:(?:\*\*)?[ \t]*(.*)$", line, re.I)
         if match:
             result.append((index, match[1].strip()))

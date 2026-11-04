@@ -1875,6 +1875,22 @@ class OwnReleaseTests(ReleaseHarness):
                 self.run_own_release()
         self.assertNotIn("post", self.f.events)
 
+    def test_preserved_status_actor_agrees_with_normal_routing(self) -> None:
+        for markup in ("<details>\nNext actor: agent:old-owner\n</details>",
+                       "> Prior handoff\nNext actor: person:example",
+                       "> Prior handoff\nNext actor: person:example\n\nNext actor: agent:old-owner"):
+            with self.subTest(markup=markup):
+                self.f.doCleanups()
+                self.setUp()
+                self.addCleanup(self.f.doCleanups)
+                self.f.issue["body"] += "\n" + markup + "\n"
+                self.run_own_release()
+                status = PLAN.github_next_queue.current_status(
+                    PLAN.github_direction_next.discussion_snapshot(self.f.issue, self.f.comments, complete=True),
+                    {BOT.casefold()})
+                self.assertEqual(PLAN.github_plan_next_actor.read(status), self.args.next_actor)
+                self.assertIn(markup.replace("agent:old-owner", self.args.next_actor), self.f.issue["body"])
+
     def test_release_preserves_literal_brief_and_neighbor_sections(self) -> None:
         brief = ("Brief:\n```text\nGUI task: example.app\n## Scope\nNext actor: person:example\n"
                  + CLAIM.marker(fixtures.OWNER) + "\n```")

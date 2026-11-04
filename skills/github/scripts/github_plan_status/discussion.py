@@ -18,15 +18,14 @@ def stamp(value: Any) -> datetime:
 
 
 def section_ranges(body: str) -> list[tuple[str, slice]]:
-    from .waits import live_lines as visible_lines
-
     offsets = [0]
     for line in body.splitlines(keepends=True):
         offsets.append(offsets[-1] + len(line))
-    header_source = DETAILS_TAG_LINE.sub(lambda match: "\n" * match[0].count("\n"), body)
-    headings = [(match[1].strip(), offsets[index])
-                for index, line in visible_lines(header_source, prefix="##")
-                if (match := re.fullmatch(r"##\s+(.+?)\s*", line))]
+    headings = []
+    for index, line in unquoted_lines(body):
+        match = re.fullmatch(r"##\s+(.+?)\s*", line)
+        if match is not None:
+            headings.append((match[1].strip(), offsets[index]))
     return [(name, slice(start, headings[index + 1][1] if index + 1 < len(headings) else len(body)))
             for index, (name, start) in enumerate(headings)]
 
@@ -36,21 +35,25 @@ def section_map(body: str) -> dict[str, str]:
     return {name: body[span].partition("\n")[2].strip() for name, span in section_ranges(body)}
 
 
-def unquoted_text(text: str) -> str:
+def unquoted_lines(text: str) -> list[tuple[int, str]]:
     from .waits import live_lines as visible_lines
 
-    text = DETAILS_TAG_LINE.sub("", text)
+    text = DETAILS_TAG_LINE.sub(lambda match: "\n" * match[0].count("\n"), text)
     lines = []
     quoted = False
-    for _, line in visible_lines(text, prefix=""):
+    for index, line in visible_lines(text, prefix=""):
         if line.lstrip().startswith(">"):
             quoted = True
             continue
         if not line.strip() or re.match(r"^ {0,3}(?:#{1,6}\s|[-+*]\s|\d+[.)]\s|<)", line):
             quoted = False
         if not quoted:
-            lines.append(line)
-    return "\n".join(lines)
+            lines.append((index, line))
+    return lines
+
+
+def unquoted_text(text: str) -> str:
+    return "\n".join(line for _, line in unquoted_lines(text))
 
 
 def current_status(discussion: dict[str, Any], trusted: set[str], *, body_recorded_at: str | None = None,
