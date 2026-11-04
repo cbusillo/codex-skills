@@ -115,10 +115,10 @@ def host_environment(args: list[str]) -> dict[str, str]:
 def sweep_evidence(repo: Path, task: str) -> None:
     try:
         evidence, retained = artifact_roots()
-        sweep(apply=True, budget_seconds=5)
         name = Path(git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir")).parent.name
         print(f"Task evidence: {evidence / name / task}; retained root: {retained}. "
               "See skills/github/references/worktrees.md for retention.", file=sys.stderr)
+        sweep(apply=True, budget_seconds=5)
     except (ImportError, OSError, ValueError, subprocess.CalledProcessError) as exc:
         print(f"dev-worktree: evidence sweep unavailable; creation continues: {exc}", file=sys.stderr)
 
@@ -130,24 +130,22 @@ def raise_walk_error(error: OSError) -> None:
     raise error
 
 
-def expired(name: str, parent_fd: int, cutoff: float, deadline: float) -> bool:
+def expired(name: str, parent_fd: int, cutoff: float) -> bool:
     info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
     if info.st_mtime >= cutoff:
         return False
     if stat.S_ISDIR(info.st_mode):
         for _, directories, files, directory_fd in os.fwalk(name, dir_fd=parent_fd, onerror=raise_walk_error):
-            if time.monotonic() >= deadline:
-                raise TimeoutError("evidence traversal budget exhausted")
             if any(os.stat(entry, dir_fd=directory_fd, follow_symlinks=False).st_mtime >= cutoff for entry in directories + files):
                 return False
     return True
 
 
-def remove(name: str, parent_fd: int, cutoff: float, deadline: float) -> bool:
+def remove(name: str, parent_fd: int, cutoff: float) -> bool:
     quarantine = f".expiring-{uuid.uuid4().hex}"
     os.rename(name, quarantine, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
     try:
-        if not expired(quarantine, parent_fd, cutoff, deadline):
+        if not expired(quarantine, parent_fd, cutoff):
             return False
         info = os.stat(quarantine, dir_fd=parent_fd, follow_symlinks=False)
         if stat.S_ISDIR(info.st_mode):
@@ -190,7 +188,7 @@ def collect(parent_fd: int, path: Path, cutoff: float, deadline: float, apply: b
                         os.rmdir(name, dir_fd=parent_fd)
                     except OSError:
                         continue
-            elif expired(name, parent_fd, cutoff, deadline) and (not apply or remove(name, parent_fd, cutoff, deadline)):
+            elif expired(name, parent_fd, cutoff) and (not apply or remove(name, parent_fd, cutoff)):
                 print(f"{'removed' if apply else 'would remove'} {path / name}", file=sys.stderr)
         except OSError as exc:
             print(f"kept, could not measure/remove {path / name}: {exc}", file=sys.stderr)

@@ -72,7 +72,7 @@ and disjoint from retained/worktree roots.
 Optional `evidenceMount` requires a mounted ancestor of the evidence root.
 
 After retirement, creation expires evidence older than 30 quiet days, stopping
-new scanning after five seconds without interrupting deletion. Failures keep evidence
+new units after five seconds; a started unit may take longer and finishes. Failures keep evidence
 and report without blocking creation. Missing roots are empty sweeps; idle
 computers keep expired evidence until new work starts.
 Preview: `<catalog>/skills/github/scripts/dev-worktree sweep-evidence`; add

@@ -64,6 +64,8 @@ class TaskEvidenceGcTest(unittest.TestCase):
         (outside / "keep").write_text("keep")
         link = old / "link"
         link.symlink_to(outside)
+        for path in (deep, deep.parent, link, old):
+            age(path, 45)
         self.assertEqual(run_gc()[0], 0)
         self.assertTrue(stray.exists())
         self.assertEqual(run_gc("--apply")[0], 0)
@@ -88,10 +90,10 @@ class TaskEvidenceGcTest(unittest.TestCase):
         expired = self.task()
         measure = gc.expired
 
-        def vanishing_measure(name: str, parent_fd: int, cutoff: float, deadline: float) -> bool:
+        def vanishing_measure(name: str, parent_fd: int, cutoff: float) -> bool:
             if name == vanished.name:
                 raise FileNotFoundError("vanished")
-            return measure(name, parent_fd, cutoff, deadline)
+            return measure(name, parent_fd, cutoff)
 
         with mock.patch.object(gc, "expired", vanishing_measure):
             code, output = run_gc("--apply")
@@ -102,23 +104,52 @@ class TaskEvidenceGcTest(unittest.TestCase):
         self.assertIn(str(blocked), output)
         self.assertIn(str(vanished), output)
 
-    def test_refresh_after_expiry_rename_preserves_free_or_reused_names(self) -> None:
+    def test_refresh_restores_files_and_directories_without_replacing_recreated_names(self) -> None:
         rename = os.rename
-        for reused in (False, True):
-            old = self.task(str(reused))
+        for directory, reused in ((False, False), (False, True), (True, False), (True, True)):
+            old = self.task(f"{directory}-{reused}")
+            if not directory:
+                old.rmdir()
+                old.write_text("old")
+                age(old, 45)
+            moved = []
 
             def concurrent_write(source: str, destination: str, **kwargs: int) -> None:
                 rename(source, destination, **kwargs)
-                if destination.startswith(".expiring-"):
-                    if reused:
+                if source != old.name:
+                    return
+                moved.append(old.with_name(destination))
+                (moved[0] / "log" if directory else moved[0]).write_text("existing writer")
+                if reused:
+                    if directory:
                         old.mkdir()
-                        (old / "new").write_text("new writer")
-                    old.with_name(destination).joinpath("log").write_text("existing writer")
+                    (old / "new" if directory else old).write_text("new writer")
 
-            with self.subTest(reused=reused), mock.patch.object(gc.os, "rename", side_effect=concurrent_write):
+            with self.subTest(directory=directory, reused=reused), mock.patch.object(gc.os, "rename", side_effect=concurrent_write):
                 run_gc("--apply")
-            self.assertTrue((old / ("new" if reused else "log")).exists())
-            self.assertEqual(len(list(old.parent.glob(".expiring-*/log"))), int(reused))
+            saved = moved[0] if reused else old
+            self.assertEqual((saved / "log" if directory else saved).read_text(), "existing writer")
+            self.assertEqual(moved[0].exists(), reused)
+            if reused:
+                self.assertEqual((old / "new" if directory else old).read_text(), "new writer")
+
+    def test_soft_budget_finishes_one_expired_unit_then_keeps_the_next(self) -> None:
+        units = [self.task("first"), self.task("second")]
+        clock, visited = [0.0], []
+        measure = gc.expired
+
+        def finish_unit(name: str, parent_fd: int, cutoff: float) -> bool:
+            result = measure(name, parent_fd, cutoff)
+            if name in {unit.name for unit in units}:
+                visited.append(name)
+                clock[0] += 6
+            return result
+
+        with mock.patch.object(gc.time, "monotonic", side_effect=lambda: clock[0]), mock.patch.object(gc, "expired", finish_unit):
+            gc.sweep(apply=True, budget_seconds=5)
+        self.assertEqual(len(visited), 1)
+        self.assertFalse((units[0].parent / visited[0]).exists())
+        self.assertEqual(sum(unit.exists() for unit in units), 1)
 
     def test_unsafe_roots_missing_mount_and_unavailable_deletion_keep_evidence(self) -> None:
         old = self.task()
@@ -140,8 +171,6 @@ class TaskEvidenceGcTest(unittest.TestCase):
         with mock.patch.object(shutil.rmtree, "avoids_symlink_attacks", False):
             self.assertNotEqual(run_gc("--apply")[0], 0)
         gc.sweep(apply=True, budget_seconds=0)
-        with mock.patch.object(gc.random, "shuffle"), mock.patch.object(gc.time, "monotonic", side_effect=[0, 0, 0, 6]):
-            gc.sweep(apply=True, budget_seconds=5)
         descriptor = gc.open_directory(self.root)
         try:
             import fcntl

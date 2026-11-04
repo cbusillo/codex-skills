@@ -581,7 +581,6 @@ class WorktreeTests(unittest.TestCase):
         host.write_text(f"#!{sys.executable}\nimport json, sys\nfrom pathlib import Path\nPath({str(receipt)!r}).write_text(json.dumps(sys.argv[1:]))\n")
         host.chmod(0o700)
         root = self.base / "unmounted/tasks"
-        config = self.settings({"root": str(root), "hostHelper": str(host)})
         evidence = self.base / "task-evidence"
         config = self.settings({"root": str(root), "hostHelper": str(host), "evidenceRoot": str(evidence)})
         host.write_text(host.read_text().replace("import json, sys", "import json, os, sys").replace(
@@ -604,7 +603,7 @@ class WorktreeTests(unittest.TestCase):
         self.settings({"root": str(root), "hostHelper": str(host)})
         self.assert_refused(self.run_helper(self.repo, "task", "HEAD"))
         self.settings({"root": str(root), "hostHelper": str(host), "evidenceMount": str(self.base / "absent")})
-        host.write_text("#!/bin/sh\nexit 7\n")
+        host.write_text('#!/bin/sh\n[ -z "${DEV_WORKTREE_EVIDENCE_ROOT+x}" ] || exit 9\nexit 7\n')
         host.chmod(0o700)
         result = self.run_helper(self.repo, "task", "HEAD")
         self.assertEqual(result.returncode, 7)
