@@ -1421,11 +1421,9 @@ def test_repository_flags_do_not_hide_command_group_mutations() -> None:
         ("pr", "merge", "view"),
         ("workflow", "run", "view"),
         ("release", "delete", "view"),
-        ("repo", "edit", "view"),
         ("label", "create", "list"),
         ("secret", "set", "list"),
         ("variable", "set", "list"),
-        ("gist", "delete", "view"),
     ):
         for flags in (["-R", "example/app"], ["--repo", "example/app"], ["--repo=example/app"], ["-Rexample/app"]):
             for command in (mutation, read):

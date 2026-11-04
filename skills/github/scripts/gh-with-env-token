@@ -196,13 +196,13 @@ allows_active_auth_fallback() {
 	esac
 }
 
-is_write_command() {
+set_command_context() {
 	while [ "$#" -gt 0 ]; do
 		case "${1:-}" in
 		-R | --repo | --hostname)
 			shift 2 || return 1
 			;;
-		--repo=* | --hostname=* | -R?*)
+		--repo=* | --hostname=*)
 			shift
 			;;
 		--)
@@ -218,7 +218,7 @@ is_write_command() {
 		esac
 	done
 
-	write_command_group=${1:-}
+	command_group=${1:-}
 	if [ "$#" -gt 0 ]; then
 		shift
 	fi
@@ -230,7 +230,13 @@ is_write_command() {
 		esac
 	done
 
-	case "$write_command_group" in
+	command_subcommand=${1:-}
+}
+
+set_command_context "$@"
+
+is_write_command() {
+	case "$command_group" in
 	api)
 		case $api_sent_method in
 		GET | HEAD) return 1 ;;
@@ -238,70 +244,70 @@ is_write_command() {
 		return 0
 		;;
 	issue)
-		case "${1:-}" in
+		case "$command_subcommand" in
 		create | edit | close | comment | delete | develop | transfer | pin | unpin | lock | unlock | reopen)
 			return 0
 			;;
 		esac
 		;;
 	pr)
-		case "${1:-}" in
+		case "$command_subcommand" in
 		assign | close | comment | convert-to-draft | create | edit | label | lock | merge | ready | reopen | request-review | review | unlock | update-branch)
 			return 0
 			;;
 		esac
 		;;
 	run)
-		case "${1:-}" in
+		case "$command_subcommand" in
 		approve | cancel | delete | rerun)
 			return 0
 			;;
 		esac
 		;;
 	workflow)
-		case "${1:-}" in
+		case "$command_subcommand" in
 		disable | enable | run)
 			return 0
 			;;
 		esac
 		;;
 	release)
-		case "${1:-}" in
+		case "$command_subcommand" in
 		create | upload | edit | delete | delete-asset)
 			return 0
 			;;
 		esac
 		;;
 	repo)
-		case "${1:-}" in
+		case "$command_subcommand" in
 		create | edit | delete | archive | unarchive | fork | deploy-key | autolink | sync)
 			return 0
 			;;
 		esac
 		;;
 	project)
-		case "${1:-}" in
+		case "$command_subcommand" in
 		create | edit | delete | close | reopen | item-add | item-archive | item-create | item-delete | item-edit)
 			return 0
 			;;
 		esac
 		;;
 	label)
-		case "${1:-}" in
+		case "$command_subcommand" in
 		create | edit | delete | clone)
 			return 0
 			;;
 		esac
 		;;
 	secret | variable)
-		case "${1:-}" in
+		case "$command_subcommand" in
 		set | delete)
 			return 0
 			;;
 		esac
 		;;
 	gist)
-		case "${1:-}" in
+		case "$command_subcommand" in
 		create | edit | delete)
 			return 0
 			;;
@@ -538,9 +544,9 @@ classify_failure() {
 	shift
 	write_flag=
 	classification_operation=github.gh_with_env_token
-	if [ "${1:-}" = pr ] && [ "${2:-}" = create ]; then
+	if [ "$command_group" = pr ] && [ "$command_subcommand" = create ]; then
 		classification_operation=github.pr.create
-	elif [ "${1:-}" = pr ] && [ "${2:-}" = edit ]; then
+	elif [ "$command_group" = pr ] && [ "$command_subcommand" = edit ]; then
 		classification_operation=github.pr.edit
 	fi
 	if is_write_command "$@"; then
@@ -1026,7 +1032,7 @@ act_as_own_user() {
 }
 
 attachment_command=0
-if { [ "${1:-}" = issue ] || [ "${1:-}" = pr ]; } && [ "${2:-}" = comment ]; then
+if { [ "$command_group" = issue ] || [ "$command_group" = pr ]; } && [ "$command_subcommand" = comment ]; then
 	for argument in "$@"; do
 		case "$argument" in --attach | --attach=*) attachment_command=1 ;; esac
 	done
