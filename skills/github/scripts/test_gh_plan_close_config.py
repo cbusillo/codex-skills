@@ -228,6 +228,7 @@ class CloseConfigTests(unittest.TestCase):
                      source_comments: list[dict] | None = None, admission: str | None = None,
                      admission_links: list[str] | None = None, milestone: dict | None = None,
                      track: dict | None = None, actor: str | None = None, worker: str | None = None, body_time: str | None = None,
+                     dispatch_recipient: str | None = None,
                      ancestry: set[tuple[str, int]] | None = None) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
         target = "fixture/target"
         configs = {repo: copy.deepcopy(PLAN.DEFAULT_CONFIG) for repo in ("fixture/local", target)}
@@ -270,6 +271,7 @@ class CloseConfigTests(unittest.TestCase):
             PLAN.cmd_show(PLAN.build_parser().parse_args(["--repo", "fixture/local", "show", "fixture/target#7", "--full",
                                                         *(["--launch-check"] if launch else []),
                                                         *(["--worker", worker] if worker else []),
+                                                        *(["--dispatch-recipient", dispatch_recipient] if dispatch_recipient else []),
                                                         *(["--resume-from", str(resume)] if resume else []),
                                                         *(["--read-only"] if read_only else []),
                                                         *(["--admission", admission] if admission else []),
@@ -415,6 +417,37 @@ class CloseConfigTests(unittest.TestCase):
                 result, _, _ = self.show_fixture(launch=True, actor=f"agent:{role}", worker="CS3293-1102")
                 self.assertTrue(result["issue"]["launch_check"]["allowed"])
                 self.assertEqual(result["issue"]["launch_check"]["ownership"]["recipients"], [])
+
+    def test_fenced_launch_request_names_the_coordinator_and_keeps_claim_and_wait_checks(self) -> None:
+        actor = "agent:01970242-7941-7f0c-b461-16aa5723fb52"
+        request = {"id": 2, "user": {"login": "fixture"}, "created_at": "2026-10-25T00:00:00Z", "body": (
+            f"## Current Status\nNext actor: {actor}\nNext action: Launch the worker.\n"
+            "Brief:\n```text\nImplement the export in a new worktree.\n```\n"
+        )}
+        held = {"id": 3, "user": {"login": "fixture"}, "body": PLAN.github_plan_wait.marker(
+            PLAN.github_plan_wait.reviewed(evidence="Client review pending", waiting_for="Client", ends_when="Client accepts"))}
+        owner = {"id": 3, "user": {"login": "fixture"}, "body": github_plan_claim.marker({
+            "worker": "holder", "session": "holder-session", "branch": "work/export", "claimed_at": "2026-10-01T00:00:00Z"})}
+        for blocker in (None, held, owner):
+            with self.subTest(blocker=blocker):
+                result, _, _ = self.show_fixture(launch=True, worker="fresh-worker", admission="spare-capacity",
+                                                dispatch_recipient=actor.removeprefix("agent:"),
+                                                body_time="2026-10-01T00:00:00Z",
+                                                comments_extra=[request, *([blocker] if blocker else [])])
+                check = result["issue"]["launch_check"]
+                self.assertEqual(check["allowed"], blocker is None)
+                self.assertEqual(check["ownership"]["recipients"], [])
+                if blocker is owner:
+                    self.assertTrue(check["ownership"]["conflicts"])
+                if blocker is held:
+                    self.assertEqual(check["error"]["code"], "claim_wait_unresolved")
+        for recipient in (None, "different-session"):
+            result, _, _ = self.show_fixture(launch=True, worker="fresh-worker", admission="spare-capacity",
+                                            dispatch_recipient=recipient, body_time="2026-10-01T00:00:00Z",
+                                            comments_extra=[request])
+            self.assertFalse(result["issue"]["launch_check"]["allowed"])
+            self.assertEqual(result["issue"]["launch_check"]["ownership"]["recipients"][0]["worker"],
+                             actor.removeprefix("agent:"))
 
     def test_launch_uses_body_edit_time_for_the_current_assignment(self) -> None:
         result, _, _ = self.show_fixture(launch=True, actor="agent:old-worker", worker="new-worker",

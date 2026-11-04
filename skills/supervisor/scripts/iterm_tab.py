@@ -1320,6 +1320,11 @@ def read_launch_text(path: Path) -> str:
 
 
 def read_issue_brief(issue: str, header: str, lead_session_id: str | None = None) -> str:
+    github = str(Path(__file__).resolve().parents[2] / "github/scripts")
+    if github not in sys.path:
+        sys.path.append(github)
+    from github_plan_status import next_actor
+
     match = re.fullmatch(r"https://github\.com/([\w.-]+/[\w.-]+)/issues/[1-9]\d*", issue)
     if not match or not re.search(rf"(?m)^Anchor and claim: {re.escape(issue)}\s*$", header):
         raise ValueError("--brief-issue needs a full issue URL matching the header's Anchor and claim")
@@ -1334,23 +1339,16 @@ def read_issue_brief(issue: str, header: str, lead_session_id: str | None = None
         raise ValueError(f"Brief source unavailable for {issue}") from error
     if managed is not True:
         raise ValueError(f"{issue} needs a managed Current Status written through gh-plan.py update-section")
-    status = status.replace("\r\n", "\n")
-    opening = re.search(r"(?m)^Brief:[ \t]*\n(?P<fence>`{3,}|~{3,})(?:text)?[ \t]*\n", status)
     actor = "agent:" + (lead_session_id or "supervisor")
-    if not opening or not re.search(rf"(?m)^Next actor: {re.escape(actor)}[ \t]*$", status[:opening.start()]):
+    brief = next_actor.launch_brief(status)
+    if brief is None or next_actor.read(status) != actor:
         raise ValueError(f"{issue} needs Next actor: {actor} and a fenced Brief: in Current Status; use ###, not ##, inside briefs")
-    content = status[opening.end():]
-    fence = opening["fence"]
-    closing = re.search(rf"(?m)^{re.escape(fence[0])}{{{len(fence)},}}[ \t]*$", content)
-    if not closing:
-        raise ValueError(f"{issue} needs a closing brief fence; use ###, not ##, inside briefs")
-    brief = content[:closing.start()]
-    if not brief.strip():
-        raise ValueError(f"{issue} has an empty worker brief")
+    if lead_session_id:
+        header = header.rstrip("\n") + f"\nFor this issue's gh-plan.py claim, pass --dispatch-recipient {lead_session_id}.\n"
     return header.rstrip("\n") + "\n\n" + brief
 
 
-def check_launch_issue(brief: str) -> None:
+def check_launch_issue(brief: str, *, dispatch_recipient: str | None = None, dispatch_issue: str | None = None) -> None:
     labels = re.findall(r"(?mi)^\s*(?:[-*] )?(?:\*\*)?(Read-only anchor|Anchor(?: and claim)?):(?:\*\*)?[^\S\n]*([^\n]*)", brief)
     anchors = []
     for mode, value in labels:
@@ -1377,6 +1375,8 @@ def check_launch_issue(brief: str) -> None:
         argv = ["uv", "run", str(helper), "--repo", repo, "show", anchor, "--full", "--launch-check"]
         if worker:
             argv.extend(["--worker", worker[1].rstrip(".;")])
+        if dispatch_recipient and anchor == dispatch_issue and mode.casefold() != "read-only anchor":
+            argv.extend(["--dispatch-recipient", dispatch_recipient])
         if mode.casefold() == "read-only anchor":
             argv.append("--read-only")
         if admission and mode.casefold() != "read-only anchor":
@@ -1507,9 +1507,10 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
         if not brief.strip():
             raise ValueError("brief must be nonempty")
         validate_text(brief, allow_tabs=True)
-    for brief in headers:
+    for index, brief in enumerate(headers):
         validate_brief_rules(brief)
-        check_launch_issue(brief)
+        check_launch_issue(brief, dispatch_recipient=getattr(args, "lead_session_id", None) if brief_issues else None,
+                           dispatch_issue=brief_issues[index] if brief_issues else None)
     validate_computer_use_launch(args, command_texts, briefs)
     apps = [gui_launch.declared_app(brief) for brief in briefs]
     if any(apps):

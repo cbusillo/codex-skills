@@ -81,6 +81,40 @@ def format_ownership(text: str) -> tuple[str, ...]:
 
 
 class ClaimMarkerTests(unittest.TestCase):
+    def test_only_a_complete_unquoted_launch_request_distinguishes_the_coordinator(self) -> None:
+        actor = "agent:01970242-7941-7f0c-b461-16aa5723fb52"
+        request = f"Next actor: {actor}\nBrief:\n````text\nTask.\n```sh\necho example\n```\n````\n"
+        for status in (request, request.replace("\n", "\r\n")):
+            self.assertIsNone(CLAIM.recipient_evidence(status, [], repo="owner/repo", number=42, trusted={"owner"},
+                                                      dispatch_recipient=actor.removeprefix("agent:")))
+            for recipient in ("", "different-session"):
+                found = CLAIM.recipient_evidence(status, [], repo="owner/repo", number=42, trusted={"owner"},
+                                                dispatch_recipient=recipient)
+                assert found is not None
+                recovery = found["next_action"].split()
+                self.assertIsNone(CLAIM.recipient_evidence(status, [], repo="owner/repo", number=42, trusted={"owner"},
+                    dispatch_recipient=recovery[recovery.index("--dispatch-recipient") + 1]))
+        for status in (f"Next actor: {actor}\n", request.removesuffix("````\n"),
+                       f"Next actor: {actor}\nBrief:\n```text\n \n```\n",
+                       f"Next actor: {actor}\n> Brief:\n> ```text\n> Task.\n> ```\n",
+                       f"Next actor: {actor}\n`````text\n{request}`````\n"):
+            with self.subTest(status=status):
+                self.assertIsNotNone(CLAIM.recipient_evidence(status, [], repo="owner/repo", number=42, trusted={"owner"},
+                                                              dispatch_recipient=actor.removeprefix("agent:")))
+
+    def test_fenced_claim_examples_never_become_holders_or_recorded_branches(self) -> None:
+        for opening, closing in (("~~~text", "~~~"), ("```text", "```"), ("````text", "````")):
+            with self.subTest(opening=opening):
+                example = f"{opening}\n<pre>\n{closing}python\n{CLAIM.marker(OTHER)}\n{closing}\n"
+                self.assertEqual(CLAIM.discussion_evidence(example, [], OWNER), ([], []))
+                self.assertEqual(CLAIM.recorded_claim_branches(example, []), set())
+                self.assertEqual(CLAIM.recorded_claim_branches(example + CLAIM.marker(OWNER), []), {OWNER["branch"]})
+        for tag in ("details", "pre", "code", "blockquote", "script", "style", "textarea"):
+            with self.subTest(tag=tag):
+                status = f"<{tag}>\n{CLAIM.marker(OTHER)}\n</{tag}>"
+                self.assertEqual(CLAIM.records(status), [OTHER])
+                self.assertEqual(CLAIM.recorded_claim_branches(status, []), {OTHER["branch"]})
+
     def test_recipient_routing_uses_existing_identity_records(self) -> None:
         recipient = "launchplane-engineer"
         status = f"Next actor: agent:{recipient}\n"
@@ -6183,6 +6217,33 @@ class ClaimTests(unittest.TestCase):
         self.assertTrue(any(row["source"] == "recorded_recipient"
                             for row in caught.exception.payload["competing_evidence"]))
         self.assert_no_writes()
+
+    def test_lead_launch_request_allows_a_fresh_worker_but_keeps_claims_and_waits(self) -> None:
+        lead = "01970242-7941-7f0c-b461-16aa5723fb52"
+        for mode in ("clear", "competitor", "wait", "redirected", "no-dispatch"):
+            with self.subTest(mode=mode):
+                self.setUp()
+                self.issue["body"] += (
+                    f"Next actor: agent:{lead}\nNext action: Launch the bounded worker.\n"
+                    "Brief:\n```text\nAnchor and claim: https://github.com/owner/repo/issues/42\n"
+                    "Implement the export in a new worktree.\n```\n"
+                )
+                self.args.dispatch_recipient = lead if mode != "no-dispatch" else None
+                if mode == "redirected":
+                    self.issue["body"] = self.issue["body"].replace(lead, "01970242-7941-7f0c-b461-16aa5723fb53")
+                if mode == "competitor":
+                    self.compete()
+                if mode == "wait":
+                    self.record_wait()
+                if mode == "clear":
+                    self.run_claim()
+                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
+                    self.assertEqual(self.emitted.call_args.args[0]["claim"]["session"], OWNER["session"])
+                else:
+                    with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                        self.run_claim()
+                    self.assertEqual(caught.exception.code, "claim_wait_unresolved" if mode == "wait" else "claim_conflict")
+                    self.assert_no_writes()
 
     def test_role_actor_does_not_reserve_execution_without_a_claim(self) -> None:
         for role in ("launchplane-engineer", "launchplane", "launchplane-native-qualification"):
