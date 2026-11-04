@@ -1135,6 +1135,8 @@ def capacity_fetch_with_unchanged_tree(fetch: Any) -> Any:
         if "/commits/" in args[1]:
             return {"sha": "unchanged", "commit": {"committer": {"date": "1970-01-01T00:00:00Z"}}, "parents": []}
         result = fetch(args)
+        if re.fullmatch(r"repos/[^/]+/[^/]+/issues/\d+", args[1]) and isinstance(result, (dict, list)):
+            return {"comments": 0, **result} if isinstance(result, dict) else {"comments": 0}
         if args[1].startswith("user/repos"):
             return [{"default_branch": "trunk", **repo} for repo in result]
         if args[1].startswith("installation/repositories"):
@@ -1193,6 +1195,41 @@ def test_capacity_uses_per_pull_links_before_own_and_tooling_fallback() -> None:
     assert result["merged_by_rank"] == {"milestone": 3, "tooling": 2, "own": 2}
     assert result["by_repository"]["o/fun"]["merged_by_rank"] == {"milestone": 3, "tooling": 0, "own": 2}
     assert run(module, capacity=result)["capacity"] is result
+
+
+def test_capacity_admission_overrides_links_and_disagreement_uses_them() -> None:
+    module = load()
+    pulls = [
+        {**merged_pull(1, NOW), "_admission_ranks": {"milestone"}},
+        {**merged_pull(2, NOW, body="Refs #10"), "_admission_ranks": {"tooling"}},
+        {**merged_pull(3, NOW), "_admission_ranks": {"own"}},
+        {**merged_pull(4, NOW, body="Refs #10"), "_admission_ranks": {"own", "tooling"}},
+        merged_pull(5, NOW),
+    ]
+    result = summary(module, pulls={"o/live": pulls})
+    assert result["merged_by_rank"] == {"milestone": 2, "tooling": 2, "own": 1}
+    assert result["classification_counts"] == {"admission": 3, "link_walk": 2, "disagreement_fallback": 1}
+
+
+def test_capacity_reads_newest_claim_admission_across_comment_pages() -> None:
+    module = load()
+    calls = []
+    def fetch(args: list[str]) -> Any:
+        calls.append(args[1])
+        if "/comments?" not in args[1]:
+            return {"comments": 201}
+        if "page=3" in args[1]:
+            return [{"body": "Released claim 3\nAdmission: own-project"}]
+        return [{"body": "Claimed by older\nAdmission: own-project"},
+                {"body": "Claimed by newest\nAdmission: milestone; evidence"},
+                {"body": "```text\nClaimed by example\nAdmission: spare-capacity\n```"}]
+    assert module.latest_issue_admission("o/live", 10, fetch=fetch) == "milestone"
+    assert len(calls) == 3
+    for newest in ("Claimed by newest", "Claimed by newest\nAdmission: unsupported"):
+        assert module.latest_issue_admission("o/live", 10, fetch=lambda args: (
+            [{"body": "Claimed by older\nAdmission: own-project"}, {"body": newest}]
+            if "/comments?" in args[1] else {"comments": 2})) is None
+    assert module.latest_issue_admission("o/live", 10, fetch=lambda _: {"pull_request": {}}) is None
 
 
 def test_own_share_is_reported_without_alarms_and_preserves_coverage() -> None:
@@ -1416,7 +1453,7 @@ def test_capacity_fetch_attribution_and_retired_milestone_window() -> None:
     result, errors = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=capacity_fetch_with_unchanged_tree(fetch))
     assert not errors
     assert result["merged_by_rank"] == {"milestone": 2, "tooling": 0, "own": 2}
-    assert native_calls == [1, 2, 4]  # Explicit proven links do not need another read.
+    assert native_calls == [1, 2, 3, 4]
     assert not any("milestone=8" in path for path in paths)
     assert result["own_projects"] == module.own_project_patterns(OWN_DIRECTION)
     for item in ("Own projects: by the `own-project` label only.", "Own projects: none."):
@@ -1555,8 +1592,8 @@ def test_mixed_repository_counts_labeled_or_linked_own_work_as_own() -> None:
     assert result["merged_by_rank"] == {"milestone": 1, "own": 4, "tooling": 3}
     assert result["own_project_label"] == "own-project"
     assert calls.count("repos/o/infra/issues/5") == 1, "each linked issue is read once"
-    assert "repos/o/house-tools/issues/3" not in calls and "repos/o/infra/issues/10" not in calls
-    assert truncated == ["capacity_issue_labels:o/infra#6"]
+    assert calls.count("repos/o/house-tools/issues/3") == calls.count("repos/o/infra/issues/10") == 1
+    assert truncated == ["capacity_issue_labels:o/infra#6", "capacity_claim:o/infra#6"]
     assert result["own_share_status"] == "unknown"
 
 
@@ -1796,6 +1833,33 @@ def reporting_fetch(module: Any, direction: str, pulls: list[dict[str, Any]], ca
     return fetch
 
 
+def test_capacity_collects_all_admission_kinds_and_keeps_unread_claims_unknown() -> None:
+    module = load()
+    admissions = list(module.github_plan_claim.ADMISSIONS)
+    pulls = [merged_pull(n, NOW, body=f"Refs #{n + 100}") for n in range(1, len(admissions) + 1)]
+    pulls.append(merged_pull(20, NOW, body="Refs #101, #104"))
+    base = reporting_fetch(module, OWN_DIRECTION, pulls, [])
+    def fetch(args: list[str]) -> Any:
+        if re.fullmatch(r"repos/o/live/issues/(10[1-6])", args[1]):
+            return {"comments": 1, "labels": []}
+        if match := re.match(r"repos/o/live/issues/(10[1-6])/comments", args[1]):
+            return [{"body": f"Claimed by worker\nAdmission: {admissions[int(match[1]) - 101]}"}]
+        return base(args)
+    result, errors = module.fetch_capacity("o/direction", SINCE, WINDOW_END,
+                                          fetch=capacity_fetch_with_unchanged_tree(fetch))
+    assert not errors
+    assert result["merged_by_rank"] == {"milestone": 3, "own": 1, "tooling": 3}
+    assert result["classification_counts"] == {"admission": 6, "link_walk": 1, "disagreement_fallback": 1}
+    def unread(args: list[str]) -> Any:
+        if "/comments?" in args[1]:
+            raise module.AuditError("HTTP 502")
+        return fetch(args)
+    partial, errors = module.fetch_capacity("o/direction", SINCE, WINDOW_END,
+                                           fetch=capacity_fetch_with_unchanged_tree(unread))
+    assert partial["own_share_status"] == "unknown"
+    assert any(error.startswith("capacity_claim:") for error in module.held_reads(errors))
+
+
 def test_reporting_week_split_uses_native_labels_and_keeps_legacy_output() -> None:
     module = load()
     # Illustrative 15-PR week; this is not OPW policy or their real hand count.
@@ -1905,7 +1969,8 @@ def test_optional_reporting_reads_preserve_legacy_status_and_page_direction_chan
                         return [{"filename": "DIRECTION.md"}]
                 return fetch(args)
             result, errors = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=capacity_fetch_with_unchanged_tree(optional_failure))
-            assert {key: value for key, value in result.items() if key != "reporting"} == baseline
+            expected = {**baseline, "own_share_status": "unknown"} if failure in {"labels", "links"} else baseline
+            assert {key: value for key, value in result.items() if key != "reporting"} == expected
             assert (bool(errors) if failure != "late_direction" else not errors), (failure, errors)
             assert len(result["reporting"]["unresolved"]) == 1
             if failure == "late_direction":

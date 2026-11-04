@@ -626,8 +626,12 @@ requests per rank, the own-projects PR share, milestones
 closed, issues reopened, and merged pull requests that mark a revert. These
 capacity events include the window's start and exclude its end (`[since, until)`);
 an event at the shared boundary belongs to the following window. Each
-merged PR counts as milestone work when a closing keyword, `Refs`, or native
-PR issue link reaches a milestone's `Track:` graph (listed milestones and
+merged PR reads the newest claim on each issue it delivers through a closing
+keyword, `Refs`, or native PR issue link. `live-breakage`, `client-request` and
+`milestone` admissions count as milestone; `own-project` as own; `repeat-stop`
+and `spare-capacity` as tooling. When the available admissions agree on a
+category, that category wins. With no admission or conflicting categories,
+the existing link walk applies: milestone work reaches a milestone's `Track:` graph (listed milestones and
 those closed since the window began, including removed lines; native
 blockers and sub-issues, including completed work). Otherwise it counts as own
 when its repository is named by the merged overall `DIRECTION.md`
@@ -639,6 +643,9 @@ label-only work (for example, `Own projects: by the own-project label only.`),
 or explicitly say `Own projects: none.` An empty repository list from either
 explicit declaration is complete; label attribution still applies. Read the
 merged declaration; do not copy it into catalog guidance or a separate map.
+`capacity.classification_counts` reports `admission` and `link_walk` totals;
+`disagreement_fallback` separately reports the conflicting subset of `link_walk`.
+Unread claim discussions keep the share unknown, rather than proving an absent admission.
 A repository can contain more than one kind of work: in a mixed
 repository, such as lab and house work in an infrastructure repository, the
 label is how that work counts as own. Reopened issues come from issues updated
