@@ -2134,14 +2134,13 @@ def cmd_show(args: argparse.Namespace) -> None:
                 target = github_plan_claim.admission_link_target(args.resume_from)
                 if target is None or target[2] is None:
                     raise PlanError("Resume from needs an existing claim comment ID or issue-comment URL")
-                source, _, source_comments, _ = claim_snapshot(str(target[1]), target[0], allow_closed=True)
-                source_item = {**source, "discussion": github_direction_next.discussion_snapshot(source, source_comments, complete=True)}
-                source_item["discussion"]["body_recorded_at"] = next_status_body_time(source_item, wait_authors(target[0]))
-                source_facts = github_next_queue.ownership_facts(source_item,
-                    observed if target[0] == issue["repo"] else read_queue_ownership(target[0]), trusted=wait_authors(target[0]),
-                    dispatch_recipient=(getattr(args, "dispatch_recipient", None) or ""
-                                        if (target[0].casefold(), target[1]) == (issue["repo"].casefold(), issue["number"]) else ""),
-                    expired_sessions=github_plan_claim.expired_lease_sessions(source_comments), worker=getattr(args, "worker", None) or "")
+                if (target[0].casefold(), target[1]) != (issue["repo"].casefold(), issue["number"]):
+                    source, _, source_comments, _ = claim_snapshot(str(target[1]), target[0], allow_closed=True)
+                    source_item = {**source, "discussion": github_direction_next.discussion_snapshot(source, source_comments, complete=True)}
+                    source_item["discussion"]["body_recorded_at"] = next_status_body_time(source_item, wait_authors(target[0]))
+                    source_facts = github_next_queue.ownership_facts(source_item,
+                        observed if target[0] == issue["repo"] else read_queue_ownership(target[0]), trusted=wait_authors(target[0]),
+                        expired_sessions=github_plan_claim.expired_lease_sessions(source_comments), worker=getattr(args, "worker", None) or "")
                 resume_id = target[2]
         facts = github_next_queue.ownership_facts(candidate, observed,
             trusted=wait_authors(issue["repo"]), resume_from=resume_id, resume_source=source_item,
@@ -2819,7 +2818,9 @@ def cmd_claim(args: argparse.Namespace) -> None:
             if not match:
                 raise PlanError("--resume-from requires a positive claim comment ID or an exact source issue claim URL")
             args.resume_from = int(match[3])
-            args.resume_issue = (match[1], int(match[2]))
+            target_repo, target_number = issue_ref(claim_reference(args).issue, default_repo(args.repo))
+            if (match[1].casefold(), int(match[2])) != (target_repo.casefold(), target_number):
+                args.resume_issue = (match[1], int(match[2]))
     claim_once(claim_reference(args))
 
 

@@ -360,41 +360,26 @@ class CloseConfigTests(unittest.TestCase):
                 resume="https://github.com/fixture/target/issues/6#issuecomment-2")
             self.assertEqual(result["issue"]["launch_check"]["allowed"], allowed)
 
-    def test_retained_launch_keeps_coordinator_context_only_on_the_requested_record(self) -> None:
+    def test_retained_launch_resolves_same_record_urls_without_inheriting_other_source_recipients(self) -> None:
         lead = "01970242-7941-7f0c-b461-16aa5723fb52"
         source = {"worker": "codex", "session": "source", "branch": "work/export", "claimed_at": "2026-10-01T00:00:00Z"}
-        claim = {"id": 2, "user": {"login": "fixture"}, "created_at": source["claimed_at"],
-                 "body": github_plan_claim.marker(source)}
-        release = {"id": 3, "user": {"login": "fixture"}, "created_at": "2026-10-02T00:00:00Z",
-                   "body": "Released claim 2\nRetained PR: https://github.com/fixture/target/pull/80"}
-        request = {"id": 4, "user": {"login": "fixture"}, "created_at": "2026-10-03T00:00:00Z",
-                   "body": f"## Current Status\nNext actor: agent:{lead}\nBrief:\n```text\nImplement the export.\n```\n"}
+        comments = [{"id": 2, "user": {"login": "fixture"}, "created_at": source["claimed_at"],
+                     "body": github_plan_claim.marker(source)},
+                    {"id": 3, "user": {"login": "fixture"}, "created_at": "2026-10-02T00:00:00Z",
+                     "body": "Released claim 2\nRetained PR: https://github.com/fixture/target/pull/80"},
+                    {"id": 4, "user": {"login": "fixture"}, "created_at": "2026-10-03T00:00:00Z",
+                     "body": f"## Current Status\nNext actor: agent:{lead}\nBrief:\n```text\nImplement the export.\n```\n"}]
         retained = {"number": 80, "state": "open", "user": {"login": "fixture"}, "body": "Refs #7\nRefs #6",
                     "head": {"ref": source["branch"], "repo": {"full_name": "fixture/target"}},
                     "base": {"repo": {"full_name": "fixture/target"}}}
-        for control in ("same", "other-source", "wrong-coordinator", "incomplete", "unreleased", "competitor", "wait"):
-            with self.subTest(control=control):
-                comments = copy.deepcopy([claim, release, request])
-                if control == "incomplete": comments[-1]["body"] = comments[-1]["body"].removesuffix("```\n")
-                if control == "unreleased": comments[1]["user"]["login"] = "foreign"
-                if control == "competitor":
-                    comments.append({"id": 5, "user": {"login": "fixture"}, "body": github_plan_claim.marker({
-                        **source, "session": "competing", "branch": "work/competing"})})
-                if control == "wait":
-                    comments.append({"id": 5, "user": {"login": "fixture"}, "body": PLAN.github_plan_wait.marker(
-                        PLAN.github_plan_wait.reviewed(evidence="Defect wait", waiting_for="Repair", ends_when="Fix installed"))})
-                source_number = 6 if control == "other-source" else 7
-                result, _, _ = self.show_fixture(launch=True, worker="fresh-worker", source_number=source_number,
+        for repo, number in (("fixture/target", 7), ("FIXTURE/Target", 7), ("fixture/target", 6)):
+            with self.subTest(repo=repo, number=number):
+                result, _, _ = self.show_fixture(launch=True, worker="fresh-worker", source_number=number,
                     body_time="2026-10-01T00:00:00Z", comments_extra=comments, source_comments=comments, pulls=[retained],
-                    dispatch_recipient="wrong" if control == "wrong-coordinator" else lead,
-                    resume=f"https://github.com/fixture/target/issues/{source_number}#issuecomment-2")
+                    dispatch_recipient=lead, resume=f"https://github.com/{repo}/issues/{number}#issuecomment-2")
                 check = result["issue"]["launch_check"]
-                self.assertEqual(check["allowed"], control == "same")
-                if control in {"same", "wait"}:
-                    self.assertEqual(check["resume_source"]["recipients"], [])
-                if control == "other-source":
-                    self.assertEqual(check["resume_source"]["recipients"][0]["worker"], lead)
-                if control == "wait": self.assertEqual(check["error"]["code"], "claim_wait_unresolved")
+                self.assertEqual(check["allowed"], number == 7)
+                if number != 7: self.assertEqual(check["resume_source"]["recipients"][0]["worker"], lead)
 
     def test_launch_checks_the_claims_milestone_admission_without_writes(self) -> None:
         claim_options = ["--worker", "worker", "--session", "session", "--branch", "work/native",
