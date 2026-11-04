@@ -1948,11 +1948,10 @@ the server. A dead pane has no input consumer; a live shell cannot qualify
 from its screen appearance. Read back disappearance once. An uncertain close
 is retained for reconciliation rather than retried.
 
-If the dead pane's old TTY has been reused, close proceeds only when tmux
-identifies a different live pane on that TTY and process ancestry proves every
-current job there belongs to that new pane's PID tree. Unattributed jobs,
-missing ancestry, and either recorded PID still present preserve the dead
-pane. The live pane is never a close target, and no process is killed.
+A verified-dead pane's old TTY may belong to an unrelated process. Physical
+close checks the original PIDs are absent, without using current TTY ownership
+as evidence about the dead pane. The exact launch identity and dead state
+remain required; the unrelated terminal and its processes stay untouched.
 
 For the locked-screen acceptance proof, the Supervisor arranges a short test
 with the Director. Prepare one harmless real Codex or Claude launch with an

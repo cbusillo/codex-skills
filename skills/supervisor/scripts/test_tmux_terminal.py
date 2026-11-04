@@ -382,7 +382,7 @@ class PaneParserTests(unittest.TestCase):
                 self.assertTrue(self.terminal.close(self.identity, ledger)["close_requested"])
             self.assertTrue(any(call.args[0] == "if-shell" for call in calls.call_args_list))
 
-    def test_empty_dead_pid_close_still_checks_ledger_pid_tty_and_siblings(self):
+    def test_empty_dead_pid_close_still_checks_ledger_pid(self):
         entry = {"supervisor_owned": True, "tmux_session_id": self.identity, "pid": 789,
                  "tty": "ttys987", "window_id": "$1", "tab_id": "@1", "tmux_socket": "fixture"}
         with tempfile.TemporaryDirectory() as folder:
@@ -392,8 +392,7 @@ class PaneParserTests(unittest.TestCase):
                     returncode=0, stdout=self.dead + self.live)) as calls, \
                     patch.object(session_liveness, "inventory", return_value=[]):
                 self.assertTrue(self.terminal.close(self.identity, ledger)["close_requested"])
-            for processes in ([(789, "other-tty", "reused-pid")],
-                              [(999, "ttys987", "tty-still-live")]):
+            for processes in ([(789, "other-tty", "reused-pid")],):
                 with self.subTest(processes=processes), \
                         patch.object(self.terminal, "run", return_value=SimpleNamespace(
                             returncode=0, stdout=self.dead)), \
@@ -420,43 +419,35 @@ class PaneParserTests(unittest.TestCase):
             self.assertTrue(keys.called)
             self.assertFalse(any(call.args[-1] == "Enter" for call in keys.call_args_list))
 
-    def test_dead_close_allows_only_processes_proven_to_belong_to_new_tty_owner(self):
+    def test_dead_pane_closes_with_unrelated_process_on_reused_tty(self) -> None:
         entry = {"supervisor_owned": True, "tmux_session_id": self.identity, "pid": 789,
                  "tty": "ttys987", "window_id": "$1", "tab_id": "@1", "tmux_socket": "fixture"}
-        live = self.pane_line({**self.live_fields, "pane_tty": "/dev/ttys987"})
-        processes = [(456, "ttys987", "new-worker"), (999, "ttys987", "worker-child")]
         with tempfile.TemporaryDirectory() as folder:
             ledger = Path(folder) / "ledger.json"
             ledger.write_text(json.dumps([entry]))
-            with patch.object(self.terminal, "run", return_value=SimpleNamespace(
-                    returncode=0, stdout=self.dead + live)) as calls, \
-                    patch.object(session_liveness, "inventory", return_value=processes), \
-                    patch.object(tmux_terminal, "process_parents", return_value={456: 123, 999: 456}):
+            with (patch.object(self.terminal, "run", return_value=SimpleNamespace(
+                    returncode=0, stdout=self.dead)) as calls,
+                  patch.object(session_liveness, "inventory", return_value=[(999, "ttys987", "zsh")])):
                 self.assertTrue(self.terminal.close(self.identity, ledger)["close_requested"])
-                mutations = [c.args for c in calls.call_args_list if c.args[0] != "list-panes"]
-                self.assertEqual(len(mutations), 1)
-                self.assertEqual(mutations[0][0], "if-shell")
-                self.assertEqual(mutations[0][-1], "kill-pane -t %1")
+            mutations = [call.args for call in calls.call_args_list if call.args[0] != "list-panes"]
+            self.assertEqual(len(mutations), 1)
+            self.assertEqual(mutations[0][0], "if-shell")
+            self.assertEqual(mutations[0][-1], "kill-pane -t %1")
 
-    def test_reused_tty_with_unattributed_or_old_process_is_preserved(self):
+    def test_live_pane_refuses_close_with_unrelated_process_on_reused_tty(self) -> None:
         entry = {"supervisor_owned": True, "tmux_session_id": self.identity, "pid": 789,
                  "tty": "ttys987", "window_id": "$1", "tab_id": "@1", "tmux_socket": "fixture"}
-        live = self.pane_line({**self.live_fields, "pane_tty": "/dev/ttys987"})
-        for parents, jobs in (({456: 123, 999: 1}, [(999, "ttys987", "orphan")]),
-                              ({456: 123, 999: 789}, [(999, "ttys987", "old-child")]),
-                              ({456: 123}, [(789, "other-tty", "reused-pid")]),
-                              ({456: 123, 999: 999}, [(999, "ttys987", "uncertain-tree")]),
-                              ({999: 456}, [(999, "ttys987", "missing-root")])):
-            with self.subTest(parents=parents, jobs=jobs), tempfile.TemporaryDirectory() as folder:
-                ledger = Path(folder) / "ledger.json"
-                ledger.write_text(json.dumps([entry]))
-                with patch.object(self.terminal, "run", return_value=SimpleNamespace(
-                        returncode=0, stdout=self.dead + live)) as calls, \
-                        patch.object(session_liveness, "inventory", return_value=[(456, "ttys987", "new-worker"), *jobs]), \
-                        patch.object(tmux_terminal, "process_parents", return_value=parents):
-                    with self.assertRaises(ValueError):
-                        self.terminal.close(self.identity, ledger)
-                    self.assertFalse(any(c.args[0] != "list-panes" for c in calls.call_args_list))
+        fields = dict(zip(tmux_terminal.PANE_FIELDS, self.dead.rstrip("\n").split("\t")))
+        live = self.pane_line({**fields, "pane_dead": "0", "pane_pid": "789"})
+        with tempfile.TemporaryDirectory() as folder:
+            ledger = Path(folder) / "ledger.json"
+            ledger.write_text(json.dumps([entry]))
+            with (patch.object(self.terminal, "run", return_value=SimpleNamespace(
+                    returncode=0, stdout=live)) as calls,
+                  patch.object(session_liveness, "inventory", return_value=[(999, "ttys987", "zsh")])):
+                with self.assertRaisesRegex(ValueError, "agent process remains"):
+                    self.terminal.close(self.identity, ledger)
+            self.assertTrue(all(call.args[0] == "list-panes" for call in calls.call_args_list))
 
     def test_physical_close_preserves_new_harness_owner_and_resumed_source(self):
         source = "01a1514c-fa7f-7be3-95ba-4d25df73d07e"
@@ -476,8 +467,7 @@ class PaneParserTests(unittest.TestCase):
                              (1000, "other-tty", "codex resume " + source)]
                 with patch.object(self.terminal, "run", return_value=SimpleNamespace(
                         returncode=0, stdout=self.dead + live)) as calls, \
-                        patch.object(session_liveness, "inventory", return_value=processes), \
-                        patch.object(tmux_terminal, "process_parents", return_value={456: 123, 999: 456}):
+                        patch.object(session_liveness, "inventory", return_value=processes):
                     self.assertTrue(self.terminal.close(self.identity, ledger)["close_requested"])
                     mutations = [call.args for call in calls.call_args_list if call.args[0] != "list-panes"]
                     self.assertEqual(len(mutations), 1)
@@ -494,49 +484,6 @@ class PaneParserTests(unittest.TestCase):
                         returncode=0, stdout=self.dead)) as calls, self.assertRaises(ValueError):
                     self.terminal.close(self.identity, ledger)
                 self.assertTrue(all(call.args[0] == "list-panes" for call in calls.call_args_list))
-
-    def test_native_close_never_excuses_unknown_old_equal_or_future_birth(self):
-        entry = {"supervisor_owned": True, "tmux_session_id": self.identity, "pid": 789,
-                 "tty": "ttys987", "window_id": "$1", "tab_id": "@1", "tmux_socket": "fixture"}
-        live = self.pane_line({**self.live_fields, "pane_tty": "/dev/ttys987"})
-        for born in (self.cutoff - timedelta(seconds=1), self.cutoff,
-                     datetime.now(timezone.utc) + timedelta(days=1), ValueError("unknown birth")):
-            with self.subTest(born=born), tempfile.TemporaryDirectory() as folder:
-                ledger = Path(folder) / "ledger.json"
-                ledger.write_text(json.dumps([entry]))
-                with patch.object(self.terminal, "run", return_value=SimpleNamespace(returncode=0, stdout=self.dead + live)) as calls, \
-                        patch.object(session_liveness, "inventory", return_value=[(456, "ttys987", "new-worker")]), \
-                        patch.object(tmux_terminal, "process_parents", return_value={456: 123}), \
-                        patch.object(session_liveness, "process_started_at") as clock:
-                    if isinstance(born, Exception):
-                        clock.side_effect = born
-                    else:
-                        clock.return_value = born
-                    with self.assertRaises(ValueError):
-                        self.terminal.close(self.identity, ledger)
-                    self.assertFalse(any(call.args[0] != "list-panes" for call in calls.call_args_list))
-
-    def test_tty_ancestry_failure_or_activity_between_checks_never_closes(self):
-        entry = {"supervisor_owned": True, "tmux_session_id": self.identity, "pid": 789,
-                 "tty": "ttys987", "window_id": "$1", "tab_id": "@1", "tmux_socket": "fixture"}
-        live = self.pane_line({**self.live_fields, "pane_tty": "/dev/ttys987"})
-        for parents, inventories in ((OSError("ps unavailable"), [[(456, "ttys987", "new-worker")]]),
-                                      ({456: 123}, [[(456, "ttys987", "new-worker")],
-                                                   [(456, "ttys987", "new-worker"), (999, "ttys987", "old-job")]])):
-            with self.subTest(parents=parents), tempfile.TemporaryDirectory() as folder:
-                ledger = Path(folder) / "ledger.json"
-                ledger.write_text(json.dumps([entry]))
-                with patch.object(self.terminal, "run", return_value=SimpleNamespace(
-                        returncode=0, stdout=self.dead + live)) as calls, \
-                        patch.object(session_liveness, "inventory", side_effect=inventories), \
-                        patch.object(tmux_terminal, "process_parents") as ancestry:
-                    if isinstance(parents, Exception):
-                        ancestry.side_effect = parents
-                    else:
-                        ancestry.return_value = parents
-                    with self.assertRaises((ValueError, OSError)):
-                        self.terminal.close(self.identity, ledger)
-                    self.assertFalse(any(c.args[0] != "list-panes" for c in calls.call_args_list))
 
     def test_cli_refusal_is_json_on_stdout_failure_on_stderr_and_nonzero(self):
         from contextlib import redirect_stdout, redirect_stderr
@@ -776,8 +723,6 @@ for line in sys.stdin:
         while time.monotonic() < deadline:
             try:
                 if self.terminal.select(row["session_id"])["dead"]:
-                    # An uncertain pane snapshot cannot prove exit. A dead
-                    # flag still needs the independent process-exit proof.
                     self.terminal.verify_closed(row["session_id"], self.entry(row))
                     return
             except ValueError as error:
