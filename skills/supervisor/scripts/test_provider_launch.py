@@ -490,7 +490,7 @@ class ProviderLaunchTests(unittest.TestCase):
                     asyncio.run(register_worker(args))
 
             @iterm_tab.guard_lead_launch
-            async def interrupted_launch(options: argparse.Namespace) -> None:
+            async def interrupted_launch(_options: argparse.Namespace) -> None:
                 raise asyncio.CancelledError
 
             ledger.write_text(json.dumps([lead, other]))
@@ -499,6 +499,16 @@ class ProviderLaunchTests(unittest.TestCase):
             self.assertTrue(json.loads(ledger.read_text())[0]["worker_launches"])
             iterm_tab.settle_lead_launch(args, 0)
             self.assertEqual(json.loads(ledger.read_text())[0]["worker_launches"], {})
+
+            ledger.write_text(json.dumps([lead, other]))
+            with patch.object(iterm_tab, "settle_lead_launch", side_effect=ValueError("ledger busy")):
+                with self.assertRaises(iterm_tab.LaunchFailure) as retained:
+                    asyncio.run(fail_launch(args))
+            self.assertEqual(retained.exception.detail["failed_launch"]["launch"]["lead_launch_id"], args.lead_launch_id)
+            self.assertFalse(retained.exception.detail["reservation_settled"])
+            ledger.write_text(json.dumps([lead, other]))
+            with patch.object(iterm_tab, "settle_lead_launch", side_effect=AssertionError("no unused successful slots")):
+                asyncio.run(register_worker(args))
 
     def setUp(self):
         self.enterContext(patch.object(iterm_tab, "check_launch_issue"))

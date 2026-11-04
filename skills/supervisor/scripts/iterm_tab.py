@@ -1771,16 +1771,16 @@ def guard_lead_launch(operation: Callable[..., Coroutine[Any, Any, Any]]) -> Cal
             save_state(ledger, rows)
         args.lead_launch_started = False
         try:
-            result = await operation(*arguments)
-        except LaunchFailure as error:
-            settle_lead_launch(args, int(error.detail["failed_launch"].get("submission") != "not_attempted"))
-            raise
-        except Exception:
-            if not args.lead_launch_started:
-                settle_lead_launch(args, 0)
-            raise
-        settle_lead_launch(args, 0)
-        return result
+            return await operation(*arguments)
+        except Exception as error:
+            failure = error if isinstance(error, LaunchFailure) else LaunchFailure([], {
+                **lead_metadata(args), "mutation_started": args.lead_launch_started,
+                "submission": "unknown" if args.lead_launch_started else "not_attempted"}, error)
+            try:
+                settle_lead_launch(args, int(failure.detail["failed_launch"].get("submission") != "not_attempted"))
+            except Exception as settlement_error:
+                failure.detail.update(reservation_settled=False, reservation_error=str(settlement_error))
+            raise failure
     return guarded
 
 
@@ -2157,6 +2157,21 @@ async def operate(app, args):
                 progress.update(tab_id=tab.tab_id if tab else None, phase="wait_for_session")
                 session = await wait_for_session(app, tab)
                 progress.update(session_id=session.session_id)
+                result = {**lead_metadata(args), "window_id": windows[0].window_id,
+                          "tab_id": tab.tab_id, "session_id": session.session_id}
+                if choice:
+                    result["account"] = account_choice.public(choice)
+                    for key in ("native_receipt", "file_native", "claude_native"):
+                        if key in choice:
+                            result[key] = choice[key]
+                    if choice.get("provider") == "openai":
+                        result["codex_home"] = str(Path(choice["env"]["CODEX_HOME"]).expanduser().resolve())
+                    if choice.get("provider") == "openai" or choice.get("file_native"):
+                        try:
+                            result["tty"] = await session.async_get_variable("tty")
+                        except (AttributeError, OSError, ValueError):
+                            result["launch_identity_unavailable"] = True
+                progress["launch"] = result
                 progress.update(submission="unknown", phase="submit_command")
                 await submit_iterm_launch(app, session, command_text, prompt_window=startup_prompt_window(choice))
                 progress.update(submission="submitted", phase="startup_observed")
@@ -2165,17 +2180,8 @@ async def operate(app, args):
                 if isinstance(error, StartupFailure):
                     progress.update(submission="submitted", phase="verify_startup")
                 raise LaunchFailure(results, progress, error) from error
-            result = {**lead_metadata(args), "window_id": windows[0].window_id,
-                      "tab_id": tab.tab_id, "session_id": session.session_id}
-            if choice:
-                result["account"] = account_choice.public(choice)
-            if choice and (choice.get("provider") == "openai" or choice.get("file_native")):
-                try:
-                    result["tty"] = await session.async_get_variable("tty")
-                except (AttributeError, OSError, ValueError):
-                    result["launch_identity_unavailable"] = True
-                if choice.get("provider") == "openai":
-                    source_launch_metadata(result, choice)
+            if choice and choice.get("provider") == "openai":
+                source_launch_metadata(result, choice)
             try:
                 await register_fresh_launch(args, result, choice)
             except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
