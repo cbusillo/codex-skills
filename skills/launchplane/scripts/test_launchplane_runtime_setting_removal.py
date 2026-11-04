@@ -9,12 +9,13 @@ import io
 import json
 import urllib.error
 from contextlib import redirect_stdout
+from typing import Any
 from unittest.mock import patch
 
-import pytest
-
-from test_launchplane_helpers import contract, write_action as h
 import launchplane_runtime_setting_removal as removal
+import pytest
+from test_launchplane_helpers import contract
+from test_launchplane_helpers import write_action as h
 
 DRY_RUN, READBACK = "runtime-setting-removal-dry-run", "runtime-setting-removal-readback"
 SERVICE = "https://plane.example.invalid"
@@ -35,7 +36,7 @@ def argv(command=DRY_RUN, *, scope=SCOPE_ARGS, keys=("OLD_FLAG", "LEGACY_URL"), 
     return args
 
 
-def response(mode="dry-run", **updates):
+def response(mode: str = "dry-run", **updates: Any) -> dict[str, Any]:
     # Producer removal_plan (control_plane/runtime_setting_removal.py) plus the
     # readback fields from PostgresRecordStore.runtime_setting_removal.
     result = {
@@ -102,6 +103,53 @@ def test_readback_sends_review_binding_and_projects_match():
     assert output["result"]["readback_matches"] is False
     assert output["result"]["current_record_present"] is True
     assert output["summary"]["readback_matches"] is False
+    assert "PRIVATE_SENTINEL" not in json.dumps(output)
+
+
+@pytest.mark.parametrize("command", [DRY_RUN, READBACK])
+def test_instance_review_keeps_context_fallback_evidence(command: str) -> None:
+    effects = [{"key": "OLD_FLAG", "source_after": "context", "effect": "unchanged"},
+               {"key": "LEGACY_URL", "source_after": None, "effect": "absent"}]
+    reply = response("readback" if command == READBACK else "dry-run", scope="instance", instance="testing",
+                     instance_plain_setting_effects=effects, context_values_sha256="d" * 64)
+    scope = ("--product", "example", "--scope", "instance", "--context", "example-testing", "--instance", "testing")
+    code, output, _ = invoke(argv(command, scope=scope), reply=reply)
+    assert code == 0
+    assert output["result"]["instance_plain_setting_effects"] == effects
+    assert output["result"]["context_values_sha256"] == reply["result"]["context_values_sha256"]
+
+
+@pytest.mark.parametrize("updates", [
+    {"instance_plain_setting_effects": []},
+    {"context_values_sha256": "not-a-digest"},
+    {"instance_plain_setting_effects": None},
+    {"context_values_sha256": None},
+    {"instance_plain_setting_effects": [{"key": "OLD_FLAG", "source_after": "context", "effect": "unchanged",
+                                         "value": "PRIVATE_SENTINEL"},
+                                        {"key": "LEGACY_URL", "source_after": None, "effect": "absent"}]},
+    {"instance_plain_setting_effects": [{"key": "OLD_FLAG", "source_after": "context", "effect": "unchanged"}] * 2},
+    {"instance_plain_setting_effects": [{"key": "OLD_FLAG", "source_after": "global", "effect": "unchanged"},
+                                        {"key": "LEGACY_URL", "source_after": None, "effect": "absent"}]},
+    {"instance_plain_setting_effects": [{"key": "OLD_FLAG", "source_after": None, "effect": "unchanged"},
+                                        {"key": "LEGACY_URL", "source_after": None, "effect": "absent"}]},
+    {"instance_plain_setting_effects": [{"key": "OLD_FLAG", "source_after": "context", "effect": "PRIVATE_SENTINEL"},
+                                        {"key": "LEGACY_URL", "source_after": None, "effect": "absent"}]},
+    {"scope": "context", "instance": ""},
+    {"instance": "preview"},
+])
+def test_invalid_context_fallback_evidence_cannot_look_qualified(updates: dict[str, object]) -> None:
+    reply = response(scope="instance", instance="testing", context_values_sha256="d" * 64,
+                     instance_plain_setting_effects=[
+                         {"key": "OLD_FLAG", "source_after": "context", "effect": "changed"},
+                         {"key": "LEGACY_URL", "source_after": None, "effect": "absent"}])
+    reply["result"].update(updates)
+    result = reply["result"]
+    scope = ("--product", "example", "--scope", result["scope"], "--context", "example-testing")
+    if result["instance"]:
+        scope += ("--instance", result["instance"])
+    code, output, _ = invoke(argv(scope=scope), reply=reply)
+    assert code == 1 and output["status"] == "invalid"
+    assert output["result"] == {}
     assert "PRIVATE_SENTINEL" not in json.dumps(output)
 
 

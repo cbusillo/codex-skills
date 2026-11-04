@@ -307,7 +307,13 @@ def unless_fast_forwarded(pull: dict, pr_commits: set[str]) -> set[str]:
     return set() if pull.get("merge_commit_sha") in pr_commits else pr_commits
 
 
-def ownership_decision(reader, github_read, repo: str, pulls: Iterable[dict], branches: Iterable[str]) -> dict:
+def pull_owns_tree(pull: dict, tree: Worktree | None) -> bool:
+    head = pull.get("head") or {}
+    return tree is None or not head or head.get("ref") == tree.branch or head.get("sha") == tree.head
+
+
+def ownership_decision(reader, github_read, repo: str, pulls: Iterable[dict], branches: Iterable[str], *,
+                       tree: Worktree | None = None) -> dict:
     import github_plan_landing
     import github_plan_status.references
 
@@ -315,7 +321,7 @@ def ownership_decision(reader, github_read, repo: str, pulls: Iterable[dict], br
     names = dict.fromkeys(branches)
     owners = {repo.split("/")[0]: None}
     for pull in pulls:
-        if not finished_pull(pull):
+        if not finished_pull(pull) and pull_owns_tree(pull, tree):
             return {"decision": "kept", "reason": "branch or commit has an open PR"}
         number = pull["number"]
         base = pull.get("base") or {}
@@ -363,7 +369,8 @@ def target_decision(target: Path, checkout: Path, *, preserve: Iterable[Path] = 
                                   params={"state": "all", "head": f"{repo.split('/')[0]}:{tree.branch}"}) if tree.branch else []
         if not pulls:
             pulls = reader.paged_json(f"repos/{repo}/commits/{tree.head}/pulls", step_prefix="retirement_target_commit_pulls")
-        return {**row, **ownership_decision(reader, github_read, repo, pulls, [tree.branch] if tree.branch else [])}
+        return {**row, **ownership_decision(reader, github_read, repo, pulls, [tree.branch] if tree.branch else [],
+                                            tree=tree)}
     except Exception as exc:
         return {**row, "reason": f"retirement evidence unavailable: {type(exc).__name__}: {exc}"}
 
@@ -467,7 +474,7 @@ def repository_rows(reader: Any, github_read: Any, repo: str, checkout: Path, ro
 
     def decisions_for_trees() -> Iterator[dict]:
         for tree in trees:
-            row = {"path": str(tree.path), "branch": tree.branch, "head": tree.head, "decision": "kept"}
+            row: dict[str, Any] = {"path": str(tree.path), "branch": tree.branch, "head": tree.head, "decision": "kept"}
             try:
                 if any(is_under(path, tree.path) for path in preserve):
                     row["reason"] = "source checkout or calling session uses this tree"
@@ -487,8 +494,12 @@ def repository_rows(reader: Any, github_read: Any, repo: str, checkout: Path, ro
                     if not pulls and (not tree.branch or not tip or not contained(checkout, tree.head, tip)):
                         pulls = reader.paged_json(f"repos/{repo}/commits/{tree.head}/pulls",
                                                   step_prefix="retirement_commit_pulls")
-                    if any(pull.get("state") != "closed" for pull in pulls):
-                        row["reason"] = "branch or commit has an open PR"
+                    open_pulls = [pull for pull in pulls if not finished_pull(pull)]
+                    if open_pulls:
+                        row.update(ownership_decision(reader, github_read, repo, pulls,
+                                                      [tree.branch] if tree.branch else [], tree=tree))
+                        if row["decision"] == "candidate":
+                            row["published_in"] = sorted(pull["number"] for pull in open_pulls)
                     else:
                         if pulls:
                             pull = max(pulls, key=lambda item: item.get("closed_at") or "")

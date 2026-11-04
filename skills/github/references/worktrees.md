@@ -156,7 +156,10 @@ Creation checks each registered linked worktree through `landed_worktrees.py`.
 A closed PR uses the existing PR-head, claim and publication checks;
 commit-associated PRs cover detached review and separate refresh branches; a branch
 without a PR uses the default-history, fresh-start and account-wide claim
-checks. Active source/calling checkouts, trees without exact PR or default-history
+checks. An open PR holds only the trees it owns: its own branch, or a checkout
+at its head commit. A tree whose commit is merely inside another branch's open
+PR is checked like a closed one, including claims on that PR, its linked issues
+and its head branch. Active source/calling checkouts, trees without exact PR or default-history
 provenance, foreign locks, dirty or unpublished work and incomplete evidence
 are kept with reasons. The host command still owns volume, publication,
 ignored-file, live-use and IDE checks. No lock is rewritten or bypassed.
