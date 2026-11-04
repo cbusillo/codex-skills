@@ -19,7 +19,7 @@ import time
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -1060,52 +1060,7 @@ def test_revalidation_readers_do_not_hold_cache_lock_during_transport_wait() -> 
 
 
 def main() -> None:
-    tests: list[Callable[[], None]] = [
-        test_revalidation_readers_do_not_hold_cache_lock_during_transport_wait,
-        test_cache_write_failure_does_not_repeat_completed_get,
-        test_cache_lock_wait_expires_without_remote_call,
-        test_cache_storage_failure_falls_back_to_same_deadline_and_actor,
-        test_poll_delay_respects_server_interval_and_adds_only_positive_jitter,
-        test_cache_honors_poll_interval_across_readers_and_304,
-        test_issue_reader_paginates_and_filters_pull_requests,
-        test_present_terminal_link_header_does_not_fabricate_next_page,
-        test_request_diagnostics_include_quota_and_request_id,
-        test_search_request_uses_search_quota_and_preserves_coverage_metadata,
-        test_graphql_json_uses_bounded_shared_graphql_transport,
-        test_reader_diagnostics_marks_mixed_rest_and_graphql_buckets,
-        test_conditional_cache_reuses_304_body_and_scopes_query_and_identity,
-        test_fresh_read_bypasses_both_conditional_cache_layers,
-        test_matrix_approved_reader_retries_and_reports_attempts,
-        test_reader_aggregates_retry_summary_across_requests,
-        test_reader_cli_operations_are_matrix_approved,
-        test_secret_scanning_status_public_repo_is_unavailable_without_alert_request,
-        test_secret_scanning_status_counts_findings_without_secret_material,
-        test_secret_scanning_status_preserves_hidden_values_on_followup_pages,
-        test_secret_scanning_status_empty_alerts_is_clean,
-        test_secret_scanning_status_permission_denied_is_unavailable_without_fallback,
-        test_secret_scanning_status_404_is_ambiguous_and_never_clean,
-        test_secret_scanning_status_repository_permission_failure_is_unavailable,
-        test_secret_scanning_status_disabled_metadata_is_not_enabled_without_alert_request,
-        test_secret_scanning_status_actor_mismatch_fails_closed_as_unavailable,
-        test_secret_scanning_status_rejects_actor_change_after_preflight,
-        test_secret_scanning_status_rejects_unbounded_limits_before_api_calls,
-        test_secret_scanning_cli_reports_invalid_limit_as_input_validation,
-        test_reader_failed_request_dominates_aggregate_certainty,
-        test_request_diagnostic_redacts_failure_messages,
-        test_explicit_active_auth_actor_is_visible_and_degraded,
-        test_permission_failure_is_explicit_and_degraded,
-        test_rate_limit_failure_preserves_reset_metadata,
-        test_pull_request_normalization_preserves_final_merge_identity,
-        test_pull_checks_share_paged_readers_and_ids,
-        test_pull_checks_keep_only_latest_status_per_context,
-        test_pull_checks_preserve_check_runs_when_status_permission_is_missing,
-        test_shape_failure_marks_diagnostics_degraded,
-        test_direct_checks_inventory_workflows_before_job_checks,
-        test_workflow_metadata_jobs_and_text_log_normalize,
-        test_text_logs_opt_in_and_remove_terminal_commands,
-        test_text_logs_support_older_cli_and_preserve_failures,
-        test_text_log_capability_probe_failure_is_visible,
-    ]
+    tests = [test for name, test in globals().items() if name.startswith("test_") and callable(test)]
     failed: list[str] = []
     for test in tests:
         try:

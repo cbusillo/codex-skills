@@ -497,23 +497,7 @@ def extract_public_script_resources(path: Path, errors: list[str]) -> set[str]:
 
 
 def run_self_tests() -> int:
-    tests = [
-        test_schema_accepts_minimal_operation,
-        test_duplicate_ids_fail,
-        test_invalid_enum_fails,
-        test_read_operation_requires_read_only_idempotency,
-        test_read_only_idempotency_requires_read_operation,
-        test_safe_retry_requires_read_only_idempotency,
-        test_conditional_non_idempotent_retry_requires_stable_key,
-        test_graphql_rationale_is_required,
-        test_planned_migration_requires_current_transport_evidence,
-        test_same_transport_component_migration_is_allowed,
-        test_planned_migration_requires_changed_evidence,
-        test_missing_python_symbol_reference_fails,
-        test_missing_line_reference_fails,
-        test_argparse_argument_choice_extractor,
-        test_static_command_coverage_reports_missing_entrypoint,
-    ]
+    tests = [test for name, test in globals().items() if name.startswith("test_") and callable(test)]
     try:
         for test in tests:
             test()
