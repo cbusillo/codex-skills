@@ -3066,25 +3066,26 @@ def claim_once(args: argparse.Namespace) -> None:
 
     def family_artifact_context(owner_inventory: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         ended: list[dict[str, Any]] = []
-        comments: list[dict[str, Any]] = []
+        family_comments: list[dict[str, Any]] = []
         checked: set[tuple[str, int]] = set()
         for peer_repo, peer_number, _, peer_comments in phase_peers:
             key = (peer_repo.casefold(), peer_number)
             if key in checked or key not in phase_owners or not (key[0] == issue_repo.casefold() == target_repo.casefold()):
                 continue
             checked.add(key)
-            comments.extend(peer_comments)
+            family_comments.extend(peer_comments)
             for entry in github_plan_claim.ended_ownership(peer_comments, owner_inventory):
                 if entry["evidence"] == "authored_release":
                     ended.append({**entry, "work_record": f"https://github.com/{peer_repo}/issues/{peer_number}",
                                   "claim_url": github_plan_claim.handoff_url(peer_repo, peer_number, entry["claim_id"]),
                                   "release_url": github_plan_claim.handoff_url(peer_repo, peer_number, entry["release_id"])})
-        return ended, comments
+        return ended, family_comments
 
-    def artifact_branches(ended: list[dict[str, Any]], comments: list[dict[str, Any]],
-                          pulls: list[dict[str, Any]], owner_inventory: dict[str, Any]) -> set[str]:
+    def artifact_branches(ended: list[dict[str, Any]], owner_comments: list[dict[str, Any]],
+                          artifact_pulls: list[dict[str, Any]], owner_inventory: dict[str, Any]) -> set[str]:
         family_ended, family_comments = family_artifact_context(owner_inventory)
-        return github_plan_claim.ended_artifact_branches([*ended, *family_ended], [*comments, *family_comments], pulls)
+        return github_plan_claim.ended_artifact_branches(
+            [*ended, *family_ended], [*owner_comments, *family_comments], artifact_pulls)
 
     def ownership_snapshot(current_status: str, current_comments: list[dict[str, Any]]):
         nonlocal inventory, ended_owners
@@ -3727,7 +3728,9 @@ def claim_once(args: argparse.Namespace) -> None:
 
     def check_family_branch_use(permitted: set[str]) -> None:
         source = phase.get("source")
-        if claim["branch"] in permitted or source is not None and claim["branch"] == source["record"]["branch"]:
+        if claim["branch"] in permitted:
+            return
+        if source is not None and claim["branch"] == source["record"]["branch"]:
             return
         family_ended, _ = family_artifact_context(inventory)
         present = (claim["branch"] in inventory["local_branches"] or claim["branch"] in inventory["remote_branches"]
@@ -4176,12 +4179,12 @@ def claim_once(args: argparse.Namespace) -> None:
         if claim_id
         else {}
     )
-    family_ended, _ = family_artifact_context(inventory)
-    reported_artifacts = [*ended_owners, *family_ended]
-    for entry in reported_artifacts:
-        entry["pull_requests"] = [f"https://github.com/{target_repo}/pull/{pull['number']}"
-                                  for pull in phase.get("artifact_pulls", phase["open_pulls"])
-                                  if (pull.get("head") or {}).get("ref") == entry["branch"]]
+    reported_family_ended, _ = family_artifact_context(inventory)
+    reported_artifacts = [*ended_owners, *reported_family_ended]
+    for reported_artifact in reported_artifacts:
+        reported_artifact["pull_requests"] = [f"https://github.com/{target_repo}/pull/{pull['number']}"
+                                              for pull in phase.get("artifact_pulls", phase["open_pulls"])
+                                              if (pull.get("head") or {}).get("ref") == reported_artifact["branch"]]
     emit(
         {
             "ok": True,
