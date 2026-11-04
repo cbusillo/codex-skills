@@ -92,7 +92,7 @@ def parse_diff(diff: str) -> list[FileDiff]:
 
 def is_directive(comment: str) -> bool:
     parts = [part.strip() for part in comment.split("#")[1:]]
-    return all(DIRECTIVE.fullmatch(part) for part in parts)
+    return comment.startswith("# insecure-tls:") or all(DIRECTIVE.fullmatch(part) for part in parts)
 
 
 def metadata_rows(source: str) -> set[int]:

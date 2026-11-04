@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import check_insecure_tls as tls_checker
 import check_new_comments as checker
 
 BASE = "def total(values: list[int]) -> int:\n    return sum(values)\n"
@@ -97,6 +98,21 @@ class NewCommentsCheck(unittest.TestCase):
             self.findings({"app.py": BASE}, {"app.py": source}),
             {("app.py", 1, "comment"), ("app.py", 2, "comment"), ("app.py", 3, "comment"), ("app.py", 4, "comment")},
         )
+
+    def test_tls_annotation_passes_comments_without_bypassing_tls_reason(self) -> None:
+        cases = (
+            ("isolated loopback test peer.", False),
+            ("isolated peer; decision https://example.invalid/issues/1#comment", False),
+            ("", True),
+            ("Q418", True),
+            ("https://example.invalid/decision", True),
+        )
+        for reason, rejected in cases:
+            with self.subTest(reason=reason):
+                source = f"import requests\n# insecure-tls: {reason}\nrequests.get(url, verify=False)  # noqa: S501\n"
+                self.assert_allowed(source)
+                self.assertEqual(bool(tls_checker.findings(source)), rejected)
+        self.assertTrue(tls_checker.findings("import requests\nrequests.get(url, verify=False)  # noqa: S501\n"))
 
     def test_shebang_and_script_metadata_pass(self) -> None:
         self.assert_allowed(
