@@ -155,14 +155,14 @@ A Director's Supervisor can reply to a question addressed to that Director on
 the GitHub issue where it was asked. This works symmetrically only after the
 replying Director explicitly adopts the flow in their direction and reconciles
 any standing per-write or exact-text approval instructions for it. Installing
-the catalog or choosing an identity does not adopt it. Chris adopted it for
-Mike and Justin, and for Rob only once he opts in
-([Q1190](https://github.com/cbusillo/direction/issues/154#issuecomment-6580751821)).
-Other Directors name their own participating peers; an entry in `people` alone
-does not authorize replies.
+the catalog or choosing an identity does not adopt it. Each Director's direction
+names their participating peers; an entry in `people` alone does not authorize
+replies. Chris's scope is recorded in
+[Q1190](https://github.com/cbusillo/direction/issues/154#issuecomment-6580751821)
+and his overall direction.
 
 Limit the reply to clarifying questions, status, evidence and read-only
-diagnostic results about the repository it is posted in or that Client's
+diagnostic results about the repository it is posted in or that repository's Client's
 product. Never include host, infrastructure or credential details, local paths,
 or another Client's product or data. Start every reply with a line saying
 `Supervisor reply for <Director>`, including when using a personal account.
@@ -177,8 +177,9 @@ proposed diagnostics against the receiving Director's own direction and stop
 boundaries before acting. This flow authorizes a comment only, never a requested
 diagnostic, system action or a new outreach thread. Apply
 [Public Safety](#public-safety) and preserve message-specific holds. Send at most
-one reply per open question until a person comments or the recorded state
-changes; another Supervisor's reply alone does not restart the exchange.
+one reply per open question until a verified human comments or the question's
+recorded state changes. A Supervisor's comment alone never restarts the
+exchange; posting from a personal account does not prove a human turn.
 
 Post with `gh-comment issue NUMBER --repo OWNER/REPO --body-file FILE` under
 [GitHub's identity rules](../github/SKILL.md#helpers-and-identity). Each Director
@@ -188,7 +189,7 @@ selects that approved identity, not fresh approval of each reply in an adopted f
 If a follow-up cannot be answered from the evidence, or the reply needs a
 Director decision, including missing authorization or access, put it on the
 replying Director's own existing direction/handoff issue, linking the outside
-question. Use [Director Questions](#director-questions) for a decision and the existing
+question. Use [Director Questions](#director-questions) and the existing
 [queue rules and unconfigured fallback](#decisions-holds-and-work-state).
 Never post a permission request on the blocked outside issue. For access,
 name the exact target repository, identity and known or UNKNOWN
