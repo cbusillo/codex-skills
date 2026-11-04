@@ -53,7 +53,11 @@ before running any allowed supplementary review, serially with its recorded
 budget, and put both results in the PR's review note.
 
 1. Commit the change and leave the worktree clean. Write a prompt file that
-   names the change, the paths to read, and what the change is for. For a
+   under the task-evidence path printed by worktree creation. Keep review
+   results and redirected logs there too. The prompt names the change, the
+   paths to read, and what the change is for. If `--out` points inside a
+   worktree or its configured root, the helper redirects it to task evidence
+   and returns the actual path as `response_file`. For a
    [pending decision](../references/model-review.md#before-a-decision), there
    is no change: describe the saved issue instead. Never ask
    the reviewer to run a command or tests, and do not forbid commands either:
@@ -71,7 +75,7 @@ budget, and put both results in the PR's review note.
 2. Run each reviewer from this skill's base directory:
 
    ```bash
-   uv run scripts/review_with_model.py run --author-provider openai --repo <repo> --prompt-file <file> --out <review.md>
+   uv run scripts/review_with_model.py run --author-provider openai --repo <repo> --prompt-file <file> --out <task-evidence>/review.md
    ```
 
    Providers are `openai`, `anthropic`, and `google`. Each is started so that

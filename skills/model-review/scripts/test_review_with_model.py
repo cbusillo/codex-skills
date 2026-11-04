@@ -16,8 +16,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
 from pathlib import Path
+from unittest.mock import patch
 
 import review_with_model
 
@@ -185,6 +185,23 @@ class ReviewWithModelTests(unittest.TestCase):
         return self.run_helper(
             "run", "--provider", provider, "--repo", str(self.repo), "--prompt-file", str(self.prompt), **env
         )
+
+    def test_review_output_in_source_or_worktree_root_moves_to_task_evidence(self) -> None:
+        from skills.github.scripts import dev_worktree
+
+        worktrees = self.root / "worktrees"
+        evidence = self.root / "task-evidence"
+        with patch.object(dev_worktree, "configuration", return_value=(worktrees, None)), \
+                patch.object(dev_worktree, "artifact_roots", return_value=(evidence, self.root / "retained"), create=True), \
+                patch.object(review_with_model.subprocess, "run", return_value=subprocess.CompletedProcess(
+                    [], 0, str(self.root / "project" / ".git"), "")):
+            for requested in (self.repo / "review.md", worktrees / "review.md"):
+                destination = review_with_model.result_destination(self.repo, str(requested))
+                destination.write_text("review")
+                self.assertTrue(destination.is_relative_to(evidence / "project" / self.repo.name))
+                self.assertFalse(requested.exists())
+            outside = self.root / "explicit-evidence" / "review.md"
+            self.assertEqual(review_with_model.result_destination(self.repo, str(outside)), outside)
 
     def test_standing_decision_blocks_primary_google_but_allows_supplementary(self) -> None:
         self.install("agy", FAKE_AGY)

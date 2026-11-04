@@ -35,10 +35,11 @@ from typing import Any
 # Share the Supervisor reader rather than keeping a second account chooser.
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from skills.supervisor.scripts import account_choice, claim_history
-from skills.supervisor.scripts.claim_history import agy_model, protobuf_fields
 import review_policy
 from review_worktree import is_review_scratch
+
+from skills.supervisor.scripts import account_choice, claim_history
+from skills.supervisor.scripts.claim_history import agy_model, protobuf_fields
 
 PROVIDERS = {"openai": "codex", "anthropic": "claude", "google": "agy"}
 FAULT_MARKER_NAME = "model-review-fault.md"
@@ -655,6 +656,23 @@ def repository_root(path: Path) -> Path:
     return Path(root.stdout.strip()).resolve() if root.returncode == 0 else path
 
 
+
+def result_destination(repo: Path, value: str) -> Path:
+    from skills.github.scripts import dev_worktree
+
+    requested = Path(value).expanduser().absolute()
+    worktrees, _ = dev_worktree.configuration()
+    if not any(requested.resolve().is_relative_to(root.resolve()) for root in (repo, worktrees)):
+        return requested
+    evidence, _ = dev_worktree.artifact_roots()
+    common = subprocess.run(["git", "-C", str(repo), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                            capture_output=True, text=True, check=True).stdout.strip()
+    destination = evidence / Path(common).parent.name / repo.name / requested.name
+    if any(parent.is_symlink() for parent in (destination, *destination.parents)):
+        raise ValueError("review output path is redirected; choose a task-evidence destination")
+    destination.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    return destination
+
 def cmd_run(args: argparse.Namespace) -> int:
     repo = repository_root(Path(args.repo).resolve())
     try:
@@ -686,8 +704,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     result["effort"] = effort.group(1).lower() if effort and confirmed else "unknown"
     planted = plant_fault(result, fault_marker(), repo)
     if result["ok"] and args.out:
-        Path(args.out).write_text(result.pop("response"))
-        result["response_file"] = args.out
+        destination = result_destination(repo, args.out)
+        destination.write_text(result.pop("response"))
+        result["response_file"] = str(destination)
     print(json.dumps(result, indent=2), flush=True)
     if planted is not None:
         consume_fault(planted)

@@ -81,6 +81,10 @@ Rules for this brief (every Supervisor brief carries them):
   Name your intended task path, never the result of `pwd` or Git discovery
   ([bot helpers](../../github/SKILL.md#helpers-and-identity)). Never
   force-push or use `git stash`.
+- Keep task output (review prompts/results, checks, logs and handoffs) under the
+  task-evidence path printed by worktree creation, including shell redirections.
+  Do not write it inside a worktree or beside worktree folders. Temporary
+  model-review input scratch is helper-owned and removed when the run ends.
 - Land through the GitHub skill's Merging procedure. Launchplane is optional
   unless this Director's direction or active policy requires its train. A missing
   or unreadable configured route stays unknown. For train-routed PRs, when green and reviewed,
