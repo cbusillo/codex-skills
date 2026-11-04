@@ -48,8 +48,7 @@ def git(checkout: Path, *args: str, input_text: str | None = None) -> subprocess
                           env=dev_worktree.git_environment(), input=input_text, timeout=30)
 
 
-def registered(checkout: Path) -> list[Worktree]:
-    """Linked worktrees of the checkout's repository; the main checkout is never listed."""
+def registered(checkout: Path, *, include_primary: bool = False) -> list[Worktree]:
     result = git(checkout, "worktree", "list", "--porcelain", "-z")
     if result.returncode:
         raise ValueError(result.stderr.strip() or "git worktree list failed")
@@ -67,7 +66,7 @@ def registered(checkout: Path) -> list[Worktree]:
             branch=branch.removeprefix("refs/heads/") if branch else None,
             lock=fields.get("locked") if "locked" in fields else None,
         ))
-    return worktrees[1:]
+    return worktrees if include_primary else worktrees[1:]
 
 
 def contained(checkout: Path, head: str, tip: str) -> bool:
@@ -158,11 +157,9 @@ def delete_merged_branch(checkout: Path, branch: str | None, head: str) -> str:
     tip = default_tracking_tip(checkout)
     if not tip or not contained(checkout, head, tip):
         return "local branch kept: not merged into the default branch"
-    if any(tree.branch == branch for tree in registered(checkout)):
+    if any(tree.branch == branch for tree in registered(checkout, include_primary=True)):
         return "local branch kept: still checked out"
-    if git(checkout, "rev-parse", "--verify", f"refs/heads/{branch}").stdout.strip() != head:
-        return "local branch kept: tip changed"
-    result = git(checkout, "branch", "-d", "--", branch)
+    result = git(checkout, "update-ref", "--no-deref", "-d", f"refs/heads/{branch}", head)
     return f"deleted merged local branch {branch}" if result.returncode == 0 else "local branch kept: tip changed or deletion failed"
 
 

@@ -566,6 +566,23 @@ class MissingCommitTests(Fixture):
         self.assertIn("kept", landed_worktrees.delete_merged_branch(self.repo, "work/held", head))
         self.assertTrue(self.git(self.repo, "for-each-ref", "refs/heads/work/held"))
 
+    def test_merged_branch_deletion_uses_tracking_tip_and_keeps_concurrent_commits(self) -> None:
+        path = self.worktree("tracking", lock=None)
+        head = self.commit(path, "Published and merged")
+        self.git(self.repo, "update-ref", "refs/remotes/origin/main", head)
+        self.git(self.repo, "worktree", "remove", str(path))
+        self.assertIn("deleted", landed_worktrees.delete_merged_branch(self.repo, "work/tracking", head))
+        self.git(self.repo, "branch", "work/raced", head)
+        later = self.commit(self.repo, "New local work")
+        original = landed_worktrees.git
+        def change_before_delete(checkout: Path, *args: str, **kwargs: object) -> subprocess.CompletedProcess[str]:
+            if args[0] == "update-ref":
+                self.git(self.repo, "update-ref", "refs/heads/work/raced", later)
+            return original(checkout, *args, **kwargs)
+        with mock.patch.object(landed_worktrees, "git", side_effect=change_before_delete):
+            self.assertIn("kept", landed_worktrees.delete_merged_branch(self.repo, "work/raced", head))
+        self.assertEqual(self.git(self.repo, "rev-parse", "work/raced"), later)
+
 
 class MainTests(Fixture):
     def setUp(self):

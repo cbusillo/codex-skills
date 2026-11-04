@@ -184,8 +184,8 @@ IDE retirement proof. Missing tools or unsupported local proof keep the tree;
 no force removal or fallback is used. Use `work-closeout` to resolve retained
 contents or unavailable proof before retrying. After verified removal, portable retirement deletes the matching local `work/*`
 branch only when its unchanged tip is merged into the default tracking branch.
-Non-force branch deletion retains branches still checked out or holding unique
-work. The host already deletes its qualified task branch with the worktree. The same creation route runs on both
+Branch deletion retains branches still checked out, requires the exact
+qualified tip atomically, and keeps any tip outside the default tracking history. The host already deletes its qualified task branch with the worktree. The same creation route runs on both
 harnesses, without a scheduler or a host-specific landing handoff.
 
 For a bulk repository pass, use automatic candidate qualification and preview:
