@@ -573,7 +573,7 @@ def ownership_decision(reader, github_read, repo: str, pulls: Iterable[dict], br
         if branch:
             for owner in owners:
                 records += issues_naming(reader, owner, branch)
-    if claims_on(reader, github_read, records):
+    if claims_on(reader, github_read, records, {name for name in names if name}):
         return {"decision": "kept", "reason": "associated work has an open claim"}
     return {"decision": "candidate"}
 
@@ -624,7 +624,7 @@ def issues_naming(reader, owner: str, branch: str) -> list[tuple[str, int]]:
     return [(item["repository_url"].split("/repos/", 1)[1], item["number"]) for item in items]
 
 
-def claims_on(reader, github_read, records: list[tuple[str, int]]) -> str:
+def claims_on(reader, github_read, records: list[tuple[str, int]], branches: set[str]) -> str:
     def release_evidence(evidence_repo, _issue, comment_id):
         try:
             return reader.get_json(f"repos/{evidence_repo}/issues/comments/{comment_id}", step="landed_release_evidence")
@@ -642,7 +642,9 @@ def claims_on(reader, github_read, records: list[tuple[str, int]]) -> str:
         released = {source["claim_id"] for source in github_plan_claim.ended_ownership(comments, NO_WORKTREES)}
         conflicts, _ = github_plan_claim.discussion_evidence((issue or {}).get("body") or "", comments, ANY_CLAIM,
                                                              ended_claims=released)
-        found += [json.dumps(c["record"]) if "record" in c else c.get("text", "") for c in conflicts]
+        found += [json.dumps(c["record"]) if "record" in c else c.get("text", "") for c in conflicts
+                  if not isinstance(c.get("record"), dict)
+                  or not isinstance(c["record"].get("branch"), str) or c["record"]["branch"] in branches]
     return "\n".join(found)
 
 
