@@ -2929,11 +2929,6 @@ def offline_retirement_records(root: Path) -> list[str]:
                                {"offline_retirement_record": str(path)})
 
     try:
-        for path in [root / ".idea/workspace.xml", root / ".idea/.name",
-                     repository_preparation_receipt_path({"worktree_root": str(root)})]:
-            if present(path):
-                raise InspectError("IDE preparation records exist; retain the worktree until separate legacy-state cleanup is proved.", 3,
-                                   {"offline_retirement_record": str(path)})
         configs = children(Path.home() / "Library" / "Application Support" / "JetBrains")
         override = os.environ.get("JETBRAINS_INSPECTION_IDE_CONFIG_DIR")
         if override:
@@ -3061,11 +3056,13 @@ def command_remove_worktree(args: argparse.Namespace) -> dict[str, Any]:
                 common = git_common_worktree(root)
                 if common is None:
                     raise InspectError("Cannot resolve the primary checkout for worktree removal.", 3)
+                receipt = repository_preparation_receipt_path({"worktree_root": str(root)})
                 before = worktree_entries(root)
                 completed = subprocess.run(["git", "-C", str(common), "worktree", "remove", str(root)],
                                            capture_output=True, text=True)
                 if completed.returncode or root.exists():
                     finish_raced_worktree_removal(common, root, before, completed.stderr)
+                receipt.unlink(missing_ok=True)
             return {"status": "ok", "dry_run": args.dry_run, "worktree_path": str(root),
                     "offline_cleanup_proved": True, "offline_records_checked": sorted(set(offline_records)),
                     "project_cache_preview": [], "project_cache_cleanup": [],

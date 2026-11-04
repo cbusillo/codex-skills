@@ -239,7 +239,7 @@ class SdkRetirementTests(unittest.TestCase):
         self.addCleanup(processes.stop)
 
     def test_offline_records_hold_registered_sdks_projects_and_caches(self):
-        for kind in ("jdk.table.xml", jb_inspect.HELPER_SDK_RECORD_FILENAME, "recentProjects.xml", "cache", "finalizing", "idea", "receipt"):
+        for kind in ("jdk.table.xml", jb_inspect.HELPER_SDK_RECORD_FILENAME, "recentProjects.xml", "cache", "finalizing"):
             with self.subTest(kind=kind), tempfile.TemporaryDirectory() as tmp:
                 home = Path(tmp).resolve()
                 root = home / "task"
@@ -253,14 +253,6 @@ class SdkRetirementTests(unittest.TestCase):
                                   projects / f"{jb_inspect.HELPER_SEALED_CACHE_PREFIX}id" / jb_inspect.HELPER_PROJECT_CACHE_MARKER)
                         record.parent.mkdir(parents=True)
                         record.write_text(json.dumps({"worktree_path": str(root)}))
-                    elif kind == "idea":
-                        (root / ".idea").mkdir()
-                        (root / ".idea/workspace.xml").write_text("<project />")
-                    elif kind == "receipt":
-                        record = jb_inspect.repository_preparation_receipt_path({"worktree_root": str(root)})
-                        record.parent.mkdir(parents=True, exist_ok=True)
-                        record.write_text("{}")
-                        self.addCleanup(record.unlink)
                     else:
                         record = home / "Library/Application Support/JetBrains/PyCharm2026.2/options" / kind
                         record.parent.mkdir(parents=True)
@@ -271,8 +263,7 @@ class SdkRetirementTests(unittest.TestCase):
                           patch.object(subprocess, "run") as removal):
                         with self.assertRaises(jb_inspect.InspectError) as caught:
                             jb_inspect.command_retire_sdks(args)
-                        self.assertEqual(caught.exception.payload["offline_retirement_record"],
-                                         str(root / ".idea/workspace.xml") if kind == "idea" else str(record))
+                        self.assertEqual(caught.exception.payload["offline_retirement_record"], str(record))
                         removal.assert_not_called()
                         self.assertTrue(root.is_dir())
 
@@ -342,12 +333,13 @@ class SdkRetirementTests(unittest.TestCase):
             home = Path(tmp).resolve()
             root = home / "task"
             root.mkdir()
+            recent = home / "Library/Application Support/JetBrains/PyCharm2026.2/options/recentProjects.xml"
             calls = []
             def retire(_root: Path, *_args: Any, **_kwargs: Any) -> Path:
                 calls.append(True)
                 if len(calls) == 2 and not new_process:
-                    (root / ".idea").mkdir()
-                    (root / ".idea/workspace.xml").write_text("<project />")
+                    recent.parent.mkdir(parents=True)
+                    recent.write_text(f'<application><option value="{root}" /></application>')
                 return root
             args = Namespace(command="remove-worktree", repo=str(root), dry_run=False,
                              offline_only=offline_only, lifecycle_lock_timeout_ms=1000)
@@ -364,7 +356,7 @@ class SdkRetirementTests(unittest.TestCase):
                 if new_process:
                     self.assertEqual(caught.exception.payload["offline_retirement_ide_pids"], [123])
                 else:
-                    self.assertEqual(caught.exception.payload["offline_retirement_record"], str(root / ".idea/workspace.xml"))
+                    self.assertEqual(caught.exception.payload["offline_retirement_record"], str(recent))
                 discover.assert_not_called()
                 removal.assert_not_called()
 
@@ -380,6 +372,7 @@ class SdkRetirementTests(unittest.TestCase):
                 (primary / ".idea/inspectionProfiles").mkdir(parents=True)
                 (primary / ".idea/inspectionProfiles/shared.xml").write_text("<component />")
                 (primary / ".idea/vcs.xml").write_text("<project />")
+                (primary / ".idea/.name").write_text("fixture")
                 subprocess.run(["git", "-C", str(primary), "add", ".idea"], check=True)
                 subprocess.run(["git", "-C", str(primary), "-c", "user.name=Fixture", "-c",
                                 "user.email=fixture@example.invalid", "commit", "-q", "-m", "shared inspection policy"], check=True)
@@ -388,7 +381,7 @@ class SdkRetirementTests(unittest.TestCase):
                 if preparation != "none":
                     (root / ".venv").mkdir()
                 if preparation == "project-model":
-                    for name in ("misc.xml", "modules.xml", "fixture.iml"):
+                    for name in ("misc.xml", "modules.xml", "fixture.iml", "workspace.xml"):
                         (root / ".idea" / name).write_text("<project />")
                 table = home / "Library/Application Support/JetBrains/PyCharm2026.2/options/jdk.table.xml"
                 table.parent.mkdir(parents=True)
@@ -400,6 +393,9 @@ class SdkRetirementTests(unittest.TestCase):
                       patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": ""}),
                       patch_attr(jb_inspect, "discover_identities", side_effect=AssertionError("desktop discovery")) as discovery,
                       patch_attr(jb_inspect, "http_post", side_effect=AssertionError("desktop request")) as post):
+                    receipt = jb_inspect.repository_preparation_receipt_path({"worktree_root": str(root)})
+                    receipt.parent.mkdir(parents=True, exist_ok=True)
+                    receipt.write_text("{}")
                     if preparation == "project-model":
                         table.write_text(f'<application><option value="{root}/.venv/bin/python" /></application>')
                         args.dry_run = False
@@ -418,6 +414,7 @@ class SdkRetirementTests(unittest.TestCase):
                     self.assertIn(str(table), result["offline_records_checked"])
                     post.assert_not_called()
                     discovery.assert_not_called()
+                    self.assertFalse(receipt.exists())
                 self.assertFalse(root.exists())
                 subprocess.run(["git", "-C", str(primary), "show-ref", "--verify", "--quiet", "refs/heads/task"], check=True)
 
