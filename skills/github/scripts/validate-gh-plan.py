@@ -33,13 +33,12 @@ from unittest.mock import patch
 
 SCRIPT = Path(__file__).with_name("gh-plan.py")
 PR_SCRIPT = Path(__file__).with_name("gh-pr.py")
-REAL_SUBPROCESS_RUN = subprocess.run
 os.environ["GITHUB_RETRY_MAX_ATTEMPTS"] = "1"
 os.environ["CODEX_SKILLS_ENV_FILE"] = "/definitely/missing/codex-skills-test.env"
 os.environ["CODEX_AUTOMATION_LOGIN"] = "shiny-code-bot"
 os.environ["CODEX_AUTOMATION_EMAIL"] = "fixture-automation@example.invalid"
 
-from github_fixture_support import run_python_helper
+from github_fixture_support import REAL_SUBPROCESS_RUN, run_python_helper
 
 
 def load_plan_module() -> Any:
