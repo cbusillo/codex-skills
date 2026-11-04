@@ -2590,7 +2590,8 @@ ones sent.
 Non-preview instance reviews also preserve `instance_plain_setting_effects`
 and the opaque `context_values_sha256` binding when supplied by the service.
 Each selected name appears once, with a context fallback marked `unchanged`
-or `changed`, or no context fallback marked `absent`. Malformed or incomplete
+or `changed`, or no context fallback marked `absent` with `source_after` null
+or omitted, as the service serializes absent sources. Malformed or incomplete
 comparisons fail the read. Missing or null comparisons are omitted and supply
 no fallback evidence. The producer owns the comparison's
 [scope and qualification limits](https://github.com/cbusillo/launchplane/blob/main/docs/reviewed-retirement.md#plain-stored-settings).
