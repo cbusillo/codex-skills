@@ -16,8 +16,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
 from pathlib import Path
+from unittest.mock import patch
 
 import review_with_model
 
@@ -170,21 +170,90 @@ class ReviewWithModelTests(unittest.TestCase):
         path.write_text(body)
         path.chmod(path.stat().st_mode | stat.S_IEXEC)
 
-    def run_helper(self, *args: str, **env: str) -> tuple[int, dict]:
+    def run_helper(self, *args: str, directory: Path | None = None, **env: str) -> tuple[int, dict]:
         # PATH holds only the fakes plus the interpreter's directory, so an uninstalled provider stays uninstalled.
         environment = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "FAKE_SNAPSHOT_FILE": str(self.snapshot_file), **env}
         if args[0] in {"run", "check"} and "--author-provider" not in args:
             provider = args[args.index("--provider") + 1] if "--provider" in args else "openai"
             args = (*args, "--author-provider", "anthropic" if provider == "openai" else "openai")
-        proc = subprocess.run(
-            [sys.executable, str(SCRIPT), *args], capture_output=True, text=True, env=environment
-        )
+        proc = subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True, text=True, env=environment, cwd=directory)
         return proc.returncode, json.loads(proc.stdout or "{}")
 
     def review(self, provider: str, **env: str) -> tuple[int, dict]:
         return self.run_helper(
             "run", "--provider", provider, "--repo", str(self.repo), "--prompt-file", str(self.prompt), **env
         )
+
+    def test_review_output_in_source_or_worktree_root_moves_to_task_evidence(self) -> None:
+        self.install("claude", FAKE_CLAUDE)
+        subprocess.run(["git", "init", "-q", "-b", "main", str(self.repo)], check=True)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(self.repo),
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "Initial",
+            ],
+            check=True,
+        )
+        evidence = self.root / "task-evidence"
+        worktrees = self.root / "worktrees"
+        config = self.home / ".config/codex-skills/worktrees.json"
+        config.parent.mkdir(parents=True)
+        config.write_text(json.dumps({"root": str(worktrees), "evidenceRoot": str(evidence)}))
+        linked = self.root / "review-task"
+        subprocess.run(["git", "-C", str(self.repo), "worktree", "add", "-q", "-b", "work/review", str(linked), "main"], check=True)
+        saved = []
+        cases = [
+            (self.repo, str(requested), requested)
+            for requested in (self.repo / "a/review.md", self.repo / "b/review.md", worktrees / "review.md")
+        ]
+        cases.append((linked, "runtime-review.md", self.repo / "runtime-review.md"))
+        for review_repo, argument, requested in cases:
+            code, result = self.run_helper(
+                "run",
+                "--provider",
+                "anthropic",
+                "--repo",
+                str(review_repo),
+                "--prompt-file",
+                str(self.prompt),
+                "--out",
+                argument,
+                directory=self.repo,
+                FAKE_CLAUDE_JSON=json.dumps({"result": completed("review fixture")}),
+            )
+            self.assertEqual((code, result["ok"]), (0, True), result)
+            destination = Path(result["response_file"])
+            self.assertTrue(destination.is_relative_to(evidence / self.repo.name / review_repo.name))
+            self.assertEqual(destination.read_text(), "review fixture")
+            self.assertFalse(requested.exists())
+            saved.append(destination)
+        self.assertEqual(len(set(saved)), len(saved))
+        config.write_text("invalid")
+        invocation = self.root / "unexpected-provider-call"
+        code, result = self.run_helper(
+            "run",
+            "--provider",
+            "anthropic",
+            "--repo",
+            str(self.repo),
+            "--prompt-file",
+            str(self.prompt),
+            "--out",
+            str(self.repo / "review.md"),
+            FAKE_REVIEW_ENV_FILE=str(invocation),
+        )
+        self.assertEqual((code, result["phase"]), (1, "output"))
+        self.assertFalse(invocation.exists())
 
     def test_standing_decision_blocks_primary_google_but_allows_supplementary(self) -> None:
         self.install("agy", FAKE_AGY)
@@ -1487,15 +1556,15 @@ printf '%s' "$FAKE_AGY_JSON"
         code, result = self.review("openai", FAKE_ANSWER=completed("none"), MODEL_REVIEW_FAULT=str(inside))
         self.assertEqual(result["response"], "none")
         self.assertTrue(inside.exists())
-        # The marker is consumed only after the review reaches its `--out` file; a review that cannot
-        # be delivered leaves the one-shot finding for the next run.
         marker.write_text("High: stop.")
         code, result = self.run_helper(
             "run", "--provider", "openai", "--repo", str(self.repo), "--prompt-file", str(self.prompt),
             "--out", str(self.root / "missing" / "review.md"), FAKE_ANSWER=completed("none"),
         )
-        self.assertNotEqual(code, 0)
-        self.assertTrue(marker.exists())
+        self.assertEqual((code, result["ok"]), (0, True))
+        self.assertIn("High: stop.", result["response"])
+        self.assertIn("output_error", result)
+        self.assertFalse(marker.exists())
 
     def test_a_provider_that_is_not_installed_is_distinguished_from_one_that_failed(self) -> None:
         code, result = self.review("google")

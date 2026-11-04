@@ -35,10 +35,11 @@ from typing import Any
 # Share the Supervisor reader rather than keeping a second account chooser.
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from skills.supervisor.scripts import account_choice, claim_history
-from skills.supervisor.scripts.claim_history import agy_model, protobuf_fields
 import review_policy
 from review_worktree import is_review_scratch
+
+from skills.supervisor.scripts import account_choice, claim_history
+from skills.supervisor.scripts.claim_history import agy_model, protobuf_fields
 
 PROVIDERS = {"openai": "codex", "anthropic": "claude", "google": "agy"}
 FAULT_MARKER_NAME = "model-review-fault.md"
@@ -655,8 +656,40 @@ def repository_root(path: Path) -> Path:
     return Path(root.stdout.strip()).resolve() if root.returncode == 0 else path
 
 
+def result_destination(repo: Path, value: str) -> Path:
+    from skills.github.scripts import dev_worktree
+
+    common = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        capture_output=True,
+        text=True,
+    )
+    primary = Path(common.stdout.strip()).parent if common.returncode == 0 else repo
+    requested = Path(value).expanduser().absolute()
+    worktrees, _ = dev_worktree.configuration()
+    if not any(
+        candidate.is_relative_to(root.resolve())
+        for root in (repo, primary, worktrees)
+        for candidate in (requested, requested.resolve())
+    ):
+        return requested
+    evidence, _ = dev_worktree.artifact_roots()
+    destination = evidence / primary.name / repo.name / requested.name
+    if any(parent.is_symlink() for parent in (destination, *destination.parents)):
+        raise ValueError("review output path is redirected; choose a task-evidence destination")
+    destination.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    descriptor, filename = tempfile.mkstemp(prefix=f"{destination.stem}-", suffix=destination.suffix, dir=destination.parent)
+    os.close(descriptor)
+    return Path(filename)
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     repo = repository_root(Path(args.repo).resolve())
+    try:
+        destination = result_destination(repo, args.out) if args.out else None
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        print(json.dumps({"ok": False, "phase": "output", "outcome": "unavailable", "error": str(exc)}))
+        return 1
     try:
         selected = review_policy.select(review_policy.load_policy(), args.author_provider, args.provider,
                                         args.supplementary, args.model, args.timeout)
@@ -685,9 +718,16 @@ def cmd_run(args: argparse.Namespace) -> int:
     confirmed = result.get("model_source", "").startswith("reported by the CLI")
     result["effort"] = effort.group(1).lower() if effort and confirmed else "unknown"
     planted = plant_fault(result, fault_marker(), repo)
-    if result["ok"] and args.out:
-        Path(args.out).write_text(result.pop("response"))
-        result["response_file"] = args.out
+    if result["ok"] and destination is not None:
+        try:
+            descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            with os.fdopen(descriptor, "w") as output:
+                output.write(result["response"])
+        except OSError as exc:
+            result["output_error"] = str(exc)
+        else:
+            result.pop("response")
+            result["response_file"] = str(destination)
     print(json.dumps(result, indent=2), flush=True)
     if planted is not None:
         consume_fault(planted)

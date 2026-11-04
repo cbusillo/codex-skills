@@ -172,6 +172,19 @@ locks. Portable foreign locks remain holds. Physical publication, contents,
 live-use and IDE checks still apply.
 
 Creation checks each registered linked worktree through `landed_worktrees.py`.
+The same pass previews or removes empty unregistered folders and moves recognizable
+stray result files older than two hours into task evidence, including loose results
+beside worktrees. Existing evidence expiry owns their eventual deletion.
+`STRAY_RESULT_PATTERNS` in [landed_worktrees.py](../scripts/landed_worktrees.py)
+defines recognized result names; other contents remain reported and kept.
+It never descends into nested folders: unknown content, symlinks, open files,
+recent changes and incomplete proof keep the entry with a reason. The pass repeats
+registration and filesystem checks before deletion. A configured host helper
+must support read-only `verify-root`, returning the exact configured root only
+after its existing mount/identity checks pass; otherwise stray entries are kept.
+No new job runs this sweep. Follow the [task output rule](../../supervisor/references/brief-rules.md#rules-every-brief-carries).
+Retirement gets the first part of the creation
+budget; the final five seconds are reserved for stray cleanup.
 A closed PR uses the existing PR-head, claim and publication checks;
 commit-associated PRs cover detached review and separate refresh branches; a branch
 without a PR uses the default-history, fresh-start and account-wide claim
@@ -180,15 +193,18 @@ at its head commit. A tree whose commit is merely inside another branch's open
 PR is checked like a closed one, including claims on that PR, its linked issues
 and its head branch. Active source/calling checkouts, trees without exact PR or default-history
 provenance, foreign locks, dirty or unpublished work and incomplete evidence
-are kept with reasons. The host command still owns volume, publication,
+are kept with reasons. A commit GitHub explicitly reports as missing is kept as
+an unpushed commit; other GitHub failures remain unavailable evidence. The host command still owns volume, publication,
 ignored-file, live-use and IDE checks. No lock is rewritten or bypassed.
 
 Portable unlocked trees use live origin publication of HEAD and its reflog,
 clean tracked/untracked/ignored state, live-use checks and the existing offline
 IDE retirement proof. Missing tools or unsupported local proof keep the tree;
 no force removal or fallback is used. Use `work-closeout` to resolve retained
-contents or unavailable proof before retrying. Portable local branches remain
-subject to the normal work-closeout branch policy. The same creation route runs on both
+contents or unavailable proof before retrying. After verified removal, portable retirement deletes the matching local `work/*`
+branch only when its unchanged tip is merged into the default tracking branch.
+Branch deletion retains branches still checked out, requires the exact
+qualified tip atomically, and keeps any tip outside the default tracking history. The host already deletes its qualified task branch with the worktree. The same creation route runs on both
 harnesses, without a scheduler or a host-specific landing handoff.
 
 For a bulk repository pass, use automatic candidate qualification and preview:
