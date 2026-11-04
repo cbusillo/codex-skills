@@ -472,6 +472,7 @@ class ProviderLaunchTests(unittest.TestCase):
             for submission in ("not_attempted", "unknown", "submitted"):
                 @iterm_tab.guard_lead_launch
                 async def fail_launch(options: argparse.Namespace) -> None:
+                    options.lead_launch_started = True
                     raise iterm_tab.LaunchFailure([], {"mutation_started": True, "submission": submission,
                         "launch": {**iterm_tab.lead_metadata(options), "session_id": "retained-worker",
                                    "harness": "codex", "supervisor_owned": True}}, ValueError("startup unknown"))
@@ -490,7 +491,8 @@ class ProviderLaunchTests(unittest.TestCase):
                     asyncio.run(register_worker(args))
 
             @iterm_tab.guard_lead_launch
-            async def interrupted_launch(_options: argparse.Namespace) -> None:
+            async def interrupted_launch(options: argparse.Namespace) -> None:
+                options.lead_launch_started = True
                 raise asyncio.CancelledError
 
             ledger.write_text(json.dumps([lead, other]))
