@@ -595,7 +595,8 @@ def recipient_evidence(status: str, comments: list[dict[str, Any]], *,
     recipient = actor.removeprefix("agent:") if actor and actor.startswith("agent:") else None
     if not recipient or recipient.casefold() in {worker.casefold(), session.casefold()}:
         return None
-    if recipient == dispatch_recipient and next_actor.launch_brief(status) is not None:
+    launch_brief = next_actor.launch_brief(status)
+    if recipient == dispatch_recipient and launch_brief is not None:
         return None
     texts = [status, *(comment.get("body") or "" for comment in comments
                       if str((comment.get("user") or {}).get("login") or "").casefold() in trusted)]
@@ -614,9 +615,11 @@ def recipient_evidence(status: str, comments: list[dict[str, Any]], *,
         return None
     return {"source": "recorded_recipient", "worker": recipient,
             "url": f"https://github.com/{repo}/issues/{number}",
-            "next_action": f"Launch the named recipient with gh-plan.py --repo {repo} show {number} --launch-check --worker {recipient}; "
+            "next_action": (f"Keep the request's Next actor and pass --dispatch-recipient {recipient} on this issue's gh-plan.py claim or show --launch-check; "
+                            "dispatch through --brief-issue with its matching coordinator; custody and waits still apply" if launch_brief is not None else
+                           f"Launch the named recipient with gh-plan.py --repo {repo} show {number} --launch-check --worker {recipient}; "
                            f"otherwise verify custody and post a Current Status section containing Next actor: agent with "
-                           f"gh-comment issue {number} --repo {repo} --body-file FILE"}
+                           f"gh-comment issue {number} --repo {repo} --body-file FILE")}
 
 
 def expired_lease_sessions(comments: list[dict[str, Any]]) -> set[str]:

@@ -74,8 +74,9 @@ class LaunchIssueTests(unittest.TestCase):
             with patch.object(iterm_tab.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps(payload))) as reader:
                 words = shlex.split(iterm_tab.prepare_launches(args)[0][0])
                 prompt = next(word.removeprefix("--prompt-interactive=") for word in words if word.startswith("--prompt-interactive="))
-                self.assertEqual(prompt, header.rstrip("\n") +
-                                 f"\nFor this issue's gh-plan.py claim, pass --dispatch-recipient {args.lead_session_id}.\n\n" + task)
+                self.assertTrue(prompt.startswith(header.rstrip("\n") + "\n"))
+                self.assertEqual(prompt.count(f"--dispatch-recipient {args.lead_session_id}"), 1)
+                self.assertTrue(prompt.endswith("\n\n" + task))
                 argv = reader.call_args.args[0]
                 self.assertEqual(argv[argv.index("--dispatch-recipient") + 1], args.lead_session_id)
             payload["issue"]["recorded_current_status"] = status
@@ -134,6 +135,11 @@ class LaunchIssueTests(unittest.TestCase):
             return subprocess.CompletedProcess(argv, 0, json.dumps(cleared))
         with patch.object(iterm_tab.subprocess, "run", side_effect=read):
             token = "successor-worker"
+            own_issue = "https://github.com/fixture/repo/issues/7"
+            iterm_tab.check_launch_issue(brief + "\nAnchor and claim: https://github.com/fixture/repo/issues/8",
+                                         dispatch_recipient="lead", dispatch_issue=own_issue)
+            self.assertEqual(calls[-2].dispatch_recipient, "lead")
+            self.assertIsNone(calls[-1].dispatch_recipient)
             iterm_tab.check_launch_issue(f"Brief from the Supervisor. Trial token: {token}.\n" + brief)
             self.assertEqual(calls[-1].worker, token)
             iterm_tab.check_launch_issue(f"GUI task: com.example.fixture\nBrief from the Supervisor. Trial token: {token}.\n" + brief)

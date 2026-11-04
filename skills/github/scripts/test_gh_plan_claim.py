@@ -88,8 +88,12 @@ class ClaimMarkerTests(unittest.TestCase):
             self.assertIsNone(CLAIM.recipient_evidence(status, [], repo="owner/repo", number=42, trusted={"owner"},
                                                       dispatch_recipient=actor.removeprefix("agent:")))
             for recipient in ("", "different-session"):
-                self.assertIsNotNone(CLAIM.recipient_evidence(status, [], repo="owner/repo", number=42, trusted={"owner"},
-                                                              dispatch_recipient=recipient))
+                found = CLAIM.recipient_evidence(status, [], repo="owner/repo", number=42, trusted={"owner"},
+                                                dispatch_recipient=recipient)
+                self.assertIsNotNone(found)
+                recovery = found["next_action"].split()
+                self.assertIsNone(CLAIM.recipient_evidence(status, [], repo="owner/repo", number=42, trusted={"owner"},
+                    dispatch_recipient=recovery[recovery.index("--dispatch-recipient") + 1]))
         for status in (f"Next actor: {actor}\n", request.removesuffix("````\n"),
                        f"Next actor: {actor}\nBrief:\n```text\n \n```\n",
                        f"Next actor: {actor}\n> Brief:\n> ```text\n> Task.\n> ```\n",
@@ -99,12 +103,17 @@ class ClaimMarkerTests(unittest.TestCase):
                                                               dispatch_recipient=actor.removeprefix("agent:")))
 
     def test_fenced_claim_examples_never_become_holders_or_recorded_branches(self) -> None:
-        for opening, closing in (("~~~text", "~~~"), ("````text", "````")):
+        for opening, closing in (("~~~text", "~~~"), ("```text", "```"), ("````text", "````")):
             with self.subTest(opening=opening):
-                example = f"{opening}\n```sh\necho example\n```\n{CLAIM.marker(OTHER)}\n{closing}\n"
+                example = f"{opening}\n<pre>\n{closing}python\n{CLAIM.marker(OTHER)}\n{closing}\n"
                 self.assertEqual(CLAIM.discussion_evidence(example, [], OWNER), ([], []))
                 self.assertEqual(CLAIM.recorded_claim_branches(example, []), set())
                 self.assertEqual(CLAIM.recorded_claim_branches(example + CLAIM.marker(OWNER), []), {OWNER["branch"]})
+        for tag in ("details", "pre", "code", "blockquote", "script", "style", "textarea"):
+            with self.subTest(tag=tag):
+                status = f"<{tag}>\n{CLAIM.marker(OTHER)}\n</{tag}>"
+                self.assertEqual(CLAIM.records(status), [OTHER])
+                self.assertEqual(CLAIM.recorded_claim_branches(status, []), {OTHER["branch"]})
 
     def test_recipient_routing_uses_existing_identity_records(self) -> None:
         recipient = "launchplane-engineer"

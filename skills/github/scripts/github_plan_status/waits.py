@@ -162,7 +162,7 @@ def project_dates(record: dict[str, Any]) -> dict[str, Any]:
     return resolve_events(record, now=dt.datetime.now(dt.UTC), one=None, listing=None, kinds={"date"})
 
 
-def live_lines(text: str, *, prefix: str = PREFIX) -> list[tuple[int, str]]:
+def live_lines(text: str, *, prefix: str = PREFIX, skip_html: bool = True) -> list[tuple[int, str]]:
     result = []
     fence = None
     html_end = None
@@ -171,7 +171,7 @@ def live_lines(text: str, *, prefix: str = PREFIX) -> list[tuple[int, str]]:
             if html_end in line.casefold():
                 html_end = None
             continue
-        html = re.match(r"^ {0,3}<(pre|code|blockquote|details|script|style|textarea)[\s>]", line, re.I)
+        html = re.match(r"^ {0,3}<(pre|code|blockquote|details|script|style|textarea)[\s>]", line, re.I) if skip_html else None
         if html:
             end = f"</{html.group(1).casefold()}>"
             if end not in line.casefold():
@@ -182,7 +182,7 @@ def live_lines(text: str, *, prefix: str = PREFIX) -> list[tuple[int, str]]:
             token = opener.group(1)
             if fence is None:
                 fence = token
-            elif token[0] == fence[0] and len(token) >= len(fence):
+            elif re.fullmatch(rf" {{0,3}}{re.escape(fence[0])}{{{len(fence)},}}[ \t]*", line):
                 fence = None
             continue
         if fence is not None or not line.startswith(prefix):

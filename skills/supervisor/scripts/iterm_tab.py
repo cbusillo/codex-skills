@@ -1348,7 +1348,7 @@ def read_issue_brief(issue: str, header: str, lead_session_id: str | None = None
     return header.rstrip("\n") + "\n\n" + brief
 
 
-def check_launch_issue(brief: str, *, dispatch_recipient: str | None = None) -> None:
+def check_launch_issue(brief: str, *, dispatch_recipient: str | None = None, dispatch_issue: str | None = None) -> None:
     labels = re.findall(r"(?mi)^\s*(?:[-*] )?(?:\*\*)?(Read-only anchor|Anchor(?: and claim)?):(?:\*\*)?[^\S\n]*([^\n]*)", brief)
     anchors = []
     for mode, value in labels:
@@ -1375,7 +1375,7 @@ def check_launch_issue(brief: str, *, dispatch_recipient: str | None = None) -> 
         argv = ["uv", "run", str(helper), "--repo", repo, "show", anchor, "--full", "--launch-check"]
         if worker:
             argv.extend(["--worker", worker[1].rstrip(".;")])
-        if dispatch_recipient:
+        if dispatch_recipient and anchor == dispatch_issue and mode.casefold() != "read-only anchor":
             argv.extend(["--dispatch-recipient", dispatch_recipient])
         if mode.casefold() == "read-only anchor":
             argv.append("--read-only")
@@ -1507,9 +1507,10 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
         if not brief.strip():
             raise ValueError("brief must be nonempty")
         validate_text(brief, allow_tabs=True)
-    for brief in headers:
+    for index, brief in enumerate(headers):
         validate_brief_rules(brief)
-        check_launch_issue(brief, dispatch_recipient=getattr(args, "lead_session_id", None) if brief_issues else None)
+        check_launch_issue(brief, dispatch_recipient=getattr(args, "lead_session_id", None) if brief_issues else None,
+                           dispatch_issue=brief_issues[index] if brief_issues else None)
     validate_computer_use_launch(args, command_texts, briefs)
     apps = [gui_launch.declared_app(brief) for brief in briefs]
     if any(apps):
