@@ -686,14 +686,14 @@ def read_repository_connections(
             if isinstance(records, Exception):
                 continue
             try:
-                repository = data.get(alias)
+                repository_node = data.get(alias)
                 if (
                     alias in invalid
-                    or not isinstance(repository, dict)
-                    or str(repository.get("nameWithOwner", "")).casefold() != repo.casefold()
+                    or not isinstance(repository_node, dict)
+                    or str(repository_node.get("nameWithOwner", "")).casefold() != repo.casefold()
                 ):
                     raise RepositoryInventoryUnavailable("repository unavailable or mismatched")
-                nodes, cursor, total = graphql_connection_page(repository.get(field))
+                nodes, cursor, total = graphql_connection_page(repository_node.get(field))
                 if total != totals.setdefault(repo, total):
                     raise RepositoryInventoryUnavailable("inventory changed during pagination")
                 for node in nodes:

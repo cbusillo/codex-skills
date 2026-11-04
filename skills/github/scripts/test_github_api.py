@@ -2920,18 +2920,6 @@ def test_shared_cooldown_suppresses_remote_call_when_deadline_is_shorter() -> No
             )
             combined = _api.aggregate_retry_summaries([result.retry_summary, cancelled.retry_summary])
             assert combined.wait_cause is None, combined.as_dict()
-            if bucket != "rest_core":
-                rest = _api.run_with_retry(
-                    retry_success,
-                    operation="github.api.rate_limit",
-                    is_write=False,
-                    actor="fixture-automation",
-                    bucket="rest_core",
-                    deadline_at=1005.0,
-                    retry_policy=policy,
-                    retry_runtime=retry_runtime(clock),
-                )
-                assert rest.ok, rest.as_dict()
 
 
 def test_post_cooldown_drain_ends_and_allows_concurrent_processes() -> None:

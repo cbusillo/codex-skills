@@ -64,6 +64,7 @@ def query(reader, document):
 
 page = github_read.graphql_connection_page
 
+
 def commit_contexts(node):
     commits = node["commits"]["nodes"]
     if (

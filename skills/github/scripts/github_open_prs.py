@@ -12,18 +12,19 @@ from typing import Any
 
 import github_api
 import github_pr_batch as batch
+import github_read
 from github_read import (
     GitHubReader,
     RepositoryInventoryUnavailable,
     read_repository_connections,
 )
-from github_read import GitHubReadError as GitHubReadError
 
 FIELDS = """number title body isDraft createdAt state headRefOid headRefName baseRefName
  headRepository { nameWithOwner } author { __typename login } updatedAt url"""
 
 
 InventoryUnavailable = RepositoryInventoryUnavailable
+GitHubReadError = github_read.GitHubReadError
 
 
 def scan(reader: GitHubReader, repositories: list[str]) -> dict[str, list[dict[str, Any]] | Exception]:

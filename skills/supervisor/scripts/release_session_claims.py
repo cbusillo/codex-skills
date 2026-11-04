@@ -31,19 +31,24 @@ from session_liveness import inventory
 GITHUB = Path(__file__).resolve().parents[2] / "github/scripts"
 sys.path.insert(0, str(GITHUB))
 import github_identity
-import github_api
 import github_plan_claim as claim
 import github_plan_release as release
 import github_plan_closure as closure
-from github_read import (
-    GitHubReader, GitHubReadError, GitHubReadShapeError, automation_only_gh_prefix_args,
-    read_repository_connections,
-)
 from github_comment import CommentError, comment
 
 if TYPE_CHECKING:
+    from skills.github.scripts import github_api
+    from skills.github.scripts.github_read import (
+        GitHubReader, GitHubReadError, GitHubReadShapeError, automation_only_gh_prefix_args,
+        read_repository_connections,
+    )
     from skills.github.scripts import github_plan_native as native_closure
 else:
+    import github_api
+    from github_read import (
+        GitHubReader, GitHubReadError, GitHubReadShapeError, automation_only_gh_prefix_args,
+        read_repository_connections,
+    )
     import github_plan_native as native_closure
 
 REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
@@ -441,14 +446,14 @@ def read_status_batch(reader: GitHubReader, repos: list[str], since: str) -> dic
         step="session_status_inventory",
         retry_policy=github_api.optional_batch_retry_policy(),
     )
-    for inventory in statuses.values():
-        if isinstance(inventory, GitHubReadError):
-            failure = inventory.result.failure
+    for status_rows in statuses.values():
+        if isinstance(status_rows, GitHubReadError):
+            failure = status_rows.result.failure
             cause = failure.cause if failure else None
-            if cause == "deadline_exceeded" and inventory.result.retry_summary is not None:
-                cause = inventory.result.retry_summary.wait_cause
+            if cause == "deadline_exceeded" and status_rows.result.retry_summary is not None:
+                cause = status_rows.result.retry_summary.wait_cause
             if cause not in {"network_provider_failure", "graphql_primary_rate_limited"}:
-                raise inventory
+                raise status_rows
     return statuses
 
 
@@ -1116,15 +1121,38 @@ def main():
     except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError,
             GitHubReadError, GitHubReadShapeError, CommentError) as error:
         read = error.result.as_dict() if isinstance(error, GitHubReadError) else {}
-        retryable = (isinstance(error, closure.LeaseBusy)
-                     or read.get("recommended_next_action") in ("retry_after_reported_reset", "rerun_when_ready")) and all(
-            report.get("retryable") is True for report in reports
-            if "error" in report or report.get("issue_refusals") or report.get("pr_claim_handoffs"))
-        print(json.dumps({"ok": False, "error": str(error), "completed_sessions": reports,
-                          "retryable": retryable, "retry_at": read.get("retry_at"),
-                          "next_action": ("no release was posted; rerun finish once GitHub or the shared closure log is available"
-                                          if retryable else
-                                          "no release was posted; inspect the error and per-session reports before rerunning finish")}))
+        limited_batch = (
+            isinstance(error, GitHubReadError)
+            and (error.result.bucket == "graphql" or error.result.graphql_operation == "query")
+            and error.result.failure is not None
+            and error.result.failure.retryable
+            and error.result.failure.cause in github_api.PRIMARY_RATE_LIMIT_CAUSES | {"secondary_rate_limited"}
+        )
+        retryable = (
+            isinstance(error, closure.LeaseBusy)
+            or limited_batch
+            or read.get("recommended_next_action") in ("retry_after_reported_reset", "rerun_when_ready")
+        ) and all(
+            report.get("retryable") is True
+            for report in reports
+            if "error" in report or report.get("issue_refusals") or report.get("pr_claim_handoffs")
+        )
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": str(error),
+                    "completed_sessions": reports,
+                    "retryable": retryable,
+                    "retry_at": read.get("retry_at"),
+                    "next_action": (
+                        "no release was posted; rerun finish once GitHub or the shared closure log is available"
+                        if retryable
+                        else "no release was posted; inspect the error and per-session reports before rerunning finish"
+                    ),
+                }
+            )
+        )
         return 1
     finally:
         if lock_stream is not None:

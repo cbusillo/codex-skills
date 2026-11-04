@@ -222,22 +222,75 @@ class ReleaseTests(unittest.TestCase):
         api = importlib.import_module("github_api")
         ledger = self.root / "ledger.json"
         ledger.write_text(json.dumps([self.entry]))
-        argv = ["helper", "finish", "--ledger", str(ledger), "--closed-log", str(self.root / "closed.json"),
-                "--session-id", "source-session", "--owner", "test", "--supervisor-session", "supervisor",
-                "--confirm-session-ended", "--transcript-root", str(self.root)]
-        for advice, retryable in (("retry_after_reported_reset", True), ("inspect_last_failure", False)):
-            with self.subTest(advice=advice):
-                stop = api.ApiResult(ok=False, status=0, body=None, retry_summary=api.RetrySummary(
-                    attempts=3, elapsed_wait=600.0, retry_eligible=True, last_actor=ACTOR, last_bucket="core",
-                    outcome_certainty="confirmed", reconciliation=None, recommended_next_action=advice,
-                    effective_deadline=0.0, exhausted_reason="deadline_exceeded"))
-                error = importlib.import_module("github_read").GitHubReadError("GitHub retry wait did not complete before the effective deadline",
-                                               result=stop, diagnostics={})
+        argv = [
+            "helper",
+            "finish",
+            "--ledger",
+            str(ledger),
+            "--closed-log",
+            str(self.root / "closed.json"),
+            "--session-id",
+            "source-session",
+            "--owner",
+            "test",
+            "--supervisor-session",
+            "supervisor",
+            "--confirm-session-ended",
+            "--transcript-root",
+            str(self.root),
+        ]
+        for advice, retryable, limited in (
+            ("retry_after_reported_reset", True, False),
+            ("inspect_last_failure", False, False),
+            ("inspect_last_failure", True, True),
+        ):
+            with self.subTest(advice=advice, limited=limited):
+                stop = api.ApiResult(
+                    ok=False,
+                    status=0,
+                    body=None,
+                    retry_summary=api.RetrySummary(
+                        attempts=3,
+                        elapsed_wait=600.0,
+                        retry_eligible=True,
+                        last_actor=ACTOR,
+                        last_bucket="core",
+                        outcome_certainty="confirmed",
+                        reconciliation=None,
+                        recommended_next_action=advice,
+                        effective_deadline=0.0,
+                        exhausted_reason="deadline_exceeded",
+                    ),
+                )
+                if limited:
+                    headers = {"retry-after": "45", "x-ratelimit-resource": "graphql"}
+                    failure = api.classify_error(403, headers, {"message": "secondary rate limit"})
+                    reply = api.ApiResult(ok=False, status=403, body=None, bucket="graphql", failure=failure)
+                    clock = [1000.0]
+                    stop = api.run_with_retry(
+                        lambda: reply,
+                        operation="github.read",
+                        is_write=False,
+                        actor=ACTOR,
+                        bucket="graphql",
+                        retry_policy=replace(api.optional_batch_retry_policy(), state_dir=self.root / "limited"),
+                        retry_runtime=api.RetryRuntime(
+                            now=lambda state=clock: state[0],
+                            sleep=lambda duration, state=clock: state.__setitem__(0, state[0] + duration),
+                        ),
+                        deadline_at=1600,
+                    )
+                error = importlib.import_module("github_read").GitHubReadError(
+                    "GitHub retry wait did not complete before the effective deadline", result=stop, diagnostics={}
+                )
                 output = io.StringIO()
-                with patch.object(helper.sys, "argv", argv), \
-                        patch_attribute(identity, "automation_login", return_value=ACTOR), \
-                        patch.object(helper, "discover", side_effect=error), \
-                        patch.object(helper, "release_session") as release, contextlib.redirect_stdout(output):
+                with (
+                    patch.object(helper.sys, "argv", argv),
+                    patch_attribute(identity, "automation_login", return_value=ACTOR),
+                    patch.object(helper, "discover", side_effect=error),
+                    patch.object(helper, "release_session") as release,
+                    contextlib.redirect_stdout(output),
+                ):
                     self.assertEqual(helper.main(), 1)
                 release.assert_not_called()
                 result = json.loads(output.getvalue())
