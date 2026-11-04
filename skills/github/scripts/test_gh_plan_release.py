@@ -1875,6 +1875,33 @@ class OwnReleaseTests(ReleaseHarness):
                 self.run_own_release()
         self.assertNotIn("post", self.f.events)
 
+    def test_release_preserves_literal_brief_and_neighbor_sections(self) -> None:
+        brief = ("Brief:\n```text\nGUI task: example.app\n## Scope\nNext actor: person:example\n"
+                 + CLAIM.marker(fixtures.OWNER) + "\n```")
+        scope = "## Scope\n\nKeep the neighboring section.\n"
+        for from_comment in (False, True):
+            for dry_run in (False, True):
+                with self.subTest(from_comment=from_comment, dry_run=dry_run):
+                    self.f.doCleanups()
+                    self.setUp()
+                    self.addCleanup(self.f.doCleanups)
+                    self.args.dry_run = dry_run
+                    self.f.issue["body"] += "\nNext actor: agent:old-owner\n"
+                    self.f.issue["last_edited_at"] = "2026-10-01T00:00:00Z"
+                    if from_comment:
+                        self.f.comments.append(self.comment(99, "## Current Status\nNext actor: agent:old-owner\n" + brief,
+                                                            "2026-10-02T00:00:00Z"))
+                    else:
+                        self.f.issue["body"] += "\n" + brief + "\n"
+                    self.f.issue["body"] += "\n" + scope
+                    self.run_own_release()
+                    body = self.f.emitted.call_args.args[0]["status_body"] if dry_run else self.f.issue["body"]
+                    self.assertIn(brief, body)
+                    self.assertIn(scope.strip(), body)
+                    status = PLAN.section_map(body)["Current Status"]
+                    self.assertEqual(PLAN.github_plan_next_actor.read(status), self.args.next_actor)
+                    self.assertEqual(CLAIM.records(status), [])
+
     def test_pr_release_keeps_body_and_publishes_status_with_actor(self) -> None:
         self.f.issue["pull_request"] = {}
         self.f.issue["body"] += "\nNext actor: agent:old-owner\n"

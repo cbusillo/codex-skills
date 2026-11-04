@@ -7,6 +7,7 @@ from typing import Any
 
 MARKER = "github-plan:claim "
 ABANDONED_RELEASE_MARKER = "github-plan:abandoned-release "
+DETAILS_TAG_LINE = re.compile(r"(?im)^ {0,3}</?details\b[^>]*>[ \t]*$")
 
 
 def stamp(value: Any) -> datetime:
@@ -16,21 +17,29 @@ def stamp(value: Any) -> datetime:
     return parsed
 
 
+def section_ranges(body: str) -> list[tuple[str, slice]]:
+    from .waits import live_lines as visible_lines
+
+    offsets = [0]
+    for line in body.splitlines(keepends=True):
+        offsets.append(offsets[-1] + len(line))
+    header_source = DETAILS_TAG_LINE.sub(lambda match: "\n" * match[0].count("\n"), body)
+    headings = [(match[1].strip(), offsets[index])
+                for index, line in visible_lines(header_source, prefix="##")
+                if (match := re.fullmatch(r"##\s+(.+?)\s*", line))]
+    return [(name, slice(start, headings[index + 1][1] if index + 1 < len(headings) else len(body)))
+            for index, (name, start) in enumerate(headings)]
+
+
 def section_map(body: str) -> dict[str, str]:
-    sections: dict[str, str] = {}
-    matches = list(re.finditer(r"(?m)^##\s+(.+?)\s*$", body or ""))
-    for idx, match in enumerate(matches):
-        name = match.group(1).strip()
-        start = match.end()
-        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(body)
-        sections[name] = body[start:end].strip()
-    return sections
+    body = body or ""
+    return {name: body[span].partition("\n")[2].strip() for name, span in section_ranges(body)}
 
 
 def unquoted_text(text: str) -> str:
     from .waits import live_lines as visible_lines
 
-    text = re.sub(r"(?im)^ {0,3}</?details\b[^>]*>[ \t]*$", "", text)
+    text = DETAILS_TAG_LINE.sub("", text)
     lines = []
     quoted = False
     for _, line in visible_lines(text, prefix=""):
@@ -45,20 +54,22 @@ def unquoted_text(text: str) -> str:
 
 
 def current_status(discussion: dict[str, Any], trusted: set[str], *, body_recorded_at: str | None = None,
-                   preserve_markers: bool = False) -> str:
+                   preserve_markers: bool = False, preserve_content: bool = False) -> str:
     def timestamp(value: Any) -> datetime | None:
         try:
             parsed = datetime.fromisoformat(value.replace("Z", "+00:00")) if isinstance(value, str) else None
             return parsed if parsed is not None and parsed.tzinfo is not None else None
         except ValueError:
             return None
-    status = section_map(unquoted_text(discussion.get("body") or "")).get("Current Status")
+    body = discussion.get("body") or ""
+    status = section_map(body if preserve_content else unquoted_text(body)).get("Current Status")
     has_body_status = status is not None
     body_time = timestamp(body_recorded_at or discussion.get("body_recorded_at") or discussion.get("updated_at"))
     for comment in discussion.get("comments", []):
         if str(comment.get("author") or "").casefold() not in trusted:
             continue
-        found = section_map(unquoted_text(comment.get("body") or "")).get("Current Status")
+        body = comment.get("body") or ""
+        found = section_map(body if preserve_content else unquoted_text(body)).get("Current Status")
         comment_time = timestamp(comment.get("created_at"))
         if found is not None and (not has_body_status or (comment_time is not None and (body_time is None or comment_time >= body_time))):
             status = found
