@@ -4140,12 +4140,15 @@ def test_plan_and_pr_failure_envelopes_keep_aggregate_retry_fields() -> None:
             reconciliation=None,
             recommended_next_action="none",
             effective_deadline=2000.0,
+            exhausted_reason="deadline_exceeded",
+            wait_cause="rest_primary_rate_limited",
         )
 
     plan.CURRENT_OPERATION = "github.plan.show"
     plan.CURRENT_TRANSPORT = "rest_api"
     plan.CURRENT_BUCKET = "rest_core"
-    plan.record_retry_summary(summary(plan.github_api_core, 2))
+    recorded = summary(plan.github_api_core, 2)
+    plan.record_retry_metadata(recorded.as_dict())
     plan_stdout = StringIO()
     plan_stderr = StringIO()
     try:
@@ -4157,6 +4160,7 @@ def test_plan_and_pr_failure_envelopes_keep_aggregate_retry_fields() -> None:
         raise AssertionError("plan.die must exit")
     plan_payload = json.loads(plan_stdout.getvalue())
     assert plan_payload["attempts"] == 2, plan_payload
+    assert plan_payload["wait_cause"] == recorded.wait_cause, plan_payload
 
     pr = load_pr_module()
     original_call = pr.github_api_core.call_gh_with_retry

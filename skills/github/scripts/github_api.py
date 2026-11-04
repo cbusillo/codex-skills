@@ -167,6 +167,10 @@ class RetryPolicy:
         )
 
 
+def optional_batch_retry_policy() -> RetryPolicy:
+    return RetryPolicy(max_wait_seconds=30, max_attempts=1)
+
+
 def _default_retry_progress(event: dict[str, Any]) -> None:
     remaining = max(0.0, float(event.get("remaining_seconds") or 0.0))
     print(
@@ -215,9 +219,10 @@ class RetrySummary:
     recommended_next_action: str
     effective_deadline: float
     exhausted_reason: Optional[str] = None
+    wait_cause: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        summary = {
             "attempts": self.attempts,
             "elapsed_wait": round(self.elapsed_wait, 3),
             "retry_eligible": self.retry_eligible,
@@ -229,6 +234,9 @@ class RetrySummary:
             "effective_deadline": self.effective_deadline,
             "retry_exhausted_reason": self.exhausted_reason,
         }
+        if self.wait_cause is not None:
+            summary["wait_cause"] = self.wait_cause
+        return summary
 
 
 def aggregate_retry_summaries(
@@ -242,16 +250,12 @@ def aggregate_retry_summaries(
         (summary.reconciliation for summary in reversed(summaries) if summary.reconciliation is not None),
         None,
     )
-    exhausted_reason = next(
-        (summary.exhausted_reason for summary in reversed(summaries) if summary.exhausted_reason is not None),
+    exhausted = next(
+        (summary for summary in reversed(summaries) if summary.exhausted_reason is not None),
         None,
     )
     recommended_next_action = next(
-        (
-            summary.recommended_next_action
-            for summary in reversed(summaries)
-            if summary.recommended_next_action != "none"
-        ),
+        (summary.recommended_next_action for summary in reversed(summaries) if summary.recommended_next_action != "none"),
         summaries[-1].recommended_next_action,
     )
     certainty_priority = {
@@ -283,7 +287,8 @@ def aggregate_retry_summaries(
         reconciliation=reconciliation,
         recommended_next_action=recommended_next_action,
         effective_deadline=min(summary.effective_deadline for summary in summaries),
-        exhausted_reason=exhausted_reason,
+        exhausted_reason=exhausted.exhausted_reason if exhausted is not None else None,
+        wait_cause=exhausted.wait_cause if exhausted is not None else None,
     )
 
 
@@ -520,6 +525,7 @@ RETRY_TERMINAL_KEYS = frozenset({
     "recommended_next_action",
     "effective_deadline",
     "retry_exhausted_reason",
+    "wait_cause",
 })
 
 
@@ -1814,6 +1820,7 @@ class _CooldownLease:
 class SharedCooldownStore:
     def __init__(self, state_dir: pathlib.Path) -> None:
         self.state_dir = state_dir
+        self.wait_cause: str | None = None
 
     def _paths(self, key: str) -> tuple[pathlib.Path, pathlib.Path]:
         digest = hashlib.sha256(key.encode()).hexdigest()
@@ -1926,6 +1933,7 @@ class SharedCooldownStore:
         now: float,
         policy: RetryPolicy,
     ) -> tuple[Optional[_CooldownLease], Optional[float], bool]:
+        self.wait_cause = None
         lease = self._open_lock(key, blocking=False)
         if lease is None:
             return None, now + policy.lock_poll_seconds, True
@@ -1939,6 +1947,8 @@ class SharedCooldownStore:
             return None, None, False
         ready_at = float(state.get("ready_at") or 0.0)
         if ready_at > now:
+            cause = state.get("cause")
+            self.wait_cause = cause if isinstance(cause, str) else None
             self.release(lease)
             return None, ready_at, True
         if state.get("cause") == "post_cooldown_drain":
@@ -2302,6 +2312,7 @@ def _attach_retry_summary(
     recommended_next_action: str,
     effective_deadline: float,
     exhausted_reason: Optional[str] = None,
+    wait_cause: str | None = None,
 ) -> ApiResult:
     result.retry_summary = RetrySummary(
         attempts=attempts,
@@ -2318,6 +2329,7 @@ def _attach_retry_summary(
         recommended_next_action=recommended_next_action,
         effective_deadline=effective_deadline,
         exhausted_reason=exhausted_reason,
+        wait_cause=wait_cause,
     )
     return result
 
@@ -2597,6 +2609,7 @@ def run_with_retry(
                     ),
                     effective_deadline=effective_deadline,
                     exhausted_reason=reason,
+                    wait_cause=store.wait_cause,
                 )
             continue
 

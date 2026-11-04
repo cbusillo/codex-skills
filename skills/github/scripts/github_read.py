@@ -36,6 +36,8 @@ SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 DEFAULT_GH = os.environ.get("GITHUB_READ_GH") or str(SCRIPT_DIR / "gh-with-env-token")
 EXPECTED_ACTOR = github_identity.automation_login()
 WORKFLOW_SETTLEMENT_GRACE_SECONDS = 300
+GRAPHQL_REPOSITORY_BATCH_SIZE = 100
+GRAPHQL_INVENTORY_PAGE_LIMIT = 100
 FAILED_CHECK_CONCLUSIONS = {"failure", "timed_out", "cancelled", "action_required", "startup_failure"}
 MERGE_STATE_STATUS = {
     "behind": "BEHIND",
@@ -608,6 +610,111 @@ def graphql_data(result: github_api_core.ApiResult) -> dict[str, Any]:
     if not isinstance(body, dict) or body.get("errors") or not isinstance(body.get("data"), dict):
         raise GitHubReadShapeError("GraphQL returned partial or missing data")
     return body["data"]
+
+
+class RepositoryInventoryUnavailable(ValueError):
+    pass
+
+
+def read_repository_connections(
+    reader: GitHubReader,
+    repositories: list[str],
+    *,
+    field: str,
+    selection: Callable[[str | None], str],
+    normalize: Callable[[str, dict[str, Any]], dict[str, Any]],
+    step: str,
+    retry_policy: github_api_core.RetryPolicy | None = None,
+) -> dict[str, list[dict[str, Any]] | Exception]:
+    repos = list(dict.fromkeys(repositories))
+    if any(not isinstance(repo, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo) for repo in repos):
+        raise ValueError("repository scan requires OWNER/REPO names")
+    if len(repos) > GRAPHQL_REPOSITORY_BATCH_SIZE:
+        grouped = {}
+        for offset in range(0, len(repos), GRAPHQL_REPOSITORY_BATCH_SIZE):
+            grouped.update(
+                read_repository_connections(
+                    reader,
+                    repos[offset : offset + GRAPHQL_REPOSITORY_BATCH_SIZE],
+                    field=field,
+                    selection=selection,
+                    normalize=normalize,
+                    step=step,
+                    retry_policy=retry_policy,
+                )
+            )
+        return grouped
+    result: dict[str, list[dict[str, Any]] | Exception] = {repo: [] for repo in repos}
+    cursors: dict[str, str | None] = dict.fromkeys(repos)
+    totals, seen = {}, {repo: set() for repo in repos}
+    for _ in range(GRAPHQL_INVENTORY_PAGE_LIMIT):
+        if not cursors:
+            return result
+        aliases = {}
+        selections = []
+        for index, (repo, cursor) in enumerate(cursors.items()):
+            owner, name = repo.split("/")
+            alias = f"r{index}"
+            aliases[alias] = repo
+            selections.append(
+                f"{alias}:repository(owner:{json.dumps(owner)},name:{json.dumps(name)}) {{ nameWithOwner {selection(cursor)} }}"
+            )
+        response = reader.graphql_json(
+            "query { " + " ".join(selections) + " rateLimit { cost remaining resetAt } }",
+            {},
+            step=step,
+            retry_policy=retry_policy,
+        )
+        if not response.ok:
+            error = GitHubReadError("repository scan unavailable", result=response, diagnostics=reader.diagnostics())
+            result.update(dict.fromkeys(cursors, error))
+            return result
+        body = response.body if isinstance(response.body, dict) else {}
+        payload = body.get("data")
+        data: dict[str, Any] = payload if isinstance(payload, dict) else {}
+        invalid = set()
+        for error in body.get("errors") or []:
+            path = error.get("path") if isinstance(error, dict) else None
+            invalid.update([path[0]] if isinstance(path, list) and path and path[0] in aliases else aliases)
+        rate = data.get("rateLimit")
+        cost = rate.get("cost") if isinstance(rate, dict) else None
+        previous = reader.batch_diagnostic.get("cost", 0)
+        reader.batch_diagnostic["cost"] = previous + cost if type(previous) is int and type(cost) is int else None
+        pending = {}
+        for alias, repo in aliases.items():
+            records = result[repo]
+            if isinstance(records, Exception):
+                continue
+            try:
+                repository_node = data.get(alias)
+                if (
+                    alias in invalid
+                    or not isinstance(repository_node, dict)
+                    or str(repository_node.get("nameWithOwner", "")).casefold() != repo.casefold()
+                ):
+                    raise RepositoryInventoryUnavailable("repository unavailable or mismatched")
+                nodes, cursor, total = graphql_connection_page(repository_node.get(field))
+                if total != totals.setdefault(repo, total):
+                    raise RepositoryInventoryUnavailable("inventory changed during pagination")
+                for node in nodes:
+                    number = node.get("number")
+                    if type(number) is not int or number <= 0 or any(record["number"] == number for record in records):
+                        raise RepositoryInventoryUnavailable("invalid or duplicate record")
+                    records.append(normalize(repo, node))
+                if cursor:
+                    if cursor in seen[repo]:
+                        raise RepositoryInventoryUnavailable("repository cursor repeated")
+                    seen[repo].add(cursor)
+                    pending[repo] = cursor
+                elif len(records) != total:
+                    raise RepositoryInventoryUnavailable("incomplete repository inventory")
+            except GitHubReadError as error:
+                result[repo] = error
+            except (RepositoryInventoryUnavailable, GitHubReadShapeError, KeyError, TypeError, ValueError):
+                result[repo] = RepositoryInventoryUnavailable("repository inventory unavailable")
+        cursors = pending
+    result.update({repo: RepositoryInventoryUnavailable("repository pagination exceeded bound") for repo in cursors})
+    return result
 
 
 def graphql_author(author: dict[str, Any] | None) -> dict[str, str]:

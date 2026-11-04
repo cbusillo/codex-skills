@@ -16,6 +16,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
+from dataclasses import replace
 from pathlib import Path
 import tempfile
 import unittest
@@ -128,6 +129,7 @@ class ReleaseTests(unittest.TestCase):
         self.addCleanup(started.stop)
         self.source = comment(1, "Claimed by trial\n\n" + helper.claim.marker(SOURCE))
         self.reader = Mock()
+        self.reader.batch_diagnostic = {}
         self.reader.get_json.return_value = {**comment(99, "Handoff"),
             "issue_url": "https://api.github.com/repos/test/a/issues/1"}
         self.inventory = patch.object(helper, "inventory", return_value=[])
@@ -220,22 +222,76 @@ class ReleaseTests(unittest.TestCase):
         api = importlib.import_module("github_api")
         ledger = self.root / "ledger.json"
         ledger.write_text(json.dumps([self.entry]))
-        argv = ["helper", "finish", "--ledger", str(ledger), "--closed-log", str(self.root / "closed.json"),
-                "--session-id", "source-session", "--owner", "test", "--supervisor-session", "supervisor",
-                "--confirm-session-ended", "--transcript-root", str(self.root)]
-        for advice, retryable in (("retry_after_reported_reset", True), ("inspect_last_failure", False)):
-            with self.subTest(advice=advice):
-                stop = api.ApiResult(ok=False, status=0, body=None, retry_summary=api.RetrySummary(
-                    attempts=3, elapsed_wait=600.0, retry_eligible=True, last_actor=ACTOR, last_bucket="core",
-                    outcome_certainty="confirmed", reconciliation=None, recommended_next_action=advice,
-                    effective_deadline=0.0, exhausted_reason="deadline_exceeded"))
-                error = importlib.import_module("github_read").GitHubReadError("GitHub retry wait did not complete before the effective deadline",
-                                               result=stop, diagnostics={})
+        argv = [
+            "helper",
+            "finish",
+            "--ledger",
+            str(ledger),
+            "--closed-log",
+            str(self.root / "closed.json"),
+            "--session-id",
+            "source-session",
+            "--owner",
+            "test",
+            "--supervisor-session",
+            "supervisor",
+            "--confirm-session-ended",
+            "--transcript-root",
+            str(self.root),
+        ]
+        clock = [1000.0]
+        for advice, retryable, limited in (
+            ("retry_after_reported_reset", True, False),
+            ("inspect_last_failure", False, False),
+            ("inspect_last_failure", True, True),
+        ):
+            with self.subTest(advice=advice, limited=limited):
+                stop = api.ApiResult(
+                    ok=False,
+                    status=0,
+                    body=None,
+                    retry_summary=api.RetrySummary(
+                        attempts=3,
+                        elapsed_wait=600.0,
+                        retry_eligible=True,
+                        last_actor=ACTOR,
+                        last_bucket="core",
+                        outcome_certainty="confirmed",
+                        reconciliation=None,
+                        recommended_next_action=advice,
+                        effective_deadline=0.0,
+                        exhausted_reason="deadline_exceeded",
+                    ),
+                )
+                if limited:
+                    headers = {"retry-after": "45", "x-ratelimit-resource": "graphql"}
+                    failure = api.classify_error(403, headers, {"message": "secondary rate limit"})
+                    reply = api.ApiResult(ok=False, status=403, body=None, bucket="graphql", failure=failure)
+                    clock[0] = 1000.0
+                    stop = api.run_with_retry(
+                        Mock(return_value=reply),
+                        operation="github.read",
+                        is_write=False,
+                        actor=ACTOR,
+                        bucket="graphql",
+                        retry_policy=replace(api.optional_batch_retry_policy(), state_dir=self.root / "limited"),
+                        retry_runtime=api.RetryRuntime(
+                            now=lambda: clock[0],
+                            sleep=lambda duration: clock.__setitem__(0, clock[0] + duration),
+                        ),
+                        deadline_at=1600,
+                    )
+                error = importlib.import_module("github_read").GitHubReadError(
+                    "GitHub retry wait did not complete before the effective deadline", result=stop, diagnostics={}
+                )
                 output = io.StringIO()
-                with patch.object(helper.sys, "argv", argv), \
-                        patch_attribute(identity, "automation_login", return_value=ACTOR), \
-                        patch.object(helper, "discover", side_effect=error), \
-                        patch.object(helper, "release_session") as release, contextlib.redirect_stdout(output):
+                with (
+                    patch.object(helper.sys, "argv", argv),
+                    patch_attribute(identity, "automation_login", return_value=ACTOR),
+                    patch.object(helper, "discover", side_effect=error),
+                    patch.object(helper, "release_session") as release,
+                    contextlib.redirect_stdout(output),
+                ):
                     self.assertEqual(helper.main(), 1)
                 release.assert_not_called()
                 result = json.loads(output.getvalue())
@@ -1345,6 +1401,114 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(repos, ["test/a", "test/b"])
         with self.assertRaises(ValueError):
             helper.discover(self.reader, "test", [self.entry], ["other/c"])
+
+    def test_status_batch_preserves_ownership_and_recovers_incomplete_repositories(self) -> None:
+        api = importlib.import_module("github_api")
+        status = {"number": 9, "body": "Claimed by trial\nSession: source-session"}
+        connection = {"totalCount": 1, "nodes": [status], "pageInfo": {"hasNextPage": False, "endCursor": None}}
+        for mode in (
+            "complete",
+            "paginated",
+            "partial",
+            "alias-error",
+            "duplicate",
+            "identity",
+            "transient",
+            "limited",
+            "primary-cooldown",
+            "secondary-cooldown",
+            "cancelled",
+            "context",
+        ):
+            with self.subTest(mode=mode):
+                value = json.loads(json.dumps(connection))
+                empty = {**connection, "totalCount": 0, "nodes": []}
+                body: dict[str, Any] = {
+                    "data": {
+                        "r0": {"nameWithOwner": "test/a", "issues": value},
+                        "r1": {"nameWithOwner": "test/b", "issues": empty},
+                    }
+                }
+                if mode == "paginated":
+                    value.update(totalCount=2, pageInfo={"hasNextPage": True, "endCursor": "next"})
+                elif mode == "partial":
+                    body["errors"] = [{"message": "partial response"}]
+                elif mode == "alias-error":
+                    body["data"]["r0"] = None
+                    body["errors"] = [{"path": ["r0"], "message": "partial response"}]
+                elif mode == "duplicate":
+                    value.update(totalCount=2, nodes=value["nodes"] * 2)
+                reader = Mock()
+                reader.batch_diagnostic = {}
+                reader.graphql_json.return_value = api.ApiResult(ok=True, status=200, body=body)
+                if mode in {"identity", "transient", "limited", "cancelled", "context"}:
+                    causes = {
+                        "identity": "actor_mismatch",
+                        "transient": "network_provider_failure",
+                        "limited": "graphql_primary_rate_limited",
+                        "cancelled": "cancelled",
+                        "context": "retry_context_changed",
+                    }
+                    cause = causes.get(mode)
+                    failure = api.FailureDetail(cause, mode, False, False, "stop") if cause else None
+                    reader.graphql_json.return_value = api.ApiResult(ok=False, status=503, body=None, failure=failure)
+                    if mode in {"identity", "cancelled", "context"}:
+                        with self.assertRaises(helper.GitHubReadError):
+                            helper.discover(reader, "test", [self.entry], ["test/a", "test/b"])
+                        reader.paged_json.assert_not_called()
+                        continue
+                if mode in {"primary-cooldown", "secondary-cooldown"}:
+                    cause = "graphql_primary_rate_limited" if mode == "primary-cooldown" else "secondary_rate_limited"
+                    policy = replace(api.optional_batch_retry_policy(), state_dir=self.root / mode)
+                    store = api.SharedCooldownStore(policy.state_dir)
+                    store.publish(
+                        api._cooldown_key("github.com", ACTOR, "graphql"), ready_at=2000, cause=cause, now=1000, policy=policy
+                    )
+                    remote = Mock(side_effect=AssertionError("cooldown must suppress the GraphQL attempt"))
+                    runtime = api.RetryRuntime(now=lambda: 1000, sleep=Mock(side_effect=AssertionError("no wait is needed")))
+                    reader.graphql_json.return_value = api.run_with_retry(
+                        remote,
+                        operation="github.read",
+                        is_write=False,
+                        actor=ACTOR,
+                        expected_actor=ACTOR,
+                        bucket="graphql",
+                        deadline_at=1600,
+                        retry_policy=policy,
+                        retry_runtime=runtime,
+                    )
+                    if mode == "secondary-cooldown":
+                        with self.assertRaises(helper.GitHubReadError):
+                            helper.discover(reader, "test", [self.entry], ["test/a", "test/b"])
+                        reader.paged_json.assert_not_called()
+                        continue
+                if mode == "paginated":
+                    more = {**connection, "totalCount": 2, "nodes": [{**status, "number": 10}]}
+                    reader.graphql_json.side_effect = [
+                        reader.graphql_json.return_value,
+                        api.ApiResult(
+                            ok=True,
+                            status=200,
+                            body={"data": {"r0": {"nameWithOwner": "test/a", "issues": more}}},
+                        ),
+                    ]
+
+                def paged(path: str, *, scenario: str = mode, **_kwargs: Any) -> list[dict]:
+                    if path == "/repos/test/b/issues/comments":
+                        return [{**self.source, "issue_url": "https://api.github.com/repos/test/b/issues/7"}]
+                    if path.endswith("/comments"):
+                        return []
+                    self.assertNotIn(scenario, {"complete", "paginated"}, "complete inventory must not reread REST")
+                    if path == "/repos/test/b/issues":
+                        self.assertIn(scenario, {"partial", "transient", "limited", "primary-cooldown"})
+                        return []
+                    return [status]
+
+                reader.paged_json.side_effect = paged
+                expected = [("test/a", status["number"]), ("test/b", 7)]
+                if mode == "paginated":
+                    expected.insert(1, ("test/a", 10))
+                self.assertEqual(helper.discover(reader, "test", [self.entry], ["test/a", "test/b"])[0], expected)
 
     def test_complete_inventory_failure_does_not_become_empty(self):
         self.reader.paged_json.side_effect = helper.GitHubReadShapeError("partial page")

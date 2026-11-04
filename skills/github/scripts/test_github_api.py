@@ -2870,41 +2870,55 @@ def test_shared_cooldown_blocks_second_process_before_remote_call() -> None:
 
 
 def test_shared_cooldown_suppresses_remote_call_when_deadline_is_shorter() -> None:
-    with tempfile.TemporaryDirectory() as temp_dir:
-        state_dir = Path(temp_dir)
-        policy = retry_policy(state_dir)
-        clock = FakeRetryClock()
-        store = _api.SharedCooldownStore(state_dir)
-        key = _api._cooldown_key("github.com", "fixture-automation", "rest_core")
-        store.publish(
-            key,
-            ready_at=1010.0,
-            cause="rest_primary_rate_limited",
-            now=1000.0,
-            policy=policy,
-        )
-        calls = 0
+    for cause, bucket in (
+        ("rest_primary_rate_limited", "rest_core"),
+        ("graphql_primary_rate_limited", "graphql"),
+        ("secondary_rate_limited", "graphql"),
+    ):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_dir = Path(temp_dir)
+            policy = retry_policy(state_dir)
+            clock = FakeRetryClock()
+            store = _api.SharedCooldownStore(state_dir)
+            key = _api._cooldown_key("github.com", "fixture-automation", bucket)
+            store.publish(key, ready_at=1010.0, cause=cause, now=clock.now(), policy=policy)
+            calls = 0
 
-        def attempt() -> Any:
-            nonlocal calls
-            calls += 1
-            return retry_success()
+            def attempt(selected_bucket: str = bucket) -> Any:
+                nonlocal calls
+                calls += 1
+                return retry_success(bucket=selected_bucket)
 
-        result = _api.run_with_retry(
-            attempt,
-            operation="github.api.rate_limit",
-            is_write=False,
-            actor="fixture-automation",
-            bucket="rest_core",
-            deadline_at=1005.0,
-            retry_policy=policy,
-            retry_runtime=retry_runtime(clock),
-        )
-        payload = result.as_dict()
-        assert calls == 0, calls
-        assert payload["attempts"] == 0, payload
-        assert payload["retry_at"] == 1010, payload
-        assert payload["retry_exhausted_reason"] == "deadline_exceeded", payload
+            result = _api.run_with_retry(
+                attempt,
+                operation="github.api.rate_limit",
+                is_write=False,
+                actor="fixture-automation",
+                bucket=bucket,
+                deadline_at=1005.0,
+                retry_policy=policy,
+                retry_runtime=retry_runtime(clock),
+            )
+            payload = result.as_dict()
+            assert calls == 0, calls
+            assert payload["attempts"] == 0, payload
+            assert payload["retry_at"] == 1010, payload
+            assert payload["retry_exhausted_reason"] == "deadline_exceeded", payload
+            assert result.retry_summary.wait_cause == cause, payload
+            assert payload["wait_cause"] == result.retry_summary.wait_cause, payload
+            combined = _api.aggregate_retry_summaries([result.retry_summary])
+            assert combined.wait_cause == result.retry_summary.wait_cause
+            cancelled = _api.run_with_retry(
+                attempt,
+                operation="github.api.rate_limit",
+                is_write=False,
+                actor="fixture-automation",
+                bucket=bucket,
+                retry_policy=policy,
+                retry_runtime=retry_runtime(clock, cancelled=lambda: True),
+            )
+            combined = _api.aggregate_retry_summaries([result.retry_summary, cancelled.retry_summary])
+            assert combined.wait_cause is None, combined.as_dict()
 
 
 def test_post_cooldown_drain_ends_and_allows_concurrent_processes() -> None:
