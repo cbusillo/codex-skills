@@ -156,12 +156,10 @@ def _surviving_keys(h: Any, value: object, drops: Any) -> list[str]:
 
 
 def _context_comparison(h: Any, result: dict[str, Any], body: dict[str, Any]) -> dict[str, object]:
-    if not COMPARISON_FIELDS & result.keys():
-        return {}
     effects = result.get("instance_plain_setting_effects")
     digest = result.get("context_values_sha256")
     if effects is None and digest is None:
-        return {key: None for key in COMPARISON_FIELDS}
+        return {}
     if (body["scope"] != "instance" or body["instance"] == "preview"
             or not isinstance(effects, list) or len(effects) != len(body["keys"])
             or not _is_hex64(digest)):

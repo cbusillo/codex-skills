@@ -9,6 +9,7 @@ import io
 import json
 import urllib.error
 from contextlib import redirect_stdout
+from typing import Any
 from unittest.mock import patch
 
 import launchplane_runtime_setting_removal as removal
@@ -35,7 +36,7 @@ def argv(command=DRY_RUN, *, scope=SCOPE_ARGS, keys=("OLD_FLAG", "LEGACY_URL"), 
     return args
 
 
-def response(mode="dry-run", **updates):
+def response(mode: str = "dry-run", **updates: Any) -> dict[str, Any]:
     # Producer removal_plan (control_plane/runtime_setting_removal.py) plus the
     # readback fields from PostgresRecordStore.runtime_setting_removal.
     result = {
@@ -121,6 +122,8 @@ def test_instance_review_keeps_context_fallback_evidence(command: str) -> None:
 @pytest.mark.parametrize("updates", [
     {"instance_plain_setting_effects": []},
     {"context_values_sha256": "not-a-digest"},
+    {"instance_plain_setting_effects": None},
+    {"context_values_sha256": None},
     {"instance_plain_setting_effects": [{"key": "OLD_FLAG", "source_after": "context", "effect": "unchanged",
                                          "value": "PRIVATE_SENTINEL"},
                                         {"key": "LEGACY_URL", "source_after": None, "effect": "absent"}]},
