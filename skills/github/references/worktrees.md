@@ -163,8 +163,9 @@ must support read-only `verify-root`, returning the exact configured root only
 after its existing mount/identity checks pass; otherwise stray entries are kept.
 No new job runs this sweep. Follow the [task output rule](../../supervisor/references/brief-rules.md#rules-every-brief-carries).
 For qualified retirement candidates, an old, closed, untracked or ignored
-`error.log` moves into task evidence before physical preview. Other contents
-retain all existing guards. Retirement gets the first part of the creation
+`error.log` moves into task evidence only after a physical preview identifies
+it as the sole ignored-file refusal; a second full preview retains all guards.
+A later hold keeps the tree and records the preserved log location. Retirement gets the first part of the creation
 budget; the final five seconds are reserved for stray cleanup.
 A closed PR uses the existing PR-head, claim and publication checks;
 commit-associated PRs cover detached review and separate refresh branches; a branch

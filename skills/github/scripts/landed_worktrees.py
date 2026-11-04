@@ -43,13 +43,19 @@ class Worktree:
     lock: str | None
 
 
-def git(checkout: Path, *args: str, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["git", "-C", str(checkout), *args], capture_output=True, text=True,
-                          env=dev_worktree.git_environment(), input=input_text, timeout=30)
+def git(checkout: Path, *args: str, input_text: str | None = None, timeout: float = 30) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(checkout), *args],
+        capture_output=True,
+        text=True,
+        env=dev_worktree.git_environment(),
+        input=input_text,
+        timeout=timeout,
+    )
 
 
-def registered(checkout: Path, *, include_primary: bool = False) -> list[Worktree]:
-    result = git(checkout, "worktree", "list", "--porcelain", "-z")
+def registered(checkout: Path, *, include_primary: bool = False, timeout: float = 30) -> list[Worktree]:
+    result = git(checkout, "worktree", "list", "--porcelain", "-z", timeout=timeout)
     if result.returncode:
         raise ValueError(result.stderr.strip() or "git worktree list failed")
     worktrees: list[Worktree] = []
@@ -168,7 +174,7 @@ def portable_retire(path: Path, *, dry_run: bool) -> subprocess.CompletedProcess
         return subprocess.CompletedProcess([], 1, "", f"{reason}; follow work-closeout before retrying")
 
     if not path.is_dir():
-        return None
+        return kept("worktree folder is missing")
     status = git(path, "status", "--porcelain", "--ignored", "--untracked-files=all")
     if status.returncode or status.stdout.strip():
         return kept("uncommitted, untracked or ignored files remain")
@@ -228,11 +234,12 @@ def retire(rows: Iterable[dict], *, apply: bool, runner=None, deadline: float | 
             continue
         stage = "preview"
         try:
-            if apply:
-                evidence = preserve_result_log(Path(row["path"]), deadline=deadline)
+            preview = runner(row["path"], dry_run=True)
+            if preview.returncode and apply:
+                evidence = preserve_result_log(Path(row["path"]), preview=preview, deadline=deadline)
                 if evidence:
                     row["results_preserved"] = str(evidence)
-            preview = runner(row["path"], dry_run=True)
+                    preview = runner(row["path"], dry_run=True)
             if preview.returncode:
                 row.update(decision="kept", reason="retire preview refused",
                            detail=preview.stderr.strip().splitlines()[-1:] or [""])
@@ -272,7 +279,6 @@ STRAY_RESULT_PATTERNS = (
     "inspection.err",
     "review.json",
     "error.log",
-    ".DS_Store",
 )
 
 
@@ -325,7 +331,15 @@ def verify_host_root(root: Path, deadline: float | None) -> None:
         raise ValueError("host worktree root verification unavailable; stray entries retained")
 
 
-def preserve_result_log(path: Path, *, deadline: float | None = None) -> Path | None:
+def preserve_result_log(path: Path, *, preview: subprocess.CompletedProcess[str], deadline: float | None = None) -> Path | None:
+    detail = preview.stderr.strip().splitlines()[-1:]
+    if (
+        not preview.returncode
+        or not detail
+        or "ignored files would be deleted;" not in detail[0]
+        or detail[0].partition("retry: ")[2].strip() != "error.log"
+    ):
+        return None
     if not path.is_dir():
         return None
     status = git(path, "status", "--porcelain", "--ignored", "--untracked-files=all", "-z")
@@ -363,6 +377,7 @@ def sweep_strays(checkout: Path, root: Path, *, apply: bool, deadline: float | N
     parent = root
     parent_fd = None
     try:
+        remaining_timeout(deadline, 30)
         common = Path(dev_worktree.git(checkout, "rev-parse", "--path-format=absolute", "--git-common-dir"))
         if not common.is_absolute() or common.name != ".git":
             raise ValueError("normal repository identity unavailable; stray entries retained")
@@ -370,19 +385,33 @@ def sweep_strays(checkout: Path, root: Path, *, apply: bool, deadline: float | N
         if not parent.exists():
             return rows
         dev_worktree.artifact_roots()
+        dev_worktree.verify_outside_repository(parent)
         if not all(hasattr(os, flag) for flag in ("O_DIRECTORY", "O_NOFOLLOW")):
             raise ValueError("safe directory descriptors unavailable; stray entries retained")
         verify_host_root(root, deadline)
         parent_fd = dev_worktree.open_directory(parent)
         names = os.listdir(parent_fd)
+        registered_paths = {
+            tree.path.resolve() for tree in registered(checkout, include_primary=True, timeout=remaining_timeout(deadline, 30))
+        }
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         if parent_fd is not None:
             os.close(parent_fd)
         return [{"path": str(parent), "decision": "kept", "reason": str(exc)}]
     try:
-        for name in names:
+        for index, name in enumerate(names):
+            if deadline is not None and time.monotonic() >= deadline:
+                rows.append(
+                    {
+                        "path": str(parent),
+                        "decision": "kept",
+                        "reason": "creation cleanup time budget exhausted",
+                        "remaining_entries": len(names) - index,
+                    }
+                )
+                break
             path = parent / name
-            if any(tree.path.resolve() == path.resolve() for tree in registered(checkout)):
+            if path.resolve() in registered_paths:
                 continue
             row: dict[str, Any] = {"path": str(path), "decision": "kept"}
             rows.append(row)
@@ -415,11 +444,15 @@ def sweep_strays(checkout: Path, root: Path, *, apply: bool, deadline: float | N
                 if (
                     entry_state(os.stat(parent)) != entry_state(os.fstat(parent_fd))
                     or entry_state(os.stat(name, dir_fd=parent_fd, follow_symlinks=False)) != entry_state(info)
-                    or any(tree.path.resolve() == path.resolve() for tree in registered(checkout))
+                    or any(
+                        tree.path.resolve() == path.resolve()
+                        for tree in registered(checkout, include_primary=True, timeout=remaining_timeout(deadline, 30))
+                    )
                     or directory_fd is not None
                     and stray_snapshot(directory_fd) != contents
                 ):
                     raise ValueError("entry changed during qualification; retained")
+                dev_worktree.verify_outside_repository(parent)
                 if apply:
                     if contents:
                         row["evidence"] = str(
@@ -433,7 +466,7 @@ def sweep_strays(checkout: Path, root: Path, *, apply: bool, deadline: float | N
                     if directory_fd is not None:
                         os.rmdir(name, dir_fd=parent_fd)
                 row.update(decision="removed" if apply else "would_remove", files=len(contents))
-            except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+            except (OSError, ValueError, subprocess.SubprocessError) as exc:
                 row["reason"] = str(exc)
             finally:
                 if directory_fd is not None:
@@ -816,7 +849,12 @@ def main(argv: list[str] | None = None) -> int:
     except (LookupError, ValueError, OSError, subprocess.TimeoutExpired) as exc:
         return refuse(str(exc))
     rows = retire(rows, apply=args.apply, deadline=retirement_deadline)
-    strays = sweep_strays(args.checkout, root, apply=args.apply, deadline=deadline) if args.all else []
+    strays = []
+    if args.all:
+        try:
+            strays = sweep_strays(args.checkout, root, apply=args.apply, deadline=deadline)
+        except Exception as exc:
+            strays = [{"path": str(root), "decision": "kept", "reason": f"stray cleanup unavailable: {type(exc).__name__}: {exc}"}]
     passed = {"retired", "would_retire"}
     ok = not args.path or len(rows) == 1 and rows[0]["decision"] in passed
     print(json.dumps({"ok": bool(ok), **summary, "worktrees": rows, "strays": strays}, indent=2), flush=True)

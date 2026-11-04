@@ -361,6 +361,11 @@ class RepositoryTests(Fixture):
         self.assertEqual([(row["path"], row["decision"]) for row in rows], [(str(path), "kept")])
         self.assertIn("offline", rows[0]["reason"])
 
+    def test_missing_portable_worktree_returns_a_refused_result(self) -> None:
+        result = landed_worktrees.portable_retire(self.root / "sample/missing", dry_run=True)
+        self.assertIsInstance(result, subprocess.CompletedProcess)
+        self.assertNotEqual(result.returncode, 0)
+
     def test_portable_retirement_keeps_private_or_unpublished_work_and_live_use(self) -> None:
         run = subprocess.run
         for cause in ("dirty", "ignored", "unpublished", "in_use", "proof_unavailable", "pull_only", "eligible"):
@@ -484,9 +489,9 @@ class StrayTests(Fixture):
                 args: list[str], *, case: str = cause, directory: Path = folder, result: Path = path, **kwargs: object
             ) -> subprocess.CompletedProcess[str]:
                 if args[0] == "lsof":
-                    if case == "changed":
+                    if case == "changed" and args[-1] == str(directory):
                         result.write_text("changed")
-                    elif case == "unknown_added":
+                    elif case == "unknown_added" and args[-1] == str(directory):
                         (directory / "source.py").write_text("important")
                     return subprocess.CompletedProcess(args, 0 if case == "open" else 1, "123" if case == "open" else "", "")
                 return original(args, **kwargs)
@@ -535,28 +540,83 @@ class StrayTests(Fixture):
         self.assertFalse(folder.exists())
         self.assertEqual((Path(rows[0]["evidence"]) / "inspection.json").read_text(), "result")
 
-    def test_closed_old_result_log_moves_to_evidence_without_other_files(self) -> None:
-        path = self.worktree("result-log")
-        log = path / "error.log"
-        log.write_text("log evidence")
-        os.utime(log, (0, 0))
-        (path / "notes.py").write_text("unique work")
+    def test_only_the_observed_sole_log_refusal_allows_preservation(self) -> None:
+        original = subprocess.run
+        for number, detail in enumerate(
+            (
+                "Retire refused: ignored files would be deleted; move what is needed, delete the rest, and retry: error.log",
+                "Retire refused: it is locked for another reason",
+                "Retire refused: uncommitted or untracked files remain.",
+                "Retire refused: ignored files would be deleted; retry: error.log private.key",
+            )
+        ):
+            path = self.worktree(f"result-log-{number}")
+            log = path / "error.log"
+            log.write_text("log evidence")
+            os.utime(log, (0, 0))
+
+            def dispatch(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+                if args[0] == "lsof":
+                    return subprocess.CompletedProcess(args, 1, "", "")
+                return original(args, **kwargs)
+
+            with (
+                self.subTest(detail=detail),
+                mock.patch.object(landed_worktrees.subprocess, "run", side_effect=dispatch),
+                mock.patch.object(dev_worktree, "configuration", return_value=(self.root, None)),
+            ):
+                evidence = landed_worktrees.preserve_result_log(path, preview=subprocess.CompletedProcess([], 1, "", detail))
+            if number == 0:
+                self.assertIsNotNone(evidence)
+                self.assertEqual((evidence / "error.log").read_text(), "log evidence")
+                self.assertFalse(log.exists())
+            else:
+                self.assertIsNone(evidence)
+                self.assertEqual(log.read_text(), "log evidence")
+
+    def test_primary_checkout_in_the_container_keeps_tracked_results(self) -> None:
+        root = self.base / "containers"
+        root.mkdir()
+        primary = root / "sample"
+        subprocess.run(["git", "clone", "-q", str(self.remote), str(primary)], check=True, capture_output=True)
+        path = primary / "inspection.json"
+        path.write_text("tracked source")
+        self.git(primary, "add", path.name)
+        self.commit(primary, "Tracked inspection data")
+        os.utime(path, (0, 0))
+        Path(os.environ["DEV_WORKTREE_CONFIG"]).write_text(json.dumps({"root": str(root)}))
+        rows = landed_worktrees.sweep_strays(primary, root, apply=True)
+        self.assertEqual(path.read_text(), "tracked source")
+        self.assertEqual(rows[0]["decision"], "kept")
+        self.assertFalse(self.git(primary, "status", "--porcelain"))
+
+    def test_container_becoming_a_repository_during_qualification_is_kept(self) -> None:
+        parent = self.root / "sample"
+        path = parent / "inspection.json"
+        path.write_text("source data")
+        os.utime(path, (0, 0))
         original = subprocess.run
 
         def dispatch(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
             if args[0] == "lsof":
+                original(["git", "init", "-q", str(parent)], check=True, capture_output=True)
+                original(["git", "-C", str(parent), "add", path.name], check=True, capture_output=True)
                 return subprocess.CompletedProcess(args, 1, "", "")
             return original(args, **kwargs)
 
         with (
-            mock.patch.object(landed_worktrees.subprocess, "run", side_effect=dispatch),
             mock.patch.object(dev_worktree, "configuration", return_value=(self.root, None)),
+            mock.patch.object(landed_worktrees.subprocess, "run", side_effect=dispatch),
         ):
-            evidence = landed_worktrees.preserve_result_log(path)
-        self.assertIsNotNone(evidence)
-        self.assertEqual((evidence / "error.log").read_text(), "log evidence")
-        self.assertFalse(log.exists())
-        self.assertEqual((path / "notes.py").read_text(), "unique work")
+            rows = landed_worktrees.sweep_strays(self.repo, self.root, apply=True)
+        self.assertEqual(path.read_text(), "source data")
+        self.assertEqual(rows[0]["decision"], "kept")
+
+    def test_expired_budget_starts_no_registration_read(self) -> None:
+        with mock.patch.object(landed_worktrees, "registered") as read:
+            rows = landed_worktrees.sweep_strays(self.repo, self.root, apply=True, deadline=0)
+        read.assert_not_called()
+        self.assertEqual(rows[0]["decision"], "kept")
 
 
 class MissingCommitTests(Fixture):
@@ -668,6 +728,17 @@ class MainTests(Fixture):
                 code = landed_worktrees.main(["--repo", repo, *landed, "--checkout", str(checkout or self.repo), "--apply"])
             self.delegation_packet = os.environ.get("DEV_WORKTREE_DELEGATED")
         return code, json.loads(out.getvalue()) if out.getvalue() else {}, host if entrypoint else run
+
+    def test_sweep_failure_preserves_completed_retirement_receipts(self) -> None:
+        completed = [{"path": "/finished", "decision": "retired"}]
+        with (
+            mock.patch.object(landed_worktrees, "retire", return_value=completed),
+            mock.patch.object(landed_worktrees, "sweep_strays", side_effect=ValueError("registration unavailable")),
+        ):
+            code, result, _run = self.run_main(None, all_trees=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(result["worktrees"], completed)
+        self.assertEqual(result["strays"][0]["decision"], "kept")
 
     def test_explicit_retirement_of_fresh_published_abandoned_work_reaches_host(self):
         for lock in (MANAGED_LOCK, "Old registration lock", None):
@@ -965,12 +1036,15 @@ class FinishedScanTests(Fixture):
         self.assertEqual(gaps, [])
         git = landed_worktrees.git
         for command in ("rev-parse", "remote", "worktree", "status"):
-            def timeout(checkout: Path, *args: str) -> subprocess.CompletedProcess[str]:
-                if checkout == path and args[0] == command:
-                    raise subprocess.TimeoutExpired(command, 1)
-                return git(checkout, *args)
 
-            with self.subTest(command=command), mock.patch.object(landed_worktrees, "git", side_effect=timeout):
+            def simulate_timeout(
+                checkout: Path, *args: str, timeout: float = 30, command_name: str = command
+            ) -> subprocess.CompletedProcess[str]:
+                if checkout == path and args[0] == command_name:
+                    raise subprocess.TimeoutExpired(command_name, 1)
+                return git(checkout, *args, timeout=timeout)
+
+            with self.subTest(command=command), mock.patch.object(landed_worktrees, "git", side_effect=simulate_timeout):
                 found, gaps = landed_worktrees.finished(self.root, lambda *_: [])
             self.assertEqual(found, [])
             self.assertTrue(gaps)

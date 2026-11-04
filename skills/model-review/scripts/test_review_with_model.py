@@ -233,6 +233,7 @@ class ReviewWithModelTests(unittest.TestCase):
             saved.append(destination)
         self.assertEqual(len(set(saved)), len(saved))
         config.write_text("invalid")
+        invocation = self.root / "unexpected-provider-call"
         code, result = self.run_helper(
             "run",
             "--provider",

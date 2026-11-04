@@ -57,7 +57,8 @@ budget, and put both results in the PR's review note.
    results and redirected logs there too. The prompt names the change, the
    paths to read, and what the change is for. If `--out` points inside a
    worktree or its configured root, the helper redirects it to task evidence
-   and returns the actual path as `response_file`. For a
+   and returns the actual path as `response_file`. When `output_error` is
+   present, the completed review is returned inline as `response`. For a
    [pending decision](../references/model-review.md#before-a-decision), there
    is no change: describe the saved issue instead. Never ask
    the reviewer to run a command or tests, and do not forbid commands either:
