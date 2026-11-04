@@ -3068,9 +3068,14 @@ def claim_once(args: argparse.Namespace) -> None:
         ended: list[dict[str, Any]] = []
         family_comments: list[dict[str, Any]] = []
         checked: set[tuple[str, int]] = set()
-        for peer_repo, peer_number, _, peer_comments in phase_peers:
+        family_records: tuple[tuple[str, int, str, list[dict[str, Any]]], ...] = tuple(phase_peers)
+        if phase.get("source") is not None and resume_source_number is not None and resume_source_number != number:
+            selected_snapshot = phase_records[(issue_repo.casefold(), resume_source_number)]
+            family_records += ((issue_repo, resume_source_number, selected_snapshot[1], selected_snapshot[2]),)
+        for peer_repo, peer_number, _, peer_comments in family_records:
             key = (peer_repo.casefold(), peer_number)
-            if key in checked or key not in phase_owners or not (key[0] == issue_repo.casefold() == target_repo.casefold()):
+            if (key == (issue_repo.casefold(), number) or key in checked or key not in phase_owners
+                    or not (key[0] == issue_repo.casefold() == target_repo.casefold())):
                 continue
             checked.add(key)
             family_comments.extend(peer_comments)
