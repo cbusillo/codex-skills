@@ -125,5 +125,5 @@ or a named holder still needs them. Follow the shared cleanup policy to remove
 only the task-owned fixture/artifact group after its processes finish. There is
 no general-purpose recursive cleanup command in this suite.
 
-See the [September 13 acceptance record](acceptance-2026-09-13.md) for the
+See the [September 13 acceptance record](https://github.com/cbusillo/codex-skills/blob/dad9daabbf6f7f1152a937f774642b54f467ec70/skills/work-closeout/evaluations/acceptance-2026-09-13.md) for the
 baseline/candidate observations and their limits.
