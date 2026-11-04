@@ -775,8 +775,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.budget_seconds is not None and (args.budget_seconds <= 0 or not math.isfinite(args.budget_seconds)):
         return refuse("budget-seconds must be positive and finite")
-    deadline = time.monotonic() + args.budget_seconds if args.budget_seconds else None
-    retirement_deadline = deadline - min(5, args.budget_seconds / 2) if deadline is not None else None
+    deadline = None
+    retirement_deadline = None
+    if args.budget_seconds is not None:
+        deadline = time.monotonic() + args.budget_seconds
+        retirement_deadline = deadline - min(5.0, args.budget_seconds / 2)
     try:
         root, _helper = dev_worktree.configuration()
     except (dev_worktree.Refused, OSError, json.JSONDecodeError) as exc:

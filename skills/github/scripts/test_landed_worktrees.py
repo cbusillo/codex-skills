@@ -16,6 +16,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 import dev_worktree
@@ -524,7 +525,7 @@ class StrayTests(Fixture):
             os.utime(item, (0, 0))
         original = subprocess.run
 
-        def dispatch(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        def dispatch(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
             if args[-1] == "verify-root":
                 self.assertIn("DEV_WORKTREE_DELEGATED", kwargs["env"])
                 return subprocess.CompletedProcess(args, 0, str(self.root) + "\n", "")
