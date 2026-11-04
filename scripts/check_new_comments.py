@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import argparse
-import ast
 import codecs
 import io
 import itertools
@@ -17,6 +16,8 @@ import tokenize
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
+
+import check_insecure_tls
 
 GUIDE = "https://github.com/cbusillo/codex-skills/blob/main/skills/references/python-odoo-style.md#names-instead-of-comments"
 HUNK = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
@@ -143,6 +144,10 @@ def file_findings(path: str, source: str, added: set[int], old: Counter[str]) ->
         return []
     allowed = metadata_rows(source) | header_rows(lines)
     tokens, tokenized = comments(source)
+    try:
+        allowed.update(check_insecure_tls.scan(source).annotation_rows)
+    except SyntaxError:
+        tokenized = False
     findings = [
         Finding(path, token.start[0], "comment")
         for token in tokens
@@ -152,10 +157,6 @@ def file_findings(path: str, source: str, added: set[int], old: Counter[str]) ->
         and not LINK.fullmatch(token.string.strip())
         and not take_moved(old, token.string.strip())
     ]
-    try:
-        ast.parse(source)
-    except SyntaxError:
-        tokenized = False
     if not tokenized:
         findings.append(Finding(path, 1, "unparsed"))
     return findings

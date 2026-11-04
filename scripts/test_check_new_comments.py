@@ -98,6 +98,47 @@ class NewCommentsCheck(unittest.TestCase):
             {("app.py", 1, "comment"), ("app.py", 2, "comment"), ("app.py", 3, "comment"), ("app.py", 4, "comment")},
         )
 
+    def test_tls_annotation_passes_comments_without_bypassing_tls_reason(self) -> None:
+        cases = (
+            ("isolated loopback test peer.", False),
+            ("isolated peer; decision https://example.invalid/issues/1#comment", False),
+            ("", True),
+            ("Q418", True),
+            ("https://example.invalid/decision", True),
+        )
+        for spacing in (" ", "", "   "):
+            for reason, rejected in cases:
+                with self.subTest(reason=reason, spacing=spacing):
+                    source = f"import requests\n#{spacing}insecure-tls: {reason}\nrequests.get(url, verify=False)  # noqa: S501\n"
+                    self.assertEqual(
+                        self.findings({"app.py": BASE}, {"app.py": source}),
+                        {("app.py", 2, "comment")} if rejected else set(),
+                    )
+
+    def test_tls_annotation_block_passes_only_at_its_choke_point(self) -> None:
+        source = (
+            "def fixture():\n"
+            "    # insecure-tls: isolated peer exercises certificate rejection.\n"
+            "    # Only this fixture disables verification.\n"
+            "    # Decision: https://example.invalid/issues/1#comment\n"
+            "    ctx.check_hostname = False\n"
+            "    ctx.verify_mode = ssl.CERT_NONE\n"
+        )
+        self.assert_allowed(source)
+        for changed, row in (
+            (source.replace("    # insecure-tls:", "    # Unrelated prose.\n    # insecure-tls:"), 2),
+            (source.replace("    ctx.verify_mode", "    # Unrelated prose.\n    ctx.verify_mode"), 6),
+        ):
+            with self.subTest(source=changed):
+                self.assertEqual(self.findings({"app.py": BASE}, {"app.py": changed}), {("app.py", row, "comment")})
+        for unrelated in (
+            "# insecure-tls: calculate totals\nvalue = 1\n",
+            "value = 1  # insecure-tls: calculate totals\n",
+            "# insecure-tls: isolated peer\ndef fixture():\n    ctx.check_hostname = False\n",
+        ):
+            with self.subTest(source=unrelated):
+                self.assertTrue(self.findings({"app.py": BASE}, {"app.py": unrelated}))
+
     def test_shebang_and_script_metadata_pass(self) -> None:
         self.assert_allowed(
             '#!/usr/bin/env python3\n# /// script\n# requires-python = ">=3.12"\n# dependencies = []\n# ///\n' + BASE

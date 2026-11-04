@@ -8,10 +8,17 @@ from __future__ import annotations
 
 import argparse
 import ast
+from dataclasses import dataclass
 from pathlib import Path
 import re
 import subprocess
 import sys
+
+
+@dataclass
+class Scan:
+    findings: list[int]
+    annotation_rows: set[int]
 
 
 def qualified(node: ast.AST, imports: dict[str, str]) -> str:
@@ -63,8 +70,7 @@ def unsafe(node: ast.AST, imports: dict[str, str]) -> bool:
     return False
 
 
-def has_reason(lines: list[str], line: int, column: int, assignment_ends: dict[tuple[int, int], int]) -> bool:
-    """One comment covers adjacent unsafe statements at the same choke point."""
+def reason_rows(lines: list[str], line: int, column: int, assignment_ends: dict[tuple[int, int], int]) -> set[int]:
     comments = []
     index = line - 2
     while index >= 0:
@@ -74,16 +80,22 @@ def has_reason(lines: list[str], line: int, column: int, assignment_ends: dict[t
             continue
         if len(text) - len(text.lstrip()) != column or not text.lstrip().startswith("#"):
             break
-        comments.append(text.lstrip()[1:].strip())
+        comments.append((index + 1, text.lstrip()[1:].strip()))
         index -= 1
-    for comment in reversed(comments):
+    for row, comment in reversed(comments):
         if comment.startswith("insecure-tls:"):
             reason = comment.partition(":")[2].strip()
-            return bool(reason and not re.fullmatch(r"Q\d+|https?://\S+", reason))
-    return False
+            if not reason or re.fullmatch(r"Q\d+|https?://\S+", reason):
+                return set()
+            rows = {number for number, _ in comments}
+            end = row
+            while end in rows:
+                end += 1
+            return set(range(row, end))
+    return set()
 
 
-def findings(source: str) -> list[int]:
+def scan(source: str) -> Scan:
     tree = ast.parse(source)
     imports = {}
     for node in ast.walk(tree):
@@ -117,19 +129,26 @@ def findings(source: str) -> list[int]:
             node = parents[node]
         nodes.append(node)
     # Only adjacent attribute assignments may inherit a choke-point annotation.
-    ends = {(node.end_lineno, node.col_offset): node.lineno for node in nodes
+    ends = {(node.end_lineno or node.lineno, node.col_offset): node.lineno for node in nodes
             if node.end_lineno is not None and isinstance(node, (ast.Assign, ast.AnnAssign)) and
             any(isinstance(target, ast.Attribute) and target.attr in {"check_hostname", "verify_mode", "verify"} for target in
                 (node.targets if isinstance(node, ast.Assign) else [node.target]))}
     lines = source.splitlines()
     result = set()
+    annotated_rows = set()
     for node in nodes:
         decorators = node.decorator_list if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) else []
         line = min([node.lineno, *(decorator.lineno for decorator in decorators)])
         adjacent = ends if (node.end_lineno, node.col_offset) in ends else {}
-        if not has_reason(lines, line, node.col_offset, adjacent):
+        rows = reason_rows(lines, line, node.col_offset, adjacent)
+        if not rows:
             result.add(line)
-    return sorted(result)
+        annotated_rows.update(rows)
+    return Scan(sorted(result), annotated_rows)
+
+
+def findings(source: str) -> list[int]:
+    return scan(source).findings
 
 
 def main(argv: list[str] | None = None) -> int:
