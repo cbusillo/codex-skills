@@ -301,7 +301,7 @@ class RepositoryTests(Fixture):
             searched.append(branch)
             return []
 
-        def claims(_reader: object, _read: object, records: list[tuple[str, int]]) -> str:
+        def claims(_reader: object, _read: object, records: list[tuple[str, int]], _branches: object = None) -> str:
             return "held" if claimed_record in records else ""
 
         with mock.patch.object(landed_worktrees, "issues_naming", side_effect=naming), \
@@ -760,7 +760,7 @@ class MainTests(Fixture):
 
     def test_explicit_retirement_reads_recognized_cross_repository_delivery_ownership(self):
         target = self.worktree("delivery-source")
-        ownership = self.claimed_source(released=False)
+        ownership = self.claimed_source(released=False, branch="work/delivery-source")
         pull = {"number": 7, "state": "closed", "head": {"ref": "work/delivery-source"},
                 "body": "Refs o/operations#5"}
         code, result, host = self.run_main(pull, target=target, entrypoint=True, branch_pulls=[pull],
@@ -883,8 +883,9 @@ class MainTests(Fixture):
         self.assertEqual({r["path"]: r["decision"] for r in result["worktrees"]}[str(refresh)], "kept")
         self.assertNotIn(mock.call(str(refresh), dry_run=False), run.call_args_list)
 
-    def claimed_source(self, *, released):
-        record = {"worker": "author", "session": "s1", "branch": "work/source", "claimed_at": "2026-10-22T00:00:00Z"}
+    @staticmethod
+    def claimed_source(*, released, branch="work/source"):
+        record = {"worker": "author", "session": "s1", "branch": branch, "claimed_at": "2026-10-22T00:00:00Z"}
         claim = {"id": 11, "user": {"login": "bot"}, "created_at": "2026-10-22T00:00:00Z",
                  "body": "Claimed by author\n" + github_plan_claim.marker(record)}
         release = {"id": 12, "user": {"login": "bot"}, "created_at": "2026-10-22T01:00:00Z",
@@ -951,18 +952,27 @@ class MainTests(Fixture):
         self.assertEqual({r["path"]: r["decision"] for r in result["worktrees"]}[source], "kept")
         self.assertNotIn(mock.call(source, dry_run=False), run.call_args_list)
 
-    def test_open_claim_on_an_issue_the_pr_refs_keeps_the_refresh_worktree(self):
+    def referenced_issue_claim(self, branch: str):
         refresh, pull, commits = self.merged_refresh()
         delivery_repo = "o/operations"
         delivery_number = 5
         claim = {"id": 12, "user": {"login": "bot"}, "created_at": "2026-10-22T00:00:00Z",
                  "body": "Claimed by refresher\n" + github_plan_claim.marker(
-                     {"worker": "refresher", "session": "s1", "branch": "work/delivery", "claimed_at": "2026-10-22T00:00:00Z"})}
+                     {"worker": "refresher", "session": "s1", "branch": branch, "claimed_at": "2026-10-22T00:00:00Z"})}
         code, result, run = self.run_main({**pull, "body": f"Refs {delivery_repo}#{delivery_number}"},
                                          commits=commits, discussions={str(delivery_number): [claim]})
         self.assertIn(f"repos/{delivery_repo}/issues/{delivery_number}", [call.args[0] for call in self.reader.get_json.call_args_list])
+        return refresh, result, run
+
+    def test_open_claim_on_an_issue_the_pr_refs_keeps_the_refresh_worktree(self):
+        refresh, result, run = self.referenced_issue_claim("work/refresh")
         self.assertEqual({r["path"]: r["decision"] for r in result["worktrees"]}[str(refresh)], "kept")
         self.assertNotIn(mock.call(str(refresh), dry_run=False), run.call_args_list)
+
+    def test_umbrella_claim_on_another_branch_does_not_keep_a_landed_worktree(self):
+        refresh, result, run = self.referenced_issue_claim("work/umbrella-lead")
+        self.assertEqual({r["path"]: r["decision"] for r in result["worktrees"]}[str(refresh)], "retired")
+        self.assertIn(mock.call(str(refresh), dry_run=False), run.call_args_list)
 
     def test_fast_forward_landing_keeps_worktrees_on_its_commits(self):
         refresh, pull, commits = self.merged_refresh()

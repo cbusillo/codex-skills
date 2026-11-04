@@ -35,6 +35,23 @@ def read(text: str) -> str | None:
     return validate(found[0][1]) if found else None
 
 
+def launch_brief(text: str) -> str | None:
+    text = text.replace("\r\n", "\n")
+    actor = read(text)
+    if not actor or not actor.startswith("agent:"):
+        return None
+    visible = {index for index, _ in unquoted_lines(text)}
+    for opening in re.finditer(r"(?m)^Brief:[ \t]*\n(?P<fence>`{3,}|~{3,})(?:text)?[ \t]*\n", text):
+        if text[:opening.start()].count("\n") not in visible or not fields(text[:opening.start()]):
+            continue
+        content = text[opening.end():]
+        fence = opening["fence"]
+        closing = re.search(rf"(?m)^{re.escape(fence[0])}{{{len(fence)},}}[ \t]*$", content)
+        if closing and content[:closing.start()].strip():
+            return content[:closing.start()]
+    return None
+
+
 def write(text: str, actor: str) -> str:
     validate(actor)
     found = fields(text)

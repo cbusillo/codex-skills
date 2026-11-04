@@ -2143,6 +2143,7 @@ def cmd_show(args: argparse.Namespace) -> None:
                 resume_id = target[2]
         facts = github_next_queue.ownership_facts(candidate, observed,
             trusted=wait_authors(issue["repo"]), resume_from=resume_id, resume_source=source_item,
+            dispatch_recipient=getattr(args, "dispatch_recipient", None) or "",
             expired_sessions=github_plan_claim.expired_lease_sessions(comments), worker=getattr(args, "worker", None) or "")
         source_clear = (source_facts is None or (source_facts["complete"] and not source_facts.get("error")
                         and not source_facts["conflicts"] and (args.read_only or not source_facts["recipients"])))
@@ -3049,7 +3050,7 @@ def claim_once(args: argparse.Namespace) -> None:
     def read_record(record_number, record_repo, *, allow_closed=False):
         key = (record_repo.casefold(), int(record_number))
         if key not in phase_records:
-            phase_records[key] = claim_snapshot(str(record_number), record_repo, allow_closed=allow_closed)
+            phase_records[key] = claim_snapshot(str(record_number), record_repo, allow_closed=allow_closed, preserve_content=True)
         snapshot = phase_records[key]
         if snapshot[0].get("state") not in ({"open", "closed"} if allow_closed else {"open"}):
             raise PlanError("Claim requires an open issue or pull request")
@@ -3103,6 +3104,7 @@ def claim_once(args: argparse.Namespace) -> None:
             ended_claims={entry["claim_id"] for entry in ended_owners})
         if recipient := github_plan_claim.recipient_evidence(current_status, current_comments,
                 repo=issue_repo, number=number, trusted=wait_authors(issue_repo), worker=claim["worker"], session=claim["session"],
+                dispatch_recipient=getattr(args, "dispatch_recipient", None) or "",
                 ended_claims={entry["claim_id"] for entry in ended_owners}):
             conflicts.append(recipient)
         current_branch_reused = any(entry["branch"] == claim["branch"] and entry["branch"] in branches
@@ -3786,7 +3788,7 @@ def claim_once(args: argparse.Namespace) -> None:
             target, sections, target_comments = prepared["targets"][pull["number"]]
             # PR status may name the canonical issue being claimed. Keep its
             # holder prose conservative rather than applying issue exclusions.
-            target_status = claim_current_status(target, sections, target_comments)
+            target_status = claim_current_status(target, sections, target_comments, preserve_content=True)
             target_ended = ended_ownership(target_comments, inventory, takeover=False)
             competing, _ = github_plan_claim.discussion_evidence(target_status, target_comments, claim,
                 ended_claims={entry["claim_id"] for entry in target_ended})
@@ -3956,10 +3958,10 @@ def claim_once(args: argparse.Namespace) -> None:
                 refuse(conflicts, owner_comments=[], owner_repo=checked_repo, owner_number=checked_number)
 
     try:
-        issue, status, comments, can_update = claim_snapshot(args.issue, repo, allow_closed=True)
+        issue, status, comments, can_update = claim_snapshot(args.issue, repo, allow_closed=True, preserve_content=True)
         record_kind = "pr" if "pull_request" in issue else "issue"
         if reconcile_observed_admissions(comments):
-            issue, status, comments, can_update = claim_snapshot(args.issue, repo, allow_closed=True)
+            issue, status, comments, can_update = claim_snapshot(args.issue, repo, allow_closed=True, preserve_content=True)
         if issue.get("state") != "open":
             raise PlanError("Claim requires an open issue or pull request")
         if record_kind == "issue" and args.resume_from:
@@ -4071,7 +4073,7 @@ def claim_once(args: argparse.Namespace) -> None:
                 raise
             completed.append("post_claim")
         # Check the discussion again before touching status or labels.
-        issue, status, comments, can_update = claim_snapshot(args.issue, repo, allow_closed=True)
+        issue, status, comments, can_update = claim_snapshot(args.issue, repo, allow_closed=True, preserve_content=True)
         reconcile_observed_admissions(comments)
         if issue.get("state") != "open":
             raise PlanError("Claim requires an open issue or pull request")
@@ -4119,7 +4121,7 @@ def claim_once(args: argparse.Namespace) -> None:
             body = replace_issue_plan_section(status_issue, "Current Status", status_text)
             rest_edit_issue(issue_repo, number, body=body)
             completed.append("update_current_status")
-        final, final_status, final_comments, _ = claim_snapshot(args.issue, repo)
+        final, final_status, final_comments, _ = claim_snapshot(args.issue, repo, preserve_content=True)
         comments = final_comments
         check_agent(final)
         _, prepared_handoff = prepare_phase((final, final_status, final_comments, can_update))
@@ -7724,6 +7726,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--full", action="store_true", help="Include the entire body instead of selected sections")
     p.add_argument("--launch-check", action="store_true", help="Read current ownership and delivery holds for a new execution worker; never claim")
     p.add_argument("--worker", help="Intended execution worker for named-recipient routing; does not claim or waive custody checks")
+    p.add_argument("--dispatch-recipient", help="Exact coordinator named by a fenced launch request; no custody or wait waiver")
     p.add_argument("--admission", help="Admission the execution worker will claim")
     p.add_argument("--admission-link", action="append", default=[], metavar="URL", help="Exact claim admission evidence; repeat for each occurrence")
     p.add_argument("--read-only", action="store_true", help="Allow a launch check to answer waits without claiming or changing held work")
@@ -7765,6 +7768,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--agent-override", metavar="REASON", help="Record an explicit Director override for this session")
     p.add_argument("--worker", required=True)
     p.add_argument("--session", required=True)
+    p.add_argument("--dispatch-recipient", help="Exact coordinator named by a fenced launch request; no custody or wait waiver")
     p.add_argument("--branch", required=True, help="Exact branch for this claim; create or continue its verified worktree only after claim succeeds")
     p.add_argument("--next-action", required=True)
     p.add_argument("--resume-from", help="Original released claim comment ID, or its exact source issue claim URL for retained PR or canonical-parent work")

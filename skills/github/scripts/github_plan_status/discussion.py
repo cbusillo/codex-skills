@@ -87,8 +87,9 @@ def status_field(status: str, field: str) -> str:
 
 
 def live_lines(text: str) -> list[str]:
-    text = re.sub(r"(?ms)^```[^\n]*\n.*?^```[^\n]*$", "", text)
-    return [line for line in text.splitlines() if line.strip().startswith("<!-- " + MARKER)]
+    from .waits import live_lines as visible_lines
+
+    return [line for _, line in visible_lines(text, prefix="", skip_html=False) if line.strip().startswith("<!-- " + MARKER)]
 
 
 def records(text: str) -> list[dict[str, str]]:

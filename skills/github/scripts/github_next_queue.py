@@ -43,9 +43,10 @@ def compact_output(value: Any) -> Any:
 def ownership_facts(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[str],
                     resume_from: int | None = None, resume_source: dict[str, Any] | None = None,
                     expired_sessions: set[str] | frozenset[str] | None = None,
-                    worker: str = "", session: str = "") -> dict[str, Any]:
+                    worker: str = "", session: str = "", dispatch_recipient: str = "") -> dict[str, Any]:
     discussion = item.get("discussion") or {}
-    status = current_status(discussion, trusted, body_recorded_at=discussion.get("body_recorded_at"), preserve_markers=True)
+    status = current_status(discussion, trusted, body_recorded_at=discussion.get("body_recorded_at"),
+                            preserve_markers=True, preserve_content=True)
     comments = [{**comment, "user": {"login": comment.get("author") or ""}} for comment in discussion.get("comments", [])]
     row = {"complete": ownership.get("complete") is True, "coverage": ownership.get("coverage", {})}
     complete = discussion.get("complete")
@@ -65,6 +66,7 @@ def ownership_facts(item: dict[str, Any], ownership: dict[str, Any], *, trusted:
         recipients = []
         if recipient := github_plan_claim.recipient_evidence(
                 status, comments, repo=item["repo"], number=item["number"], trusted=trusted, worker=worker, session=session,
+                dispatch_recipient=dispatch_recipient,
                 ended_claims={source["claim_id"] for source in ended}):
             recipients.append(recipient)
         if item.get("record_type") == "pull_request":
@@ -86,7 +88,8 @@ def ownership_facts(item: dict[str, Any], ownership: dict[str, Any], *, trusted:
                 source_comments = source["_graph_comments"]
                 ended_sources = github_plan_claim.ended_ownership(source_comments, inventory,
                     expired_sessions | github_plan_claim.expired_lease_sessions(source_comments))
-                source_status = current_status(github_direction_next.discussion_snapshot(source, source_comments, complete=True), trusted, preserve_markers=True)
+                source_status = current_status(github_direction_next.discussion_snapshot(source, source_comments, complete=True),
+                                               trusted, preserve_markers=True, preserve_content=True)
                 source_conflicts, _ = github_plan_claim.discussion_evidence(source_status, source_comments,
                     {"worker": "", "session": "", "branch": "", "claimed_at": ""},
                     ended_claims={source["claim_id"] for source in ended_sources})
