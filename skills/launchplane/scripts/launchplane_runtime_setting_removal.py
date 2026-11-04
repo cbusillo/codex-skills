@@ -166,10 +166,11 @@ def _context_comparison(h: Any, result: dict[str, Any], body: dict[str, Any]) ->
         raise h.LaunchplaneSafetyError("invalid_response")
     keys = []
     for effect in effects:
-        if (not isinstance(effect, dict) or effect.keys() != {"key", "source_after", "effect"}
+        if (not isinstance(effect, dict) or not {"key", "effect"} <= effect.keys()
+                or effect.keys() - {"key", "source_after", "effect"}
                 or not printable_key(effect["key"])
-                or not ((effect["source_after"] == "context" and effect["effect"] in ("unchanged", "changed"))
-                        or (effect["source_after"] is None and effect["effect"] == "absent"))):
+                or not ((effect.get("source_after") == "context" and effect["effect"] in ("unchanged", "changed"))
+                        or (effect.get("source_after") is None and effect["effect"] == "absent"))):
             raise h.LaunchplaneSafetyError("invalid_response")
         keys.append(effect["key"])
     if sorted(keys) != sorted(body["keys"]):
