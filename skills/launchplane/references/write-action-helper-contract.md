@@ -907,6 +907,14 @@ installed local helper bindings.
   id, name, domains and live volume values are dropped and listed in
   `dropped_field_paths`, as are names that are not env keys. A secret-looking
   value in a kept field fails the read.
+  When reported, the current target also keeps `compose_matches_generated`
+  (strict boolean or null) and `override_environment_keys` (complete names-only
+  list or null). Missing fields remain omitted and provide no evidence; null
+  stays unknown, and a valid empty list stays empty. Malformed fields or any
+  invalid or over-bound override-name list refuse the read rather than returning
+  a partial list. These advisory provider observations do not qualify a removal;
+  [the producer guide](https://github.com/cbusillo/launchplane/blob/main/docs/reviewed-retirement.md)
+  owns their runtime and rollback limits.
   Provider deployment status is a bounded code from the latest reported
   deployment; omitted, null or whitespace-only status stays `null` (unknown).
   Malformed status is dropped to `null` with its path recorded, retaining the
