@@ -474,7 +474,7 @@ def repository_rows(reader: Any, github_read: Any, repo: str, checkout: Path, ro
 
     def decisions_for_trees() -> Iterator[dict]:
         for tree in trees:
-            row = {"path": str(tree.path), "branch": tree.branch, "head": tree.head, "decision": "kept"}
+            row: dict[str, Any] = {"path": str(tree.path), "branch": tree.branch, "head": tree.head, "decision": "kept"}
             try:
                 if any(is_under(path, tree.path) for path in preserve):
                     row["reason"] = "source checkout or calling session uses this tree"
