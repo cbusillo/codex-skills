@@ -325,9 +325,7 @@ def test_recorded_rest_show_provenance_and_fallback():
     )
     rows[0]["_graph_actor"] = "fixture-reader"
     plan = load_plan()
-    args = argparse.Namespace(
-        repo="owner/repo", issue="1720", full=True, batch_read=True
-    )
+    args = plan.build_parser().parse_args(["--repo", "owner/repo", "show", "1720", "--full"])
     with (
         mock_attribute(
             plan.github_identity,
@@ -336,7 +334,10 @@ def test_recorded_rest_show_provenance_and_fallback():
         ),
         mock_attribute(plan, "emit") as output,
     ):
-        with mock_attribute(plan, "read_planning_graph", return_value=rows):
+        with (
+            mock_attribute(plan, "read_planning_graph", return_value=rows),
+            mock_attribute(plan, "get_issue", side_effect=AssertionError("unexpected REST issue read")),
+        ):
             plan.cmd_show(args)
         batched = output.call_args.args[0]["issue"]
         with (
@@ -356,6 +357,17 @@ def test_recorded_rest_show_provenance_and_fallback():
             plan.cmd_show(args)
         assert output.call_args.args[0]["issue"] == batched
         assert batched["provenance"]["ownership"] == "automation_managed"
+        args = plan.build_parser().parse_args(["--repo", "owner/repo", "show", "1720", "--full", "--no-batch-read"])
+        with (
+            mock_attribute(plan, "read_planning_graph", side_effect=AssertionError("unexpected GraphQL")),
+            mock_attribute(plan, "get_issue", return_value=("fixture-reader", record["rest"])),
+            mock_attribute(plan, "collect_paged_rest_items", return_value=("fixture-reader", record["comments"])),
+            mock_attribute(plan, "read_issue_relationships", return_value=("fixture-reader", {
+                key: [plan.compact_relationship_issue(row, key) for row in values]
+                for key, values in rows[0]["_graph_relationships"].items()})),
+        ):
+            plan.cmd_show(args)
+        assert output.call_args.args[0]["issue"] == batched
 
 
 def test_local_next_batch_selection_matches_rest_and_falls_back():

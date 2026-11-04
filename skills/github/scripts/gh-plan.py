@@ -7668,7 +7668,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_search)
 
     p = sub.add_parser("show", help="Show issue sections and all comments")
-    p.add_argument("--batch-read", action="store_true", help="Explicit cold/changed GraphQL slice; REST remains the unchanged-read route")
+    p.add_argument("--batch-read", action=argparse.BooleanOptionalAction, default=True,
+                   help="Read the complete issue graph through GraphQL; --no-batch-read uses conditional REST")
     p.add_argument("issue")
     p.add_argument("--full", action="store_true", help="Include the entire body instead of selected sections")
     p.add_argument("--launch-check", action="store_true", help="Read current ownership and delivery holds for a new execution worker; never claim")

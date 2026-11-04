@@ -53,6 +53,42 @@ def response(data: dict[str, Any], **fields: Any) -> ApiResult:
 
 
 class DiscussionTests(unittest.TestCase):
+    def test_worker_reviews_include_every_inline_location_and_submission(self) -> None:
+        inline = comment(10, "PullRequestReviewComment", authorAssociation="CONTRIBUTOR", path="app.py", line=None, originalLine=12)
+        review = comment(
+            9,
+            "PullRequestReview",
+            authorAssociation="CONTRIBUTOR",
+            state="CHANGES_REQUESTED",
+            submittedAt="2026-11-01T02:00:00Z",
+            comments=connection([inline], "inline", 2),
+        )
+        reader = Mock(deadline_at=None)
+        another = dict(
+            review, id="review-20", databaseId=20, comments=connection([dict(inline, id="node-11", databaseId=11, line=14)])
+        )
+        reader.graphql_json.side_effect = [
+            response(
+                {
+                    "repository": {
+                        "pullRequest": {"id": "pull", "__typename": "PullRequest", "reviews": connection([review, another])}
+                    }
+                }
+            ),
+            response({"node": {"comments": connection([dict(inline, id="node-13", databaseId=13, line=15)], total=2)}}),
+        ]
+        result = github_read.read_pull_request_reviews(reader, "example/repo", 7)
+        self.assertEqual(result["reviews"][0]["submitted_at"], review["submittedAt"])
+        self.assertEqual(
+            [(row["id"], row["line"], row["original_line"]) for row in result["review_comments"]],
+            [(10, None, 12), (11, 14, 12), (13, 15, 12)],
+        )
+        self.assertEqual(result["review_comments"][0]["author_association"], inline["authorAssociation"])
+        self.assertEqual(reader.graphql_json.call_count, 2)
+        reader.graphql_json.side_effect = [response({"repository": {"pullRequest": None}}, errors=[{"message": "partial"}])]
+        with self.assertRaises(GitHubReadShapeError):
+            github_read.read_pull_request_reviews(reader, "example/repo", 7)
+
     def test_thread_comments_authors_edits_and_reactions_share_one_query(self) -> None:
         reader = Mock(deadline_at=None)
         reader.graphql_json.return_value = response({"repository": {"issueOrPullRequest": thread()}})

@@ -3189,15 +3189,17 @@ retry and exact-head reconciliation.
 
 ### Planning Graph Batches
 
-For an explicitly cold or changing repository workload, `gh-plan.py show N
---full --batch-read` and `gh-plan.py next --batch-read` collect issue metadata,
-labels and native relationships in the shared bulk reader GraphQL transport.
+`gh-plan.py show N --full` collects issue metadata, labels, comments and native
+relationships through the existing shared GraphQL transport by default.
+`--no-batch-read` selects conditional REST for unchanged polling or diagnostics.
+For an explicitly cold or changing repository workload, `gh-plan.py next --batch-read`
+collects issue metadata, labels and native relationships through the same transport.
 Every `show` mode also collects every comment. Every requested connection is paged;
 a partial/error response discards the entire enrichment and recovers through
 the ordinary same-actor REST route. Claims and mutation preflights are unchanged.
 Global next retains its existing REST discovery.
 
-REST remains the default and the route for unchanged observations: its
+REST remains `next`'s default and the route for unchanged observations: its
 authenticated conditional cache can cost zero primary requests, while GraphQL
 costs points on every refresh. Select batching for cold/changed passes, rather
 than replacing free idle polling. The recorded library slice (`planning_graph(reader, repo, limit=20,
@@ -3217,8 +3219,13 @@ The Supervisor auto-enqueue observer and PR watcher support `--batch-read` for
 explicitly cold or changing passes. The watcher batches only its first
 snapshot or a new head, then uses REST while that head remains unchanged.
 The Supervisor flag requires `--once` for a cold/changed pass; its continuous
-mode uses conditional REST. The watcher keeps discussion/Client feedback reads
-on REST so publisher IDs and App provenance retain their verification path. The flag defaults off: unchanged polling
+mode uses conditional REST. The watcher reads submitted reviews and their inline
+comments together through the shared discussion GraphQL reader on every cycle.
+It retains issue comments on conditional REST so publisher IDs and App provenance
+keep their verification path. Review-thread resolution retains its separate
+current-head query. This shifts two cold REST requests to one GraphQL query;
+unchanged cycles still spend that query's points while their REST reads can return 304.
+The check-batch flag defaults off: unchanged check polling
 keeps its authenticated conditional REST savings. There is no persisted GraphQL
 body cache or credential/actor change.
 
@@ -3235,6 +3242,9 @@ already read, following [GitHub's combined-state rules](https://docs.github.com/
 An unavailable status list leaves the combined state unknown. Actions runs,
 jobs, superseded-run selection, unresolved review threads and Client acceptance
 retain their existing reads and decisions.
+GraphQL `EXPECTED` contexts have no qualified REST-state parity. The optional
+check adapter discards such a batch and recovers through its existing REST path,
+rather than inventing a pending status. Its defaults remain unchanged.
 The batch does not make an enqueue or merge decision. The six-PR cold
 metadata/check/status slice measures eighteen REST requests versus one GraphQL
 request/point; unchanged REST revalidation still costs zero primary requests.

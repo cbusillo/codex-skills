@@ -915,6 +915,58 @@ def test_fetch_new_review_items_surfaces_unknown_external_human(monkeypatch):
     ]
 
 
+def test_graphql_reviews_preserve_feedback_and_rest_publisher_provenance(monkeypatch: pytest.MonkeyPatch) -> None:
+    issue: dict[str, Any] = {
+        "id": 1,
+        "body": "Question",
+        "user": {"login": "person", "id": 27},
+        "performed_via_github_app": {"id": 45},
+        "author_association": "CONTRIBUTOR",
+    }
+    inline = {
+        "id": 2,
+        "body": "Fix",
+        "user": {"login": "person"},
+        "path": "app.py",
+        "line": None,
+        "original_line": 12,
+        "author_association": "CONTRIBUTOR",
+    }
+    review = {
+        "id": 3,
+        "body": "Needs work",
+        "user": {"login": "person"},
+        "state": "CHANGES_REQUESTED",
+        "submitted_at": "2026-11-01T00:00:00Z",
+        "author_association": "CONTRIBUTOR",
+    }
+
+    def rest(endpoint: str, **_kwargs: Any) -> list[dict[str, Any]]:
+        if "/issues/" in endpoint:
+            return [issue]
+        return [review] if endpoint.endswith("/reviews") else [inline]
+
+    monkeypatch.setattr(gh_pr_watch, "gh_api_list_paginated", rest)
+    before = gh_pr_watch.fetch_new_review_items(sample_pr(), {}, True)
+    calls = []
+
+    def issue_only(endpoint: str, **kwargs: Any) -> list[dict[str, Any]]:
+        calls.append(endpoint)
+        assert "/issues/" in endpoint
+        return rest(endpoint, **kwargs)
+
+    monkeypatch.setattr(gh_pr_watch, "gh_api_list_paginated", issue_only)
+    monkeypatch.setitem(
+        vars(sys.modules["github_read"]), "read_pull_request_reviews", lambda *_a: {"reviews": [review], "review_comments": [inline]}
+    )
+    state = {}
+    assert gh_pr_watch.fetch_new_review_items(sample_pr(), state, True, reader=ReviewReader()) == before
+    assert before[0]["author_id"] == issue["user"]["id"]
+    assert before[0]["github_app"] == issue["performed_via_github_app"]
+    assert gh_pr_watch.fetch_new_review_items(sample_pr(), state, False, reader=ReviewReader()) == []
+    assert len(calls) == 2
+
+
 def test_fetch_new_review_items_ignores_own_automation_comment(monkeypatch):
     automation_comment = {
         "id": 10,
@@ -2052,6 +2104,7 @@ def test_security_threads_survive_seen_comments(monkeypatch, resolved, outdated,
     pr = sample_pr()
     comment = {"id": 17, "user": {"login": "github-advanced-security[bot]"}, "body": "CodeQL finding", "commit_id": comment_sha}
     monkeypatch.setattr(gh_pr_watch, "gh_api_list_paginated", lambda endpoint, **kwargs: [comment] if endpoint.endswith("/comments") and "/pulls/" in endpoint else [])
+    monkeypatch.setitem(vars(sys.modules["github_read"]), "read_pull_request_reviews", lambda *_a: {"reviews": [], "review_comments": [comment]})
     body = {"data": {"repository": {"nameWithOwner": pr["repo"], "pullRequest": {
         "number": pr["number"], "url": pr["url"], "headRefOid": pr["head_sha"],
         "reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": [{
@@ -2150,6 +2203,7 @@ def test_resolved_comments_do_not_replay_after_graphql_failure(monkeypatch):
     pr = sample_pr()
     comment = {"id": 17, "user": {"login": "github-advanced-security[bot]"}, "body": "CodeQL finding"}
     monkeypatch.setattr(gh_pr_watch, "gh_api_list_paginated", lambda endpoint, **kwargs: [comment] if endpoint.endswith("/comments") and "/pulls/" in endpoint else [])
+    monkeypatch.setitem(vars(sys.modules["github_read"]), "read_pull_request_reviews", lambda *_a: {"reviews": [], "review_comments": [comment]})
     body = {"data": {"repository": {"nameWithOwner": pr["repo"], "pullRequest": {
         "number": pr["number"], "url": pr["url"], "headRefOid": pr["head_sha"],
         "reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": [{

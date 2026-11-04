@@ -722,6 +722,39 @@ def read_discussion(reader: GitHubReader, repo: str, number: int, *, issue_id: i
     return result
 
 
+def read_pull_request_reviews(reader: GitHubReader, repo: str, number: int) -> dict[str, Any]:
+    owner, name = repo.split("/")
+    fields = "__typename id databaseId body createdAt updatedAt url author { __typename login } authorAssociation"
+    inline_fields = fields + " path line originalLine"
+    review_fields = fields + " submittedAt " + discussion_connection("comments", inline_fields)
+    document = (
+        "query($owner:String!,$name:String!,$number:Int!) { repository(owner:$owner,name:$name) { "
+        "pullRequest(number:$number) { __typename id "
+        + discussion_connection("reviews", review_fields)
+        + " } } rateLimit { cost } }"
+    )
+    data = discussion_query(reader, document, {"owner": owner, "name": name, "number": number})
+    repository_node = data.get("repository")
+    pull = repository_node.get("pullRequest") if isinstance(repository_node, dict) else None
+    if not isinstance(pull, dict):
+        raise GitHubReadShapeError(f"GitHub did not expose {repo}#{number}")
+    result: dict[str, Any] = {"reviews": [], "review_comments": []}
+    for review in discussion_nodes(reader, pull, "reviews", review_fields):
+        result["reviews"].append({**discussion_comment(review, repo, number), "author_association": review["authorAssociation"]})
+        for node in discussion_nodes(reader, review, "comments", inline_fields):
+            result["review_comments"].append(
+                {
+                    **discussion_comment(node, repo, number),
+                    "path": node["path"],
+                    "line": node["line"],
+                    "original_line": node["originalLine"],
+                    "author_association": node["authorAssociation"],
+                }
+            )
+    result["review_comments"].sort(key=lambda comment: comment["id"])
+    return result
+
+
 def request_diagnostic(
     result: github_api_core.ApiResult,
     *,

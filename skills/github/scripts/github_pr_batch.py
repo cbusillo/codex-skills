@@ -302,13 +302,13 @@ def batch_pull_requests(
                     }
                 )
             elif context["__typename"] == "StatusContext":
+                if context["state"] == "EXPECTED":
+                    raise github_read.GitHubReadShapeError("EXPECTED status context requires REST evidence")
                 statuses.append(
                     {
                         "id": context["id"],
                         "context": context["context"],
-                        "state": "pending"
-                        if context["state"] == "EXPECTED"
-                        else context["state"].lower(),
+                        "state": context["state"].lower(),
                         "description": context["description"],
                         "target_url": context["targetUrl"],
                         "created_at": context["createdAt"],
