@@ -3064,6 +3064,30 @@ def claim_once(args: argparse.Namespace) -> None:
                                    if entry["session"] != claim["session"] and entry["evidence"] == "lease_expired")
         return ended
 
+    def family_artifact_context(owner_inventory: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        ended: list[dict[str, Any]] = []
+        comments: list[dict[str, Any]] = []
+        checked: set[tuple[str, int]] = set()
+        for peer_repo, peer_number, _, peer_comments in phase_peers:
+            key = (peer_repo.casefold(), peer_number)
+            if key in checked or key not in phase_owners or peer_repo.casefold() != issue_repo.casefold():
+                continue
+            if peer_repo.casefold() != target_repo.casefold():
+                continue
+            checked.add(key)
+            comments.extend(peer_comments)
+            for entry in github_plan_claim.ended_ownership(peer_comments, owner_inventory):
+                if entry["evidence"] == "authored_release":
+                    ended.append({**entry, "work_record": f"https://github.com/{peer_repo}/issues/{peer_number}",
+                                  "claim_url": github_plan_claim.handoff_url(peer_repo, peer_number, entry["claim_id"]),
+                                  "release_url": github_plan_claim.handoff_url(peer_repo, peer_number, entry["release_id"])})
+        return ended, comments
+
+    def artifact_branches(ended: list[dict[str, Any]], comments: list[dict[str, Any]],
+                          pulls: list[dict[str, Any]], owner_inventory: dict[str, Any]) -> set[str]:
+        family_ended, family_comments = family_artifact_context(owner_inventory)
+        return github_plan_claim.ended_artifact_branches([*ended, *family_ended], [*comments, *family_comments], pulls)
+
     def ownership_snapshot(current_status: str, current_comments: list[dict[str, Any]]):
         nonlocal inventory, ended_owners
         inventory = phase["inventory"]
@@ -3076,10 +3100,12 @@ def claim_once(args: argparse.Namespace) -> None:
                 repo=issue_repo, number=number, trusted=wait_authors(issue_repo), worker=claim["worker"], session=claim["session"],
                 ended_claims={entry["claim_id"] for entry in ended_owners}):
             conflicts.append(recipient)
+        family_ended, _ = family_artifact_context(inventory)
         phase["branch_error"] = (ClassifiedPlanError("claim_ended_branch_reused",
             "Ended ownership requires a new task branch; preserve the retained source branch and worktree")
             if any(entry["branch"] == claim["branch"] and entry["branch"] in branches
-                   and entry["claim_id"] != args.resume_from for entry in ended_owners) else None)
+                   and (entry in family_ended or entry["claim_id"] != args.resume_from)
+                   for entry in [*ended_owners, *family_ended]) else None)
         return conflicts, owned
 
     def check_wait(waiting_issue: dict[str, Any], waiting_status: str) -> bool:
@@ -3474,6 +3500,7 @@ def claim_once(args: argparse.Namespace) -> None:
                     raise
                 continue
             target_pulls.append(retained_pull)
+        phase["artifact_pulls"] = target_pulls
         prepared = {"source": source_info, "pulls": target_pulls,
                     "permitted": set(), "error": None, "targets": {}}
         _, current_status, current_comments, _ = phase_records[(issue_repo.casefold(), number)]
@@ -3496,7 +3523,7 @@ def claim_once(args: argparse.Namespace) -> None:
                     raw_inventory, target_pulls, checked_number, candidate_claim, own_record=bool(own),
                     retained=source["record"]["branch"], retained_branches=candidate["permitted"],
                     retained_repo=target_repo, repo=checked_repo, inventory_repo=target_repo,
-                    ended_branches=github_plan_claim.ended_artifact_branches(ended, owner_comments, target_pulls),
+                    ended_branches=artifact_branches(ended, owner_comments, target_pulls, raw_inventory),
                     recorded_branches=github_plan_claim.recorded_claim_branches(owner_status, owner_comments))
                 if any(conflict["source"] in {"local_branches", "remote_branches", "worktree", "open_pr",
                                                "closed_pr_artifacts"} for conflict in conflicts):
@@ -3642,7 +3669,6 @@ def claim_once(args: argparse.Namespace) -> None:
             bucket="rest_core", step_prefix="claim_pr_readback",
         )
         phase["inventory"] = github_plan_claim.local_inventory(target_repo, number)
-        prepared = prepare_handoff(source_info, phase["open_pulls"])
         inherited_source = any(record.get("retained_handoff") for text in [current_status, *(comment.get("body") or "" for comment in current_comments)]
                                for record in github_plan_claim.records(text))
         if record_kind == "issue" or getattr(args, "resume_issue", None) or inherited_source:
@@ -3662,6 +3688,7 @@ def claim_once(args: argparse.Namespace) -> None:
                 # Stop at the invalid edge. Already collected peer ownership
                 # still has its original precedence over that local predicate.
                 phase_family_error = error
+        prepared = prepare_handoff(source_info, phase["open_pulls"])
         if retained_mode:
             phase["target_config"] = load_config(target_repo)
             if issue_repo.casefold() != target_repo.casefold():
@@ -3728,9 +3755,6 @@ def claim_once(args: argparse.Namespace) -> None:
                 known_wait_errors.append(target_wait_error)
             evaluated_waits[pull_number] = has_wait, target_wait_error
         aggregate_wait_requirement = wait_requirement(known_wait_errors)
-        for ended in ended_owners:
-            ended["pull_requests"] = [f"https://github.com/{target_repo}/pull/{p['number']}" for p in target_pulls
-                                      if (p.get("head") or {}).get("ref") == ended["branch"]]
         if claim["branch"] in permitted and selection["mode"] != "next":
             retained_branch_error = PlanError("Retained handoff requires a new task branch, separate from every retained PR/source branch")
             requirements = [branch_exclusion_requirement(set(permitted), "retained_handoff")]
@@ -3798,7 +3822,7 @@ def claim_once(args: argparse.Namespace) -> None:
             competing = github_plan_claim.artifact_evidence(
                 target_inventory, target_pulls, checked_number, claim, own_record=bool(own_comments),
                 retained_branches=permitted, retained_repo=target_repo, repo=checked_repo,
-                ended_branches=github_plan_claim.ended_artifact_branches(checked_ended, checked_comments, target_pulls),
+                ended_branches=artifact_branches(checked_ended, checked_comments, target_pulls, target_inventory),
                 inventory_repo=target_repo,
                 recorded_branches=github_plan_claim.recorded_claim_branches(checked_status, checked_comments),
             )
@@ -3886,7 +3910,7 @@ def claim_once(args: argparse.Namespace) -> None:
 
     def check_pr_artifacts(status_to_check: str, current_comments: list[dict[str, Any]]) -> None:
         fresh_inventory = inventory
-        fresh_pulls = phase["open_pulls"]
+        fresh_pulls = phase.get("artifact_pulls", phase["open_pulls"])
         permitted_issues = {f"https://github.com/{issue_repo}/issues/{number}".casefold()} if record_kind == "issue" else set()
         if retained_mode and record_kind == "pr":
             permitted_issues.add(f"https://github.com/{issue_repo}/issues/{resume_source_number}".casefold())
@@ -3896,7 +3920,7 @@ def claim_once(args: argparse.Namespace) -> None:
                 "PR has a canonical implementation issue; claim that issue instead",
                 payload={"canonical_issue": other_canonical[0], "canonical_issues": phase["canonical_issues"]})
         _, own = github_plan_claim.discussion_evidence("", current_comments, claim)
-        ended_branches = github_plan_claim.ended_artifact_branches(ended_owners, current_comments, fresh_pulls)
+        ended_branches = artifact_branches(ended_owners, current_comments, fresh_pulls, fresh_inventory)
         recorded_branches = github_plan_claim.recorded_claim_branches(status_to_check, current_comments)
         scopes = dict.fromkeys(((number, issue_repo), *((n, target_repo)
                                for n in sorted(phase.get("retained_pr_numbers", ())))))
@@ -3941,14 +3965,14 @@ def claim_once(args: argparse.Namespace) -> None:
         retained = phase["source"]["record"]["branch"] if args.resume_from else None
         check_native_blockers()
         retained_branches = handoff_preflight(comments, status, prepared_handoff)
-        pulls = phase["open_pulls"]
+        pulls = phase.get("artifact_pulls", phase["open_pulls"])
         conflicts = github_plan_claim.artifact_evidence(inventory, pulls, number, claim,
                                                        subject_pr=number if record_kind == "pr" else None,
                                                        own_record=bool(owned), retained=retained, repo=issue_repo,
                                                        retained_branches=retained_branches,
                                                        retained_repo=target_repo if retained_mode else None,
                                                        inventory_repo=target_repo,
-                                                       ended_branches=github_plan_claim.ended_artifact_branches(ended_owners, comments, pulls),
+                                                       ended_branches=artifact_branches(ended_owners, comments, pulls, inventory),
                                                        recorded_branches=github_plan_claim.recorded_claim_branches(status, comments))
         if conflicts:
             refuse_or_route(conflicts, comments)
@@ -4145,6 +4169,12 @@ def claim_once(args: argparse.Namespace) -> None:
         if claim_id
         else {}
     )
+    family_ended, _ = family_artifact_context(inventory)
+    reported_artifacts = [*ended_owners, *family_ended]
+    for entry in reported_artifacts:
+        entry["pull_requests"] = [f"https://github.com/{target_repo}/pull/{pull['number']}"
+                                  for pull in phase.get("artifact_pulls", phase["open_pulls"])
+                                  if (pull.get("head") or {}).get("ref") == entry["branch"]]
     emit(
         {
             "ok": True,
@@ -4158,7 +4188,7 @@ def claim_once(args: argparse.Namespace) -> None:
             "previous_current_status": previous_status,
             "retained_artifacts": [
                 entry
-                for entry in ended_owners
+                for entry in reported_artifacts
                 if entry.get("worktrees")
                 or entry.get("pull_requests")
                 or entry["branch"] in inventory["local_branches"]

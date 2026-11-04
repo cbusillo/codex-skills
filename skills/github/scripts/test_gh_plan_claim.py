@@ -2505,6 +2505,88 @@ class ClaimTests(unittest.TestCase):
         self.target_comments["/repos/other/plans/issues/41/comments"] = source_comments
         for pull in [*self.pulls, *self.closed_pulls.values()]:
             pull["body"] = "Refs other/plans#41\nRefs other/plans#42"
+
+    def inherited_ended_artifact_fixture(self) -> dict[str, Any]:
+        self.completed_child_handoff_fixture()
+        inherited = {**OTHER, "session": "canonical-source", "branch": "work/canonical-source",
+                     "resume_from": "1", "retained_handoff": CLAIM.handoff_url("owner/repo", 41, self.handoff_id)}
+        self.comments = [
+            {"id": 70, "body": CLAIM.marker(inherited), "user": {"login": TEST_BOT},
+             "created_at": inherited["claimed_at"]},
+            {"id": 71, "body": "Released claim 70\nRetained PR #99. Closed PR #100 remains preserved history.",
+             "user": {"login": TEST_BOT}, "created_at": "2026-10-02T00:00:00Z"}]
+        self.closed_pulls[100]["merged_at"] = None
+        self.args.resume_from, self.handoff_id = 70, 71
+        self.args.branch = "work/canonical-next"
+        return self.target_comments["/repos/owner/repo/issues/41/comments"][0]
+
+    def test_inherited_ended_artifacts_are_preserved_and_report_the_original_owner(self) -> None:
+        source = self.inherited_ended_artifact_fixture()
+        original = CLAIM.records(source["body"])[0]
+        before = copy.deepcopy((self.inventory, self.pulls, self.closed_pulls, self.targets, self.target_comments))
+        self.run_claim()
+        result = self.emitted.call_args.args[0]
+        self.assertTrue(result["ok"])
+        self.assertIn("metadata_readback", result["completed_steps"])
+        artifact = next(entry for entry in result["retained_artifacts"] if entry["claim_id"] == source["id"])
+        self.assertEqual(artifact["branch"], original["branch"])
+        self.assertEqual(artifact["release_id"], self.target_comments["/repos/owner/repo/issues/41/comments"][-1]["id"])
+        self.assertEqual(artifact["claim_url"], CLAIM.handoff_url("owner/repo", 41, source["id"]))
+        self.assertIn("https://github.com/owner/repo/pull/100", artifact["pull_requests"])
+        self.assertTrue(artifact["worktrees"])
+        self.assertEqual(before, (self.inventory, self.pulls, self.closed_pulls, self.targets, self.target_comments))
+
+    def test_inherited_ended_artifacts_refuse_reuse_and_recheck_ownership_at_each_phase(self) -> None:
+        cases = [*product(("preflight", "after_post", "after_status"),
+                          ("release", "foreign_release", "author", "unmentioned_open", "new_claim",
+                           "expired_release", "expired_reuse")), ("preflight", "reuse")]
+        for phase, change in cases:
+            with self.subTest(phase=phase, change=change):
+                self.setUp()
+                source = self.inherited_ended_artifact_fixture()
+                original = CLAIM.records(source["body"])[0]
+                def invalidate() -> None:
+                    history = self.target_comments["/repos/owner/repo/issues/41/comments"]
+                    if change in {"release", "expired_release"}:
+                        history.pop()
+                        if change == "expired_release": self.lease_fixture("expired")
+                    elif change == "foreign_release": history[-1]["user"]["login"] = "stranger"
+                    elif change == "author": self.closed_pulls[100]["user"]["login"] = "stranger"
+                    elif change == "unmentioned_open":
+                        self.pulls.append({**copy.deepcopy(self.closed_pulls[100]), "number": 101, "state": "open"})
+                    elif change == "new_claim":
+                        record = {**OTHER, "branch": original["branch"], "session": "new-family-holder"}
+                        self.comments.append({"id": 90, "body": CLAIM.marker(record), "user": {"login": TEST_BOT}})
+                    elif change == "expired_reuse":
+                        history.append({"id": 90, "body": CLAIM.marker({**OTHER, "branch": original["branch"]}),
+                                        "user": {"login": TEST_BOT}})
+                        self.lease_fixture("expired")
+                    else: self.args.branch = original["branch"]
+                if phase == "preflight": invalidate()
+                else: setattr(self, phase, invalidate)
+                before = copy.deepcopy(self.inventory)
+                with self.assertRaises(PLAN.PlanError) as caught:
+                    self.run_claim()
+                if change == "reuse": self.assertEqual(caught.exception.code, "claim_ended_branch_reused")
+                if phase == "preflight": self.assert_no_writes()
+                else: self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
+                self.assertEqual(self.inventory, before)
+
+    def test_family_artifacts_do_not_force_selection_of_a_later_handoff(self) -> None:
+        self.inherited_ended_artifact_fixture()
+        first_handoff = self.handoff_id
+        later = {**copy.deepcopy(self.closed_pulls[100]), "number": 101, "merged_at": "2026-10-02T02:00:00Z"}
+        self.closed_pulls[later["number"]] = later
+        self.targets[str(later["number"])] = {**copy.deepcopy(self.targets["100"]), "number": later["number"]}
+        self.target_comments[f"/repos/owner/repo/issues/{later['number']}/comments"] = []
+        source = CLAIM.records(self.comments[0]["body"])[0]
+        self.comments.append({"id": 72, "user": {"login": TEST_BOT}, "body": (
+            f"Handoff from {source['worker']}\nclaim {self.args.resume_from}; session {source['session']}\n"
+            f"Retained PR #99 and #{later['number']}.")})
+        self.run_claim()
+        result = self.emitted.call_args.args[0]
+        self.assertEqual(result["claim"]["retained_handoff"], CLAIM.handoff_url("owner/repo", 42, first_handoff))
+
     def test_canonical_issue_adopts_consolidated_child_in_another_repository(self) -> None:
         self.consolidated_child_handoff_fixture()
         before = copy.deepcopy((self.targets, self.target_comments, self.inventory, self.pulls))
