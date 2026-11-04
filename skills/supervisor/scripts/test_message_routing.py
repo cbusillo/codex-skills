@@ -412,7 +412,7 @@ class MessageRoutingTests(unittest.TestCase):
         self.assertIsNotNone(event)
         assert event is not None
         self.reader.paged_json.return_value = [source]
-        [opening, sweep] = watch.read_opened(self.reader, REPO, STAMP)
+        [opening, sweep], _ = watch.read_opened(self.reader, REPO, STAMP)
         self.assertEqual(opening["updated_at"], source["created_at"])
         self.assertEqual(watch.source_messages(event[1]), [opening, sweep])
         self.assertEqual(
