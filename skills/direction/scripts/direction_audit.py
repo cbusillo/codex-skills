@@ -71,6 +71,10 @@ STATUS_FIELD = r"(?:State|Next action|Blocked by|Waiting for|Parked until|Waitin
 
 # The overall direction owns classification; repositories can contain mixed work.
 RANKS = ("milestone", "tooling", "own")
+ADMISSION_RANKS = {
+    "live-breakage": "milestone", "client-request": "milestone", "milestone": "milestone",
+    "own-project": "own", "repeat-stop": "tooling", "spare-capacity": "tooling",
+}
 # GitHub's revert button titles the pull request `Revert "..."` and writes
 # `Reverts OWNER/REPO#N`; `git revert` writes `This reverts commit <sha>`.
 REVERT_TITLE = re.compile(r"^\s*revert\b", re.I)
@@ -1515,6 +1519,35 @@ def native_pull_issue_refs(repo: str, number: int, *, fetch: Callable[[list[str]
     raise AuditError("native PR issue links truncated")
 
 
+def latest_issue_admission(repo: str, number: int, *, fetch: Callable[[list[str]], Any]) -> str | None:
+    path = f"repos/{repo}/issues/{number}"
+    issue = fetch(["api", path, "--method", "GET"])
+    if not isinstance(issue, dict):
+        raise AuditError("claim issue unavailable")
+    if "pull_request" in issue:
+        return None
+    count = issue.get("comments")
+    if type(count) is not int or count < 0:
+        raise AuditError("claim comment count unavailable")
+    trusted = github_plan_wait.authors(repo)
+    last_page = math.ceil(count / 100)
+    for page in range(last_page, max(0, last_page - MAX_PAGES), -1):
+        comments = fetch(["api", f"{path}/comments?per_page=100&page={page}", "--method", "GET"])
+        if not isinstance(comments, list):
+            raise AuditError("claim comments unavailable")
+        for comment in reversed(comments):
+            if not github_plan_wait.author_is_trusted(comment, repo.split("/")[0], author_logins=trusted):
+                continue
+            body = github_plan_claim.unquoted_text(comment.get("body") or "")
+            if not re.match(r"^Claimed by:?[ \t]+\S+[ \t]*(?:\n|$)", body.strip(), re.I):
+                continue
+            admission = re.search(r"^Admission:[ \t]*([a-z-]+)\b", body, re.M)
+            return admission[1] if admission and admission[1] in ADMISSION_RANKS else None
+    if last_page > MAX_PAGES:
+        raise AuditError("claim comments truncated")
+    return None
+
+
 def reopened_issue_events(
     repo: str, since: dt.datetime, *, fetch: Callable[[list[str]], Any], max_pages: int = MAX_PAGES,
 ) -> tuple[list[dict[str, Any]], bool]:
@@ -1617,6 +1650,7 @@ def capacity_summary(
     own-project repository.
     """
     merged_by_rank = dict.fromkeys(RANKS, 0)
+    classification_counts = dict.fromkeys(("admission", "link_walk", "disagreement_fallback"), 0)
     by_repository: dict[str, dict[str, Any]] = {}
     reverts: list[dict[str, Any]] = []
     reporting_rows: list[tuple[str, dict[str, Any], bool, bool]] = []
@@ -1631,8 +1665,15 @@ def capacity_summary(
         tooling_pulls = []
         for pull in merged:
             refs = pull_issue_refs(repo, pull)
-            rank = capacity_rank(repo, pull, own_projects=own_projects, tracked_issues=tracked_issues,
-                                 own_label=own_label, own_issues=own_issues)
+            admissions = pull.get("_admission_ranks") or set()
+            if len(admissions) == 1:
+                rank = next(iter(admissions))
+                classification_counts["admission"] += 1
+            else:
+                rank = capacity_rank(repo, pull, own_projects=own_projects, tracked_issues=tracked_issues,
+                                     own_label=own_label, own_issues=own_issues)
+                classification_counts["link_walk"] += 1
+                classification_counts["disagreement_fallback"] += int(len(admissions) > 1)
             reporting_rows.append((repo, pull, rank == "milestone",
                                    own_repository(repo, own_projects) or own_label.casefold() in _labels(pull)
                                    or own_label.casefold() in (pull.get("_report_labels") or set())
@@ -1680,6 +1721,7 @@ def capacity_summary(
         "own_project_label": own_label,
         "merged_total": total,
         "merged_by_rank": merged_by_rank,
+        "classification_counts": classification_counts,
         "own_share": own_share,
         "own_share_basis": "merged_pull_requests",
         "own_share_status": share_status,
@@ -2055,6 +2097,7 @@ def fetch_capacity(
     reads: github_next_reads.NextReads | None = None, tree_lines: Callable[[str, str], int] | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     """Read merged direction, its Track graph and per-repository listings."""
+    fetch = github_work_graph.cached_reads(fetch)
     owner = direction_repo.split("/")[0].casefold()
     coverage_errors: list[str] = []
     text = merged_direction(direction_repo, fetch=fetch)
@@ -2091,6 +2134,7 @@ def fetch_capacity(
         events: dict[str, list[dict[str, Any]]] = {}
         own_issues: set[tuple[str, int]] = set()
         linked_labels: dict[tuple[str, int], set[str] | None] = {}
+        admissions: dict[tuple[str, int], str | None] = {}
         truncated: list[str] = []
         reporting_errors: list[str] = []
 
@@ -2156,20 +2200,24 @@ def fetch_capacity(
                     if (github_plan_claim.is_train_batch(pull)
                             or not _within(pull.get("merged_at"), since, until, end_exclusive=True)):
                         continue
-                    legacy_tracked = bool(pull_issue_refs(name, pull) & tracked_issues)
-                    if not reporting_rules and legacy_tracked:
-                        continue
                     pull["_report_links_complete"] = True
                     try:
                         pull["_native_issue_refs"] = native_pull_issue_refs(name, pull["number"], fetch=fetch)
                     except AuditError:
-                        if legacy_tracked:
-                            reporting_errors.append(f"capacity_reporting_links:{name}#{pull.get('number')}")
-                        else:
-                            truncated.append(f"capacity_pull_links:{name}#{pull.get('number')}")
+                        truncated.append(f"capacity_pull_links:{name}#{pull.get('number')}")
                         pull["_report_links_complete"] = False
                     if not pull_issue_refs(name, pull) & tracked_issues:
                         mark_own_links(name, pull)
+                    pull["_admission_ranks"] = set()
+                    for ref in sorted(pull_issue_refs(name, pull)):
+                        try:
+                            if ref not in admissions:
+                                admissions[ref] = latest_issue_admission(*ref, fetch=fetch)
+                            admission = admissions[ref]
+                            if admission is not None:
+                                pull["_admission_ranks"].add(ADMISSION_RANKS[admission])
+                        except AuditError:
+                            truncated.append(f"capacity_claim:{ref[0]}#{ref[1]}")
                     if reporting_rules:
                         mark_reporting(name, pull)
             milestones[name], cut = fetch_paginated(f"repos/{name}/milestones?state=closed", fetch=fetch, max_pages=2)
