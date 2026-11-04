@@ -52,7 +52,7 @@ An explicit provider cannot bypass that policy. Finish the primary review
 before running any allowed supplementary review, serially with its recorded
 budget, and put both results in the PR's review note.
 
-1. Commit the change and leave the worktree clean. Write a prompt file that
+1. Commit the change and leave the worktree clean. Write a prompt file
    under the task-evidence path printed by worktree creation. Keep review
    results and redirected logs there too. The prompt names the change, the
    paths to read, and what the change is for. If `--out` points inside a

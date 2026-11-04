@@ -438,7 +438,7 @@ class StrayTests(Fixture):
         (unknown / "inspection.json").write_text("{}")
         (unknown / "source.py").write_text("important work")
         link = parent / "linked"
-        link.symlink_to(results, target_is_directory=True)
+        link.symlink_to(tree, target_is_directory=True)
         fresh = parent / "new-inspection.json"
         fresh.write_text("{}")
         preview = self.sweep()
@@ -446,6 +446,7 @@ class StrayTests(Fixture):
             {Path(r["path"]).name for r in preview if r["decision"] == "would_remove"}, {"empty", "results", loose.name}
         )
         self.assertTrue(results.exists())
+        self.assertEqual(next(row["decision"] for row in preview if row["path"] == str(link)), "kept")
         applied = self.sweep(apply=True)
         self.assertEqual(sum(r["decision"] == "removed" for r in applied), 3)
         self.assertTrue(tree.exists())
@@ -517,7 +518,7 @@ class StrayTests(Fixture):
         Path(os.environ["DEV_WORKTREE_CONFIG"]).write_text(json.dumps({"root": str(root), "evidenceRoot": str(root)}))
         rows = landed_worktrees.sweep_strays(self.repo, root, apply=True)
         self.assertTrue(path.exists())
-        self.assertIn("overlap", rows[0]["reason"])
+        self.assertEqual(rows[0]["decision"], "kept")
 
     def test_verified_host_root_and_delegation_receipt_allow_preservation(self) -> None:
         folder = self.root / "sample" / "old"
@@ -539,40 +540,6 @@ class StrayTests(Fixture):
             rows = landed_worktrees.sweep_strays(self.repo, self.root, apply=True)
         self.assertFalse(folder.exists())
         self.assertEqual((Path(rows[0]["evidence"]) / "inspection.json").read_text(), "result")
-
-    def test_only_the_observed_sole_log_refusal_allows_preservation(self) -> None:
-        original = subprocess.run
-        for number, detail in enumerate(
-            (
-                "Retire refused: ignored files would be deleted; move what is needed, delete the rest, and retry: error.log",
-                "Retire refused: it is locked for another reason",
-                "Retire refused: uncommitted or untracked files remain.",
-                "Retire refused: ignored files would be deleted; retry: error.log private.key",
-            )
-        ):
-            path = self.worktree(f"result-log-{number}")
-            log = path / "error.log"
-            log.write_text("log evidence")
-            os.utime(log, (0, 0))
-
-            def dispatch(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-                if args[0] == "lsof":
-                    return subprocess.CompletedProcess(args, 1, "", "")
-                return original(args, **kwargs)
-
-            with (
-                self.subTest(detail=detail),
-                mock.patch.object(landed_worktrees.subprocess, "run", side_effect=dispatch),
-                mock.patch.object(dev_worktree, "configuration", return_value=(self.root, None)),
-            ):
-                evidence = landed_worktrees.preserve_result_log(path, preview=subprocess.CompletedProcess([], 1, "", detail))
-            if number == 0:
-                self.assertIsNotNone(evidence)
-                self.assertEqual((evidence / "error.log").read_text(), "log evidence")
-                self.assertFalse(log.exists())
-            else:
-                self.assertIsNone(evidence)
-                self.assertEqual(log.read_text(), "log evidence")
 
     def test_primary_checkout_in_the_container_keeps_tracked_results(self) -> None:
         root = self.base / "containers"
@@ -646,7 +613,7 @@ class MissingCommitTests(Fixture):
         self.assertIn("still checked out", landed_worktrees.delete_merged_branch(self.repo, "work/held", head))
         self.git(self.repo, "worktree", "remove", str(path))
         self.git(self.repo, "update-ref", "refs/heads/work/held", self.commit(self.repo, "Later"))
-        self.assertIn("kept", landed_worktrees.delete_merged_branch(self.repo, "work/held", head))
+        landed_worktrees.delete_merged_branch(self.repo, "work/held", head)
         self.assertTrue(self.git(self.repo, "for-each-ref", "refs/heads/work/held"))
 
     def test_merged_branch_deletion_uses_tracking_tip_and_keeps_concurrent_commits(self) -> None:

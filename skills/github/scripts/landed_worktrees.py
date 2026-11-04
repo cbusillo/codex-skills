@@ -193,12 +193,14 @@ def portable_retire(path: Path, *, dry_run: bool) -> subprocess.CompletedProcess
     if objects.returncode or unpublished.returncode or unpublished.stdout.strip():
         return kept("HEAD or reflog history is unpublished")
     try:
-        users = subprocess.run(["lsof", "-nP", "-t", "+D", str(path)], capture_output=True, text=True, timeout=10)
+        if not has_no_live_users(path, directory=True):
+            return kept("worktree is in use or live-use proof is incomplete")
     except (OSError, subprocess.TimeoutExpired):
         return kept("live-use proof unavailable")
-    if users.stdout.strip() or users.stderr.strip() or users.returncode not in {0, 1}:
-        return kept("worktree is in use or live-use proof is incomplete")
-    common = Path(git(path, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip())
+    metadata = git(path, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    common = Path(metadata.stdout.strip())
+    if metadata.returncode or not common.is_absolute() or common.name != ".git":
+        return kept("repository identity unavailable")
     head = git(path, "rev-parse", "HEAD").stdout.strip()
     branch = git(path, "symbolic-ref", "--short", "-q", "HEAD").stdout.strip() or None
     inspector = Path(__file__).parents[2] / "jetbrains-inspection/scripts/jb-inspect.py"
@@ -235,11 +237,6 @@ def retire(rows: Iterable[dict], *, apply: bool, runner=None, deadline: float | 
         stage = "preview"
         try:
             preview = runner(row["path"], dry_run=True)
-            if preview.returncode and apply:
-                evidence = preserve_result_log(Path(row["path"]), preview=preview, deadline=deadline)
-                if evidence:
-                    row["results_preserved"] = str(evidence)
-                    preview = runner(row["path"], dry_run=True)
             if preview.returncode:
                 row.update(decision="kept", reason="retire preview refused",
                            detail=preview.stderr.strip().splitlines()[-1:] or [""])
@@ -298,11 +295,13 @@ def stray_snapshot(directory: int) -> dict[str, dict[str, int]]:
 
 def archive_results(repository: str, task: str, source_fd: int, contents: dict[str, dict[str, int]]) -> Path:
     evidence, _ = dev_worktree.artifact_roots()
-    parent = evidence / repository
-    if parent.is_symlink():
+    parent = evidence / repository / task
+    if any(path.is_symlink() for path in (parent, *parent.parents)):
         raise ValueError("result evidence directory is redirected")
     parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-    destination = Path(tempfile.mkdtemp(prefix=f"{task}-results-", dir=parent))
+    if parent.stat().st_dev != os.fstat(source_fd).st_dev:
+        raise ValueError("result evidence is on another filesystem; source entries kept")
+    destination = Path(tempfile.mkdtemp(prefix="results-", dir=parent))
     target_fd = dev_worktree.open_directory(destination)
     try:
         for name, expected in contents.items():
@@ -310,7 +309,7 @@ def archive_results(repository: str, task: str, source_fd: int, contents: dict[s
                 raise ValueError(f"result changed; remaining files kept; preserved results: {destination}")
             os.rename(name, name, src_dir_fd=source_fd, dst_dir_fd=target_fd)
     except OSError as exc:
-        raise OSError(f"result archive incomplete; preserved files at {destination}: {exc}") from exc
+        raise OSError(f"result archive incomplete; any moved files are at {destination}: {exc}") from exc
     finally:
         os.close(target_fd)
     return destination
@@ -331,45 +330,21 @@ def verify_host_root(root: Path, deadline: float | None) -> None:
         raise ValueError("host worktree root verification unavailable; stray entries retained")
 
 
-def preserve_result_log(path: Path, *, preview: subprocess.CompletedProcess[str], deadline: float | None = None) -> Path | None:
-    detail = preview.stderr.strip().splitlines()[-1:]
-    if (
-        not preview.returncode
-        or not detail
-        or "ignored files would be deleted;" not in detail[0]
-        or detail[0].partition("retry: ")[2].strip() != "error.log"
-    ):
-        return None
-    if not path.is_dir():
-        return None
-    status = git(path, "status", "--porcelain", "--ignored", "--untracked-files=all", "-z")
-    if status.returncode or not {"!! error.log", "?? error.log"}.intersection(status.stdout.split("\0")):
-        return None
-    info = (path / "error.log").lstat()
-    if not stat.S_ISREG(info.st_mode) or time.time() - info.st_mtime < FRESH_START.total_seconds():
-        return None
-    root, _ = dev_worktree.configuration()
-    if not is_under(path, root):
-        return None
-    verify_host_root(root, deadline)
-    users = subprocess.run(
-        ["lsof", "-nP", "-t", "+D", str(path)], capture_output=True, text=True, timeout=remaining_timeout(deadline, 10)
-    )
-    if users.returncode not in {0, 1} or users.stdout.strip() or users.stderr.strip():
-        return None
-    common = Path(dev_worktree.git(path, "rev-parse", "--path-format=absolute", "--git-common-dir"))
-    descriptor = dev_worktree.open_directory(path)
-    try:
-        return archive_results(common.parent.name, path.name, descriptor, {"error.log": entry_state(info)})
-    finally:
-        os.close(descriptor)
-
-
 def remaining_timeout(deadline: float | None, maximum: float) -> float:
     remaining = maximum if deadline is None else min(maximum, deadline - time.monotonic())
     if remaining <= 0:
         raise ValueError("creation cleanup time budget exhausted")
     return remaining
+
+
+def has_no_live_users(path: Path, *, directory: bool, deadline: float | None = None) -> bool:
+    users = subprocess.run(
+        ["lsof", "-nP", "-t", *(["+D"] if directory else []), str(path)],
+        capture_output=True,
+        text=True,
+        timeout=remaining_timeout(deadline, 10),
+    )
+    return users.returncode in {0, 1} and not users.stdout.strip() and not users.stderr.strip()
 
 
 def sweep_strays(checkout: Path, root: Path, *, apply: bool, deadline: float | None = None) -> list[dict]:
@@ -411,7 +386,7 @@ def sweep_strays(checkout: Path, root: Path, *, apply: bool, deadline: float | N
                 )
                 break
             path = parent / name
-            if path.resolve() in registered_paths:
+            if path.absolute() in registered_paths:
                 continue
             row: dict[str, Any] = {"path": str(path), "decision": "kept"}
             rows.append(row)
@@ -433,13 +408,7 @@ def sweep_strays(checkout: Path, root: Path, *, apply: bool, deadline: float | N
                     raise ValueError("changed within the last two hours; may be in use")
                 if is_under(Path.cwd(), path) or is_under(Path(__file__), path):
                     raise ValueError("calling session uses this entry")
-                users = subprocess.run(
-                    ["lsof", "-nP", "-t", *(["+D"] if directory_fd is not None else []), str(path)],
-                    capture_output=True,
-                    text=True,
-                    timeout=remaining_timeout(deadline, 10),
-                )
-                if users.returncode not in {0, 1} or users.stdout.strip() or users.stderr.strip():
+                if not has_no_live_users(path, directory=directory_fd is not None, deadline=deadline):
                     raise ValueError("entry is in use or live-use proof is incomplete")
                 if (
                     entry_state(os.stat(parent)) != entry_state(os.fstat(parent_fd))
