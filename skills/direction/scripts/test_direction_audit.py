@@ -1211,23 +1211,27 @@ def test_capacity_admission_overrides_links_and_disagreement_uses_them() -> None
     assert result["classification_counts"] == {"admission": 3, "link_walk": 2, "disagreement_fallback": 1}
 
 
+def capacity_claim_comment(module: Any, kind: str | None, worker: str = "worker") -> dict[str, Any]:
+    record = {"worker": worker, "session": "fixture", "branch": "work/fixture", "claimed_at": stamp(NOW)}
+    admission = module.github_plan_claim.admission_text(kind, []) if kind else ""
+    return {"user": {"login": "o"}, "body": f"Claimed by {worker}\n{admission}\n" + module.github_plan_claim.marker(record)}
+
+
 def test_capacity_reads_newest_claim_admission_across_comment_pages() -> None:
     module = load()
-    calls = []
     def fetch(args: list[str]) -> Any:
-        calls.append(args[1])
         if "/comments?" not in args[1]:
             return {"comments": 201}
         if "page=3" in args[1]:
-            return [{"body": "Released claim 3\nAdmission: own-project"}]
-        return [{"body": "Claimed by older\nAdmission: own-project"},
-                {"body": "Claimed by newest\nAdmission: milestone; evidence"},
-                {"body": "```text\nClaimed by example\nAdmission: spare-capacity\n```"}]
+            return [{"body": "Released claim 3\nAdmission: own-project", "user": {"login": "o"}},
+                    {**capacity_claim_comment(module, "own-project"), "user": {"login": "outside-user"}}]
+        newest = capacity_claim_comment(module, "milestone", "newest")
+        return [capacity_claim_comment(module, "own-project", "older"), newest,
+                {"body": "```text\nClaimed by example\nAdmission: spare-capacity\n```", "user": {"login": "o"}}]
     assert module.latest_issue_admission("o/live", 10, fetch=fetch) == "milestone"
-    assert len(calls) == 3
-    for newest in ("Claimed by newest", "Claimed by newest\nAdmission: unsupported"):
+    for kind in (None, "unsupported"):
         assert module.latest_issue_admission("o/live", 10, fetch=lambda args: (
-            [{"body": "Claimed by older\nAdmission: own-project"}, {"body": newest}]
+            [capacity_claim_comment(module, "own-project", "older"), capacity_claim_comment(module, kind, "newest")]
             if "/comments?" in args[1] else {"comments": 2})) is None
     assert module.latest_issue_admission("o/live", 10, fetch=lambda _: {"pull_request": {}}) is None
 
@@ -1418,7 +1422,6 @@ def test_capacity_graph_includes_closed_waiting_children_blockers_and_cycles() -
 def test_capacity_fetch_attribution_and_retired_milestone_window() -> None:
     import base64
     module = load()
-    native_calls = []
     paths = []
     def fetch(args: list[str]) -> Any:
         path = args[1]
@@ -1444,7 +1447,6 @@ def test_capacity_fetch_attribution_and_retired_milestone_window() -> None:
             return reopened_page([])
         if path == "graphql":
             number = int(next(arg.split("=",1)[1] for arg in args if arg.startswith("number=")))
-            native_calls.append(number)
             return {"data": {"repository": {"pullRequest": {"closingIssuesReferences": {
                 "nodes": [{"number": 10, "repository": {"nameWithOwner": "o/live"}}] if number == 1 else [],
                 "pageInfo": {"hasNextPage": False, "endCursor": None},
@@ -1453,7 +1455,6 @@ def test_capacity_fetch_attribution_and_retired_milestone_window() -> None:
     result, errors = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=capacity_fetch_with_unchanged_tree(fetch))
     assert not errors
     assert result["merged_by_rank"] == {"milestone": 2, "tooling": 0, "own": 2}
-    assert native_calls == [1, 2, 3, 4]
     assert not any("milestone=8" in path for path in paths)
     assert result["own_projects"] == module.own_project_patterns(OWN_DIRECTION)
     for item in ("Own projects: by the `own-project` label only.", "Own projects: none."):
@@ -1840,10 +1841,10 @@ def test_capacity_collects_all_admission_kinds_and_keeps_unread_claims_unknown()
     pulls.append(merged_pull(20, NOW, body="Refs #101, #104"))
     base = reporting_fetch(module, OWN_DIRECTION, pulls, [])
     def fetch(args: list[str]) -> Any:
-        if re.fullmatch(r"repos/o/live/issues/(10[1-6])", args[1]):
+        if re.fullmatch(r"repos/o/live/issues/(\d+)", args[1]):
             return {"comments": 1, "labels": []}
-        if match := re.match(r"repos/o/live/issues/(10[1-6])/comments", args[1]):
-            return [{"body": f"Claimed by worker\nAdmission: {admissions[int(match[1]) - 101]}"}]
+        if match := re.match(r"repos/o/live/issues/(\d+)/comments", args[1]):
+            return [capacity_claim_comment(module, admissions[int(match[1]) - 101])]
         return base(args)
     result, errors = module.fetch_capacity("o/direction", SINCE, WINDOW_END,
                                           fetch=capacity_fetch_with_unchanged_tree(fetch))

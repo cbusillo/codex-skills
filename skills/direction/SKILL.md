@@ -626,7 +626,7 @@ requests per rank, the own-projects PR share, milestones
 closed, issues reopened, and merged pull requests that mark a revert. These
 capacity events include the window's start and exclude its end (`[since, until)`);
 an event at the shared boundary belongs to the following window. Each
-merged PR reads the newest claim on each issue it delivers through a closing
+merged PR reads the newest trusted claim at audit time on each issue it delivers through a closing
 keyword, `Refs`, or native PR issue link. `live-breakage`, `client-request` and
 `milestone` admissions count as milestone; `own-project` as own; `repeat-stop`
 and `spare-capacity` as tooling. When the available admissions agree on a

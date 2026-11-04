@@ -1529,14 +1529,17 @@ def latest_issue_admission(repo: str, number: int, *, fetch: Callable[[list[str]
     count = issue.get("comments")
     if type(count) is not int or count < 0:
         raise AuditError("claim comment count unavailable")
+    trusted = github_plan_wait.authors(repo)
     last_page = math.ceil(count / 100)
     for page in range(last_page, max(0, last_page - MAX_PAGES), -1):
         comments = fetch(["api", f"{path}/comments?per_page=100&page={page}", "--method", "GET"])
         if not isinstance(comments, list):
             raise AuditError("claim comments unavailable")
         for comment in reversed(comments):
+            if not github_plan_wait.author_is_trusted(comment, repo.split("/")[0], author_logins=trusted):
+                continue
             body = github_plan_claim.unquoted_text(comment.get("body") or "")
-            if not re.match(r"^Claimed by \S+", body.strip()):
+            if not re.match(r"^Claimed by:?[ \t]+\S+[ \t]*(?:\n|$)", body.strip(), re.I):
                 continue
             admission = re.search(r"^Admission:[ \t]*([a-z-]+)\b", body, re.M)
             return admission[1] if admission and admission[1] in ADMISSION_RANKS else None
