@@ -594,6 +594,8 @@ def recipient_evidence(status: str, comments: list[dict[str, Any]], *,
     recipient = actor.removeprefix("agent:") if actor and actor.startswith("agent:") else None
     if not recipient or recipient.casefold() in {worker.casefold(), session.casefold()}:
         return None
+    if next_actor.launch_brief(status) is not None:
+        return None
     texts = [status, *(comment.get("body") or "" for comment in comments
                       if str((comment.get("user") or {}).get("login") or "").casefold() in trusted)]
     identities = {record[key].casefold() for text in texts for record in records(text) for key in ("worker", "session")}

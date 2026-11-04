@@ -81,6 +81,18 @@ def format_ownership(text: str) -> tuple[str, ...]:
 
 
 class ClaimMarkerTests(unittest.TestCase):
+    def test_only_a_complete_unquoted_launch_request_distinguishes_the_coordinator(self) -> None:
+        actor = "agent:01970242-7941-7f0c-b461-16aa5723fb52"
+        request = f"Next actor: {actor}\nBrief:\n````text\nTask.\n```sh\necho example\n```\n````\n"
+        for status in (request, request.replace("\n", "\r\n")):
+            self.assertIsNone(CLAIM.recipient_evidence(status, [], repo="owner/repo", number=42, trusted={"owner"}))
+        for status in (f"Next actor: {actor}\n", request.removesuffix("````\n"),
+                       f"Next actor: {actor}\nBrief:\n```text\n \n```\n",
+                       f"Next actor: {actor}\n> Brief:\n> ```text\n> Task.\n> ```\n",
+                       f"Next actor: {actor}\n`````text\n{request}`````\n"):
+            with self.subTest(status=status):
+                self.assertIsNotNone(CLAIM.recipient_evidence(status, [], repo="owner/repo", number=42, trusted={"owner"}))
+
     def test_recipient_routing_uses_existing_identity_records(self) -> None:
         recipient = "launchplane-engineer"
         status = f"Next actor: agent:{recipient}\n"
@@ -6183,6 +6195,30 @@ class ClaimTests(unittest.TestCase):
         self.assertTrue(any(row["source"] == "recorded_recipient"
                             for row in caught.exception.payload["competing_evidence"]))
         self.assert_no_writes()
+
+    def test_lead_launch_request_allows_a_fresh_worker_but_keeps_claims_and_waits(self) -> None:
+        lead = "01970242-7941-7f0c-b461-16aa5723fb52"
+        for mode in ("clear", "competitor", "wait"):
+            with self.subTest(mode=mode):
+                self.setUp()
+                self.issue["body"] += (
+                    f"Next actor: agent:{lead}\nNext action: Launch the bounded worker.\n"
+                    "Brief:\n```text\nAnchor and claim: https://github.com/owner/repo/issues/42\n"
+                    "Implement the export in a new worktree.\n```\n"
+                )
+                if mode == "competitor":
+                    self.compete()
+                if mode == "wait":
+                    self.record_wait()
+                if mode == "clear":
+                    self.run_claim()
+                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
+                    self.assertEqual(self.emitted.call_args.args[0]["claim"]["session"], OWNER["session"])
+                else:
+                    with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                        self.run_claim()
+                    self.assertEqual(caught.exception.code, "claim_conflict" if mode == "competitor" else "claim_wait_unresolved")
+                    self.assert_no_writes()
 
     def test_role_actor_does_not_reserve_execution_without_a_claim(self) -> None:
         for role in ("launchplane-engineer", "launchplane", "launchplane-native-qualification"):

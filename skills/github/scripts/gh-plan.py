@@ -3049,7 +3049,7 @@ def claim_once(args: argparse.Namespace) -> None:
     def read_record(record_number, record_repo, *, allow_closed=False):
         key = (record_repo.casefold(), int(record_number))
         if key not in phase_records:
-            phase_records[key] = claim_snapshot(str(record_number), record_repo, allow_closed=allow_closed)
+            phase_records[key] = claim_snapshot(str(record_number), record_repo, allow_closed=allow_closed, preserve_content=True)
         snapshot = phase_records[key]
         if snapshot[0].get("state") not in ({"open", "closed"} if allow_closed else {"open"}):
             raise PlanError("Claim requires an open issue or pull request")
@@ -3786,7 +3786,7 @@ def claim_once(args: argparse.Namespace) -> None:
             target, sections, target_comments = prepared["targets"][pull["number"]]
             # PR status may name the canonical issue being claimed. Keep its
             # holder prose conservative rather than applying issue exclusions.
-            target_status = claim_current_status(target, sections, target_comments)
+            target_status = claim_current_status(target, sections, target_comments, preserve_content=True)
             target_ended = ended_ownership(target_comments, inventory, takeover=False)
             competing, _ = github_plan_claim.discussion_evidence(target_status, target_comments, claim,
                 ended_claims={entry["claim_id"] for entry in target_ended})
@@ -3956,10 +3956,10 @@ def claim_once(args: argparse.Namespace) -> None:
                 refuse(conflicts, owner_comments=[], owner_repo=checked_repo, owner_number=checked_number)
 
     try:
-        issue, status, comments, can_update = claim_snapshot(args.issue, repo, allow_closed=True)
+        issue, status, comments, can_update = claim_snapshot(args.issue, repo, allow_closed=True, preserve_content=True)
         record_kind = "pr" if "pull_request" in issue else "issue"
         if reconcile_observed_admissions(comments):
-            issue, status, comments, can_update = claim_snapshot(args.issue, repo, allow_closed=True)
+            issue, status, comments, can_update = claim_snapshot(args.issue, repo, allow_closed=True, preserve_content=True)
         if issue.get("state") != "open":
             raise PlanError("Claim requires an open issue or pull request")
         if record_kind == "issue" and args.resume_from:
@@ -4071,7 +4071,7 @@ def claim_once(args: argparse.Namespace) -> None:
                 raise
             completed.append("post_claim")
         # Check the discussion again before touching status or labels.
-        issue, status, comments, can_update = claim_snapshot(args.issue, repo, allow_closed=True)
+        issue, status, comments, can_update = claim_snapshot(args.issue, repo, allow_closed=True, preserve_content=True)
         reconcile_observed_admissions(comments)
         if issue.get("state") != "open":
             raise PlanError("Claim requires an open issue or pull request")
@@ -4119,7 +4119,7 @@ def claim_once(args: argparse.Namespace) -> None:
             body = replace_issue_plan_section(status_issue, "Current Status", status_text)
             rest_edit_issue(issue_repo, number, body=body)
             completed.append("update_current_status")
-        final, final_status, final_comments, _ = claim_snapshot(args.issue, repo)
+        final, final_status, final_comments, _ = claim_snapshot(args.issue, repo, preserve_content=True)
         comments = final_comments
         check_agent(final)
         _, prepared_handoff = prepare_phase((final, final_status, final_comments, can_update))
