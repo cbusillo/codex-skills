@@ -24,6 +24,7 @@
       <w>dotool</w>
       <w>entrypoints</w>
       <w>execv</w>
+      <w>execve</w>
       <w>fancyindex</w>
       <w>fcntl</w>
       <w>findmnt</w>
@@ -63,6 +64,7 @@
       <w>pbcopy</w>
       <w>pghostaddr</w>
       <w>pgservice</w>
+      <w>pids</w>
       <w>pipefail</w>
       <w>pipestatus</w>
       <w>popd</w>
