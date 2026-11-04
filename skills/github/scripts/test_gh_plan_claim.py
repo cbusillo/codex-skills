@@ -90,7 +90,7 @@ class ClaimMarkerTests(unittest.TestCase):
             for recipient in ("", "different-session"):
                 found = CLAIM.recipient_evidence(status, [], repo="owner/repo", number=42, trusted={"owner"},
                                                 dispatch_recipient=recipient)
-                self.assertIsNotNone(found)
+                assert found is not None
                 recovery = found["next_action"].split()
                 self.assertIsNone(CLAIM.recipient_evidence(status, [], repo="owner/repo", number=42, trusted={"owner"},
                     dispatch_recipient=recovery[recovery.index("--dispatch-recipient") + 1]))
