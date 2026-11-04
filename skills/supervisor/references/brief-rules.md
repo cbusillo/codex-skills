@@ -185,21 +185,30 @@ Rules for this brief (every Supervisor brief carries them):
 - Keep the item's Current Status current. When the item is done or handed
   off, close out with [work-closeout](../../work-closeout/SKILL.md) and end
   with a standalone, unqualified final line: Safe to exit: yes
-- Request a parallel session only through the child's Current Status, updated
-  with `gh-plan.py update-section`: `Next actor: agent:supervisor`, its concrete
-  launch action, and `Brief:` followed by the bounded brief in a fenced `text`
+- Unless your brief delegates worker launches as a milestone lead, request a
+  parallel session through the child's Current Status, updated
+  with `gh-plan.py update-section`: `Next actor: agent:<launching-lead-native-id>`
+  when a lead launched you (its id is in your brief), otherwise
+  `Next actor: agent:supervisor`, its concrete launch action, and `Brief:`
+  followed by the bounded brief in a fenced `text`
   block. Use `###` or plain labels inside it, since `##` starts a plan section,
-  and a longer fence if it contains fences. The Supervisor alone launches it
+  and a longer fence if it contains fences. That lead or the Supervisor launches it
   [verbatim under the standard header](helpers.md#terminal-launches).
+  When a lead launched you, notify it through its verified native delivery route
+  with the issue URL; an automation-authored status edit does not wake the foreign watch.
   Never post staffing lists or STAFF NOW on the Track board.
-  Keep the lead as next actor for work it retains.
 <!-- brief-rules:end -->
 
 ## Milestone lead briefs
 
-A lead works one of the Director's listed `DIRECTION.md` milestones through
-`gh-plan.py next`, claims and the installed harness bindings. A Track issue and
-its goal board are optional views when that Director uses them.
+A lead is a mini Supervisor for one of the Director's listed `DIRECTION.md`
+milestones: it holds decisions, status and worker assignments, and does no
+slices itself. This is the
+[all-leads pilot](https://github.com/cbusillo/direction/issues/163#issuecomment-6635104014);
+the first weekly direction audit at least one full week after this brief lands
+judges it, and the Director keeps, changes or drops it. Either harness works;
+Claude leads use tmux for guarded notifications, and the pilot starts on Codex.
+A Track and its goal board are optional views.
 When several leads share a repository, spread work within its shared PR cap.
 
 Fill the placeholders below and carry the shared rules by link or inclusion.
@@ -210,18 +219,21 @@ Brief from the Supervisor (__HANDOFF_RECORD__), __DATE__. Trial token: __TOKEN__
 You are the long-running lead for: __MILESTONE__.
 Scope: __REPOSITORIES__
 Admission: milestone (__MILESTONE__)
+Worker ledger: __SHARED_LEDGER__
+Worker cap: __WORKER_CAP__ concurrent workers, recorded on your lead ledger row.
+Allowed accounts: __ACCOUNTS__
 
 How a lead works:
 1. Read the Director's overall and repository DIRECTION.md, the milestone's finish line, and gh-plan.py next. If a Track is supplied, read it and its native children too; do not claim the Track itself. Take only work belonging to this milestone.
-2. Take the next actionable items in that order: not waiting on a person or event, not natively blocked, not owned by another running session. Recheck ownership before every claim. Hold up to three concurrent claims across the milestone's repositories.
-3. Do your slices with the harness's built-in subagents: implementation, reading and diagnosis, tests, your own review of record, drafting comments. Each claim has its own task worktree, with only one editor per worktree at a time. For a separate parallel session, use the shared rules' child Current Status request; the Supervisor remains the only launcher.
-4. After each item: post results on that issue, keep its Current Status current, and release its claim before replacing it. Optional Track comments hold decisions and finish-line proof, not per-slice progress or staffing lists.
-5. When an item needs a person, record its wait, follow the shared brief rules for Director questions and Asking a Client for Client questions, and move to the next independent item. Never wait idle on a person.
-6. Stop only when no milestone item is actionable by an agent or you need the Director. Keep issue status and structured waits current, close out with work-closeout, and end with a standalone final line: Safe to exit: yes
+2. Brief workers for the next actionable items in that order: not waiting on a person or event, not natively blocked, not owned by another running session. Recheck ownership before dispatch; workers claim their own issues and use their own task worktrees. Choose the tier each slice needs under Q1199, rather than giving every slice the strongest tier.
+3. Launch through the existing iterm_tab.py launcher on either terminal backend, into the shared ledger, with --lead-session-id <your-native-session-id> and an explicit --account from the allowed accounts. The launcher enforces your assigned cap across repositories and batches. Never raise the cap or use another account yourself. Put your native id and the native delivery pointers from the shared launch reference in each worker brief and use the shared brief rules. Handle worker-originated requests with --brief-issue on their child issues; do not send staffing requests to the Supervisor for launches within your assignment.
+4. Watch and review workers through handoff comments, issue status and the optional board; leave diffs, CI logs, implementation, tests and the review of record to workers. Nudge stalls, record decisions and keep each issue's Current Status current. Close your workers with session_closeout.py on the same ledger, passing your native id as --supervisor-session; all existing claim, handoff, process and terminal checks apply. Recover a partial launch before dispatching more work. The Supervisor adopts your rows if you cannot continue.
+5. Idle at the native prompt between events so messages reach you. Reuse worker-finish notices, the existing foreign watch narrowed to the milestone's repositories, and native message delivery; use a rare backstop check every few hours, not a continuous turn or cache-warming schedule. On each wake, handle finished workers and new messages, scan child statuses naming your native id, then refill available capacity. Preserve coverage gaps as UNKNOWN.
+6. When an item needs a person, record its wait, follow the shared brief rules for Director questions and Asking a Client for Client questions, and move to independent milestone work. When nothing is actionable, keep waits and the next actor current and remain idle for events. When the assignment is done or handed off, close out with work-closeout and end with a standalone final line: Safe to exit: yes
 
-At the shared PR cap, help land existing work first. If nothing open is agent-fixable, finish on your branch, record the unopened branch on its issue, and move to another repository in scope below the cap. Report nothing actionable only when none of those repositories has available work.
+At the shared PR cap, brief finishing work first. Workers with finished branches record unopened branches on their issues. Use other repositories in scope below the cap; report nothing actionable only when none has available work.
 
-While CI or landing runs, do other milestone work and check gh-pr.py checks between steps. Land through the GitHub skill's Merging procedure; for train-routed work, run ready as soon as checks are green with a weighed review for the current head.
+Workers land through the GitHub skill's Merging procedure and run ready for train-routed work once checks are green with a weighed review for the current head. While they wait on CI or landing, coordinate other milestone work.
 
 __SPECIFIC__
 

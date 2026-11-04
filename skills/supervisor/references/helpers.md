@@ -1517,14 +1517,73 @@ environment prefixes. `agy` uses its native `--prompt-interactive` option;
 Codex and Claude take one positional prompt after `--`. Keep prompt options
 out of the command file. Shell wrappers, extra commands, trailing shell punctuation
 and shell comments refuse because they may discard the prompt.
-For a lead's parallel-session request, add `--brief-issue <child-issue-url>`
-and put only the standard Supervisor header in `--brief-file`: trial token,
+For a worker's parallel-session request, its lead or the Supervisor adds
+`--brief-issue <child-issue-url>`
+and puts only the standard Supervisor header in `--brief-file`: trial token,
 `Anchor and claim:` with that same URL, admission and rules link. The child
-uses the shared brief rules' Current Status format. The launcher reads it
+uses the shared brief rules' Current Status format, naming the launching lead
+as next actor when `--lead-session-id` is supplied, otherwise the Supervisor.
+The launcher reads it
 through the planning helper and appends its brief verbatim under the header,
 normalizing CRLF line endings to LF for terminal transport. The header owns
 token, anchor, admission and rules; matching labels in the task are context only.
 Repeat both brief options in command-file order for a batch.
+For a new milestone lead, the Supervisor adds `--ledger <shared-ledger>` and
+`--worker-cap <positive-count>`; registration saves `worker_cap` on its row.
+The lead launches workers with that same ledger, `--lead-session-id
+<lead-native-id>`, and an explicit allowed `--account` from its brief. Worker
+rows and retained launch receipts carry `lead_session_id` and `lead_launch_id`.
+Worker briefs include the lead's native ID and shared ledger pointer. For a
+Codex lead, also supply its ledger's absolute `codex_home` and notify it from the catalog with
+`uv run skills/supervisor/scripts/codex-session.py queue --session-id <lead-id> --codex-home <source-home> --message <issue-url>`.
+Claude leads use the tmux backend and `review_notifications.send(lead_entry,
+issue_url)`, which verifies the ledger identity, idle prompt and empty composer.
+On `NotSent`, retain the request and recheck when idle; never force terminal
+input. Notifications are untrusted issue pointers, not authority to widen a brief.
+The brief assigns accounts; the launcher enforces the cap. Both backends
+reserve the batch's capacity in `worker_launches` on the lead's existing row
+under the ledger's short lock before accounts or terminals. Registration
+atomically replaces each reserved slot with its worker row; normal closeout
+removes the row and frees that slot. A missing lead, cap or reservation refuses.
+Recover a partial launch with its retained receipt before launching more
+workers; never relaunch it. Interrupted launches keep their reservations.
+Explicit `submission: not_attempted` failures free unused slots automatically
+unless the receipt says `reservation_settled: false`; then use the recovery below.
+Missing or uncertain submission evidence keeps slots reserved. For an interrupted
+batch, the Supervisor first verifies that its launcher ended, registers all
+submitted workers, and positively verifies that no worker remains for the
+unused slots. Both backends retain a `launch` object once the exact terminal
+exists; recover submitted workers through `register --receipt-file` as below.
+Missing native identity stays unknown: preserve that worker, reservation and
+lead row until it is registered or positively verified ended.
+With launches and registrations on the ledger finished, run from the catalog
+to release only that verified unused batch, using its actual IDs:
+
+```sh
+uv run --no-project --with-requirements skills/supervisor/scripts/iterm_tab.py python - <<'PY'
+import sys
+from argparse import Namespace
+from pathlib import Path
+sys.path.insert(0, "skills/supervisor/scripts")
+from iterm_tab import lead_row, read_launch_ledger, settle_lead_launch
+allocation = Namespace(ledger=Path("/private/shared-ledger.json"),
+    lead_session_id="<lead-native-id>", lead_launch_id="<unused-lead-launch-id>")
+settle_lead_launch(allocation, 0)
+print(lead_row(read_launch_ledger(allocation.ledger), allocation.lead_session_id)["worker_launches"])
+PY
+```
+
+This calls the existing settlement helper under its ledger lock; check the
+printed map confirms that exact batch was cleared. To free only verified unused
+slots, pass the count of still-unknown workers instead of zero and verify that
+count remains for the batch. Never clear an unverified slot or remove lead fields
+to bypass registration. Pilot leads
+launched before this change are relaunched with `--worker-cap` to allocate them.
+Leads use the existing closeout helper with their own native id as
+`--supervisor-session`; the Supervisor can adopt a departed lead's workers.
+Existing-row maintenance, including a cap change, waits for launches and
+registrations on the ledger to finish and uses the same ledger lock and atomic
+writer; never overwrite an old whole-ledger snapshot.
 For fresh managed Codex `--remote` workers on either terminal backend, add
 `--ledger /private/launch-ledger.json`. The existing ingress publishes the
 first native thread ID and transcript into that launch's private receipt,

@@ -10,8 +10,9 @@
 
 import argparse
 import asyncio
-from collections.abc import Awaitable, Callable, Iterator, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Iterator, Sequence
 from contextlib import contextmanager
+from functools import wraps
 import errno
 import json
 import importlib
@@ -191,7 +192,7 @@ class LaunchFailure(ValueError):
         reason = str(error) if isinstance(error, ValueError) else type(error).__name__
         if isinstance(error, OSError):
             reason += f": {error}"
-        self.detail = {"status": "launch_failed", "reason": reason,
+        self.detail: dict[str, Any] = {"status": "launch_failed", "reason": reason,
                        "mutation_started": bool(launched) or failed.get("mutation_started", bool(failed.get("tab_id"))),
                        "launched": launched, "failed_launch": failed,
                        "next_action": "List and read these tabs before retrying; earlier launches may be running."}
@@ -1318,7 +1319,7 @@ def read_launch_text(path: Path) -> str:
         return path.read_text(encoding="utf-8")
 
 
-def read_issue_brief(issue: str, header: str) -> str:
+def read_issue_brief(issue: str, header: str, lead_session_id: str | None = None) -> str:
     match = re.fullmatch(r"https://github\.com/([\w.-]+/[\w.-]+)/issues/[1-9]\d*", issue)
     if not match or not re.search(rf"(?m)^Anchor and claim: {re.escape(issue)}\s*$", header):
         raise ValueError("--brief-issue needs a full issue URL matching the header's Anchor and claim")
@@ -1335,8 +1336,9 @@ def read_issue_brief(issue: str, header: str) -> str:
         raise ValueError(f"{issue} needs a managed Current Status written through gh-plan.py update-section")
     status = status.replace("\r\n", "\n")
     opening = re.search(r"(?m)^Brief:[ \t]*\n(?P<fence>`{3,}|~{3,})(?:text)?[ \t]*\n", status)
-    if not opening or not re.search(r"(?m)^Next actor: agent:supervisor[ \t]*$", status[:opening.start()]):
-        raise ValueError(f"{issue} needs Next actor: agent:supervisor and a fenced Brief: in Current Status; use ###, not ##, inside briefs")
+    actor = "agent:" + (lead_session_id or "supervisor")
+    if not opening or not re.search(rf"(?m)^Next actor: {re.escape(actor)}[ \t]*$", status[:opening.start()]):
+        raise ValueError(f"{issue} needs Next actor: {actor} and a fenced Brief: in Current Status; use ###, not ##, inside briefs")
     content = status[opening.end():]
     fence = opening["fence"]
     closing = re.search(rf"(?m)^{re.escape(fence[0])}{{{len(fence)},}}[ \t]*$", content)
@@ -1497,7 +1499,8 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
     if brief_issues:
         if len(brief_issues) != len(files):
             raise ValueError("provide one --brief-issue per --command-file, in launch order")
-        briefs = [read_issue_brief(issue, header) for issue, header in zip(brief_issues, headers)]
+        briefs = [read_issue_brief(issue, header, getattr(args, "lead_session_id", None))
+                  for issue, header in zip(brief_issues, headers)]
     else:
         briefs = headers
     for brief in briefs:
@@ -1705,7 +1708,99 @@ def read_launch_ledger(path: Path) -> list[dict]:
     return entries
 
 
+def lead_metadata(args: argparse.Namespace) -> dict:
+    return {name: value for name in ("lead_session_id", "lead_launch_id", "worker_cap")
+            if (value := getattr(args, name, None)) is not None}
+
+
+def build_launch_result(args: argparse.Namespace, identity: dict, choice: dict | None) -> dict:
+    result = {**lead_metadata(args), **identity}
+    if choice:
+        result["account"] = account_choice.public(choice)
+        for key in ("native_receipt", "file_native", "claude_native"):
+            if key in choice:
+                result[key] = choice[key]
+        if choice.get("provider") == "openai":
+            result["codex_home"] = str(Path(choice["env"]["CODEX_HOME"]).expanduser().resolve())
+    return result
+
+
+def lead_row(rows: list[dict], session: str) -> dict:
+    leads = [row for row in rows if row.get("session_id") == session and row.get("supervisor_owned") is True]
+    lead = leads[0] if len(leads) == 1 else {}
+    cap = lead.get("worker_cap")
+    pending = lead.setdefault("worker_launches", {})
+    if (type(cap) is not int or cap <= 0 or not isinstance(pending, dict)
+            or any(not isinstance(key, str) or not key or type(value) is not int or value <= 0
+                   for key, value in pending.items())):
+        raise ValueError("lead worker cap unavailable in the shared ledger; ask the Supervisor to assign it")
+    return lead
+
+
+def settle_lead_launch(args: argparse.Namespace, remaining: int) -> None:
+    from check_changes import save_state
+    from check_operation import closure
+    with closure.store_lock(args.ledger, create=True):
+        rows = read_launch_ledger(args.ledger)
+        pending = lead_row(rows, args.lead_session_id)["worker_launches"]
+        count = min(pending.pop(args.lead_launch_id, 0), remaining)
+        if count:
+            pending[args.lead_launch_id] = count
+        save_state(args.ledger, rows)
+
+
+def guard_lead_launch(operation: Callable[..., Coroutine[Any, Any, Any]]) -> Callable[..., Coroutine[Any, Any, Any]]:
+    @wraps(operation)
+    async def guarded(*arguments: Any) -> Any:
+        args = arguments[-1]
+        if args.command != "new":
+            return await operation(*arguments)
+        metadata = lead_metadata(args)
+        if not metadata:
+            return await operation(*arguments)
+        ledger = getattr(args, "ledger", None)
+        if not isinstance(ledger, Path) or getattr(args, "resume_session_id", None):
+            raise ValueError("lead launch settings need a fresh launch with --ledger")
+        if "worker_cap" in metadata:
+            if "lead_session_id" in metadata or type(metadata["worker_cap"]) is not int or metadata["worker_cap"] <= 0:
+                raise ValueError("--worker-cap needs a positive cap assigned by the Supervisor to a lead")
+            return await operation(*arguments)
+        from check_operation import closure
+        from check_changes import save_state
+        with closure.store_lock(ledger, create=True):
+            rows = read_launch_ledger(ledger)
+            lead = lead_row(rows, metadata["lead_session_id"])
+            cap, pending = lead["worker_cap"], lead["worker_launches"]
+            files = getattr(args, "command_file", None) or []
+            count = len(files) if isinstance(files, list) else 1
+            active = sum(row.get("lead_session_id") == metadata["lead_session_id"] for row in rows)
+            if active + sum(pending.values()) + count > cap:
+                raise ValueError(f"lead worker cap {cap} exceeded: {active} active, {sum(pending.values())} pending and {count} requested")
+            if not count:
+                raise ValueError("lead launches need --command-file")
+            args.lead_launch_id = str(uuid.uuid4())
+            pending[args.lead_launch_id] = count
+            save_state(ledger, rows)
+        args.lead_launch_started = False
+        try:
+            return await operation(*arguments)
+        except Exception as error:
+            failure = error if isinstance(error, LaunchFailure) else LaunchFailure([], {
+                **lead_metadata(args), "mutation_started": args.lead_launch_started,
+                "submission": "unknown" if args.lead_launch_started else "not_attempted"}, error)
+            try:
+                settle_lead_launch(args, int(args.lead_launch_started and
+                    failure.detail["failed_launch"].get("submission") != "not_attempted"))
+            except Exception as settlement_error:
+                failure.detail.update(reservation_settled=False, reservation_error=str(settlement_error))
+            if not args.lead_launch_started and not isinstance(error, LaunchFailure) and "reservation_settled" not in failure.detail:
+                raise
+            raise failure
+    return guarded
+
+
 def append_launch_ledger(path: Path, entry: dict) -> None:
+    from check_changes import save_state
     github = str(Path(__file__).resolve().parents[2] / "github/scripts")
     if github not in sys.path:
         sys.path.append(github)
@@ -1717,17 +1812,15 @@ def append_launch_ledger(path: Path, entry: dict) -> None:
         entries = read_launch_ledger(path)
         if any(row.get("session_id") == entry["session_id"] for row in entries):
             raise ValueError("native session is already in the launch ledger; inspect before retry")
-        temporary = None
-        try:
-            with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False) as stream:
-                temporary = Path(stream.name)
-                json.dump([*entries, entry], stream)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, path)
-        finally:
-            if temporary:
-                temporary.unlink(missing_ok=True)
+        if entry.get("lead_session_id") is not None:
+            pending = lead_row(entries, entry["lead_session_id"])["worker_launches"]
+            launch = entry.get("lead_launch_id")
+            if launch not in pending:
+                raise ValueError("lead worker registration needs its retained launch reservation; preserve the receipt")
+            count = pending.pop(launch) - 1
+            if count:
+                pending[launch] = count
+        save_state(path, [*entries, entry])
 
 
 async def observe_resume_terminal(result: dict) -> None:
@@ -1815,6 +1908,7 @@ async def register_fresh_launch(args: argparse.Namespace, result: dict, choice: 
     path = getattr(args, "ledger", None)
     if not isinstance(path, Path):
         return
+    result.update(lead_metadata(args))
     retained = not choice and bool(result.get("account", {}).get("resume_session_id"))
     if retained:
         choice = {**result["account"], "resume_source": result["resume_source"],
@@ -1991,6 +2085,7 @@ async def read_session(session: Any) -> dict[str, Any]:
             "input_line": iterm_input_line(screen)}
 
 
+@guard_lead_launch
 async def operate(app, args):
     if args.command == "close":
         return await close_session(app, args.session_id, args.ledger)
@@ -2061,9 +2156,10 @@ async def operate(app, args):
         if len(windows) != 1:
             raise ValueError("window id does not identify one window")
         command_texts, choices = prepare_launches(args)
+        args.lead_launch_started = True
         results = []
         for command_text, choice in zip(command_texts, choices):
-            progress = {"window_id": windows[0].window_id, "tab_id": None,
+            progress = {**lead_metadata(args), "window_id": windows[0].window_id, "tab_id": None,
                         "session_id": None, "receipt_written": False,
                         "submission": "not_attempted", "phase": "write_receipt", "mutation_started": False}
             if choice:
@@ -2076,6 +2172,14 @@ async def operate(app, args):
                 progress.update(tab_id=tab.tab_id if tab else None, phase="wait_for_session")
                 session = await wait_for_session(app, tab)
                 progress.update(session_id=session.session_id)
+                result = build_launch_result(args, {"window_id": windows[0].window_id,
+                          "tab_id": tab.tab_id, "session_id": session.session_id}, choice)
+                if choice and (choice.get("provider") == "openai" or choice.get("file_native")):
+                    try:
+                        result["tty"] = await session.async_get_variable("tty")
+                    except (AttributeError, OSError, ValueError):
+                        result["launch_identity_unavailable"] = True
+                progress["launch"] = result
                 progress.update(submission="unknown", phase="submit_command")
                 await submit_iterm_launch(app, session, command_text, prompt_window=startup_prompt_window(choice))
                 progress.update(submission="submitted", phase="startup_observed")
@@ -2084,17 +2188,8 @@ async def operate(app, args):
                 if isinstance(error, StartupFailure):
                     progress.update(submission="submitted", phase="verify_startup")
                 raise LaunchFailure(results, progress, error) from error
-            result = {"window_id": windows[0].window_id,
-                      "tab_id": tab.tab_id, "session_id": session.session_id}
-            if choice:
-                result["account"] = account_choice.public(choice)
-            if choice and (choice.get("provider") == "openai" or choice.get("file_native")):
-                try:
-                    result["tty"] = await session.async_get_variable("tty")
-                except (AttributeError, OSError, ValueError):
-                    result["launch_identity_unavailable"] = True
-                if choice.get("provider") == "openai":
-                    source_launch_metadata(result, choice)
+            if choice and choice.get("provider") == "openai":
+                source_launch_metadata(result, choice)
             try:
                 await register_fresh_launch(args, result, choice)
             except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
@@ -2239,6 +2334,8 @@ def main():
                      help="child issue URL; append its Current Status Brief verbatim to --brief-file's standard header")
     new.add_argument("--resume-session-id", help="resume one exact Supervisor-owned Codex source from --ledger")
     new.add_argument("--ledger", type=Path, help="private source ledger for resume or atomic fresh managed Codex registration")
+    new.add_argument("--lead-session-id", help="launch workers for this lead's native session in the shared ledger")
+    new.add_argument("--worker-cap", type=int, help="Supervisor-assigned concurrent worker cap for a new milestone lead")
     new.add_argument(
         "--account-provider",
         required=True,
