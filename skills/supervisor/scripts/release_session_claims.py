@@ -36,7 +36,7 @@ import github_plan_release as release
 import github_plan_closure as closure
 from github_read import (
     GitHubReader, GitHubReadError, GitHubReadShapeError, automation_only_gh_prefix_args,
-    graphql_connection_page, graphql_data,
+    read_repository_connections,
 )
 from github_comment import CommentError, comment
 
@@ -47,7 +47,6 @@ else:
 
 REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 HANDOFF = release.COMMENT_URL
-STATUS_BATCH_SIZE = 100
 
 
 class PartialRelease(ValueError):
@@ -419,43 +418,31 @@ def belongs_to_session(body: str, session: str) -> bool:
     )
 
 
-def read_status_batch(reader: GitHubReader, repos: list[str], since: str) -> dict[str, list[dict]]:
-    statuses: dict[str, list[dict]] = {}
-    for offset in range(0, len(repos), STATUS_BATCH_SIZE):
-        batch = repos[offset : offset + STATUS_BATCH_SIZE]
-        fields = []
-        for index, repo in enumerate(batch):
-            owner, name = repo.split("/")
-            fields.append(
-                f"r{index}:repository(owner:{json.dumps(owner)},name:{json.dumps(name)}) {{ "
-                "issues(first:100,filterBy:{since:$since}) { totalCount nodes { number body } "
-                "pageInfo { hasNextPage endCursor } } }"
-            )
-        result = reader.graphql_json(
-            "query($since:DateTime!) { " + " ".join(fields) + " rateLimit { cost } }",
-            {"since": since},
-            step="session_status_inventory",
+def read_status_batch(reader: GitHubReader, repos: list[str], since: str) -> dict[str, list[dict] | Exception]:
+    def selection(cursor: str | None) -> str:
+        return (
+            f"issues(first:100,after:{json.dumps(cursor)},filterBy:{{since:{json.dumps(since)}}}) "
+            "{ totalCount nodes { number body } pageInfo { hasNextPage endCursor } }"
         )
-        if not result.ok:
-            raise GitHubReadError("session status inventory unavailable", result=result, diagnostics=reader.diagnostics())
-        data = graphql_data(result)
-        for index, repo in enumerate(batch):
-            repository = data.get(f"r{index}")
-            if not isinstance(repository, dict):
-                raise GitHubReadShapeError("status repository unavailable")
-            nodes, cursor, total = graphql_connection_page(repository.get("issues"))
-            if cursor is not None:
-                continue
-            if (
-                len(nodes) != total
-                or any(
-                    type(node.get("number")) is not int or node["number"] <= 0 or not isinstance(node.get("body"), str)
-                    for node in nodes
-                )
-                or len({node["number"] for node in nodes}) != total
-            ):
-                raise GitHubReadShapeError("incomplete status inventory")
-            statuses[repo] = nodes
+
+    def normalize(_repo: str, node: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(node.get("body"), str):
+            raise ValueError("status body unavailable")
+        return node
+
+    statuses = read_repository_connections(
+        reader,
+        repos,
+        field="issues",
+        selection=selection,
+        normalize=normalize,
+        step="session_status_inventory",
+    )
+    for inventory in statuses.values():
+        if isinstance(inventory, GitHubReadError):
+            failure = inventory.result.failure
+            if failure is None or failure.cause not in {"network_provider_failure", "graphql_primary_rate_limited"}:
+                raise inventory
     return statuses
 
 
@@ -473,10 +460,7 @@ def discover(
         raise ValueError("repository inventory contains no repositories for this owner; verify scope and installation coverage")
     sessions = {e["session_id"] for e in entries}
     since = scan_start(entries)
-    try:
-        statuses = read_status_batch(reader, repos, since)
-    except GitHubReadShapeError:
-        statuses = {}
+    statuses = read_status_batch(reader, repos, since)
     issues = set()
     for repo in repos:
         comments = reader.paged_json(f"/repos/{repo}/issues/comments", step_prefix="session_claim_inventory",
@@ -494,8 +478,9 @@ def discover(
                 if not match:
                     raise ValueError("claim comment has an unexpected canonical issue URL")
                 issues.add((repo, int(match[1])))
-        repo_statuses = statuses.get(repo)
-        if repo_statuses is None:
+        repo_statuses = statuses[repo]
+        if isinstance(repo_statuses, Exception):
+            reader.batch_diagnostic.setdefault("fallbackRepositories", []).append(repo)
             repo_statuses = reader.paged_json(f"/repos/{repo}/issues", step_prefix="session_status_inventory",
                                             params={"state": "all", "since": since}, required_query_params={"since": since})
         for issue in repo_statuses:
@@ -1116,7 +1101,7 @@ def main():
                                 "next_action": "inspect records before retry"})
         ok = not any("error" in r or r.get("issue_refusals") or r.get("pr_claim_handoffs") for r in reports)
         incomplete = [r for r in reports if "error" in r or r.get("issue_refusals") or r.get("pr_claim_handoffs")]
-        print(json.dumps({"ok": ok, "reports": reports, "repositories_checked": repos,
+        print(json.dumps({"ok": ok, "reports": reports, "repositories_checked": repos, "discovery": reader.batch_diagnostic,
                           "retryable": bool(incomplete) and all(r.get("retryable") is True for r in incomplete),
                           "needs_reconciliation": any(r.get("retained_status_claims") or r.get("issue_refusals") or r.get("pr_claim_handoffs") or "error" in r for r in reports),
                           "coverage": "exact verified inventory claims" if all(e.get("_inventory") for e in entries) else "explicit scope" if args.repo else "accessible repositories under the requested owner",
