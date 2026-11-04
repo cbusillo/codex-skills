@@ -50,9 +50,7 @@ URL = re.compile(r"https?://\S+")
 
 # The glossary names the retired words. Recorded evaluation evidence keeps the
 # words it was written with.
-EXCLUDED = re.compile(
-    r"^evals/(?!README\.md$)|/evaluations/acceptance-|^skills/references/role-words\.md$"
-)
+EXCLUDED = re.compile(r"^evals/(?!README\.md$)|^skills/references/role-words\.md$")
 
 
 def strip_comments(line: str, in_comment: bool) -> tuple[str, bool]:
