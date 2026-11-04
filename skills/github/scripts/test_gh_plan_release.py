@@ -1875,6 +1875,49 @@ class OwnReleaseTests(ReleaseHarness):
                 self.run_own_release()
         self.assertNotIn("post", self.f.events)
 
+    def test_preserved_status_actor_agrees_with_normal_routing(self) -> None:
+        for markup in ("<details>\nNext actor: agent:old-owner\n</details>",
+                       "> Prior handoff\nNext actor: person:example",
+                       "> Prior handoff\nNext actor: person:example\n\nNext actor: agent:old-owner"):
+            with self.subTest(markup=markup):
+                self.f.doCleanups()
+                self.setUp()
+                self.addCleanup(self.f.doCleanups)
+                self.f.issue["body"] += "\n" + markup + "\n"
+                self.run_own_release()
+                status = PLAN.github_next_queue.current_status(
+                    PLAN.github_direction_next.discussion_snapshot(self.f.issue, self.f.comments, complete=True),
+                    {BOT.casefold()})
+                self.assertEqual(PLAN.github_plan_next_actor.read(status), self.args.next_actor)
+                self.assertIn(markup.replace("agent:old-owner", self.args.next_actor), self.f.issue["body"])
+
+    def test_release_preserves_literal_brief_and_neighbor_sections(self) -> None:
+        brief = ("Brief:\n```text\nGUI task: example.app\n## Scope\nNext actor: person:example\n"
+                 + CLAIM.marker(fixtures.OWNER) + "\n```")
+        scope = "## Scope\n\nKeep the neighboring section.\n"
+        for from_comment in (False, True):
+            for dry_run in (False, True):
+                with self.subTest(from_comment=from_comment, dry_run=dry_run):
+                    self.f.doCleanups()
+                    self.setUp()
+                    self.addCleanup(self.f.doCleanups)
+                    self.args.dry_run = dry_run
+                    self.f.issue["body"] += "\nNext actor: agent:old-owner\n"
+                    self.f.issue["last_edited_at"] = "2026-10-01T00:00:00Z"
+                    if from_comment:
+                        self.f.comments.append(self.comment(99, "## Current Status\nNext actor: agent:old-owner\n" + brief,
+                                                            "2026-10-02T00:00:00Z"))
+                    else:
+                        self.f.issue["body"] += "\n" + brief + "\n"
+                    self.f.issue["body"] += "\n" + scope
+                    self.run_own_release()
+                    body = self.f.emitted.call_args.args[0]["status_body"] if dry_run else self.f.issue["body"]
+                    self.assertIn(brief, body)
+                    self.assertIn(scope.strip(), body)
+                    status = PLAN.section_map(body)["Current Status"]
+                    self.assertEqual(PLAN.github_plan_next_actor.read(status), self.args.next_actor)
+                    self.assertEqual(CLAIM.records(status), [])
+
     def test_pr_release_keeps_body_and_publishes_status_with_actor(self) -> None:
         self.f.issue["pull_request"] = {}
         self.f.issue["body"] += "\nNext actor: agent:old-owner\n"

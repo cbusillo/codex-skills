@@ -68,6 +68,7 @@ import github_plan_trigger
 import github_plan_release
 import github_plan_landing
 import github_plan_status
+from github_plan_status.discussion import section_ranges
 from github_plan_status import next_actor as github_plan_next_actor
 from github_plan_status import questions as github_plan_questions
 import github_agent
@@ -1601,12 +1602,13 @@ def replace_section(body: str, section: str, new_text: str) -> str:
     body = body or ""
     if any(marker in new_text for marker in PLAN_RESERVED_MARKERS):
         raise PlanError("Plan section content contains reserved GitHub plan ownership markers")
-    pattern = re.compile(rf"(?ms)^##\s+{re.escape(section)}\s*\n.*?(?=^##\s+|\Z)")
     replacement = f"## {section}\n\n{new_text.strip()}\n\n"
-    if pattern.search(body):
-        return pattern.sub(
-            lambda match: f"## {section}\n\n{with_carried_markers(match.group(0), new_text)}\n\n",
-            body).rstrip() + "\n"
+    spans = [span for name, span in section_ranges(body) if name == section]
+    if spans:
+        for span in reversed(spans):
+            replacement = f"## {section}\n\n{with_carried_markers(body[span], new_text)}\n\n"
+            body = body[:span.start] + replacement + body[span.stop:]
+        return body.rstrip() + "\n"
     if body and not body.endswith("\n"):
         body += "\n"
     return f"{body}\n{replacement}".lstrip()
@@ -2261,16 +2263,19 @@ def _claim_release_evidence(evidence_repo, _number, evidence_id):
         return None
 
 
-def claim_current_status(issue: dict[str, Any], sections: dict[str, str], comments: list[dict[str, Any]]) -> str:
+def claim_current_status(issue: dict[str, Any], sections: dict[str, str], comments: list[dict[str, Any]],
+                         *, preserve_content: bool = False) -> str:
     discussion = github_direction_next.discussion_snapshot(issue, comments, complete=True)
     if "body" not in issue:
         discussion["body"] = "## Current Status\n" + sections.get("Current Status", "")
     trusted = wait_authors(issue["repo"])
     body_time = next_status_body_time({**issue, "discussion": discussion}, trusted)
-    return github_next_queue.current_status(discussion, trusted, body_recorded_at=body_time, preserve_markers=True)
+    return github_next_queue.current_status(discussion, trusted, body_recorded_at=body_time,
+                                           preserve_markers=True, preserve_content=preserve_content)
 
 
-def claim_snapshot(ref: str, repo: str, *, allow_closed: bool = False) -> tuple[dict[str, Any], str, list[dict[str, Any]], bool]:
+def claim_snapshot(ref: str, repo: str, *, allow_closed: bool = False,
+                   preserve_content: bool = False) -> tuple[dict[str, Any], str, list[dict[str, Any]], bool]:
     _, issue = get_issue(ref, repo)
     if issue.get("state") not in ({"open", "closed"} if allow_closed else {"open"}):
         raise PlanError("Claim requires an open issue or pull request")
@@ -2283,7 +2288,7 @@ def claim_snapshot(ref: str, repo: str, *, allow_closed: bool = False) -> tuple[
     seed_decision_discussion(issue["repo"], issue["number"],
         github_direction_next.discussion_snapshot(issue, comments, complete=True))
     can_update = "pull_request" not in issue and provenance["section_updates_allowed"] and provenance["ownership"] != "contributor_unmanaged"
-    status = claim_current_status(issue, sections, comments)
+    status = claim_current_status(issue, sections, comments, preserve_content=preserve_content)
     issue["claim_wait"] = current_wait(issue, comments, issue["repo"])
     return issue, status, comments, can_update
 
@@ -2686,7 +2691,7 @@ def cmd_release(args: argparse.Namespace) -> None:
     posted_comment = None
 
     def snapshot() -> dict[str, Any]:
-        work_record, status, comments, can_update = claim_snapshot(args.issue, repo, allow_closed=True)
+        work_record, status, comments, can_update = claim_snapshot(args.issue, repo, allow_closed=True, preserve_content=True)
         source = next((c for c in comments if c.get("id") == args.claim_comment), None)
         records = github_plan_claim.records((source or {}).get("body") or "")
         if (source is None or (source.get("user") or {}).get("login") != expected_actor
