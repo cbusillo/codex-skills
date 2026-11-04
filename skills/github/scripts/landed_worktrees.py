@@ -7,13 +7,16 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import fnmatch
 import importlib.util
 import json
 import math
 import os
 import random
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
@@ -40,13 +43,19 @@ class Worktree:
     lock: str | None
 
 
-def git(checkout: Path, *args: str, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["git", "-C", str(checkout), *args], capture_output=True, text=True,
-                          env=dev_worktree.git_environment(), input=input_text, timeout=30)
+def git(checkout: Path, *args: str, input_text: str | None = None, timeout: float = 30) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(checkout), *args],
+        capture_output=True,
+        text=True,
+        env=dev_worktree.git_environment(),
+        input=input_text,
+        timeout=timeout,
+    )
 
 
-def registered(checkout: Path) -> list[Worktree]:
-    result = git(checkout, "worktree", "list", "--porcelain", "-z")
+def registered(checkout: Path, *, include_primary: bool = False, timeout: float = 30) -> list[Worktree]:
+    result = git(checkout, "worktree", "list", "--porcelain", "-z", timeout=timeout)
     if result.returncode:
         raise ValueError(result.stderr.strip() or "git worktree list failed")
     worktrees: list[Worktree] = []
@@ -63,7 +72,7 @@ def registered(checkout: Path) -> list[Worktree]:
             branch=branch.removeprefix("refs/heads/") if branch else None,
             lock=fields.get("locked") if "locked" in fields else None,
         ))
-    return worktrees[1:]
+    return worktrees if include_primary else worktrees[1:]
 
 
 def contained(checkout: Path, head: str, tip: str) -> bool:
@@ -134,6 +143,31 @@ def run_retire(path: str, *, dry_run: bool) -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess([], 1, "", f"retire preview {outcome.get('error', 'unavailable')}")
 
 
+class UnpushedCommit(LookupError):
+    pass
+
+
+def commit_pulls(reader: Any, github_read: Any, repo: str, head: str) -> list[dict]:
+    try:
+        return reader.paged_json(f"repos/{repo}/commits/{head}/pulls", step_prefix="retirement_commit_pulls")
+    except github_read.GitHubReadError as exc:
+        if getattr(exc.result, "status", None) == 422 and f"No commit found for SHA: {head}" in str(exc):
+            raise UnpushedCommit("unpushed commit; GitHub has no record of this HEAD") from exc
+        raise
+
+
+def delete_merged_branch(checkout: Path, branch: str | None, head: str) -> str:
+    if not branch or not branch.startswith("work/"):
+        return "local branch kept: not a task branch"
+    tip = default_tracking_tip(checkout)
+    if not tip or not contained(checkout, head, tip):
+        return "local branch kept: not merged into the default branch"
+    if any(tree.branch == branch for tree in registered(checkout, include_primary=True)):
+        return "local branch kept: still checked out"
+    result = git(checkout, "update-ref", "--no-deref", "-d", f"refs/heads/{branch}", head)
+    return f"deleted merged local branch {branch}" if result.returncode == 0 else "local branch kept: tip changed or deletion failed"
+
+
 def portable_retire(path: Path, *, dry_run: bool) -> subprocess.CompletedProcess[str]:
     def kept(reason: str) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess([], 1, "", f"{reason}; follow work-closeout before retrying")
@@ -156,15 +190,36 @@ def portable_retire(path: Path, *, dry_run: bool) -> subprocess.CompletedProcess
     if objects.returncode or unpublished.returncode or unpublished.stdout.strip():
         return kept("HEAD or reflog history is unpublished")
     try:
-        users = subprocess.run(["lsof", "-nP", "-t", "+D", str(path)], capture_output=True, text=True, timeout=10)
+        if not has_no_live_users(path, directory=True):
+            return kept("worktree is in use or live-use proof is incomplete")
     except (OSError, subprocess.TimeoutExpired):
         return kept("live-use proof unavailable")
-    if users.stdout.strip() or users.stderr.strip() or users.returncode not in {0, 1}:
-        return kept("worktree is in use or live-use proof is incomplete")
+    metadata = git(path, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    common = Path(metadata.stdout.strip())
+    if metadata.returncode or not common.is_absolute() or common.name != ".git":
+        return kept("repository identity unavailable")
+    head = git(path, "rev-parse", "HEAD").stdout.strip()
+    branch = git(path, "symbolic-ref", "--short", "-q", "HEAD").stdout.strip() or None
     inspector = Path(__file__).parents[2] / "jetbrains-inspection/scripts/jb-inspect.py"
-    return subprocess.run([sys.executable, str(inspector), "remove-worktree", "--offline-only", "--repo", str(path),
-                           *([] if dry_run else ["--no-dry-run"])], capture_output=True, text=True,
-                          env=dev_worktree.git_environment())
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(inspector),
+            "remove-worktree",
+            "--offline-only",
+            "--repo",
+            str(path),
+            *([] if dry_run else ["--no-dry-run"]),
+        ],
+        capture_output=True,
+        text=True,
+        env=dev_worktree.git_environment(),
+    )
+    if result.returncode == 0 and not dry_run:
+        if path.exists() or any(tree.path == path for tree in registered(common.parent)):
+            return kept("worktree removal postcondition is incomplete")
+        result.stdout += "\n" + delete_merged_branch(common.parent, branch, head) + "\n"
+    return result
 
 
 def retire(rows: Iterable[dict], *, apply: bool, runner=None, deadline: float | None = None) -> list[dict]:
@@ -201,6 +256,190 @@ def retire(rows: Iterable[dict], *, apply: bool, runner=None, deadline: float | 
                        reason=f"retire {stage} outcome unavailable; reconcile this exact tree before retrying",
                        detail=[f"{type(exc).__name__}: {exc}"])
     return results
+
+
+STRAY_RESULT_PATTERNS = (
+    "*-inspection*.json",
+    "*-inspection*.err",
+    "*-checks*.json",
+    "*-snapshot*.json",
+    "*-watch*.json",
+    "*-watch*.jsonl",
+    "*-review*.json",
+    "*-validation*.log",
+    "*-controller.log",
+    "*-attention*.json",
+    "inspection.json",
+    "inspection.err",
+    "review.json",
+    "error.log",
+)
+
+
+def entry_state(info: os.stat_result) -> dict[str, int]:
+    return {field: getattr(info, field) for field in ("st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns", "st_ctime_ns")}
+
+
+def stray_snapshot(directory: int) -> dict[str, dict[str, int]]:
+    contents = {name: os.stat(name, dir_fd=directory, follow_symlinks=False) for name in os.listdir(directory)}
+    if any(
+        not stat.S_ISREG(info.st_mode) or not any(fnmatch.fnmatchcase(name, pattern) for pattern in STRAY_RESULT_PATTERNS)
+        for name, info in contents.items()
+    ):
+        raise ValueError("unknown content; retained without deletion")
+    return {name: entry_state(info) for name, info in contents.items()}
+
+
+def archive_results(repository: str, task: str, source_fd: int, contents: dict[str, dict[str, int]]) -> Path:
+    evidence, _ = dev_worktree.artifact_roots()
+    parent = evidence / repository / task
+    if any(path.is_symlink() for path in (parent, *parent.parents)):
+        raise ValueError("result evidence directory is redirected")
+    parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    if parent.stat().st_dev != os.fstat(source_fd).st_dev:
+        raise ValueError("result evidence is on another filesystem; source entries kept")
+    destination = Path(tempfile.mkdtemp(prefix="results-", dir=parent))
+    target_fd = dev_worktree.open_directory(destination)
+    try:
+        for name, expected in contents.items():
+            if entry_state(os.stat(name, dir_fd=source_fd, follow_symlinks=False)) != expected:
+                raise ValueError(f"result changed; remaining files kept; preserved results: {destination}")
+            os.rename(name, name, src_dir_fd=source_fd, dst_dir_fd=target_fd)
+    except OSError as exc:
+        raise OSError(f"result archive incomplete; any moved files are at {destination}: {exc}") from exc
+    finally:
+        os.close(target_fd)
+    return destination
+
+
+def verify_host_root(root: Path, deadline: float | None) -> None:
+    _, helper = dev_worktree.configuration()
+    if helper is None:
+        return
+    verified = subprocess.run(
+        [str(helper), "verify-root"],
+        capture_output=True,
+        text=True,
+        timeout=remaining_timeout(deadline, 30),
+        env=dev_worktree.host_environment(["verify-root"]),
+    )
+    if verified.returncode or verified.stdout.strip() != str(root):
+        raise ValueError("host worktree root verification unavailable; stray entries retained")
+
+
+def remaining_timeout(deadline: float | None, maximum: float) -> float:
+    remaining = maximum if deadline is None else min(maximum, deadline - time.monotonic())
+    if remaining <= 0:
+        raise ValueError("creation cleanup time budget exhausted")
+    return remaining
+
+
+def has_no_live_users(path: Path, *, directory: bool, deadline: float | None = None) -> bool:
+    users = subprocess.run(
+        ["lsof", "-nP", "-t", *(["+D"] if directory else []), str(path)],
+        capture_output=True,
+        text=True,
+        timeout=remaining_timeout(deadline, 10),
+    )
+    return users.returncode in {0, 1} and not users.stdout.strip() and not users.stderr.strip()
+
+
+def sweep_strays(checkout: Path, root: Path, *, apply: bool, deadline: float | None = None) -> list[dict]:
+    rows = []
+    parent = root
+    parent_fd = None
+    try:
+        remaining_timeout(deadline, 30)
+        common = Path(dev_worktree.git(checkout, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+        if not common.is_absolute() or common.name != ".git":
+            raise ValueError("normal repository identity unavailable; stray entries retained")
+        parent = root / common.parent.name
+        if not parent.exists():
+            return rows
+        dev_worktree.artifact_roots()
+        dev_worktree.verify_outside_repository(parent)
+        if not all(hasattr(os, flag) for flag in ("O_DIRECTORY", "O_NOFOLLOW")):
+            raise ValueError("safe directory descriptors unavailable; stray entries retained")
+        verify_host_root(root, deadline)
+        parent_fd = dev_worktree.open_directory(parent)
+        names = os.listdir(parent_fd)
+        registered_paths = {
+            tree.path.absolute() for tree in registered(checkout, include_primary=True, timeout=remaining_timeout(deadline, 30))
+        }
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        if parent_fd is not None:
+            os.close(parent_fd)
+        return [{"path": str(parent), "decision": "kept", "reason": str(exc)}]
+    try:
+        for index, name in enumerate(names):
+            if deadline is not None and time.monotonic() >= deadline:
+                rows.append(
+                    {
+                        "path": str(parent),
+                        "decision": "kept",
+                        "reason": "creation cleanup time budget exhausted",
+                        "remaining_entries": len(names) - index,
+                    }
+                )
+                break
+            path = parent / name
+            if path.absolute() in registered_paths:
+                continue
+            row: dict[str, Any] = {"path": str(path), "decision": "kept"}
+            rows.append(row)
+            directory_fd = None
+            try:
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise ValueError("creation cleanup time budget exhausted")
+                info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+                if stat.S_ISDIR(info.st_mode):
+                    directory_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+                    contents = stray_snapshot(directory_fd)
+                    newest = max([info.st_mtime, *(item["st_mtime_ns"] / 1_000_000_000 for item in contents.values())])
+                elif stat.S_ISREG(info.st_mode) and any(fnmatch.fnmatchcase(name, pattern) for pattern in STRAY_RESULT_PATTERNS):
+                    contents = {name: entry_state(info)}
+                    newest = info.st_mtime
+                else:
+                    raise ValueError("unknown content or symlink; retained without deletion")
+                if time.time() - newest < FRESH_START.total_seconds():
+                    raise ValueError("changed within the last two hours; may be in use")
+                if is_under(Path.cwd(), path) or is_under(Path(__file__), path):
+                    raise ValueError("calling session uses this entry")
+                if not has_no_live_users(path, directory=directory_fd is not None, deadline=deadline):
+                    raise ValueError("entry is in use or live-use proof is incomplete")
+                if (
+                    entry_state(os.stat(parent)) != entry_state(os.fstat(parent_fd))
+                    or entry_state(os.stat(name, dir_fd=parent_fd, follow_symlinks=False)) != entry_state(info)
+                    or any(
+                        tree.path.resolve() == path.resolve()
+                        for tree in registered(checkout, include_primary=True, timeout=remaining_timeout(deadline, 30))
+                    )
+                    or directory_fd is not None
+                    and stray_snapshot(directory_fd) != contents
+                ):
+                    raise ValueError("entry changed during qualification; retained")
+                dev_worktree.verify_outside_repository(parent)
+                if apply:
+                    if contents:
+                        row["evidence"] = str(
+                            archive_results(
+                                common.parent.name,
+                                name if directory_fd is not None else "stray",
+                                directory_fd if directory_fd is not None else parent_fd,
+                                contents,
+                            )
+                        )
+                    if directory_fd is not None:
+                        os.rmdir(name, dir_fd=parent_fd)
+                row.update(decision="removed" if apply else "would_remove", files=len(contents))
+            except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                row["reason"] = str(exc)
+            finally:
+                if directory_fd is not None:
+                    os.close(directory_fd)
+    finally:
+        os.close(parent_fd)
+    return rows
 
 
 def finished_pull(pull: dict) -> bool:
@@ -365,9 +604,11 @@ def target_decision(target: Path, checkout: Path, *, preserve: Iterable[Path] = 
         pulls = reader.paged_json(f"repos/{repo}/pulls", step_prefix="retirement_target_pulls",
                                   params={"state": "all", "head": f"{repo.split('/')[0]}:{tree.branch}"}) if tree.branch else []
         if not pulls:
-            pulls = reader.paged_json(f"repos/{repo}/commits/{tree.head}/pulls", step_prefix="retirement_target_commit_pulls")
+            pulls = commit_pulls(reader, github_read, repo, tree.head)
         return {**row, **ownership_decision(reader, github_read, repo, pulls, [tree.branch] if tree.branch else [],
                                             tree=tree)}
+    except UnpushedCommit as exc:
+        return {**row, "reason": str(exc)}
     except Exception as exc:
         return {**row, "reason": f"retirement evidence unavailable: {type(exc).__name__}: {exc}"}
 
@@ -489,8 +730,7 @@ def repository_rows(reader: Any, github_read: Any, repo: str, checkout: Path, ro
                     pulls = reader.paged_json(f"repos/{repo}/pulls", step_prefix="retirement_repository_pulls",
                                               params={"state": "all", "head": f"{repo.split('/')[0]}:{tree.branch}"}) if tree.branch else []
                     if not pulls and (not tree.branch or not tip or not contained(checkout, tree.head, tip)):
-                        pulls = reader.paged_json(f"repos/{repo}/commits/{tree.head}/pulls",
-                                                  step_prefix="retirement_commit_pulls")
+                        pulls = commit_pulls(reader, github_read, repo, tree.head)
                     open_pulls = [pull for pull in pulls if not finished_pull(pull)]
                     if open_pulls:
                         row.update(ownership_decision(reader, github_read, repo, pulls,
@@ -510,6 +750,8 @@ def repository_rows(reader: Any, github_read: Any, repo: str, checkout: Path, ro
                         row = next((dict(decision) for decision in decisions if decision["path"] == str(tree.path)),
                                    {**row, "reason": "no covered worktree found; use --branch or --pr with exact provenance"})
                         row = keep_fresh_starts([row], dt.datetime.now(dt.timezone.utc))[0]
+            except UnpushedCommit as exc:
+                row.update(decision="kept", reason=str(exc))
             except Exception as exc:
                 row.update(decision="kept", reason=f"retirement evidence unavailable: {type(exc).__name__}: {exc}")
             yield row
@@ -532,7 +774,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.budget_seconds is not None and (args.budget_seconds <= 0 or not math.isfinite(args.budget_seconds)):
         return refuse("budget-seconds must be positive and finite")
-    deadline = time.monotonic() + args.budget_seconds if args.budget_seconds else None
+    deadline = None
+    retirement_deadline = None
+    if args.budget_seconds is not None:
+        deadline = time.monotonic() + args.budget_seconds
+        retirement_deadline = deadline - min(5.0, args.budget_seconds / 2)
     try:
         root, _helper = dev_worktree.configuration()
     except (dev_worktree.Refused, OSError, json.JSONDecodeError) as exc:
@@ -551,19 +797,36 @@ def main(argv: list[str] | None = None) -> int:
             rows = [target_decision(args.path, args.checkout, preserve=args.preserve, reader=reader)]
         elif args.all:
             summary = {}
-            rows = repository_rows(reader, github_read, repo, args.checkout, root,
-                                   preserve={args.checkout.resolve(), Path.cwd().resolve(), Path(__file__).resolve(),
-                                             *(path.resolve() for path in args.preserve)}, deadline=deadline)
+            rows = repository_rows(
+                reader,
+                github_read,
+                repo,
+                args.checkout,
+                root,
+                preserve={
+                    args.checkout.resolve(),
+                    Path.cwd().resolve(),
+                    Path(__file__).resolve(),
+                    *(path.resolve() for path in args.preserve),
+                },
+                deadline=retirement_deadline,
+            )
         elif args.branch:
             summary, rows = branch_rows(reader, github_read, repo, args.branch, args.checkout, root)
         else:
             summary, rows = pull_rows(reader, github_read, repo, args.pr, args.checkout, root)
     except (LookupError, ValueError, OSError, subprocess.TimeoutExpired) as exc:
         return refuse(str(exc))
-    rows = retire(rows, apply=args.apply, deadline=deadline)
+    rows = retire(rows, apply=args.apply, deadline=retirement_deadline)
+    strays = []
+    if args.all:
+        try:
+            strays = sweep_strays(args.checkout, root, apply=args.apply, deadline=deadline)
+        except Exception as exc:
+            strays = [{"path": str(root), "decision": "kept", "reason": f"stray cleanup unavailable: {type(exc).__name__}: {exc}"}]
     passed = {"retired", "would_retire"}
     ok = not args.path or len(rows) == 1 and rows[0]["decision"] in passed
-    print(json.dumps({"ok": bool(ok), **summary, "worktrees": rows}, indent=2), flush=True)
+    print(json.dumps({"ok": bool(ok), **summary, "worktrees": rows, "strays": strays}, indent=2), flush=True)
     return 0 if ok else 2
 
 if __name__ == "__main__":

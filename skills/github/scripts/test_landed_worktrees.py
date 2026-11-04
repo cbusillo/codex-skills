@@ -10,19 +10,19 @@ from __future__ import annotations
 import io
 import json
 import os
-import sys
-from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
+from pathlib import Path
+from typing import Any
 from unittest import mock
 
+import dev_worktree
 import github_plan_claim
 import github_plan_lease
 import landed_worktrees
-import dev_worktree
-
 
 MANAGED_LOCK = "External storage registration"
 IDENTITY = ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid"]
@@ -381,13 +381,15 @@ class RepositoryTests(Fixture):
                 self.commit(path, "Squashed source")
                 self.git(path, "push", "origin", "HEAD:refs/pull/7/head")
 
-            def dispatch(args: list[str], **options: object) -> subprocess.CompletedProcess[str]:
+            def dispatch(
+                args: list[str], *, case: str = cause, target: Path = path, **options: object
+            ) -> subprocess.CompletedProcess[str]:
                 if args[0] == "lsof":
-                    if cause == "proof_unavailable":
+                    if case == "proof_unavailable":
                         raise FileNotFoundError("lsof")
-                    return subprocess.CompletedProcess(args, 0 if cause == "in_use" else 1,
-                                                       "123\n" if cause == "in_use" else "", "")
+                    return subprocess.CompletedProcess(args, 0 if case == "in_use" else 1, "123\n" if case == "in_use" else "", "")
                 if "remove-worktree" in args:
+                    run(["git", "-C", str(self.repo), "worktree", "remove", str(target)], check=True, capture_output=True)
                     return subprocess.CompletedProcess(args, 0, "proved", "")
                 return run(args, **options)
 
@@ -396,6 +398,240 @@ class RepositoryTests(Fixture):
             self.assertEqual(result.returncode == 0, cause in {"eligible", "pull_only"}, result)
             removals = [call.args[0] for call in calls.call_args_list if "remove-worktree" in call.args[0]]
             self.assertEqual(len(removals), int(cause in {"eligible", "pull_only"}))
+            branches = self.git(self.repo, "for-each-ref", "--format=%(refname)", f"refs/heads/work/{cause}")
+            self.assertEqual(bool(branches), cause != "eligible")
+
+
+class StrayTests(Fixture):
+    def sweep(self, *, apply: bool = False) -> list[dict]:
+        original = subprocess.run
+        with (
+            mock.patch.object(dev_worktree, "configuration", return_value=(self.root, None)),
+            mock.patch.object(landed_worktrees.subprocess, "run", wraps=subprocess.run) as run,
+        ):
+
+            def dispatch(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+                if args[0] == "lsof":
+                    return subprocess.CompletedProcess(args, 1, "", "")
+                return original(args, **kwargs)
+
+            run.side_effect = dispatch
+            return landed_worktrees.sweep_strays(self.repo, self.root, apply=apply)
+
+    def test_only_old_known_results_and_empty_unregistered_folders_are_removed(self) -> None:
+        parent = self.root / "sample"
+        tree = self.worktree("registered")
+        empty = parent / "empty"
+        empty.mkdir()
+        results = parent / "results"
+        results.mkdir()
+        (results / "inspection.json").write_text("{}")
+        loose = parent / "old-inspection.json"
+        loose.write_text("{}")
+        for path in (empty, results, results / "inspection.json", loose):
+            os.utime(path, (0, 0))
+        unknown = parent / "unknown"
+        unknown.mkdir()
+        (unknown / "inspection.json").write_text("{}")
+        (unknown / "source.py").write_text("important work")
+        link = parent / "linked"
+        link.symlink_to(tree, target_is_directory=True)
+        fresh = parent / "new-inspection.json"
+        fresh.write_text("{}")
+        preview = self.sweep()
+        self.assertEqual(
+            {Path(r["path"]).name for r in preview if r["decision"] == "would_remove"}, {"empty", "results", loose.name}
+        )
+        self.assertTrue(results.exists())
+        self.assertFalse(any(row["path"] == str(tree) for row in preview))
+        self.assertEqual(next(row["decision"] for row in preview if row["path"] == str(link)), "kept")
+        applied = self.sweep(apply=True)
+        self.assertEqual(sum(r["decision"] == "removed" for r in applied), 3)
+        self.assertTrue(tree.exists())
+        self.assertTrue((unknown / "source.py").exists())
+        self.assertTrue((unknown / "inspection.json").exists())
+        self.assertTrue(fresh.exists())
+        self.assertTrue(link.is_symlink())
+        self.assertFalse(empty.exists())
+        self.assertFalse(results.exists())
+        self.assertFalse(loose.exists())
+        archives = [Path(row["evidence"]) for row in applied if row.get("evidence")]
+        self.assertEqual(sum(len(list(archive.iterdir())) for archive in archives), 2)
+
+    def test_host_verification_failure_keeps_every_entry(self) -> None:
+        folder = self.root / "sample" / "old"
+        folder.mkdir()
+        os.utime(folder, (0, 0))
+        original = subprocess.run
+
+        def dispatch(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            if args[-1] == "verify-root":
+                return subprocess.CompletedProcess(args, 1, "", "wrong volume")
+            return original(args, **kwargs)
+
+        with mock.patch.object(landed_worktrees.subprocess, "run", side_effect=dispatch):
+            rows = landed_worktrees.sweep_strays(self.repo, self.root, apply=True)
+        self.assertTrue(folder.exists())
+        self.assertEqual(rows[0]["decision"], "kept")
+
+    def test_open_or_changed_result_is_kept(self) -> None:
+        original = subprocess.run
+        for cause in ("open", "changed", "unknown_added"):
+            folder = self.root / "sample" / cause
+            folder.mkdir()
+            path = folder / "inspection.json"
+            path.write_text("original result")
+            for item in (path, folder):
+                os.utime(item, (0, 0))
+
+            def dispatch(
+                args: list[str], *, case: str = cause, directory: Path = folder, result: Path = path, **kwargs: object
+            ) -> subprocess.CompletedProcess[str]:
+                if args[0] == "lsof":
+                    if case == "changed" and args[-1] == str(directory):
+                        result.write_text("changed")
+                    elif case == "unknown_added" and args[-1] == str(directory):
+                        (directory / "source.py").write_text("important")
+                    return subprocess.CompletedProcess(args, 0 if case == "open" else 1, "123" if case == "open" else "", "")
+                return original(args, **kwargs)
+
+            with (
+                self.subTest(cause=cause),
+                mock.patch.object(dev_worktree, "configuration", return_value=(self.root, None)),
+                mock.patch.object(landed_worktrees.subprocess, "run", side_effect=dispatch),
+            ):
+                rows = landed_worktrees.sweep_strays(self.repo, self.root, apply=True)
+            self.assertTrue(path.exists())
+            if cause == "unknown_added":
+                self.assertTrue((folder / "source.py").exists())
+                self.assertEqual(path.read_text(), "original result")
+            self.assertEqual(next(row["decision"] for row in rows if row["path"] == str(folder)), "kept")
+
+    def test_overlapping_evidence_root_keeps_results(self) -> None:
+        root = self.base / "task-evidence"
+        path = root / "sample" / "old-inspection.json"
+        path.parent.mkdir(parents=True)
+        path.write_text("evidence")
+        os.utime(path, (0, 0))
+        Path(os.environ["DEV_WORKTREE_CONFIG"]).write_text(json.dumps({"root": str(root), "evidenceRoot": str(root)}))
+        rows = landed_worktrees.sweep_strays(self.repo, root, apply=True)
+        self.assertTrue(path.exists())
+        self.assertEqual(rows[0]["decision"], "kept")
+
+    def test_verified_host_root_and_delegation_receipt_allow_preservation(self) -> None:
+        folder = self.root / "sample" / "old"
+        folder.mkdir()
+        (folder / "inspection.json").write_text("result")
+        for item in (folder, folder / "inspection.json"):
+            os.utime(item, (0, 0))
+        original = subprocess.run
+
+        def dispatch(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            if args[-1] == "verify-root":
+                self.assertIn("DEV_WORKTREE_DELEGATED", kwargs["env"])
+                return subprocess.CompletedProcess(args, 0, str(self.root) + "\n", "")
+            if args[0] == "lsof":
+                return subprocess.CompletedProcess(args, 1, "", "")
+            return original(args, **kwargs)
+
+        with mock.patch.object(landed_worktrees.subprocess, "run", side_effect=dispatch):
+            rows = landed_worktrees.sweep_strays(self.repo, self.root, apply=True)
+        self.assertFalse(folder.exists())
+        self.assertEqual((Path(rows[0]["evidence"]) / "inspection.json").read_text(), "result")
+
+    def test_primary_checkout_in_the_container_keeps_tracked_results(self) -> None:
+        root = self.base / "containers"
+        root.mkdir()
+        primary = root / "sample"
+        subprocess.run(["git", "clone", "-q", str(self.remote), str(primary)], check=True, capture_output=True)
+        path = primary / "inspection.json"
+        path.write_text("tracked source")
+        self.git(primary, "add", path.name)
+        self.commit(primary, "Tracked inspection data")
+        os.utime(path, (0, 0))
+        Path(os.environ["DEV_WORKTREE_CONFIG"]).write_text(json.dumps({"root": str(root)}))
+        rows = landed_worktrees.sweep_strays(primary, root, apply=True)
+        self.assertEqual(path.read_text(), "tracked source")
+        self.assertEqual(rows[0]["decision"], "kept")
+        self.assertFalse(self.git(primary, "status", "--porcelain"))
+
+    def test_container_becoming_a_repository_during_qualification_is_kept(self) -> None:
+        parent = self.root / "sample"
+        path = parent / "inspection.json"
+        path.write_text("source data")
+        os.utime(path, (0, 0))
+        original = subprocess.run
+
+        def dispatch(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            if args[0] == "lsof":
+                original(["git", "init", "-q", str(parent)], check=True, capture_output=True)
+                original(["git", "-C", str(parent), "add", path.name], check=True, capture_output=True)
+                return subprocess.CompletedProcess(args, 1, "", "")
+            return original(args, **kwargs)
+
+        with (
+            mock.patch.object(dev_worktree, "configuration", return_value=(self.root, None)),
+            mock.patch.object(landed_worktrees.subprocess, "run", side_effect=dispatch),
+        ):
+            rows = landed_worktrees.sweep_strays(self.repo, self.root, apply=True)
+        self.assertEqual(path.read_text(), "source data")
+        self.assertEqual(rows[0]["decision"], "kept")
+
+    def test_expired_budget_starts_no_registration_read(self) -> None:
+        with mock.patch.object(landed_worktrees, "registered") as read:
+            rows = landed_worktrees.sweep_strays(self.repo, self.root, apply=True, deadline=0)
+        read.assert_not_called()
+        self.assertEqual(rows[0]["decision"], "kept")
+
+
+class MissingCommitTests(Fixture):
+    def test_missing_commit_is_kept_and_other_read_failures_stay_errors(self) -> None:
+        import github_read
+
+        head = "a" * 40
+        reader = mock.Mock()
+        for status, message in (
+            (422, f"Validation failed: No commit found for SHA: {head}"),
+            (403, "Forbidden"),
+            (404, "Not Found"),
+            (422, "other validation error"),
+        ):
+            reader.paged_json.side_effect = github_read.GitHubReadError(message, result=mock.Mock(status=status), diagnostics={})
+            with self.subTest(status=status, message=message):
+                if "No commit found" in message:
+                    with self.assertRaisesRegex(LookupError, "unpushed commit"):
+                        landed_worktrees.commit_pulls(reader, github_read, "o/sample", head)
+                else:
+                    with self.assertRaises(github_read.GitHubReadError):
+                        landed_worktrees.commit_pulls(reader, github_read, "o/sample", head)
+
+    def test_changed_or_checked_out_branch_is_kept(self) -> None:
+        path = self.worktree("held", lock=None)
+        head = self.git(path, "rev-parse", "HEAD")
+        self.assertIn("still checked out", landed_worktrees.delete_merged_branch(self.repo, "work/held", head))
+        self.git(self.repo, "worktree", "remove", str(path))
+        self.git(self.repo, "update-ref", "refs/heads/work/held", self.commit(self.repo, "Later"))
+        landed_worktrees.delete_merged_branch(self.repo, "work/held", head)
+        self.assertTrue(self.git(self.repo, "for-each-ref", "refs/heads/work/held"))
+
+    def test_merged_branch_deletion_uses_tracking_tip_and_keeps_concurrent_commits(self) -> None:
+        path = self.worktree("tracking", lock=None)
+        head = self.commit(path, "Published and merged")
+        self.git(self.repo, "update-ref", "refs/remotes/origin/main", head)
+        self.git(self.repo, "worktree", "remove", str(path))
+        self.assertIn("deleted", landed_worktrees.delete_merged_branch(self.repo, "work/tracking", head))
+        self.git(self.repo, "branch", "work/raced", head)
+        later = self.commit(self.repo, "New local work")
+        original = landed_worktrees.git
+
+        def change_before_delete(checkout: Path, *args: str, **kwargs: object) -> subprocess.CompletedProcess[str]:
+            if args[0] == "update-ref":
+                self.git(self.repo, "update-ref", "refs/heads/work/raced", later)
+            return original(checkout, *args, **kwargs)
+
+        with mock.patch.object(landed_worktrees, "git", side_effect=change_before_delete):
+            self.assertIn("kept", landed_worktrees.delete_merged_branch(self.repo, "work/raced", head))
+        self.assertEqual(self.git(self.repo, "rev-parse", "work/raced"), later)
 
 
 class MainTests(Fixture):
@@ -457,6 +693,17 @@ class MainTests(Fixture):
                 code = landed_worktrees.main(["--repo", repo, *landed, "--checkout", str(checkout or self.repo), "--apply"])
             self.delegation_packet = host.call_args.args[2].get("DEV_WORKTREE_DELEGATED") if host.called else None
         return code, json.loads(out.getvalue()) if out.getvalue() else {}, host if entrypoint else run
+
+    def test_sweep_failure_preserves_completed_retirement_receipts(self) -> None:
+        completed = [{"path": "/finished", "decision": "retired"}]
+        with (
+            mock.patch.object(landed_worktrees, "retire", return_value=completed),
+            mock.patch.object(landed_worktrees, "sweep_strays", side_effect=ValueError("registration unavailable")),
+        ):
+            code, result, _run = self.run_main(None, all_trees=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(result["worktrees"], completed)
+        self.assertEqual(result["strays"][0]["decision"], "kept")
 
     def test_explicit_retirement_of_fresh_published_abandoned_work_reaches_host(self):
         for lock in (MANAGED_LOCK, "Old registration lock", None):
@@ -755,12 +1002,15 @@ class FinishedScanTests(Fixture):
         self.assertEqual(gaps, [])
         git = landed_worktrees.git
         for command in ("rev-parse", "remote", "worktree", "status"):
-            def timeout(checkout: Path, *args: str) -> subprocess.CompletedProcess[str]:
-                if checkout == path and args[0] == command:
-                    raise subprocess.TimeoutExpired(command, 1)
-                return git(checkout, *args)
 
-            with self.subTest(command=command), mock.patch.object(landed_worktrees, "git", side_effect=timeout):
+            def simulate_timeout(
+                checkout: Path, *args: str, timeout: float = 30, command_name: str = command
+            ) -> subprocess.CompletedProcess[str]:
+                if checkout == path and args[0] == command_name:
+                    raise subprocess.TimeoutExpired(command_name, 1)
+                return git(checkout, *args, timeout=timeout)
+
+            with self.subTest(command=command), mock.patch.object(landed_worktrees, "git", side_effect=simulate_timeout):
                 found, gaps = landed_worktrees.finished(self.root, lambda *_: [])
             self.assertEqual(found, [])
             self.assertTrue(gaps)
