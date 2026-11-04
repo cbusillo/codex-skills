@@ -2043,6 +2043,13 @@ Snapshots older than
 [context-panel#961](https://github.com/cbusillo/context-panel/pull/961) carry
 no periods, so both are `null` (unknown) and the label is `null`.
 
+Morning numbers and account reads include each provider account's
+`banked_resets.available_count` and `earliest_known_expiry`, alongside its
+`coverage`. These and `known_expiries` pass through Context Panel's summary
+unchanged; a missing summary is `null` (unknown), not zero resets. Report a
+missing earliest expiry as unknown, even when resets are available. Use the
+existing named-account preview to read accounts outside the published launch order.
+
 For source work use `codex --remote unix:// -C /absolute/repository` with the
 per-session settings. The empty endpoint selects that account's daemon; fixed
 endpoints can attach to another account, and removing remote can select embedded

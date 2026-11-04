@@ -1596,6 +1596,22 @@ class AccountChoiceTests(unittest.TestCase):
              "burn": {"unitsPerHour": weekly_burn, "observedDurationHours": 12, "sampleCount": 8}}])
         return snapshot
 
+    def test_report_passes_banked_reset_summary_through_unchanged(self) -> None:
+        snapshot = self.snapshot()
+        summary = {"availableCount": 3, "earliestKnownExpiry": "2026-11-04T07:00:00Z",
+                   "knownExpiries": ["2026-11-06T07:00:00Z", "2026-11-04T07:00:00Z"],
+                   "coverage": "partial"}
+        snapshot["accounts"][1]["bankedResets"] = {"state": "available", "summary": summary, "unknownExpiryCount": 1}
+        choices = account_choice.choose_batch("anthropic", accounts_config(), snapshot, None, count=3, now=NOW)
+        expected = {"available_count": summary["availableCount"], "earliest_known_expiry": summary["earliestKnownExpiry"],
+                    "known_expiries": summary["knownExpiries"], "coverage": summary["coverage"]}
+        self.assertEqual([account_choice.public(choice)["banked_resets"] for choice in choices],
+                         [expected, None, expected])
+        choice = account_choice.choose("anthropic", accounts_config(), snapshot, None, now=NOW, name="spare")
+        self.assertEqual(choice["banked_resets"], expected)
+        snapshot["accounts"][1]["bankedResets"]["summary"] = None
+        self.assertIsNone(account_choice.choose("anthropic", accounts_config(), snapshot, None, now=NOW)["banked_resets"])
+
     def test_report_keeps_five_hour_and_weekly_capacity_separate(self):
         snapshot = self.windowed(self.snapshot(), "5-hour", .63, .89, 1.5)
         choice = account_choice.choose("anthropic", accounts_config(), snapshot, None, now=NOW)

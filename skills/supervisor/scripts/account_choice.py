@@ -233,6 +233,8 @@ def number_or_none(value):
 # https://github.com/cbusillo/codex-skills/issues/2478
 def window_report(row):
     label = row.get("limitingWindowLabel")
+    banked = row.get("bankedResets")
+    summary = banked.get("summary") if isinstance(banked, dict) else None
     windows = row.get("windows")
     windows = [w for w in windows if isinstance(w, dict)] if isinstance(windows, list) else []
     capacity = dict.fromkeys(REPORTED_PERIODS.values())
@@ -244,7 +246,11 @@ def window_report(row):
             if key is not None:
                 capacity[key].append(period_window(window))
     return {"limiting_window_label": label if isinstance(label, str) and label else None,
-            "window_capacity": capacity}
+            "window_capacity": capacity,
+            "banked_resets": {"available_count": summary.get("availableCount"),
+                              "earliest_known_expiry": summary.get("earliestKnownExpiry"),
+                              "known_expiries": summary.get("knownExpiries"),
+                              "coverage": summary.get("coverage")} if isinstance(summary, dict) else None}
 
 
 def period_window(window):
@@ -367,12 +373,13 @@ def choose(provider, config, snapshot, unavailable_reason, now=None, name=None):
 
 
 def decision(account, source, reason, account_id=None, remaining=None, limiting_window_label=None,
-             window_capacity=None, configuration_errors=(), reset_prompts=()):
+             window_capacity=None, configuration_errors=(), reset_prompts=(), banked_resets=None):
     binding = {"account_binding": GOOGLE_ACCOUNT_BINDING} if account["provider"] == "google" else {}
     return {**binding, "name": account["name"], "provider": account["provider"], "source": source,
             "reason": reason, "account_id": account_id, "remaining_fraction": remaining,
             "limiting_window_label": limiting_window_label,
             "window_capacity": window_capacity or dict.fromkeys(REPORTED_PERIODS.values()),
+            "banked_resets": banked_resets,
             "env": account["env"], "configuration_errors": list(configuration_errors),
             "reset_prompts": list(reset_prompts)}
 
