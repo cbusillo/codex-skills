@@ -61,8 +61,8 @@ decisions, statuses, board contents or narrative; open linked records for action
    NEXT rows have no observed claim or wait; REVIEW rows need status or custody
    reconciliation. Generic agent roles are available work, subject to the ownership
    check. Follow the shared [recipient check](../../github/references/cli-reference.md#planning-next-work)
-   when assigning an unclaimed worker or reconciling its custody. Leads update
-   each delegated child's staffing action under the [brief rules](brief-rules.md#rules-every-brief-carries).
+   when assigning an unclaimed worker or reconciling its custody. Leads launch
+   within their assigned capacity under the [lead brief](brief-rules.md#milestone-lead-briefs).
    There is no separate staffing-comment queue.
    Route Client and Client-agent comments to the owning worker under the
    [Client-reply rule](../../references/talking-with-the-director.md#client-replies).

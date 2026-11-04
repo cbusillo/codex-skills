@@ -10,8 +10,10 @@
 
 import argparse
 import asyncio
-from collections.abc import Awaitable, Callable, Iterator, Sequence
-from contextlib import contextmanager
+from collections.abc import Awaitable, Callable, Coroutine, Iterator, Sequence
+from contextlib import contextmanager, nullcontext
+from contextvars import ContextVar
+from functools import wraps
 import errno
 import json
 import importlib
@@ -46,6 +48,7 @@ CLAUDE_QUESTION_TOOL = "AskUserQuestion"
 # hook-review prompt until the brief's turn runs, within this bound.
 CODEX_PROMPT_WINDOW = 20.0
 LAUNCH_TIMEOUT = 30.0
+LEAD_LEDGER: ContextVar[Path | None] = ContextVar("lead_ledger", default=None)
 EXIT_READBACK_ATTEMPTS = 5
 EXIT_READBACK_INTERVAL = 0.2
 # The catalog's Chrome opt-in; with it, browser tools come only from the pinned server.
@@ -1705,7 +1708,50 @@ def read_launch_ledger(path: Path) -> list[dict]:
     return entries
 
 
+def lead_metadata(args: argparse.Namespace) -> dict:
+    return {name: value for name in ("lead_session_id", "worker_cap")
+            if (value := getattr(args, name, None)) is not None}
+
+
+def guard_lead_launch(operation: Callable[..., Coroutine[Any, Any, Any]]) -> Callable[..., Coroutine[Any, Any, Any]]:
+    @wraps(operation)
+    async def guarded(*arguments: Any) -> Any:
+        args = arguments[-1]
+        if args.command != "new":
+            return await operation(*arguments)
+        metadata = lead_metadata(args)
+        if not metadata:
+            return await operation(*arguments)
+        ledger = getattr(args, "ledger", None)
+        if not isinstance(ledger, Path) or getattr(args, "resume_session_id", None):
+            raise ValueError("lead launch settings need a fresh launch with --ledger")
+        if "worker_cap" in metadata:
+            if "lead_session_id" in metadata or type(metadata["worker_cap"]) is not int or metadata["worker_cap"] <= 0:
+                raise ValueError("--worker-cap needs a positive cap assigned by the Supervisor to a lead")
+            return await operation(*arguments)
+        from check_operation import closure
+        with closure.store_lock(ledger, create=True):
+            rows = read_launch_ledger(ledger)
+            leads = [row for row in rows if row.get("session_id") == metadata["lead_session_id"]
+                     and row.get("supervisor_owned") is True]
+            cap = leads[0].get("worker_cap") if len(leads) == 1 else None
+            if type(cap) is not int or cap <= 0:
+                raise ValueError("lead worker cap unavailable in the shared ledger; ask the Supervisor to assign it")
+            files = getattr(args, "command_file", None) or []
+            count = len(files) if isinstance(files, list) else 1
+            active = sum(row.get("lead_session_id") == metadata["lead_session_id"] for row in rows)
+            if active + count > cap:
+                raise ValueError(f"lead worker cap {cap} exceeded: {active} active and {count} requested")
+            token = LEAD_LEDGER.set(ledger.resolve())
+            try:
+                return await operation(*arguments)
+            finally:
+                LEAD_LEDGER.reset(token)
+    return guarded
+
+
 def append_launch_ledger(path: Path, entry: dict) -> None:
+    from check_changes import save_state
     github = str(Path(__file__).resolve().parents[2] / "github/scripts")
     if github not in sys.path:
         sys.path.append(github)
@@ -1713,21 +1759,11 @@ def append_launch_ledger(path: Path, entry: dict) -> None:
     if (entry.get("harness") not in {"codex", "claude", "agy"} or entry.get("supervisor_owned") is not True
             or not isinstance(entry.get("session_id"), str) or not entry["session_id"].strip()):
         raise ValueError("launch ledger append needs a native identity and explicit Supervisor ownership")
-    with github_plan_closure.store_lock(path, create=True):
+    with nullcontext() if LEAD_LEDGER.get() == path.resolve() else github_plan_closure.store_lock(path, create=True):
         entries = read_launch_ledger(path)
         if any(row.get("session_id") == entry["session_id"] for row in entries):
             raise ValueError("native session is already in the launch ledger; inspect before retry")
-        temporary = None
-        try:
-            with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False) as stream:
-                temporary = Path(stream.name)
-                json.dump([*entries, entry], stream)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, path)
-        finally:
-            if temporary:
-                temporary.unlink(missing_ok=True)
+        save_state(path, [*entries, entry])
 
 
 async def observe_resume_terminal(result: dict) -> None:
@@ -1815,6 +1851,7 @@ async def register_fresh_launch(args: argparse.Namespace, result: dict, choice: 
     path = getattr(args, "ledger", None)
     if not isinstance(path, Path):
         return
+    result.update(lead_metadata(args))
     retained = not choice and bool(result.get("account", {}).get("resume_session_id"))
     if retained:
         choice = {**result["account"], "resume_source": result["resume_source"],
@@ -1991,6 +2028,7 @@ async def read_session(session: Any) -> dict[str, Any]:
             "input_line": iterm_input_line(screen)}
 
 
+@guard_lead_launch
 async def operate(app, args):
     if args.command == "close":
         return await close_session(app, args.session_id, args.ledger)
@@ -2063,7 +2101,7 @@ async def operate(app, args):
         command_texts, choices = prepare_launches(args)
         results = []
         for command_text, choice in zip(command_texts, choices):
-            progress = {"window_id": windows[0].window_id, "tab_id": None,
+            progress = {**lead_metadata(args), "window_id": windows[0].window_id, "tab_id": None,
                         "session_id": None, "receipt_written": False,
                         "submission": "not_attempted", "phase": "write_receipt", "mutation_started": False}
             if choice:
@@ -2084,7 +2122,7 @@ async def operate(app, args):
                 if isinstance(error, StartupFailure):
                     progress.update(submission="submitted", phase="verify_startup")
                 raise LaunchFailure(results, progress, error) from error
-            result = {"window_id": windows[0].window_id,
+            result = {**lead_metadata(args), "window_id": windows[0].window_id,
                       "tab_id": tab.tab_id, "session_id": session.session_id}
             if choice:
                 result["account"] = account_choice.public(choice)
@@ -2239,6 +2277,8 @@ def main():
                      help="child issue URL; append its Current Status Brief verbatim to --brief-file's standard header")
     new.add_argument("--resume-session-id", help="resume one exact Supervisor-owned Codex source from --ledger")
     new.add_argument("--ledger", type=Path, help="private source ledger for resume or atomic fresh managed Codex registration")
+    new.add_argument("--lead-session-id", help="launch workers for this lead's native session in the shared ledger")
+    new.add_argument("--worker-cap", type=int, help="Supervisor-assigned concurrent worker cap for a new milestone lead")
     new.add_argument(
         "--account-provider",
         required=True,

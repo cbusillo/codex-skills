@@ -27,6 +27,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import account_choice
 import agent_tools
 import iterm_tab
+import codex_session_proxy
 from codex_session_proxy import MEMORY_SETTING
 import tmux_terminal
 import session_liveness
@@ -395,6 +396,60 @@ class ResumeLaunchTests(unittest.TestCase):
 
 
 class ProviderLaunchTests(unittest.TestCase):
+    def test_lead_launch_records_its_owner_on_the_worker_ledger_row(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            ledger = Path(folder) / "ledger.json"
+            args = argparse.Namespace(ledger=ledger, lead_session_id="milestone-lead")
+            native = {"session_id": "worker", "transcript": str(Path(folder) / "worker.jsonl"),
+                      "launch_pid": 123, "launch_generation": "generation", "launch_started_at": "started",
+                      "codex_home": folder, "tty": "fixture"}
+            receipt = {**native, "session_id": "terminal", "native_receipt": str(Path(folder) / "receipt.json")}
+            with patch.object(codex_session_proxy, "read_launch_receipt", return_value=native):
+                asyncio.run(iterm_tab.register_fresh_launch(args, receipt, None))
+            self.assertEqual(json.loads(ledger.read_text())[0]["lead_session_id"], args.lead_session_id)
+            self.assertEqual(receipt["lead_session_id"], args.lead_session_id)
+
+    def test_lead_cap_refuses_overflow_before_accounts_or_terminals_on_both_backends(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            ledger = Path(folder) / "ledger.json"
+            lead = {"session_id": "lead", "supervisor_owned": True, "worker_cap": 2}
+            worker = {"session_id": "worker", "lead_session_id": lead["session_id"]}
+            other = {"session_id": "other", "lead_session_id": "another-lead"}
+            args = argparse.Namespace(command="new", window_id="chosen", ledger=ledger,
+                                      lead_session_id=lead["session_id"], command_file=[Path(folder) / "absent"],
+                                      tmux_socket="fixture")
+            window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock())
+            app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
+            for rows, files in (([lead, worker, {**worker, "session_id": "worker2"}, other], 1),
+                                ([lead, worker, other], 2)):
+                ledger.write_text(json.dumps(rows))
+                args.command_file = [Path(folder) / "absent"] * files
+                for backend in ("iterm", "tmux"):
+                    with (self.subTest(backend=backend, files=files),
+                          patch.dict(sys.modules, {"iterm2": SimpleNamespace()}),
+                          patch.object(account_choice, "select") as select,
+                          patch.object(tmux_terminal, "Terminal") as terminal):
+                        operation = iterm_tab.operate(app, args) if backend == "iterm" else tmux_terminal.operate(args)
+                        with self.assertRaisesRegex(ValueError, "worker cap"):
+                            asyncio.run(operation)
+                        select.assert_not_called()
+                        window.async_create_tab.assert_not_called()
+                        terminal.return_value.run.assert_not_called()
+
+            @iterm_tab.guard_lead_launch
+            async def register_worker(options: argparse.Namespace) -> None:
+                iterm_tab.append_launch_ledger(options.ledger, {
+                    **worker, "harness": "codex", "supervisor_owned": True})
+
+            args.command_file = [Path(folder) / "absent"]
+            ledger.write_text(json.dumps([lead, other]))
+            asyncio.run(register_worker(args))
+            self.assertIn(worker["session_id"], [row["session_id"] for row in json.loads(ledger.read_text())])
+            for cap in (None, 0, True, "2"):
+                ledger.write_text(json.dumps([{**lead, "worker_cap": cap}, other]))
+                with self.subTest(cap=cap), self.assertRaisesRegex(ValueError, "worker cap unavailable"):
+                    asyncio.run(register_worker(args))
+
     def setUp(self):
         self.enterContext(patch.object(iterm_tab, "check_launch_issue"))
         # Generic launch cases must not discover the host's private opt-in.

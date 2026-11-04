@@ -311,6 +311,10 @@ Full supervision is a direction session the Director starts directly in a host,
 not a subordinate call. The Supervisor briefs, watches, nudges and records;
 it never decides for the Director, widens a running brief, or judges a run it
 launched. Another model's direction session judges that run.
+Milestone leads act as mini Supervisors within their assigned milestone,
+accounts and worker cap under the [lead brief](references/brief-rules.md#milestone-lead-briefs).
+They launch and close their own workers in the Supervisor's shared ledger;
+they do no slices themselves. This does not start a full Supervisor takeover.
 
 Load this skill at takeover. Scheduled checks use only
 [Routine check](references/routine-check.md), which names the private ledger,
@@ -405,6 +409,11 @@ unresolved waits, point workers at the decision, and leave escalation labels
 for the weekly direction audit. Client test notes already settling acceptance
 need no new pre-merge question.
 
+Assign leads capacity and accounts, watch their responsiveness and milestone
+handoffs, and launch work outside their milestones. Adopt a departed lead's
+worker rows for closeout. Leads idle between worker-finish, scoped foreign-watch
+and native-message events, with a rare backstop check; use their
+[lead brief](references/brief-rules.md#milestone-lead-briefs).
 Run [Routine check](references/routine-check.md) about every 30 minutes and act
 on finished notices immediately. Read optional host `[staffing]` `openai_workers` and
 `load1_limit` when present; missing tuning does not block available work. Refill below

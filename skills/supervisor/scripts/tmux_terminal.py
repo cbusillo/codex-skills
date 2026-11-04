@@ -365,6 +365,7 @@ class Terminal:
         return {"session_id": identity, "close_requested": True, "readback_required": True}
 
 
+@iterm_tab.guard_lead_launch
 async def operate(args):
     terminal = Terminal(args.tmux_socket)
     if args.command == "list":
@@ -424,7 +425,7 @@ async def operate(args):
     commands, choices = iterm_tab.prepare_launches(args)
     results = []
     for command, choice in zip(commands, choices):
-        progress = {"window_id": args.window_id, "tab_id": None, "session_id": None,
+        progress = {**iterm_tab.lead_metadata(args), "window_id": args.window_id, "tab_id": None, "session_id": None,
                     "receipt_written": False, "submission": "not_attempted", "phase": "prepare_terminal",
                     "mutation_started": False,
                     "backend": "tmux", "tmux_socket": args.tmux_socket}
@@ -463,7 +464,8 @@ async def operate(args):
             row = terminal.select(sid)
             progress.update(session_id=sid, pid=row["pid"])
             progress.update(submission="unknown", phase="submit_command")
-            result = {key: row[key] for key in ("window_id", "tab_id", "session_id", "tty", "pid", "backend", "tmux_socket")}
+            result = {**iterm_tab.lead_metadata(args),
+                      **{key: row[key] for key in ("window_id", "tab_id", "session_id", "tty", "pid", "backend", "tmux_socket")}}
             if choice:
                 result["account"] = account_choice.public(choice)
                 for key in ("native_receipt", "file_native", "claude_native"):

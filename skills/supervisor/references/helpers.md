@@ -1517,7 +1517,7 @@ environment prefixes. `agy` uses its native `--prompt-interactive` option;
 Codex and Claude take one positional prompt after `--`. Keep prompt options
 out of the command file. Shell wrappers, extra commands, trailing shell punctuation
 and shell comments refuse because they may discard the prompt.
-For a lead's parallel-session request, add `--brief-issue <child-issue-url>`
+For a worker's parallel-session request, add `--brief-issue <child-issue-url>`
 and put only the standard Supervisor header in `--brief-file`: trial token,
 `Anchor and claim:` with that same URL, admission and rules link. The child
 uses the shared brief rules' Current Status format. The launcher reads it
@@ -1525,6 +1525,18 @@ through the planning helper and appends its brief verbatim under the header,
 normalizing CRLF line endings to LF for terminal transport. The header owns
 token, anchor, admission and rules; matching labels in the task are context only.
 Repeat both brief options in command-file order for a batch.
+For a new milestone lead, the Supervisor adds `--ledger <shared-ledger>` and
+`--worker-cap <positive-count>`; registration saves `worker_cap` on its row.
+The lead launches workers with that same ledger, `--lead-session-id
+<lead-native-id>`, and an explicit allowed `--account` from its brief. Worker
+rows and retained launch receipts carry `lead_session_id`. Both backends hold
+the existing ledger lock across a lead's batch, checking its assigned cap
+before accounts or terminals and counting every row it launched until normal
+closeout removes it. A missing lead or cap refuses. Recover any partial launch
+with its retained receipt before launching more workers; never relaunch it.
+Leads use the existing closeout helper with their own native id as
+`--supervisor-session`; the Supervisor can adopt a departed lead's workers.
+Change assigned caps only after launches and registrations on the ledger finish.
 For fresh managed Codex `--remote` workers on either terminal backend, add
 `--ledger /private/launch-ledger.json`. The existing ingress publishes the
 first native thread ID and transcript into that launch's private receipt,
