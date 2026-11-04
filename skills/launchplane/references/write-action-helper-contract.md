@@ -901,7 +901,7 @@ installed local helper bindings.
   `blocker_codes`, `blocker_keys` by code, `blocker_count`, `warning_count`,
   the current target's `env_keys`, `required_volume_keys_missing` and
   `latest_deployment_status`, and each
-  step's `step_id` and `status`. Every key list keeps names that match
+  step's `step_id` and `status`. The existing env-key lists keep names that match
   `[A-Za-z_][A-Za-z0-9_]*` only. Blocker, step and warning text, the next
   target's name and domains, the approval issue URL, and the current target's
   id, name, domains and live volume values are dropped and listed in
@@ -909,7 +909,7 @@ installed local helper bindings.
   value in a kept field fails the read.
   When reported, the current target also keeps `compose_matches_generated`
   (strict boolean or null) and `override_environment_keys` (complete names-only
-  list or null). Missing fields remain omitted and provide no evidence; null
+  list or null, using the producer's existing printable stored-name rule). Missing fields remain omitted and provide no evidence; null
   stays unknown, and a valid empty list stays empty. Malformed fields or any
   invalid or over-bound override-name list refuse the read rather than returning
   a partial list. These advisory provider observations do not qualify a removal;

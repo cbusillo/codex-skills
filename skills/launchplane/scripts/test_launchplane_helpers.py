@@ -5718,7 +5718,7 @@ def test_target_replacement_plan_read_keeps_key_names_and_drops_text() -> None:
 
 
 @pytest.mark.parametrize("match", [True, False, None])
-@pytest.mark.parametrize("names", [None, [], ["EXAMPLE_INPUT"]])
+@pytest.mark.parametrize("names", [None, [], ["EXAMPLE_INPUT", "web.base.url", "MY-SETTING"]])
 def test_plan_read_preserves_optional_complete_current_target_evidence(
     match: bool | None, names: list[str] | None
 ) -> None:
