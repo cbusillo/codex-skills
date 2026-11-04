@@ -239,6 +239,7 @@ class ReleaseTests(unittest.TestCase):
             "--transcript-root",
             str(self.root),
         ]
+        clock = [1000.0]
         for advice, retryable, limited in (
             ("retry_after_reported_reset", True, False),
             ("inspect_last_failure", False, False),
@@ -266,17 +267,17 @@ class ReleaseTests(unittest.TestCase):
                     headers = {"retry-after": "45", "x-ratelimit-resource": "graphql"}
                     failure = api.classify_error(403, headers, {"message": "secondary rate limit"})
                     reply = api.ApiResult(ok=False, status=403, body=None, bucket="graphql", failure=failure)
-                    clock = [1000.0]
+                    clock[0] = 1000.0
                     stop = api.run_with_retry(
-                        lambda: reply,
+                        Mock(return_value=reply),
                         operation="github.read",
                         is_write=False,
                         actor=ACTOR,
                         bucket="graphql",
                         retry_policy=replace(api.optional_batch_retry_policy(), state_dir=self.root / "limited"),
                         retry_runtime=api.RetryRuntime(
-                            now=lambda state=clock: state[0],
-                            sleep=lambda duration, state=clock: state.__setitem__(0, state[0] + duration),
+                            now=lambda: clock[0],
+                            sleep=lambda duration: clock.__setitem__(0, clock[0] + duration),
                         ),
                         deadline_at=1600,
                     )
