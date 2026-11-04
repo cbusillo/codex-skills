@@ -506,9 +506,18 @@ class ProviderLaunchTests(unittest.TestCase):
                     asyncio.run(fail_launch(args))
             self.assertEqual(retained.exception.detail["failed_launch"]["launch"]["lead_launch_id"], args.lead_launch_id)
             self.assertFalse(retained.exception.detail["reservation_settled"])
+
+            refusal = ValueError("fixture preflight refusal")
+
+            @iterm_tab.guard_lead_launch
+            async def refuse_before_launch(_options: argparse.Namespace) -> None:
+                raise refusal
+
             ledger.write_text(json.dumps([lead, other]))
-            with patch.object(iterm_tab, "settle_lead_launch", side_effect=AssertionError("no unused successful slots")):
-                asyncio.run(register_worker(args))
+            with self.assertRaises(ValueError) as caught:
+                asyncio.run(refuse_before_launch(args))
+            self.assertIs(caught.exception, refusal)
+            self.assertEqual(json.loads(ledger.read_text())[0]["worker_launches"], {})
 
     def setUp(self):
         self.enterContext(patch.object(iterm_tab, "check_launch_issue"))

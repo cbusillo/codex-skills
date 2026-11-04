@@ -207,7 +207,8 @@ slices itself. This is the
 [all-leads pilot](https://github.com/cbusillo/direction/issues/163#issuecomment-6635104014);
 the first weekly direction audit at least one full week after this brief lands
 judges it, and the Director keeps, changes or drops it. Either harness works;
-the pilot starts on Codex. A Track and its goal board are optional views.
+Claude leads use tmux for guarded notifications, and the pilot starts on Codex.
+A Track and its goal board are optional views.
 When several leads share a repository, spread work within its shared PR cap.
 
 Fill the placeholders below and carry the shared rules by link or inclusion.

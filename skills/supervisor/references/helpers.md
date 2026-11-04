@@ -1534,7 +1534,7 @@ The lead launches workers with that same ledger, `--lead-session-id
 <lead-native-id>`, and an explicit allowed `--account` from its brief. Worker
 rows and retained launch receipts carry `lead_session_id` and `lead_launch_id`.
 Worker briefs include the lead's native ID and shared ledger pointer. For a
-Codex lead, also supply its ledger's absolute `codex_home` and notify it with
+Codex lead, also supply its ledger's absolute `codex_home` and notify it from the catalog with
 `uv run skills/supervisor/scripts/codex-session.py queue --session-id <lead-id> --codex-home <source-home> --message <issue-url>`.
 Claude leads use the tmux backend and `review_notifications.send(lead_entry,
 issue_url)`, which verifies the ledger identity, idle prompt and empty composer.
@@ -1547,8 +1547,9 @@ atomically replaces each reserved slot with its worker row; normal closeout
 removes the row and frees that slot. A missing lead, cap or reservation refuses.
 Recover a partial launch with its retained receipt before launching more
 workers; never relaunch it. Interrupted launches keep their reservations.
-Explicit `submission: not_attempted` failures free unused slots automatically;
-missing or uncertain submission evidence keeps them reserved. For an interrupted
+Explicit `submission: not_attempted` failures free unused slots automatically
+unless the receipt says `reservation_settled: false`; then use the recovery below.
+Missing or uncertain submission evidence keeps slots reserved. For an interrupted
 batch, the Supervisor first verifies that its launcher ended, registers all
 submitted workers, and positively verifies that no worker remains for the
 unused slots. Both backends retain a `launch` object once the exact terminal

@@ -1713,6 +1713,18 @@ def lead_metadata(args: argparse.Namespace) -> dict:
             if (value := getattr(args, name, None)) is not None}
 
 
+def build_launch_result(args: argparse.Namespace, identity: dict, choice: dict | None) -> dict:
+    result = {**lead_metadata(args), **identity}
+    if choice:
+        result["account"] = account_choice.public(choice)
+        for key in ("native_receipt", "file_native", "claude_native"):
+            if key in choice:
+                result[key] = choice[key]
+        if choice.get("provider") == "openai":
+            result["codex_home"] = str(Path(choice["env"]["CODEX_HOME"]).expanduser().resolve())
+    return result
+
+
 def lead_row(rows: list[dict], session: str) -> dict:
     leads = [row for row in rows if row.get("session_id") == session and row.get("supervisor_owned") is True]
     lead = leads[0] if len(leads) == 1 else {}
@@ -1777,9 +1789,12 @@ def guard_lead_launch(operation: Callable[..., Coroutine[Any, Any, Any]]) -> Cal
                 **lead_metadata(args), "mutation_started": args.lead_launch_started,
                 "submission": "unknown" if args.lead_launch_started else "not_attempted"}, error)
             try:
-                settle_lead_launch(args, int(failure.detail["failed_launch"].get("submission") != "not_attempted"))
+                settle_lead_launch(args, int(args.lead_launch_started and
+                    failure.detail["failed_launch"].get("submission") != "not_attempted"))
             except Exception as settlement_error:
                 failure.detail.update(reservation_settled=False, reservation_error=str(settlement_error))
+            if not args.lead_launch_started and not isinstance(error, LaunchFailure) and "reservation_settled" not in failure.detail:
+                raise
             raise failure
     return guarded
 
@@ -2157,20 +2172,13 @@ async def operate(app, args):
                 progress.update(tab_id=tab.tab_id if tab else None, phase="wait_for_session")
                 session = await wait_for_session(app, tab)
                 progress.update(session_id=session.session_id)
-                result = {**lead_metadata(args), "window_id": windows[0].window_id,
-                          "tab_id": tab.tab_id, "session_id": session.session_id}
-                if choice:
-                    result["account"] = account_choice.public(choice)
-                    for key in ("native_receipt", "file_native", "claude_native"):
-                        if key in choice:
-                            result[key] = choice[key]
-                    if choice.get("provider") == "openai":
-                        result["codex_home"] = str(Path(choice["env"]["CODEX_HOME"]).expanduser().resolve())
-                    if choice.get("provider") == "openai" or choice.get("file_native"):
-                        try:
-                            result["tty"] = await session.async_get_variable("tty")
-                        except (AttributeError, OSError, ValueError):
-                            result["launch_identity_unavailable"] = True
+                result = build_launch_result(args, {"window_id": windows[0].window_id,
+                          "tab_id": tab.tab_id, "session_id": session.session_id}, choice)
+                if choice and (choice.get("provider") == "openai" or choice.get("file_native")):
+                    try:
+                        result["tty"] = await session.async_get_variable("tty")
+                    except (AttributeError, OSError, ValueError):
+                        result["launch_identity_unavailable"] = True
                 progress["launch"] = result
                 progress.update(submission="unknown", phase="submit_command")
                 await submit_iterm_launch(app, session, command_text, prompt_window=startup_prompt_window(choice))

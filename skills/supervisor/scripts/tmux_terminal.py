@@ -465,15 +465,8 @@ async def operate(args):
             row = terminal.select(sid)
             progress.update(session_id=sid, pid=row["pid"])
             progress.update(submission="unknown", phase="submit_command")
-            result = {**iterm_tab.lead_metadata(args),
-                      **{key: row[key] for key in ("window_id", "tab_id", "session_id", "tty", "pid", "backend", "tmux_socket")}}
-            if choice:
-                result["account"] = account_choice.public(choice)
-                for key in ("native_receipt", "file_native", "claude_native"):
-                    if key in choice:
-                        result[key] = choice[key]
-                if choice.get("provider") == "openai":
-                    result["codex_home"] = str(Path(choice["env"]["CODEX_HOME"]).expanduser().resolve())
+            result = iterm_tab.build_launch_result(args, {
+                key: row[key] for key in ("window_id", "tab_id", "session_id", "tty", "pid", "backend", "tmux_socket")}, choice)
             progress["launch"] = result
             await terminal.send(sid, gate)
             progress.update(submission="submitted", phase="verify_startup")
