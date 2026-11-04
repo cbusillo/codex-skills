@@ -88,7 +88,7 @@ def artifact_roots() -> tuple[Path, Path]:
         raise Refused("evidenceRoot must be named task-evidence.")
     for root in roots[:2]:
         if any(parent.is_symlink() for parent in (root, *root.parents)) or root != root.resolve():
-            raise Refused(f"Artifact/worktree root is redirected or inside Git: {root}")
+            raise Refused(f"Artifact root must be canonical and not redirected: {root}")
         verify_outside_repository(root)
         if Path.home().resolve().is_relative_to(root.resolve()):
             raise Refused(f"Root must not contain the home directory: {root}")
@@ -176,18 +176,12 @@ def collect(parent_fd: int, path: Path, cutoff: float, deadline: float, apply: b
             print("evidence sweep budget exhausted; remaining units kept", file=sys.stderr)
             return
         try:
-            info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-            if repositories and stat.S_ISDIR(info.st_mode):
+            if repositories and stat.S_ISDIR(os.stat(name, dir_fd=parent_fd, follow_symlinks=False).st_mode):
                 repo_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
                 try:
                     collect(repo_fd, path / name, cutoff, deadline, apply)
                 finally:
                     os.close(repo_fd)
-                if apply:
-                    try:
-                        os.rmdir(name, dir_fd=parent_fd)
-                    except OSError:
-                        continue
             elif expired(name, parent_fd, cutoff) and (not apply or remove(name, parent_fd, cutoff)):
                 print(f"{'removed' if apply else 'would remove'} {path / name}", file=sys.stderr)
         except OSError as exc:
@@ -237,7 +231,7 @@ def verify_outside_repository(path: Path) -> None:
         capture_output=True, text=True, env={**git_environment(), "LC_ALL": "C"},
     )
     if probe.returncode == 0:
-        raise Refused("The worktree destination must be outside repositories and Git metadata.")
+        raise Refused("Configured paths must be outside repositories and Git metadata.")
     if "not a git repository" not in probe.stderr:
         raise Refused("Cannot verify that the destination is outside repositories; inspect the Git probe failure.")
 

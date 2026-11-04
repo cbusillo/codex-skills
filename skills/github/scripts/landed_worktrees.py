@@ -46,7 +46,6 @@ def git(checkout: Path, *args: str, input_text: str | None = None) -> subprocess
 
 
 def registered(checkout: Path) -> list[Worktree]:
-    """Linked worktrees of the checkout's repository; the main checkout is never listed."""
     result = git(checkout, "worktree", "list", "--porcelain", "-z")
     if result.returncode:
         raise ValueError(result.stderr.strip() or "git worktree list failed")
@@ -68,7 +67,6 @@ def registered(checkout: Path) -> list[Worktree]:
 
 
 def contained(checkout: Path, head: str, tip: str) -> bool:
-    """True when every commit at head is in tip; a tip missing locally proves nothing."""
     if head == tip:
         return True
     return (git(checkout, "cat-file", "-e", f"{tip}^{{commit}}").returncode == 0

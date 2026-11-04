@@ -18,7 +18,9 @@ import unittest
 import urllib.error
 from contextlib import ExitStack, redirect_stdout
 from email.message import Message
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+
+import dev_worktree
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 spec = importlib.util.spec_from_file_location("attachment", pathlib.Path(__file__).with_name("gh-attachment.py"))
@@ -68,6 +70,7 @@ class AttachmentTests(unittest.TestCase):
         reader = self.stack.enter_context(patch.object(attachment.github_read, "GitHubReader"))
         self.reader_factory = reader
         reader.return_value.get_json.side_effect = lambda path, **_: self.comment if "/comments/" in path else self.repo
+        self.stack.enter_context(patch.object(dev_worktree, "subprocess", Mock(run=subprocess.run)))
         self.run = self.stack.enter_context(patch.object(attachment.subprocess, "run", return_value=
             subprocess.CompletedProcess([], 0, self.token.encode(), b"")))
         self.opener_factory = self.stack.enter_context(patch.object(attachment.urllib.request, "build_opener"))

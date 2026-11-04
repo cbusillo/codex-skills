@@ -603,6 +603,7 @@ class WorktreeTests(unittest.TestCase):
         self.settings({"root": str(root), "hostHelper": str(host)})
         self.assert_refused(self.run_helper(self.repo, "task", "HEAD"))
         self.settings({"root": str(root), "hostHelper": str(host), "evidenceMount": str(self.base / "absent")})
+        self.env["DEV_WORKTREE_EVIDENCE_ROOT"] = str(self.base / "stale/task-evidence")
         host.write_text('#!/bin/sh\n[ -z "${DEV_WORKTREE_EVIDENCE_ROOT+x}" ] || exit 9\nexit 7\n')
         host.chmod(0o700)
         result = self.run_helper(self.repo, "task", "HEAD")

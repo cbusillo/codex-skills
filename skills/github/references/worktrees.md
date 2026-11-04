@@ -70,6 +70,7 @@ Creation prints `<evidenceRoot>/<repo>/<task>` and retained root on stderr.
 Evidence roots must be named `task-evidence`, outside Git, without symlink ancestry,
 and disjoint from retained/worktree roots.
 Optional `evidenceMount` requires a mounted ancestor of the evidence root.
+Verify external storage identity/mounts through the host storage guard before writing either root; never create a fallback mount directory.
 
 After retirement, creation expires evidence older than 30 quiet days, stopping
 new units after five seconds; a started unit may take longer and finishes. Failures keep evidence
@@ -80,6 +81,7 @@ Preview: `<catalog>/skills/github/scripts/dev-worktree sweep-evidence`; add
 and deletion requires symlink-resistant support. Renaming then remeasuring
 preserves observed concurrent refreshes and reused original names. Age-based
 expiry cannot lock writers: already-open files can change after measurement.
+Age uses modification timestamps; moved/extracted inputs with preserved timestamps keep their old age.
 Keep needed inputs and ongoing work in retained storage.
 
 Retained items use `<retainedRoot>/<group>/<repo>/<item>`, with a one-line note

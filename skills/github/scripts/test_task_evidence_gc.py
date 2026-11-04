@@ -24,7 +24,7 @@ def age(path: Path, days: float) -> None:
     os.utime(path, (stamp, stamp), follow_symlinks=False)
 
 
-def run_gc( *args: str) -> tuple[int, str]:
+def run_gc(*args: str) -> tuple[int, str]:
     output = io.StringIO()
     with contextlib.redirect_stderr(output):
         code = gc.main(["sweep-evidence", *args])
@@ -39,7 +39,8 @@ class TaskEvidenceGcTest(unittest.TestCase):
         self.root = self.base / "task-evidence"
         self.root.mkdir()
         self.config = self.base / "worktrees.json"
-        self.configure()
+        self.configure(evidenceMount=str(self.base))
+        self.enterContext(mock.patch("os.path.ismount", return_value=True))
         self.enterContext(mock.patch.dict(os.environ, DEV_WORKTREE_CONFIG=str(self.config)))
 
     def configure(self, **values: str) -> None:
@@ -52,6 +53,7 @@ class TaskEvidenceGcTest(unittest.TestCase):
         return folder
 
     def test_expiry_uses_newest_change_and_preview_preserves_everything(self) -> None:
+        self.assertEqual(gc.host_environment([])["DEV_WORKTREE_EVIDENCE_ROOT"], str(self.root))
         old = self.task()
         deep = old / "nested" / "deep"
         deep.mkdir(parents=True)
@@ -76,7 +78,7 @@ class TaskEvidenceGcTest(unittest.TestCase):
         (deep / "new").chmod(0o444)
         deep.chmod(0o555)
         self.assertEqual(run_gc("--apply")[0], 0)
-        self.assertFalse((self.root / "repo").exists())
+        self.assertFalse(old.exists())
         self.assertTrue((outside / "keep").exists())
 
     def test_unreadable_or_vanishing_unit_is_kept_while_others_expire(self) -> None:
