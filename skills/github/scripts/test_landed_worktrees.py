@@ -445,6 +445,8 @@ class StrayTests(Fixture):
         self.assertFalse(empty.exists())
         self.assertFalse(results.exists())
         self.assertFalse(loose.exists())
+        archives = [Path(row["evidence"]) for row in applied if row.get("evidence")]
+        self.assertEqual(sum(len(list(archive.iterdir())) for archive in archives), 2)
 
     def test_host_verification_failure_keeps_every_entry(self) -> None:
         folder = self.root / "sample" / "old"
@@ -461,18 +463,19 @@ class StrayTests(Fixture):
         self.assertEqual(rows[0]["decision"], "kept")
 
     def test_open_or_changed_result_is_kept(self) -> None:
-        path = self.root / "sample" / "inspection.json"
-        path.write_text("{}")
-        os.utime(path, (0, 0))
         original = subprocess.run
         for cause in ("open", "changed", "unknown_added"):
-            folder = self.root / "sample" / "empty"
-            folder.mkdir(exist_ok=True)
-            os.utime(folder, (0, 0))
-            def dispatch(args: list[str], *, case: str = cause, directory: Path = folder, **kwargs: object) -> subprocess.CompletedProcess[str]:
+            folder = self.root / "sample" / cause
+            folder.mkdir()
+            path = folder / "inspection.json"
+            path.write_text("original result")
+            for item in (path, folder):
+                os.utime(item, (0, 0))
+            def dispatch(args: list[str], *, case: str = cause, directory: Path = folder,
+                         result: Path = path, **kwargs: object) -> subprocess.CompletedProcess[str]:
                 if args[0] == "lsof":
                     if case == "changed":
-                        path.write_text("changed")
+                        result.write_text("changed")
                     elif case == "unknown_added":
                         (directory / "source.py").write_text("important")
                     return subprocess.CompletedProcess(args, 0 if case == "open" else 1,
@@ -485,7 +488,57 @@ class StrayTests(Fixture):
             self.assertTrue(path.exists())
             if cause == "unknown_added":
                 self.assertTrue((folder / "source.py").exists())
-            self.assertEqual(next(row["decision"] for row in rows if row["path"] == str(path)), "kept")
+                self.assertEqual(path.read_text(), "original result")
+            self.assertEqual(next(row["decision"] for row in rows if row["path"] == str(folder)), "kept")
+
+    def test_overlapping_evidence_root_keeps_results(self) -> None:
+        root = self.base / "task-evidence"
+        path = root / "sample" / "old-inspection.json"
+        path.parent.mkdir(parents=True)
+        path.write_text("evidence")
+        os.utime(path, (0, 0))
+        Path(os.environ["DEV_WORKTREE_CONFIG"]).write_text(json.dumps({"root": str(root), "evidenceRoot": str(root)}))
+        rows = landed_worktrees.sweep_strays(self.repo, root, apply=True)
+        self.assertTrue(path.exists())
+        self.assertIn("overlap", rows[0]["reason"])
+
+    def test_verified_host_root_and_delegation_receipt_allow_preservation(self) -> None:
+        folder = self.root / "sample" / "old"
+        folder.mkdir()
+        (folder / "inspection.json").write_text("result")
+        for item in (folder, folder / "inspection.json"):
+            os.utime(item, (0, 0))
+        original = subprocess.run
+        def dispatch(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            if args[-1] == "verify-root":
+                self.assertIn("DEV_WORKTREE_DELEGATED", kwargs["env"])
+                return subprocess.CompletedProcess(args, 0, str(self.root) + "\n", "")
+            if args[0] == "lsof":
+                return subprocess.CompletedProcess(args, 1, "", "")
+            return original(args, **kwargs)
+        with mock.patch.object(landed_worktrees.subprocess, "run", side_effect=dispatch):
+            rows = landed_worktrees.sweep_strays(self.repo, self.root, apply=True)
+        self.assertFalse(folder.exists())
+        self.assertEqual((Path(rows[0]["evidence"]) / "inspection.json").read_text(), "result")
+
+    def test_closed_old_result_log_moves_to_evidence_without_other_files(self) -> None:
+        path = self.worktree("result-log")
+        log = path / "error.log"
+        log.write_text("log evidence")
+        os.utime(log, (0, 0))
+        (path / "notes.py").write_text("unique work")
+        original = subprocess.run
+        def dispatch(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            if args[0] == "lsof":
+                return subprocess.CompletedProcess(args, 1, "", "")
+            return original(args, **kwargs)
+        with mock.patch.object(landed_worktrees.subprocess, "run", side_effect=dispatch), \
+                mock.patch.object(dev_worktree, "configuration", return_value=(self.root, None)):
+            evidence = landed_worktrees.preserve_result_log(path)
+        self.assertIsNotNone(evidence)
+        self.assertEqual((evidence / "error.log").read_text(), "log evidence")
+        self.assertFalse(log.exists())
+        self.assertEqual((path / "notes.py").read_text(), "unique work")
 
 
 class MissingCommitTests(Fixture):

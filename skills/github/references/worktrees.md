@@ -153,15 +153,19 @@ locks. Portable foreign locks remain holds. Physical publication, contents,
 live-use and IDE checks still apply.
 
 Creation checks each registered linked worktree through `landed_worktrees.py`.
-The same pass previews or removes empty unregistered folders and recognizable
-stray result files older than two hours, including loose results beside worktrees.
+The same pass previews or removes empty unregistered folders and moves recognizable
+stray result files older than two hours into task evidence, including loose results
+beside worktrees. Existing evidence expiry owns their eventual deletion.
 It never descends into nested folders: unknown content, symlinks, open files,
 recent changes and incomplete proof keep the entry with a reason. The pass repeats
 registration and filesystem checks before deletion. A configured host helper
 must support read-only `verify-root`, returning the exact configured root only
 after its existing mount/identity checks pass; otherwise stray entries are kept.
-No new job runs this sweep. Keep new task output under the creation message's
-task-evidence path, including shell redirections, so retirement stays clean.
+No new job runs this sweep. Follow the [task output rule](../../supervisor/references/brief-rules.md#rules-every-brief-carries).
+For qualified retirement candidates, an old, closed, untracked or ignored
+`error.log` moves into task evidence before physical preview. Other contents
+retain all existing guards. Retirement gets the first part of the creation
+budget; the final five seconds are reserved for stray cleanup.
 A closed PR uses the existing PR-head, claim and publication checks;
 commit-associated PRs cover detached review and separate refresh branches; a branch
 without a PR uses the default-history, fresh-start and account-wide claim

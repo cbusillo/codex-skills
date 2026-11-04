@@ -656,13 +656,13 @@ def repository_root(path: Path) -> Path:
     return Path(root.stdout.strip()).resolve() if root.returncode == 0 else path
 
 
-
 def result_destination(repo: Path, value: str) -> Path:
     from skills.github.scripts import dev_worktree
 
     requested = Path(value).expanduser().absolute()
     worktrees, _ = dev_worktree.configuration()
-    if not any(requested.resolve().is_relative_to(root.resolve()) for root in (repo, worktrees)):
+    if not any(candidate.is_relative_to(root.resolve()) for root in (repo, worktrees)
+               for candidate in (requested, requested.resolve())):
         return requested
     evidence, _ = dev_worktree.artifact_roots()
     common = subprocess.run(["git", "-C", str(repo), "rev-parse", "--path-format=absolute", "--git-common-dir"],
@@ -671,10 +671,18 @@ def result_destination(repo: Path, value: str) -> Path:
     if any(parent.is_symlink() for parent in (destination, *destination.parents)):
         raise ValueError("review output path is redirected; choose a task-evidence destination")
     destination.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-    return destination
+    descriptor, filename = tempfile.mkstemp(prefix=f"{destination.stem}-", suffix=destination.suffix, dir=destination.parent)
+    os.close(descriptor)
+    return Path(filename)
+
 
 def cmd_run(args: argparse.Namespace) -> int:
     repo = repository_root(Path(args.repo).resolve())
+    try:
+        destination = result_destination(repo, args.out) if args.out else None
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        print(json.dumps({"ok": False, "phase": "output", "outcome": "unavailable", "error": str(exc)}))
+        return 1
     try:
         selected = review_policy.select(review_policy.load_policy(), args.author_provider, args.provider,
                                         args.supplementary, args.model, args.timeout)
@@ -703,10 +711,16 @@ def cmd_run(args: argparse.Namespace) -> int:
     confirmed = result.get("model_source", "").startswith("reported by the CLI")
     result["effort"] = effort.group(1).lower() if effort and confirmed else "unknown"
     planted = plant_fault(result, fault_marker(), repo)
-    if result["ok"] and args.out:
-        destination = result_destination(repo, args.out)
-        destination.write_text(result.pop("response"))
-        result["response_file"] = str(destination)
+    if result["ok"] and destination is not None:
+        try:
+            descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            with os.fdopen(descriptor, "w") as output:
+                output.write(result["response"])
+        except OSError as exc:
+            result["output_error"] = str(exc)
+        else:
+            result.pop("response")
+            result["response_file"] = str(destination)
     print(json.dumps(result, indent=2), flush=True)
     if planted is not None:
         consume_fault(planted)

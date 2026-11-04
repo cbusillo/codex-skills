@@ -187,21 +187,29 @@ class ReviewWithModelTests(unittest.TestCase):
         )
 
     def test_review_output_in_source_or_worktree_root_moves_to_task_evidence(self) -> None:
-        from skills.github.scripts import dev_worktree
-
-        worktrees = self.root / "worktrees"
+        self.install("claude", FAKE_CLAUDE)
+        subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
         evidence = self.root / "task-evidence"
-        with patch.object(dev_worktree, "configuration", return_value=(worktrees, None)), \
-                patch.object(dev_worktree, "artifact_roots", return_value=(evidence, self.root / "retained"), create=True), \
-                patch.object(review_with_model.subprocess, "run", return_value=subprocess.CompletedProcess(
-                    [], 0, str(self.root / "project" / ".git"), "")):
-            for requested in (self.repo / "review.md", worktrees / "review.md"):
-                destination = review_with_model.result_destination(self.repo, str(requested))
-                destination.write_text("review")
-                self.assertTrue(destination.is_relative_to(evidence / "project" / self.repo.name))
-                self.assertFalse(requested.exists())
-            outside = self.root / "explicit-evidence" / "review.md"
-            self.assertEqual(review_with_model.result_destination(self.repo, str(outside)), outside)
+        worktrees = self.root / "worktrees"
+        config = self.home / ".config/codex-skills/worktrees.json"
+        config.parent.mkdir(parents=True)
+        config.write_text(json.dumps({"root": str(worktrees), "evidenceRoot": str(evidence)}))
+        saved = []
+        for requested in (self.repo / "a/review.md", self.repo / "b/review.md", worktrees / "review.md"):
+            code, result = self.run_helper("run", "--provider", "anthropic", "--repo", str(self.repo),
+                                           "--prompt-file", str(self.prompt), "--out", str(requested),
+                                           FAKE_CLAUDE_JSON=json.dumps({"result": completed("review fixture")}))
+            self.assertEqual((code, result["ok"]), (0, True), result)
+            destination = Path(result["response_file"])
+            self.assertTrue(destination.is_relative_to(evidence / self.repo.name / self.repo.name))
+            self.assertEqual(destination.read_text(), "review fixture")
+            self.assertFalse(requested.exists())
+            saved.append(destination)
+        self.assertEqual(len(set(saved)), len(saved))
+        config.write_text("invalid")
+        code, result = self.run_helper("run", "--provider", "anthropic", "--repo", str(self.repo),
+                                       "--prompt-file", str(self.prompt), "--out", str(self.repo / "review.md"))
+        self.assertEqual((code, result["phase"]), (1, "output"))
 
     def test_standing_decision_blocks_primary_google_but_allows_supplementary(self) -> None:
         self.install("agy", FAKE_AGY)
@@ -1504,15 +1512,14 @@ printf '%s' "$FAKE_AGY_JSON"
         code, result = self.review("openai", FAKE_ANSWER=completed("none"), MODEL_REVIEW_FAULT=str(inside))
         self.assertEqual(result["response"], "none")
         self.assertTrue(inside.exists())
-        # The marker is consumed only after the review reaches its `--out` file; a review that cannot
-        # be delivered leaves the one-shot finding for the next run.
         marker.write_text("High: stop.")
         code, result = self.run_helper(
             "run", "--provider", "openai", "--repo", str(self.repo), "--prompt-file", str(self.prompt),
             "--out", str(self.root / "missing" / "review.md"), FAKE_ANSWER=completed("none"),
         )
-        self.assertNotEqual(code, 0)
-        self.assertTrue(marker.exists())
+        self.assertEqual((code, result["ok"], result["response"]), (0, True, "none\n\nHigh: stop.\n"))
+        self.assertIn("output_error", result)
+        self.assertFalse(marker.exists())
 
     def test_a_provider_that_is_not_installed_is_distinguished_from_one_that_failed(self) -> None:
         code, result = self.review("google")
