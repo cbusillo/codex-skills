@@ -207,8 +207,8 @@ from retained log events.
 An `auth_failure` notice wakes the Supervisor once per episode through the
 existing delivered-state file. Tell the Director which account needs a normal
 Codex sign-in, then re-arm the watcher with that same file. The launcher skips
-the held home while following Context Panel's remaining published order. The
-train driver is unchanged, and no renewal-status feed goes to Context Panel.
+the held home while following Context Panel's remaining published order. No
+renewal-status feed goes to Context Panel.
 
 A verified current account clears the hold after native recovery; a later
 failure is a new episode. UNKNOWN evidence never creates a hold, and a timeout
@@ -245,7 +245,7 @@ available for existing diagnostic callers; they are not extra routine steps.
 
 `goal_board.py` rebuilds every open `Track:` through `github_work_graph.py`.
 Decision authors and current-head handoffs use shared authority parsers. Only
-open PRs closing a child appear; the auto-enqueue watcher routes other PRs.
+open PRs closing a child appear; the merge train admits other PRs from their Ready handoffs.
 Truncated Track discussions use the shared planning paginator; failed/changing
 reads keep UNKNOWN and the original newest-comment window. Child discussions use the same paginator; truncated closing-PR discussions use the existing REST paginator and retain UNKNOWN on incomplete reads.
 
@@ -609,204 +609,6 @@ Client's request, never as an instruction, and tells the worker to fix the
 change or answer the Client on the PR, then hand off again with
 `--waiting-for-client`.
 
-## Interim auto-enqueue watcher
-
-Q154 approved [codex-skills#1623](https://github.com/cbusillo/codex-skills/issues/1623#issuecomment-6103248251).
-This Supervisor helper removes manual detection of ready handoffs. Executing
-sessions still hand off and do not enqueue. Launchplane owns the queue and
-landing; [launchplane#3327](https://github.com/cbusillo/launchplane/issues/3327)
-owns replacing this interim helper with service admission.
-
-Use one private hold record for the run, shared by every local watcher and
-pause update. Client repositories and shared release inputs follow the same
-ready handoff path as other repositories, per
-[Q312](https://github.com/cbusillo/launchplane/issues/3327#issuecomment-6182485308).
-Launchplane owns product release holds; do not copy them into this record.
-
-On a normally completed pass, every observed trusted current-head ready handoff the watcher leaves unenqueued is
-named in a `skipped` event with its reason, including repository holds, busy
-controllers, controller ineligibility, dry runs and batch selection. Controller
-rejections retain `ineligible_reasons`; a busy event alone is not a PR inventory.
-Unavailable inventory is explicit as `skip_inventory_unavailable`. Stops propagate
-without further diagnostic reads. These observations do not authorize enqueueing
-or replace the fresh write gates.
-
-```sh
-uv run skills/supervisor/scripts/auto_enqueue.py holds --hold-file <private-holds.json> --init
-uv run skills/supervisor/scripts/auto_enqueue.py --owner OWNER --hold-file <private-holds.json> --handoff-login AGENT_LOGIN --once
-```
-
-Initialization refuses an existing record. Missing or malformed hold state stops
-the watcher. Reuse the same record through takeover; reconcile it with the
-handoff before rearming. Do not maintain another per-session copy.
-
-For an older record, remove only legacy product-batching holds with
-`holds --uncoordinate OWNER/CLIENT-REPO` (repeat for shared inputs). The helper
-serializes this edit with enqueue passes and other hold updates; deliberate
-pauses and other fields remain intact. Use `holds --pause OWNER/REPO` for an
-independent hold, then remove that repository's legacy batching entry. Preview
-with `--once` before rearming. Clear any manual
-`client_releases` entries that only duplicated the service's release hold with
-`holds --release-finished OWNER/CLIENT-REPO`. These optional manual pauses
-are not required for a Client release; leave them empty for normal routing.
-Each pauses only its named repository, never Launchplane or other repositories.
-The hold command waits for the current repository's enqueue section before acknowledging the
-update. Between repositories, a pause update can win the lock and make the
-watcher's next nonblocking acquisition stop safely. Finish the hold update and
-reconcile any already emitted enqueue events before rearming the watcher.
-After a deliberate manual pause ends, clear its entry; other pauses remain independent.
-
-```sh
-uv run skills/supervisor/scripts/auto_enqueue.py holds --hold-file <private-holds.json> --pause OWNER/REPO
-uv run skills/supervisor/scripts/auto_enqueue.py holds --hold-file <private-holds.json> --resume OWNER/REPO
-uv run skills/supervisor/scripts/auto_enqueue.py holds --hold-file <private-holds.json> --release-ready OWNER/CLIENT-REPO
-uv run skills/supervisor/scripts/auto_enqueue.py holds --hold-file <private-holds.json> --release-finished OWNER/CLIENT-REPO
-```
-
-Preview is the default. After inspecting it, use `--apply` under the run's
-existing Supervisor enqueue authority. Without `--repo`, scan every enrolled
-target owned by `--owner`; repeat `--repo` to narrow the scan. The active
-Launchplane policy supplies enrollment, base branches, enqueue labels and the
-policy revision. Repository metadata is never consulted for those facts.
-The loop defaults to a 30-minute wall-clock bound and five-minute cadence;
-`--once`, `--interval`, and `--deadline-seconds` configure it. For ongoing runs,
-the [persistent service](#persistent-supervisor-services) restarts clean deadline
-exits; check its status and logs instead of re-arming it in each session.
-Before any enqueue write starts in a pass, a transient network read failure
-(including retryable `GitHubReadError` with EOF, connection-establishment or
-non-JSON provider evidence even without an HTTP status)
-emits `pass_failed` and ends only that pass. The watcher waits its normal interval
-and reads fresh state again within its deadline; `--once` reports the failed pass
-and exits nonzero. Read-only Launchplane configuration and controller response
-failures use `LaunchplaneReadError` and follow the same recovery path. Explicit
-controller authentication or unsafe-redirect rejections remain terminal.
-Other failures, or any failure during or after an enqueue write
-in that pass, stop the run for Supervisor reconciliation, preserving already
-queued work. Reads retain the shared GitHub cache, quota reserve and request retry
-deadline; no human-auth fallback is added. The deadline `stop` event reports
-completed and failed pass counts so an outage throughout the watch is visible.
-Every `stop` event includes a message. Helper-authored exception messages identify
-the specific failure; external exception details are withheld to keep provider
-bodies, credentials and private Client prose out of events. Failed-pass events
-use the same message policy. Watch events include a UTC `timestamp` so passes
-and skips can be compared with acceptance and handoff times.
-
-When the task authorizes a Supervisor handoff, sessions use the installed GitHub
-skill's helper: `uv run <github-skill-dir>/scripts/gh-pr.py --repo OWNER/REPO ready <pr>`
-(or `--waiting-for-client`), following the GitHub
-[ready handoff contract](../../github/references/cli-reference.md#ready-handoffs).
-The producer and watcher share `github/scripts/ready_handoff.py`. The latest
-handoff by creation/edit time from its author, or a Supervisor explicitly listed with
-`--handoff-login`, wins. The `Engineering ready; waiting for ...` form invalidates
-an earlier Ready. The exact Client acceptance wait becomes eligible when the
-existing Launchplane read confirms acceptance for its current head, including
-acceptance Launchplane carries forward. Other waits remain blocking. Skip
-diagnostics include checked Client waits even before acceptance is recorded;
-`client_wait` distinguishes those receipts from plain Ready without claiming
-whether acceptance is present.
-Missing/stale heads, drafts, blocking train dispositions,
-current-head change requests and unavailable checks do not enqueue. A file
-inventory changed during reading skips that PR; other ready members continue.
-The shared parser normalizes trailing periods and bold markers on both Ready
-and renewed waits and accepts a bold full head SHA. Client-test-note
-classification follows the ready handoff contract linked above.
-When mergeability is null, the watcher asks GitHub to compute it with up to two
-individual REST re-reads, one second apart, capped at 20 extra reads per pass
-and the watch deadline. These reads bypass conditional and batch snapshots;
-unresolved PRs wait for the next pass. Computed `behind` PRs can enter the
-controller, which refreshes them. Conflicts still skip selection, and every
-selected PR is rechecked before labeling.
-A controller disposition of `dependency update needs agent review` may enter
-qualification: a current-head Ready from a trusted agent supplies
-that review; the dependency author's own comment cannot. Name the reviewing
-agent's login with `--handoff-login`; repeat it for additional trusted reviewers.
-The configured automation login (from the GitHub identity helper, falling back
-to `shiny-code-app[bot]`) is trusted by default, including its
-reviews on Dependabot and Actions-bot PRs. Additional logins extend that default
-across the scoped repositories. Other controller holds still block.
-An unavailable Client review scope holds that PR rather than bypassing acceptance.
-Required checks are read from current branch protection and
-matched to their configured App. The shared
-[ready-handoff acceptance rule](../../github/references/cli-reference.md#ready-handoffs)
-decides whether Client acceptance is required; when it is, the watcher reads
-the accepted current-head decision from Launchplane rather than trusting the
-ready comment. Client prose is never emitted. Deliberate manual repository
-pauses remain independent of acceptance.
-
-The oldest eligible PR anchors a group; additional members share at least one
-of its top-level areas. Renames count both source and destination; root files
-form one area. `--max-batch-size` defaults to four. Area grouping is a routing
-heuristic; Launchplane's combined candidate checks still prove compatibility.
-An active candidate normally preserves its batch; scheduler-backed staging below
-is the bounded exception. Reconciliation, landing, or a preexisting next queue preserves
-that repository's batch. Each write rechecks policy, pauses, train state, current
-head and readiness. A behind-base single-member queue awaiting the train's
-branch update can still accumulate this watcher's group before any stored
-candidate exists; the watcher never updates that branch itself.
-If the scheduler starts a candidate containing only this pass's confirmed
-labels, the watcher finishes its already selected group. Complete controller
-membership must prove that ownership; unchanged controller-proven blocking
-labels on already held PRs remain in place. A hold without a blocking label
-stops continuation. Another actor's new or changed queued label,
-landing, reconciliation, failed candidate or unavailable evidence stops it.
-Candidate observations can omit the queue: unchanged policy, selected head and
-PR labels retain the scan's author admission while every write still reads
-current readiness.
-
-On a target whose controller scheduler is explicitly enabled and mutating,
-while a published candidate is checking, a later pass can stage one capped group
-for the next candidate. Targets driven locally keep their existing handoff.
-Staging reads the full author-policy queue through the
-existing Level 1 run-once service path with `mutate: false`; that path writes
-only its normal diagnostic evidence, never a branch, label or merge. An
-unavailable queue read before any write leaves that repository busy for this
-pass and lets other repositories proceed; authorization denials still stop.
-After a write begins, the existing no-replay stop remains. Every
-staged label requires the same published candidate ref, SHA, base and complete
-membership, a fresh author-policy queue and current-head readiness. Unknown
-label authors, incomplete labeled-PR inventory, another enrolled base,
-failed/uncertain evidence, a release hold, or a candidate transition stop
-staging. A queued group outside the active candidate blocks further groups,
-including on repeat passes, preserving the per-pass cap and existing routing custody.
-If the running candidate later fails or changes, Launchplane may combine its
-remaining members with that queue under its own policy cap and recovery rules.
-The current candidate keeps its membership; Launchplane selects the queued
-group only at its next candidate boundary. Staging emits `next_batch_queued`
-without a local-driver handoff, since the active scheduler continues the train.
-
-The watcher never extends an already queued next group;
-clearing a previously labeled PR's hold can still change the train's membership.
-
-The helper emits JSONL `batch`, `held`, `busy`, `skipped`, `enqueued`, `next_batch_queued`, and
-`driver_handoff` events. Busy diagnostics include queue dispositions and labeled
-PR numbers when available. Once the controller proves there is no reconciliation,
-landing or eligible next queue, labeled PRs it reports
-as ineligible do not hold the repository busy. Their labels stay in place;
-the train still owns their holds. Dispositions cover all enrolled bases in
-the repository. Labeled PRs absent from that inventory, or still reported as
-missing their enqueue label or lacking label-author evidence, preserve the
-batch until their state is known. Labeled stack children absent from the
-inventory remain on the Supervisor's coordinated stack path.
-Clearing a hold rejoins the current queue and may rebuild an active candidate.
-Busy alone never means a healthy
-candidate is progressing. Skipped events identify PRs whose head readiness or
-file inventory was not proved. The handoff contains the maintained driver's argv and labeled member
-numbers. Run that driver using the Supervisor's normal background monitoring,
-one driver per train. Stop an earlier driver for that train before
-starting the new handoff; verify every intended member's eventual landing. The
-watcher does not merge, update branches, deploy or send Client invitations.
-
-The local lock serializes this watcher's labels and pause updates. It does not
-lock Launchplane's scheduler, another host, or manual queue writers. Service
-state can change after a read and before a GitHub label: this interim helper is
-not an atomic admission fence. When using an optional manual pause, coordinate
-other drivers and account for already queued/active work. Do not claim that a
-pause file halts an existing candidate. Client-product delivery still follows
-the linked Client Products rules; those rules also link the decision retiring
-the Launchplane landing hold. First-class service holds and atomic admission
-belong to [launchplane#3327](https://github.com/cbusillo/launchplane/issues/3327)
-service admission.
-
 ## Daily stranded-work service
 
 `scripts/stranded_service.py` uses the persistent service runner's locks,
@@ -1017,35 +819,24 @@ repeat the start command to restart that same managed job.
 
 ## Persistent Supervisor services
 
-On the Director's Mac, launchd owns enqueue, drive, foreign and throughput,
-plus optional `idle-codex` and `idle-claude` jobs. They survive Supervisor session restarts and start again at login.
+On the Director's Mac, launchd owns foreign and throughput, plus optional `idle-codex` and `idle-claude` jobs. They survive Supervisor session restarts and start again at login.
 The Supervisor installs and starts them after review; an executing session
 prepares and tests the helper without installing or starting these services.
 Use the installed runtime catalog, not a task worktree, as their source.
 
-Keep one private configuration at a stable location, reusing the same hold and
-foreign-watch state files across takeovers. Each service takes the existing
+Keep one private configuration at a stable location, reusing the same
+foreign-watch state file across takeovers. Each service takes the existing
 bounded command as an argument array, an absolute working directory and a
 delay between successful runs. The runner uses no shell, copies no credentials,
 and preserves the command's output in its log. Use absolute executable and
 script paths: launchd does not inherit a terminal's directory or shell setup.
 Do not put secrets in this configuration; helpers use their existing private
-credential sources. A configuration has this shape, with all four entries:
+credential sources. A configuration has this shape:
 
 ```json
 {
   "uv": "/absolute/path/to/uv",
   "services": {
-    "enqueue": {
-      "argv": ["/absolute/path/to/uv", "run", "--no-cache", "/runtime/catalog/skills/supervisor/scripts/auto_enqueue.py", "--owner", "OWNER", "--hold-file", "/private/holds.json", "--apply"],
-      "cwd": "/runtime/catalog",
-      "restart_seconds": 60
-    },
-    "drive": {
-      "argv": ["/absolute/path/to/uv", "run", "--no-cache", "/private/existing-bounded-drive-loop.py"],
-      "cwd": "/runtime/catalog",
-      "restart_seconds": 60
-    },
     "foreign": {
       "argv": ["/absolute/path/to/uv", "run", "--no-cache", "/runtime/catalog/skills/supervisor/scripts/foreign_watch.py", "--owner", "OWNER", "--own-login", "OWNER", "--own-login", "shiny-code-app[bot]", "--launchplane-login", "DELIVERY-LOGIN", "--director-login", "OWNER", "--mention-approval", "APPROVAL-COMMENT-LINK", "--state", "/private/foreign-state.json", "--persistent"],
       "cwd": "/runtime/catalog",
@@ -1146,23 +937,18 @@ prior bounded watch ended before re-arming; a lock refusal never authorizes a
 duplicate watcher.
 
 Replace the example paths and scope with the current Supervisor handoff's
-commands. The drive entry runs the existing bounded loop calling the maintained
-train driver, one driver per repository. It does not replace Launchplane's
-controller or take over another driver. [launchplane#3419](https://github.com/cbusillo/launchplane/issues/3419)
-owns moving that scheduling into Launchplane. The throughput entry runs `fleet_counts.py`; its JSON stdout accumulates in the
+commands. The throughput entry runs `fleet_counts.py`; its JSON stdout accumulates in the
 throughput log. Use only successful entries (`ok: true`) as count snapshots.
 `--service-snapshot` keeps this read-only service sampling after failed reads by
 returning zero with `ok: false` and no totals; the ordinary CLI exits nonzero.
 Shared transport still owns retries and cooldowns. Check `diagnostics.actor`
 and installation scope before interpreting these visible totals as the full fleet.
-Keep the drive command at a durable private path. Preview enqueue first under the
-existing authority described above before configuring its `--apply` command.
 
 Before first startup, verify the previous deadline loops and their children
 have ended, and reconcile their unread output. Before changing a running
 configuration or rendering replacement jobs, stop these jobs and verify their
 children have exited. A per-service lock prevents duplicate runners sharing
-one configuration; the existing watcher and driver locks retain their own
+one configuration; the existing watcher locks retain their own
 scope. A second configuration is not a takeover route.
 
 Render only (writes private plists and empty log directories, never installs):
@@ -1174,26 +960,25 @@ uv run /runtime/catalog/skills/supervisor/scripts/services.py render --catalog /
 After reviewing those jobs, the Supervisor starts each with:
 
 ```sh
-launchctl bootstrap "gui/$(id -u)" /private/supervisor-services/com.codex-skills.supervisor.enqueue.plist
+launchctl bootstrap "gui/$(id -u)" /private/supervisor-services/com.codex-skills.supervisor.foreign.plist
 ```
 
-Repeat for `drive`, `foreign`, `throughput` and each configured idle job. To start automatically after a
+Repeat for `throughput` and each configured idle job. To start automatically after a
 Mac login, the Supervisor places the reviewed plists in `~/Library/LaunchAgents/`
 and bootstraps those paths instead. Session takeovers reuse the loaded jobs;
 do not bootstrap another set or re-arm deadline loops. During each check:
 
 ```sh
-launchctl print "gui/$(id -u)/com.codex-skills.supervisor.enqueue"
-tail -n 40 /private/supervisor-services/logs/enqueue.jsonl
-tail -n 40 /private/supervisor-services/logs/enqueue.stderr.log
+launchctl print "gui/$(id -u)/com.codex-skills.supervisor.foreign"
+tail -n 40 /private/supervisor-services/logs/foreign.jsonl
+tail -n 40 /private/supervisor-services/logs/foreign.stderr.log
 ```
 
 Repeat for the other jobs. Their log names are `<service>.jsonl` and
 `<service>.stderr.log` under the render output's `logs/`.
 Rotate logs during a stopped maintenance window when needed.
 
-Clean bounded exits restart after `restart_seconds`. Transient enqueue reads
-already recover inside `auto_enqueue.py`, without an extra wrapper. Any nonzero
+Clean bounded exits restart after `restart_seconds`. Any nonzero
 exit or launch/configuration failure emits `reconciliation_required` and stops
 that service: launchd does not blindly replay uncertain writes or bypass quota
 retry times. A private `<config>.<service>.reconcile` marker also preserves a
@@ -1202,17 +987,17 @@ runner writes it before starting a child and removes it only after exit 0, so
 a forced runner kill cannot silently resume a command. Read the helper output
 and canonical records, respect any retry time, verify prior children have ended,
 and resolve the cause. Then clear that service's marker under its lock with
-`uv run /runtime/catalog/skills/supervisor/scripts/services.py clear --config /private/supervisor-services.json --service enqueue`
+`uv run /runtime/catalog/skills/supervisor/scripts/services.py clear --config /private/supervisor-services.json --service foreign`
 before restarting a stopped job with
-`launchctl kickstart "gui/$(id -u)/com.codex-skills.supervisor.enqueue"`.
+`launchctl kickstart "gui/$(id -u)/com.codex-skills.supervisor.foreign"`.
 Do not use `kickstart -k` to displace a running service.
 
-To stop, use `launchctl bootout "gui/$(id -u)/com.codex-skills.supervisor.enqueue"`
+To stop, use `launchctl bootout "gui/$(id -u)/com.codex-skills.supervisor.foreign"`
 and repeat for the other jobs. SIGTERM reaches the runner, which terminates its
 active child process group and waits for exit before returning. Verify the
 job is absent and its children have ended. To keep it stopped after login,
 remove only its reviewed plist from `~/Library/LaunchAgents/`; retain the
-configuration, holds, watch state and logs for takeover or reconciliation.
+configuration, watch state and logs for takeover or reconciliation.
 
 The optional `inspection` job uses this same runner for
 [weekly project counts](../../jetbrains-inspection/references/native-backend.md#weekly-project-counts).

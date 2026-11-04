@@ -301,7 +301,7 @@ def batch_pull_requests(
         responses[f"/repos/{repo}/commits/{sha}/statuses"] = statuses
     # Publish atomically only after EVERY requested PR/connection is complete.
     # Snapshots never survive the pass or cross readers/actors. A consumed path
-    # recontacts REST (notably the auto-enqueue final head/labels recheck).
+    # recontacts REST.
     reader.batch_identity = reader.batch_context()
     reader.batch_responses = responses
     reader.batch_diagnostic["used"] = True

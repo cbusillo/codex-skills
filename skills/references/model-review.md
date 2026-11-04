@@ -123,7 +123,7 @@ the author verifies it.
 
 In the pull request or the owning issue, give the reviewers by provider and
 model, what was acted on, what was declined and why, and what was reproduced.
-For a review that gates ready or auto-enqueue, post the weighed disposition
+For a review that gates ready, post the weighed disposition
 through the existing PR comment helper:
 
 ```sh

@@ -46,9 +46,6 @@ resources:
   - path: scripts/foreign_watch.py
     kind: script
     description: Emit bounded untrusted foreign-poster and Launchplane review notices.
-  - path: scripts/auto_enqueue.py
-    kind: script
-    description: Enqueue current-head ready handoffs in capped groups between candidates, respecting the Supervisor hold record.
   - path: scripts/fleet_counts.py
     kind: script
     description: Read open issue and PR counts per visible non-archived repository in the selected account and fleet totals with one paginated GraphQL query.
@@ -158,16 +155,6 @@ commands:
     resource_path: scripts/finished_map.py
     example_argv: ["uv", "run", "scripts/finished_map.py", "--ledger", "<ledger.json>"]
     purpose: Find close-out candidates without authorizing shutdown.
-  - name: supervisor-auto-enqueue
-    source: skill
-    resource_path: scripts/auto_enqueue.py
-    example_argv: ["uv", "run", "scripts/auto_enqueue.py", "--owner", "OWNER", "--hold-file", "<private-holds.json>", "--handoff-login", "<agent-login>", "--once"]
-    purpose: Preview stable batches from active Launchplane policy; apply only under the Supervisor's existing enqueue authority.
-  - name: supervisor-enqueue-holds
-    source: skill
-    resource_path: scripts/auto_enqueue.py
-    example_argv: ["uv", "run", "scripts/auto_enqueue.py", "holds", "--hold-file", "<private-holds.json>", "--pause", "OWNER/REPO"]
-    purpose: Serialize repository pauses and optional manual release pauses with local enqueue passes.
   - name: supervisor-release-session-claims
     source: skill
     resource_path: scripts/release_session_claims.py
@@ -432,13 +419,13 @@ On failed compaction/account departure, obtain a durable handoff, recheck
 ownership, close safely, then relaunch the same goal with its retained source.
 
 Land by the assigned train or authorized protected-branch route. Load the owning
-skill first. Use one maintained driver per repo and its interim auto-enqueue
-procedure; after about 45 minutes with only `lease held`, read candidate CI.
+skill first. On the train, a current-head Ready or the enqueue label is the
+whole landing step; Launchplane's scheduled pass lands it, so run no driver or
+pass. After about 45 minutes with only `lease held`, read candidate CI.
 After landing load `github` for After A Merge and planning reconciliation.
 Catalog verification runs independently; read its failures in the routine digest under
 [catalog landing verification](references/helpers.md#catalog-landing-verification). Prefer per-repo `since` reads
-over search where the maintained readers support them. A killed driver can leave
-a lease; two drivers on one repository mean wait, not failure. For stacked PRs,
+over search where the maintained readers support them. For stacked PRs,
 keep held children draft or unlabeled under `launchplane`; each landing child
 needs its own Ready.
 
@@ -481,7 +468,7 @@ At takeover check permission mode and load `direction` for daily-turn reads.
 Use the brief's handoff anchor, or the optional private handoff setting.
 Read this Director's latest handoff and later comments, original Director words,
 full current board and registry, each named thread/screen and the recovery note.
-Verify pending actions at their source and list actual watcher/driver processes.
+Verify pending actions at their source and list actual watcher processes.
 Recreate the check/digest with the harness scheduler. Persistent services are optional. Bind existing services when present;
 otherwise start scoped bounded idle/foreign watches with separate
 harness watermarks, processing closeout notices immediately and re-arming after
@@ -567,7 +554,7 @@ Post one full handoff comment on this Director's own handoff record under
 [Agent Comments](../references/talking-with-the-director.md#agent-comments).
 Link the freshly rebuilt board and coverage, governing decisions, open ready
 PRs, running session identities and anchors, briefs and next actors, verified
-watchers/drivers with scopes/state/deadlines, private file pointers and Director
+watchers with scopes/state/deadlines, private file pointers and Director
 sessions to leave alone. Link new landed lessons or their tracking issues,
 the latest catalog-verification receipt, pending recovery actions and the
 Director's question queue. Say whether any lesson is new. A handoff is incomplete

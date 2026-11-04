@@ -13,16 +13,13 @@ from typing import Any, Optional
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-from test_ready_handoff import PR, REPO, SHA, Reader, helper
-from ready_handoff import handoff_body
+from test_ready_handoff import PR, REPO, Reader, helper
 
 acceptance = importlib.import_module("skills.launchplane.scripts.launchplane_acceptance")
-watch = importlib.import_module("skills.supervisor.scripts.auto_enqueue")
 lp = acceptance.operator
 
 CLIENT_NOTES = "## Client test notes\nTry the new export button on the parts list."
 NOTHING_TO_TEST = "## Client test notes\nNothing for the Client to test: internal tooling."
-TARGET = {"repo": REPO, "base": "main", "label": "enqueue", "policy": {}, "scheduler_drives_train": True}
 
 
 class FakeLaunchplane:
@@ -97,20 +94,6 @@ class ClientRuleTests(unittest.TestCase):
             started.start()
             self.addCleanup(started.stop)
         helper.CURRENT_OPERATION = "github.pr.ready"
-        self.live = watch.Live.__new__(watch.Live)
-        self.live.reader = object()
-        self.live.get = lambda _path: {"checks": [{"context": "unit", "app_id": None}]}
-        ready_comment = {"id": 1, "user": {"login": "engineer"}, "body": handoff_body(SHA),
-                         "created_at": "2026-01-01T00:01:00Z"}
-        self.live.pages = lambda path: [] if path.endswith("/reviews") else [ready_comment]
-        self.live.acceptance = lambda *_args: False
-        checks = patch.object(watch, "pull_request_checks", side_effect=lambda *_a, **_k: {
-            "summary": {"countsComplete": True, "unavailableComponents": [], "failingCount": 0,
-                        "pendingCount": 0, "unfinishedWorkflowRunCount": 0},
-            "checkRuns": copy.deepcopy(self.reader.checks), "statuses": [],
-        })
-        checks.start()
-        self.addCleanup(checks.stop)
 
     def verdict(self, body, labels=()):
         self.reader.pr = {**copy.deepcopy(PR), "body": body, "labels": [{"name": name} for name in labels]}
@@ -120,9 +103,6 @@ class ClientRuleTests(unittest.TestCase):
             refusal = ""
         except helper.PrHelperError as error:
             refusal = str(error)
-        pull = {**copy.deepcopy(self.reader.pr), "mergeable": True}
-        qualified = self.live.qualified(TARGET, pull, set())
-        self.assertEqual(not refusal, qualified, refusal or "auto-enqueue refused a PR that ready accepted")
         return refusal
 
     def test_unmapped_repository_with_client_notes_gets_plain_ready(self):

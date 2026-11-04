@@ -160,7 +160,7 @@ New receipts optionally carry a private session identifier from
 inherited markers from both families leave attribution unknown. The report
 lists attributed counts and unattributed requests; a
 distinct receipt session is not proof of a simultaneously working session.
-Background watchers and train drivers inherit their launching session's ID
+Background watchers inherit their launching session's ID
 unless explicitly attributed with `GITHUB_REQUEST_SESSION`; their traffic is
 still identified separately by helper and operation in the consumer rows.
 `session_ceiling` remains null: declaring fleet capacity requires a timed load
@@ -263,13 +263,13 @@ their original CLI route. Fresh response bytes and gh error output are preserved
 The adapter never retries a completed failed request
 or serves a body after a provider/authentication failure.
 
-The Supervisor auto-enqueue and pending-review helpers discover open PRs across
+The Supervisor pending-review helper discovers open PRs across
 repositories with one GraphQL query per ordinary pass. Additional pages are read
 only for overflowing PR/label connections; partial or changing inventories skip
-only the affected repositories until the next pass. Discovery snapshots may precede
-controller reads; they never replace final freshness checks. This replaces discovery alone: controller policy, ready receipts,
+only the affected repositories until the next pass. Discovery snapshots never replace
+final freshness checks. This replaces discovery alone: ready receipts,
 Client acceptance, reviews, checks and final fresh pre-write reads still decide
-eligibility. The final auto-enqueue queue-inventory recheck stays live REST.
+eligibility.
 
 For lazy GitHub fields that require an unconditional observation, shared reader
 callers use `GitHubReader.request(..., fresh=True)`. It bypasses both conditional
@@ -683,10 +683,9 @@ again follows the model-review policy and task instructions. If a completed
 legacy review already covers the head, weigh it and post through this command;
 no rerun is needed solely to add metadata. Required-path coverage also refuses
 an incomplete changed-file inventory, including GitHub's file-list cap.
-`supervisor/scripts/auto_enqueue.py` skips the same PRs with reason
-`review_of_record_not_recorded`. It rechecks the head and labels
-before posting through the shared comment writer. This is a handoff to the
-assigned routing agent; it applies no enqueue label and performs no merge.
+It rechecks the head and labels
+before posting through the shared comment writer. The train admits a current-head
+Ready without a label; `ready` itself performs no merge.
 Other review and task authorization requirements still apply.
 
 When the Director records a decision to reroute a pending Client review as
@@ -715,8 +714,8 @@ not list the current PR. This approves or retries nothing. Missing identity,
 unavailable reads, actual fork jobs or failures, and pending or failed same-repository
 executions remain blocking. Other workflow execution identities stay separate.
 
-The shared `github/scripts/ready_handoff.py` module owns the format and parser
-used by `supervisor/scripts/auto_enqueue.py`. A ready comment has exactly:
+The shared `github/scripts/ready_handoff.py` module owns the format and parser.
+A ready comment has exactly:
 
 ```text
 Ready for the merge train
@@ -730,16 +729,15 @@ It posts `Engineering ready; waiting for the Client's acceptance` with the head
 and permits only pending `launchplane/owner-review` checks; every other pending
 check, unfinished workflow and every failure still refuses.
 Once Launchplane records acceptance for that head, including acceptance it carries
-forward, auto-enqueue can admit this checked Client wait without another `ready`
+forward, the train can admit this checked Client wait without another `ready`
 call. Other waits still require a fresh Ready; all other train checks still apply.
 
-`ready` and the auto-enqueue watcher share one Client rule, `client_handoff` in
-`ready_handoff.py`. Client acceptance is required only when Launchplane maps the
+`ready` uses one Client rule, `client_handoff` in `ready_handoff.py`. Client acceptance is required only when Launchplane maps the
 repository, directly or as an addon source pinned in an Odoo product's prod or
 testing lane, to an active product whose Client is not the Director, or when the
 PR carries an explicit hold: an `owner-review` label, or a
 `launchplane/owner-review` check other than a completed neutral check or an
-unfinished advisory for current engineering notes. Both readers exclude that
+unfinished advisory for current engineering notes. `ready` excludes that
 unfinished advisory from pending checks. A product that
 releases on `director_standing` is the Director's, so it keeps standing
 acceptance unless explicitly held. A repository with no Client gets a plain
@@ -752,8 +750,8 @@ grants no release authority.
 
 On the Client path, a normal handoff requiring acceptance (a hold or real Client
 test notes) needs a successful current-head `launchplane/owner-review` check,
-and the watcher independently verifies the saved Client decision before
-enqueueing. A completed neutral `launchplane/owner-review` advisory does not
+and the train independently verifies the saved Client decision before
+admitting it. A completed neutral `launchplane/owner-review` advisory does not
 request acceptance on its own. The notes follow the merge train's rules: inline
 `Client test notes:` or `Client testing:` paragraphs, empty or placeholder
 sections, decorated no-test markers, and `Nothing for the Client to test`
@@ -784,8 +782,7 @@ changes for the Client; the legacy `Nothing for the owner to test` also accepts
 `:` or `.`. Other "nothing to test" wording, such as
 `Nothing for Sam to test.`, is a notes error, so `ready` refuses and the
 `owner-review` check fails with the exact wording to use. Each notes section or
-batch member makes its own statement. `ready` and the auto-enqueue watcher
-refuse a class that disagrees with it: Client test steps or
+batch member makes its own statement. `ready` refuses a class that disagrees with it: Client test steps or
 `--waiting-for-client` without `Client change:`, a unit holding both
 statements, or release test steps on engineering work
 (`Engineering: merge to testing; Client tests at release.`). The review by
@@ -896,8 +893,7 @@ uv run <runtime-checkout>/skills/github/scripts/reconcile-runtime-checkout.py --
 copy outside the given worktree fails `invalid_merged_worktree`. When the
 helper itself changed upstream, the install's copy fails
 `helper_landing_source_mismatch`; run the copy from a worktree at the fetched
-tip instead. The receipt's `detail` says which. A landing driven by
-`launchplane-train-drive.py` runs this helper itself and reports the receipt.
+tip instead. The receipt's `detail` says which.
 
 The JSON receipt reports `synchronized`, `already_current`, `not_applicable`,
 `blocked`, `retryable`, or `failed`, plus stable reason codes and before/fetched/
@@ -2114,9 +2110,8 @@ malformed rather than ignoring its additional field.
   The current Launchplane completion adapter's imports remain available. The
   default label mapping is empty and its diff preserves recorded labels without
   writes. Label-derived result fields, `reopened` and `project_labels` are retired.
-  The train driver includes separate planning receipts for every confirmed
-  landed batch member. A failed planning receipt does not undo a landing;
-  rerun this command after resolving its reported blocker.
+  A failed planning receipt does not undo a landing; rerun this command after
+  resolving its reported blocker.
 - `reconcile-status <issue> [--include-dependents] [--planning-checkout PATH] [--apply]`:
   Read status, open blockers and trusted structured waits without mutating labels,
   prose or native state. `--apply` remains accepted for existing recovery commands.
@@ -3219,11 +3214,10 @@ counts and GraphQL points are separate from whole-fleet hourly savings.
 `github_pr_batch.batch_pull_requests(reader, repo, numbers)` refreshes up to
 twenty PRs through the existing reader transport and fills one-pass,
 REST-shaped metadata, reviews, comments, check runs and latest status contexts.
-The Supervisor auto-enqueue observer and PR watcher support `--batch-read` for
+The PR watcher supports `--batch-read` for
 explicitly cold or changing passes. The watcher batches only its first
 snapshot or a new head, then uses REST while that head remains unchanged.
-The Supervisor flag requires `--once` for a cold/changed pass; its continuous
-mode uses conditional REST. The watcher keeps discussion/Client feedback reads
+The watcher keeps discussion/Client feedback reads
 on REST so publisher IDs and App provenance retain their verification path. The flag defaults off: unchanged polling
 keeps its authenticated conditional REST savings. There is no persisted GraphQL
 body cache or credential/actor change.
