@@ -160,6 +160,8 @@ released. Other user turns or any later assistant turn invalidate it.
 
 ## Checks and morning digest
 
+Include banked-reset expiry from [the account read](#choosing-the-account) in morning numbers.
+
 The existing Codex idle watcher and launcher guard share the same per-home
 auth helper. Every check connects to that account's existing daemon, verifies
 its PID/start identity and Unix peer, and requests token-free `getAuthStatus`
@@ -2049,6 +2051,8 @@ Morning numbers and account reads include each provider account's
 unchanged; a missing summary is `null` (unknown), not zero resets. Report a
 missing earliest expiry as unknown, even when resets are available. Use the
 existing named-account preview to read accounts outside the published launch order.
+If a preview refuses because an account needs sign-in, report its expiry as unknown
+until sign-in is restored.
 
 For source work use `codex --remote unix:// -C /absolute/repository` with the
 per-session settings. The empty endpoint selects that account's daemon; fixed
