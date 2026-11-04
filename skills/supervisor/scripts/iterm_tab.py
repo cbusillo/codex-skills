@@ -1773,7 +1773,7 @@ def guard_lead_launch(operation: Callable[..., Coroutine[Any, Any, Any]]) -> Cal
         try:
             result = await operation(*arguments)
         except LaunchFailure as error:
-            settle_lead_launch(args, int(error.detail["failed_launch"].get("mutation_started", True)))
+            settle_lead_launch(args, int(error.detail["failed_launch"].get("submission") != "not_attempted"))
             raise
         except Exception:
             if not args.lead_launch_started:

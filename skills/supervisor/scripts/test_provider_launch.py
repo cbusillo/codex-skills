@@ -469,21 +469,36 @@ class ProviderLaunchTests(unittest.TestCase):
                 with self.subTest(cap=cap), self.assertRaisesRegex(ValueError, "worker cap unavailable"):
                     asyncio.run(register_worker(args))
 
-            @iterm_tab.guard_lead_launch
-            async def fail_after_submission(options: argparse.Namespace) -> None:
-                raise iterm_tab.LaunchFailure([], {"mutation_started": True,
-                    "launch": {**iterm_tab.lead_metadata(options), "session_id": "retained-worker",
-                               "harness": "codex", "supervisor_owned": True}}, ValueError("startup unknown"))
+            for submission in ("not_attempted", "unknown", "submitted"):
+                @iterm_tab.guard_lead_launch
+                async def fail_launch(options: argparse.Namespace) -> None:
+                    raise iterm_tab.LaunchFailure([], {"mutation_started": True, "submission": submission,
+                        "launch": {**iterm_tab.lead_metadata(options), "session_id": "retained-worker",
+                                   "harness": "codex", "supervisor_owned": True}}, ValueError("startup unknown"))
 
-            ledger.write_text(json.dumps([{**lead, "worker_cap": 1}, other]))
-            with self.assertRaises(iterm_tab.LaunchFailure) as failed:
-                asyncio.run(fail_after_submission(args))
-            with self.assertRaisesRegex(ValueError, "worker cap"):
-                asyncio.run(register_worker(args))
-            iterm_tab.append_launch_ledger(ledger, failed.exception.detail["failed_launch"]["launch"])
+                ledger.write_text(json.dumps([{**lead, "worker_cap": 1}, other]))
+                with self.subTest(submission=submission), self.assertRaises(iterm_tab.LaunchFailure) as failed:
+                    asyncio.run(fail_launch(args))
+                if submission == "not_attempted":
+                    self.assertEqual(json.loads(ledger.read_text())[0]["worker_launches"], {})
+                    continue
+                with self.assertRaisesRegex(ValueError, "worker cap"):
+                    asyncio.run(register_worker(args))
+                iterm_tab.append_launch_ledger(ledger, failed.exception.detail["failed_launch"]["launch"])
+                self.assertEqual(json.loads(ledger.read_text())[0]["worker_launches"], {})
+                with self.assertRaisesRegex(ValueError, "worker cap"):
+                    asyncio.run(register_worker(args))
+
+            @iterm_tab.guard_lead_launch
+            async def interrupted_launch(options: argparse.Namespace) -> None:
+                raise asyncio.CancelledError
+
+            ledger.write_text(json.dumps([lead, other]))
+            with self.assertRaises(asyncio.CancelledError):
+                asyncio.run(interrupted_launch(args))
+            self.assertTrue(json.loads(ledger.read_text())[0]["worker_launches"])
+            iterm_tab.settle_lead_launch(args, 0)
             self.assertEqual(json.loads(ledger.read_text())[0]["worker_launches"], {})
-            with self.assertRaisesRegex(ValueError, "worker cap"):
-                asyncio.run(register_worker(args))
 
     def setUp(self):
         self.enterContext(patch.object(iterm_tab, "check_launch_issue"))

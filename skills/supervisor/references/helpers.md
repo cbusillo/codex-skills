@@ -1540,12 +1540,38 @@ atomically replaces each reserved slot with its worker row; normal closeout
 removes the row and frees that slot. A missing lead, cap or reservation refuses.
 Recover a partial launch with its retained receipt before launching more
 workers; never relaunch it. Interrupted launches keep their reservations.
-For an interrupted batch, the Supervisor verifies its receipts and terminals,
-registers submitted workers, and removes only that batch's unused reservation
-under the existing ledger-maintenance rule.
+Explicit `submission: not_attempted` failures free unused slots automatically;
+missing or uncertain submission evidence keeps them reserved. For an interrupted
+batch, the Supervisor first verifies that its launcher ended, registers all
+submitted workers, and positively verifies that no worker remains for the
+unused slots. An iTerm failure before registration may lack a `launch` object:
+`register --receipt-file` cannot reconstruct it. Inspect its exact terminal and
+native identity, finish registration through the existing `--entry-file` route,
+carrying its original `lead_session_id` and `lead_launch_id`, or prove that
+worker ended; unknown workers keep their slots and the lead row.
+With launches and registrations on the ledger finished, run from the catalog
+to release only that verified unused batch, using its actual IDs:
+
+```sh
+uv run --no-project --with-requirements skills/supervisor/scripts/iterm_tab.py python - <<'PY'
+import sys
+from argparse import Namespace
+from pathlib import Path
+sys.path.insert(0, "skills/supervisor/scripts")
+from iterm_tab import settle_lead_launch
+settle_lead_launch(Namespace(ledger=Path("/private/shared-ledger.json"),
+    lead_session_id="<lead-native-id>", lead_launch_id="<unused-lead-launch-id>"), 0)
+PY
+```
+
+This calls the existing settlement helper under its ledger lock. Never clear an
+unverified slot or remove lead fields to bypass registration. Pilot leads
+launched before this change are relaunched with `--worker-cap` to allocate them.
 Leads use the existing closeout helper with their own native id as
 `--supervisor-session`; the Supervisor can adopt a departed lead's workers.
-Change assigned caps only after launches and registrations on the ledger finish.
+Existing-row maintenance, including a cap change, waits for launches and
+registrations on the ledger to finish and uses the same ledger lock and atomic
+writer; never overwrite an old whole-ledger snapshot.
 For fresh managed Codex `--remote` workers on either terminal backend, add
 `--ledger /private/launch-ledger.json`. The existing ingress publishes the
 first native thread ID and transcript into that launch's private receipt,

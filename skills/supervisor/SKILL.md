@@ -411,7 +411,9 @@ need no new pre-merge question.
 
 Assign leads capacity and accounts, watch their responsiveness and milestone
 handoffs, and launch work outside their milestones. Adopt a departed lead's
-worker rows for closeout. Leads idle between worker-finish, scoped foreign-watch
+worker rows for closeout and re-point its pending child actions to
+`agent:supervisor`. Recover retained worker registrations before retiring the
+lead's row; preserve it while any remain unknown. Leads idle between worker-finish, scoped foreign-watch
 and native-message events, with a rare backstop check; use their
 [lead brief](references/brief-rules.md#milestone-lead-briefs).
 Run [Routine check](references/routine-check.md) about every 30 minutes and act
