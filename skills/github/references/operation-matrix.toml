@@ -456,7 +456,7 @@ retry_eligibility = "conditional"
 reconciliation_strategy = "operation_marker"
 retained_graphql_rationale = "No retained GraphQL transport; reuses REST checks and shared comment reconciliation."
 source_refs = ["github/scripts/gh-pr.py:cmd_ready", "github/scripts/gh-pr.py:validate_ready_pr", "github/scripts/ready_handoff.py:latest_ready", "github/scripts/ready_handoff.py:client_handoff"]
-test_refs = ["github/scripts/test_ready_handoff.py", "supervisor/scripts/test_auto_enqueue.py:test_latest_wait_stale_head_missing_head_and_untrusted_ready_refuse"]
+test_refs = ["github/scripts/test_ready_handoff.py"]
 
 [[operations]]
 id = "github.pr.checks"
@@ -2131,27 +2131,6 @@ capabilities = ["issues_read", "pull_requests_read", "checks_read", "statuses_re
 permission_mode = "fixed"
 permission_note = "Existing read grants only; no identity, permission or controller-mutation expansion."
 
-[[operations]]
-id = "github.train.drive"
-request_priority = "essential"
-entrypoint = "launchplane/scripts/launchplane-train-drive.py --repo OWNER/REPO --pr N"
-intent = "Read train PR and candidate-check state with conditional caching and bounded primary-reset waits. Controller mutations remain delegated to the Launchplane helper."
-current_transport = "rest_api"
-selected_transport = "rest_api"
-endpoint_or_command = "GET /repos/{repo}/pulls/{number}; GET /repos/{repo}/commits/{sha}/check-runs; GET /repos/{repo}/pulls?state=closed; GET /rate_limit"
-quota_bucket = "rest_core"
-actor_policy = "automation_required"
-mutation_class = "read"
-idempotency = "read_only"
-retry_eligibility = "safe"
-reconciliation_strategy = "fresh_read"
-retained_graphql_rationale = "No GraphQL in this operation; readiness and review-thread queries retain their separate bounded matrix entries."
-source_refs = ["launchplane/scripts/launchplane-train-drive.py:live_io"]
-test_refs = ["launchplane/scripts/test_launchplane_train_drive.py:TrainDriveTests"]
-capabilities = ["pull_requests_read", "checks_read"]
-permission_mode = "fixed"
-permission_note = "Existing read grants only; no identity, permission or controller-mutation expansion."
-
 [capabilities.contents_read]
 scope = "repository"
 permission = "contents"
@@ -2524,8 +2503,8 @@ idempotency = "conditional"
 retry_eligibility = "manual"
 reconciliation_strategy = "read_after_write"
 retained_graphql_rationale = "GraphQL GitHub closingIssuesReferences is the authoritative relationship for keyword/manual PR closing links; prose and merged prerequisites never establish completion."
-source_refs = ["github/scripts/gh-plan.py:cmd_reconcile_landing", "github/scripts/github_plan_landing.py:closing_references", "github/scripts/github_plan_landing.py:reconcile", "launchplane/scripts/launchplane-train-drive.py:_with_runtime_reconciliation"]
-test_refs = ["github/scripts/test_github_plan_landing.py:LandingTests", "launchplane/scripts/test_launchplane_train_drive.py:TrainDriveTests"]
+source_refs = ["github/scripts/gh-plan.py:cmd_reconcile_landing", "github/scripts/github_plan_landing.py:closing_references", "github/scripts/github_plan_landing.py:reconcile"]
+test_refs = ["github/scripts/test_github_plan_landing.py:LandingTests"]
 
 [[operations]]
 id = "github.plan.reconcile_status"

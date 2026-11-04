@@ -171,17 +171,17 @@ class UsageTests(unittest.TestCase):
                                       headers={"x-github-request-id": "request-a"},
                                       operation="github.pr.watch", actor="fixture-bot", now=1000)
             shutil.copytree(first / "request-usage", second / "request-usage")
-            with patch.dict(os.environ, {"GITHUB_RETRY_STATE_DIR": other, "GITHUB_REQUEST_CALLER": "launchplane-train-drive.py",
-                                       "GITHUB_REQUEST_SESSION": "driver-a"}):
+            with patch.dict(os.environ, {"GITHUB_RETRY_STATE_DIR": other, "GITHUB_REQUEST_CALLER": "gh_pr_watch.py",
+                                       "GITHUB_REQUEST_SESSION": "watcher-a"}):
                 usage.record_response(method="GET", path="/repos/example/app/pulls/7", status=304,
                                       headers={"x-github-request-id": "request-b"},
-                                      operation="github.train.drive", actor="fixture-bot", now=1001)
+                                      operation="github.pr.watch", actor="fixture-bot", now=1001)
             result = usage.report(since=900, now=1100, actor="fixture-bot", state_dirs=[first, second, first])
         self.assertEqual(result["duplicate_records"], 1)
         self.assertEqual(sum(row["http_requests"] for row in result["consumers"]), 2)
         self.assertEqual(sum(row["primary_requests"] for row in result["consumers"]), 1)
-        self.assertEqual({row["session"] for row in result["sessions"]}, {"session-a", "driver-a"})
-        self.assertIn("launchplane-train-drive.py", {row["helper"] for row in result["consumers"]})
+        self.assertEqual({row["session"] for row in result["sessions"]}, {"session-a", "watcher-a"})
+        self.assertIn("gh_pr_watch.py", {row["helper"] for row in result["consumers"]})
         self.assertIsNone(result["session_ceiling"])
 
     def test_quota_windows_keep_peak_headers_separate_from_local_cost_and_scope(self):
@@ -239,14 +239,14 @@ class UsageTests(unittest.TestCase):
         self.assertEqual((absent["status"], absent["files_read"]), ("missing_or_unavailable", 0))
         self.assertNotIn(str(root), json.dumps(result))
 
-    def test_claude_native_attribution_and_background_driver_inheritance(self):
+    def test_claude_native_attribution_and_background_watcher_inheritance(self):
         with patch.dict(os.environ, {"GITHUB_REQUEST_SESSION": "", "CODEX_THREAD_ID": "",
                                    "CODEX_SESSION_ID": "", "CLAUDE_CODE_SESSION_ID": "claude-native"}):
             usage.record_response(method="GET", path="/repos/example/app", status=200, headers={},
                                   operation="github.read", actor="fixture-bot", now=1000)
-            with patch.dict(os.environ, {"GITHUB_REQUEST_CALLER": "launchplane-train-drive.py"}):
+            with patch.dict(os.environ, {"GITHUB_REQUEST_CALLER": "gh_pr_watch.py"}):
                 usage.record_response(method="GET", path="/repos/example/app", status=200, headers={},
-                                      operation="github.train.drive", actor="fixture-bot", now=1001)
+                                      operation="github.pr.watch", actor="fixture-bot", now=1001)
         result = usage.report(since=0, now=1100)
         self.assertEqual(result["sessions"], [{"session": "claude-native", "http_requests": 2, "primary_requests": 2}])
         self.assertEqual(len(result["consumers"]), 2)

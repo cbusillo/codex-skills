@@ -1,10 +1,10 @@
 # Merge-Train Execution
 
-Read before advancing or diagnosing a train. The entrypoint retains the runtime
+Read before diagnosing a train. The entrypoint retains the runtime
 authority, mutation gate, and exact landing-SHA checkout handoff requirements.
 
-- **Before Enqueueing**: Run the controller without `--mutate` and inspect the
-  intended PRs in `result.dry_run_result.queue`. The current GitHub adapter
+- **When A PR Is Not Admitted**: Run the controller without `--mutate` and
+  inspect the intended PRs in `result.dry_run_result.queue`. The current GitHub adapter
   checks both the PR author and the actor who last applied the enqueue label
   from active Launchplane policy,
   using the label's latest `labeled` event. Enqueue with the trusted automation
@@ -17,7 +17,7 @@ authority, mutation gate, and exact landing-SHA checkout handoff requirements.
   and an App acting for a user. Report those refusals;
   do not work around it by relabeling under another identity. Check
   `actor_role` (the author's role), `eligible`, `ineligible_reasons`, checks, and head SHA before
-  adding ready labels. If the trusted automation identity is refused, use
+  relabeling. If the trusted automation identity is refused, use
   **Capability Scope** below to diagnose the policy grant; relabeling cannot
   supply it. A missing ready label alone is the expected state before
   enqueueing; an unauthorized author remains ineligible after labeling. When an
@@ -75,134 +75,16 @@ authority, mutation gate, and exact landing-SHA checkout handoff requirements.
   root to the flat train, and resolve child PRs after the root lands according
   to policy. Treat forked, ambiguous, sibling, cyclic, stale-head, or
   permission-limited stacks as blocked/unsupported instead of mutating by hand.
-- **Retry Model**: Repeated controller calls are expected; let
-  `scripts/launchplane-train-drive.py` make them. The CLI holds an OS file lock
-  per repository/base train in the user's shared cache, across worktrees.
-  A block selecting another PR reports `needs_owner` with both PR numbers,
-  rather than failing the tracked PR. When the controller confirms that other
-  PR's block was applied and its policy permits continuation, the driver proceeds.
-  Blocks on the tracked PR, unsupported stacks and blocks without a selected PR
-  remain failures.
-  A second local driver exits with `needs_owner`, naming the running PR and
-  start time and suggesting enqueueing the PR for that driver. If that driver
-  exits before the queued PR lands, rerun the refused driver; a driver stops
-  when its own PR lands and does not promise to drain unrelated work. Process exit
-  releases the lock; stale metadata never keeps a train locked. Drivers on
-  other hosts still obey Launchplane's controller lease.
-  Three consecutive refusals with the same code and this driver's PR number
-  stop with `needs_owner`, preserving the code, HTTP status and trace ID.
-  Progress, a different refusal, and lease contention reset that streak;
-  unassigned refusals keep the existing helper-failure budget.
-  It pauses on every non-terminal
-  state, treats a candidate made stale by a queue change as rebuildable, waits
-  out a block raised only because the batch candidate's checks are still
-  running or another driver holds the controller lease, treats a branch the
-  controller refreshed as progress, and stops early with `needs_owner` when
-  the dry run's `intended_next_action` is `update_branch` and the driver may
-  not refresh that PR, even if the controller reports `wait_for_root_checks`.
-  `--allow-branch-update` permits refreshing only the driver's own selected PR.
-  It stops on other blocks, failed,
-  ineligible, closed, deadline, no response, or repeated controller refusals,
-  with each refusal's error code, HTTP status and trace ID. A candidate failure reports the
-  failing checks and run URLs on the candidate commit. A failed candidate whose
-  checks are still running, such as a rerun of a failed job, keeps waiting under
-  the deadline; one with no failing and no running check stops after repeated passes.
-  Snapshots retain the response's `reason_code` and, when present, the service's
-  bounded `last_controller_result`. That canonical pass evidence includes its
-  source record, policy/time binding, observed checks, retry lineage and next
-  actor/observation; missing evidence remains null. The driver does not
-  reconstruct historical causes or use diagnostic metadata to change outcomes.
-  Launchplane owns the [last-result contract](https://github.com/cbusillo/launchplane/blob/main/docs/merge-train-policy.md).
-  Snapshots also retain the write-action helper's validated public-safe
-  `records` and `result`, including candidate and landing-plan identities and
-  run links. A change to that evidence emits a snapshot even within the same
-  controller phase; a new request trace alone does not. Polling backoff still
-  follows phase changes. Every terminal receipt carries the emitted snapshots
-  in order as `controller_evidence`, so later idle, refused or unavailable
-  responses do not erase earlier plan or landing evidence. These are observed
-  controller responses; the terminal `landing_sha` and `prs` remain GitHub
-  read-back evidence, and missing controller evidence is not reconstructed.
-  Driver GitHub reads use the shared conditional cache and retry deadline.
-  The controller helper projects validated candidate PR numbers. While the
-  controller observes a candidate containing this driver's PR, it leaves the batch PRs
-  to that observation and reads them again on a phase change or final landing.
-  It still reads its tracked PR before each pass and after each accepted reply,
-  so another controller's landing ends the drive before another pass or pause.
-  Every controller call makes Launchplane re-read the whole repository train
-  from GitHub, and Launchplane also runs its own passes. Unchanged controller
-  phases and a lease held by another holder therefore poll less often, doubling
-  up to `--max-wait-seconds` (fifteen minutes by default), and respect the
-  shared low-budget floor; any phase change returns to `--poll-seconds`. A
-  newly reported action Launchplane says to mutate once and call again
-  (`admit_collapsed_root`, `plan_candidate`, `build_candidate`, `plan_landing`,
-  `land_batch`) is followed by a shorter `--progress-seconds` pause (15 by
-  default, never above `--poll-seconds`), still under the low-budget floor and
-  the deadline; the same action repeated backs off like any unchanged phase.
-  The terminal receipt's `cadence` counts controller requests, read-only
-  observations and GitHub read calls (a paged check read counts once), and
-  splits elapsed time into controller requests, sleep, reads, recovery,
-  terminal read-back and an unattributed remainder such as a branch update.
-  A recovery run is one measured span, not a counted controller request.
-  `passes` lists each controller pass with its action, whether it was new
-  progress, its request time and why it paused. These are local measurements,
-  not Launchplane's own timing. A generic `github_request_failed` refusal probes
-  the quota-free `/rate_limit` endpoint through the target repository's
-  installation. Zero local core quota permits one wait to reset per refusal
-  streak, within the driver's deadline, without spending its helper-failure budget.
-  This is evidence about the local App; the controller can use another identity.
-  Further refusals retain the failure budget until the controller makes progress.
-  Other refusals retain their existing failure budget.
-  A timeout, absent/malformed reply, unverified success or unknown write stops
-  immediately with `controller_recovery`; an open PR does not settle a
-  candidate/admission mutation. Before sending a mutating request, the driver
-  saves its exact scope and key in an owner-only request file beside its local
-  train lock. The stop event names that file and the key fingerprint, never the
-  raw key. The pending file survives process exit and prevents a restarted
-  driver from starting a fresh pass, including stack-finish passes. Keep it
-  until recovery completes; deleting it discards the reconciliation barrier.
-  To recover, rerun the same driver command with `--recover-controller`.
-  It reads the saved PR and runs a read-only controller pass, then replays the
-  saved mutating request with its original key. Read-only evidence alone does
-  not clear the pending request. Only an accepted replay clears it;
-  an unavailable read, lease refusal or denial keeps the file and stops.
-  When Launchplane accepted the pass but the helper cannot project its reply
-  (`controller_reply_unreadable`, with the helper's `projection_error_code`),
-  the pass happened, so the driver releases the request file and stops. Read
-  the PR and controller state for its effect, and compare the pinned reply
-  schema with Launchplane's before relying on that reply shape.
-  A verified PR landing is still reported as landed with unresolved controller
-  recovery attached, and recovery works after that PR has landed.
-  At the deadline, final read-back has one fixed 15-second grace window;
-  controller mutations and stack-finish observations keep the original deadline.
-  Once the tracked root lands, the driver makes no more mutating controller
-  calls. It first reads the tracked children; a completed stack needs no
-  controller observation. For unfinished children it observes dry-run passes
-  from the service's own controller, bounded by the existing finish-pass limit
-  and deadline. Only the same collapse ID and root can supply child evidence;
-  unrelated queue selection or unavailable observation stops finishing without
-  adopting that queue. The terminal `stack_finish` records completion, changed
-  selection, unavailable observation, pass limit or deadline. Confirmed root
-  landing remains `landed`; open or unknown children remain visible in `prs`.
-  The helper contract has no stack-bound post-landing mutation, so a matching
-  dry run never authorizes a generic mutating pass that can race queue changes.
-  Authentication and permission failures emit an `error` stop event.
+- **Retry Model**: Repeated controller calls are expected; Launchplane's
+  scheduled pass makes them. Wait by reading the PR with `babysit-pr --once`
+  or its train comment. A manual run-once pass is for diagnosis only. After a
+  timeout or unreadable reply from a mutating pass, read the PR and controller
+  state before any new mutation, and replay only with the original
+  idempotency key.
 - **Evidence**: For stack runs, report the stack-collapse plan record id, any
   batch candidate record id, the landing-plan record id, workflow run URLs, and
   the final root merge commit. Include child disposition evidence when the root
   lands.
-  The driver's terminal `prs` rows distinguish `landed`, `closed`, `open` and
-  `unknown`. A closed child is `superseded` only when the projected controller
-  disposition confirms it was closed after its root landed and its expected
-  head matches GitHub; `carried_by` retains that collapse, root and head evidence.
-  Only a verified GitHub merge supplies a child's `merge_commit_sha`; a carried
-  child's value stays empty. Failed reads keep prior verified terminal results,
-  while unavailable nonterminal members are `unknown`.
-  Candidate and landing-plan membership come from the service projection.
-  GitHub history can recover omitted companions sharing the target's exact
-  landing commit, regardless of their current enqueue labels. The terminal
-  `companion_inventory` reports whether that bounded history read completed;
-  a cap or unavailable read leaves companion coverage incomplete even when the
-  target's landing is verified.
 - **Batch Evidence**: For flat batch runs, report the dry-run/admission reason,
   candidate record id and candidate SHA, required-check status on the candidate
   commit, landing-plan record id, each landed PR number and merge commit, managed

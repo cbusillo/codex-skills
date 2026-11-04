@@ -72,7 +72,6 @@ class QuotaCacheTests(unittest.TestCase):
         self.assertEqual(self.execute('github.plan.index')[1], [1000])
         self.budget(24)
         self.assertEqual(self.execute('github.pr.view')[1], [1000])
-        self.assertEqual(self.execute('github.train.drive')[1], [1000])
         self.assertEqual(self.execute('github.plan.index', write=True)[1], [1000])
         self.assertEqual(self.execute('github.plan.index', repository='other/app')[1], [1000])
         result, calls = self.execute('github.plan.index')

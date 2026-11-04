@@ -32,7 +32,7 @@ import threading
 import time
 
 
-SERVICES = ("enqueue", "drive", "foreign", "throughput")
+SERVICES = ("foreign", "throughput")
 IDLE_SERVICES = ("idle-codex", "idle-claude")
 OPTIONAL_SERVICES = IDLE_SERVICES + ("inspection", "catalog",)
 LABEL_PREFIX = "com.codex-skills.supervisor"

@@ -528,8 +528,7 @@ Treat the checkout behind the active `skills` path as a runtime checkout: keep
 it clean, on `main`, and current with `origin/main`. Use linked task worktrees
 for skill development. After a skills PR lands, reconcile the runtime checkout
 with the landed repo-local GitHub helper before relying on installed skill
-behavior or provenance-sensitive evidence. A merge-train landing driven by
-`launchplane-train-drive.py` does this itself. To catch up a clean install that
+behavior or provenance-sensitive evidence. To catch up a clean install that
 has fallen behind, run its own copy:
 `uv run <runtime-checkout>/skills/github/scripts/reconcile-runtime-checkout.py --repo cbusillo/codex-skills`.
 
@@ -541,7 +540,7 @@ clients use the [existing resume helper](skills/supervisor/references/helpers.md
 Resume reopens a stopped session; it does not restart an active turn.
 
 The registered session-start hook also runs this catch-up for its bound catalog,
-so a landing without a local train driver is picked up on configured startup,
+so a landing is picked up on configured startup,
 resume, or clear events on either harness. The maintained declarations skip
 compaction; legacy matcher scope remains as configured. Manual unbound development
 invocations skip catch-up. Discovery and network reads are bounded to five seconds, reporting a
@@ -630,7 +629,7 @@ additional affected modules:
 | Area | Local modules |
 | --- | --- |
 | Command approval policy | `hooks/test_command_policy_hook.py`; command-policy simulator above |
-| Claims and ready handoffs | `skills/github/scripts/test_gh_plan_claim.py`, `test_github_plan_claim_log.py`, `test_ready_handoff.py`; `skills/supervisor/scripts/test_auto_enqueue.py` |
+| Claims and ready handoffs | `skills/github/scripts/test_gh_plan_claim.py`, `test_github_plan_claim_log.py`, `test_ready_handoff.py`, `test_client_handoff.py` |
 | Worktree creation and retirement | `skills/github/scripts/test_dev_worktree.py`, `test_git_task_worktree.py`, `test_landed_worktrees.py` |
 | Launchplane route authority | `skills/launchplane/scripts/test_launchplane_route_authority.py` |
 
