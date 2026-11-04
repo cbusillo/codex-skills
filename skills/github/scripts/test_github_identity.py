@@ -72,7 +72,7 @@ def next_prime(candidate: int) -> int:
     return candidate
 
 
-def test_private_key() -> str:
+def private_key() -> str:
     public_exponent = 65_537
     p = next_prime((1 << 287) + 0x123456789ABCDEF)
     q = next_prime((1 << 287) + 0xFEDCBA987654321)
@@ -190,7 +190,7 @@ class RedirectHandler(BaseHTTPRequestHandler):
 
 def app_environment(root: Path, api_url: str) -> dict[str, str]:
     key = root / "app.pem"
-    key.write_text(test_private_key(), encoding="utf-8")
+    key.write_text(private_key(), encoding="utf-8")
     key.chmod(0o600)
     return {
         "HOME": str(root),
@@ -646,27 +646,7 @@ def test_github_app_requires_explicit_api_url_for_enterprise_host() -> None:
 
 
 def main() -> None:
-    tests = [
-        test_local_env_file_precedence_matches_shell,
-        test_local_env_file_skips_homes_without_one,
-        test_per_tool_overrides_win_over_shared_identity,
-        test_unconfigured_identity_is_distinct_from_fallback,
-        test_local_require_automation_auth_overrides_process_fallback,
-        test_unquoted_multiword_values_are_ignored_like_invalid_shell_assignments,
-        test_shell_expansion_values_are_ignored_in_python_parser,
-        test_configured_bot_logins_support_quoted_space_separated_values,
-        test_github_app_token_is_minted_cached_and_refreshed,
-        test_github_app_token_follows_the_repository_installation,
-        test_write_identity_by_target_repository,
-        test_github_app_configuration_is_all_or_nothing,
-        test_github_app_private_key_rejects_group_or_world_access,
-        test_github_app_jwt_has_a_valid_pkcs1_signature,
-        test_github_app_api_url_rejects_non_loopback_http,
-        test_github_app_jwt_accepts_pkcs8_wrapped_key,
-        test_github_app_identity_request_does_not_follow_redirects,
-        test_github_app_check_verifies_current_installation_without_cache,
-        test_github_app_requires_explicit_api_url_for_enterprise_host,
-    ]
+    tests = [test for name, test in globals().items() if name.startswith("test_") and callable(test)]
     for test in tests:
         test()
         print(f"ok {test.__name__}")

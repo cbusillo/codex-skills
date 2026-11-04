@@ -12,13 +12,10 @@ import io
 import json
 import os
 import pathlib
-import shlex
 import sys
 import tempfile
 import threading
 import time
-import subprocess
-import urllib.parse
 from typing import Any
 from unittest.mock import Mock, patch
 
@@ -29,7 +26,6 @@ os.environ["GH_WITH_ENV_TOKEN_EXPECTED_LOGIN"] = "fixture-automation"
 
 import github_api
 import github_issue
-import github_plan_status
 from github_fixture_support import api_failure, api_success, with_call_stub
 
 
@@ -1486,56 +1482,12 @@ def test_generic_cli_state_changes_preserve_labels_and_related_issues() -> None:
     assert records[43] == related
 
 
-TESTS = [
-    test_generic_cli_state_changes_preserve_labels_and_related_issues,
-    test_create_preserves_fields_and_emits_operation_marker,
-    test_own_user_create_reports_success_without_duplicate_retry,
-    test_own_user_create_rejects_wrong_response_author,
-    test_own_user_sibling_writes_use_resolved_personal_actor,
-    test_create_unknown_outcome_requires_reconciliation_before_retry,
-    test_create_unknown_outcome_returns_unique_reconciled_issue,
-    test_create_reconciliation_survives_explicit_actor_fallback,
-    test_create_reconciliation_rejects_concurrent_identical_issue,
-    test_create_reconciliation_rejects_preexisting_identical_issue,
-    test_create_reconciliation_excludes_preexisting_same_second_issue,
-    test_unknown_retry_enabled_issue_create_fails_closed_after_no_match,
-    test_rejected_retry_enabled_issue_create_can_retry,
-    test_edit_uses_rest_membership_endpoints_and_reads_after_write,
-    test_edit_partial_failure_preserves_completed_steps_and_guidance,
-    test_direction_label_removal_preserves_current_routing_and_reports_read_failures,
-    test_edit_absent_label_removal_completes_requested_edit,
-    test_edit_retried_label_removal_confirms_unseen_success,
-    test_edit_label_removal_requires_readable_absence,
-    test_edit_label_removal_does_not_reconcile_denials_or_unrelated_404,
-    test_edit_failure_after_reconciled_removal_preserves_remaining_intent,
-    test_edit_first_mutation_failure_is_not_partial,
-    test_edit_failed_readback_preserves_confirmed_writes,
-    test_edit_malformed_readback_preserves_confirmed_writes,
-    test_edit_partial_failure_preserves_actor_recovery_guidance,
-    test_edit_rejects_cross_author_source_content_without_override,
-    test_edit_allows_explicit_cross_author_source_content_override,
-    test_metadata_only_edit_does_not_require_source_content_ownership,
-    test_edit_local_validation_preserves_prior_retry_summary,
-    test_close_partial_failure_preserves_comment_step,
-    test_reopen_comment_uses_non_idempotent_comment_retry_policy,
-    test_close_and_reopen_use_explicit_state_reasons,
-    test_duplicate_close_resolves_database_id,
-    test_invalid_duplicate_target_does_not_post_comment,
-    test_mutation_parsers_accept_self_contained_targets_without_repo_resolution,
-    test_close_reason_and_duplicate_target_are_mutually_exclusive,
-    test_state_and_edit_commands_return_with_open_idle_stdin,
-    test_explicit_comment_file_waits_for_slow_stdin_and_reads_paths,
-    test_edit_body_file_can_clear_the_body,
-    test_close_refuses_over_unanswered_outside_comment_before_any_write,
-    test_close_rejects_comment_with_comment_file,
-]
-
-
 def main() -> None:
-    for test in TESTS:
+    tests = [test for name, test in globals().items() if name.startswith("test_") and callable(test)]
+    for test in tests:
         test()
         print(f"ok {test.__name__}")
-    print(f"\nAll {len(TESTS)} tests passed.")
+    print(f"\nAll {len(tests)} tests passed.")
 
 
 if __name__ == "__main__":
