@@ -2866,6 +2866,40 @@ def test_explicit_whole_plan_wait_survives_prerequisites_of_held_children() -> N
         assert result["truncated"]
 
 
+def test_global_next_preserves_nested_waits_and_isolates_malformed_text_fields() -> None:
+    root = track("someone/direction", 1, "First")
+    parent = global_issue("someone/product", 10, wait_reviewed=False)
+    blocker = global_issue(parent["repo"], 11)
+    ready = global_issue(parent["repo"], 20)
+    edges = {(root["repo"], 1): relationships(sub_issues=[parent, ready]),
+             (parent["repo"], 10): relationships(blocked_by=[blocker])}
+    wait = load_module().github_plan_wait
+    for extra in ({"not_before": "2999-01-01"},
+                  {"release_product": "product", "release_commit": "a" * 40,
+                   "release_next_action": "Next agent: verify production"},
+                  {"ends_when": {"unexpected": "nested ending"}}):
+        record = wait.reviewed(evidence="Recorded hold on the whole plan.",
+                               waiting_for="Client holds all preparation", ends_when="Client releases the plan")
+        if "ends_when" in extra:
+            record["waits"][0].update(extra)
+        else:
+            record = wait.reviewed(evidence=record["evidence"], waiting_for=record["waits"][0]["waiting_for"],
+                                   ends_when=record["waits"][0]["ends_when"], **extra)
+        comments = {(parent["repo"], 10): [{"user": {"login": "someone"}, "body": wait.marker(record)}]}
+        current_edges = edges if "ends_when" not in extra else {(root["repo"], 1): relationships(sub_issues=[parent, ready])}
+        with global_fixture([root], [parent, blocker, ready], current_edges, comments=comments) as (module, result, _reads):
+            module.cmd_next(next_args())
+            assert 20 in [row["number"] for row in result["candidates"]], extra
+            observed = next(row for row in result["excluded"] if row["number"] == 10)
+            if "ends_when" in extra:
+                assert observed["exclusion"] == "wait_review_required", observed
+                assert observed["wait_review_required"], observed
+            else:
+                assert observed["exclusion"] == "waiting", observed
+                assert observed["structured_wait"] == record, observed
+                assert any(row["number"] == 11 and row["exclusion"] == "parent_waiting" for row in result["excluded"])
+
+
 def test_direct_blockers_preserve_legacy_and_explicit_whole_plan_holds() -> None:
     root = track("someone/direction", 1, "First")
     parent = global_issue("someone/product", 3, labels=["plan", "plan:waiting"],
