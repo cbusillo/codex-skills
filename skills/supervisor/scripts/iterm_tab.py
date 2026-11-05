@@ -2018,7 +2018,7 @@ def local_codex_native(launch: dict, native: dict) -> dict:
             or type(reservation.get("pid")) is not int):
         raise ValueError("local Codex registration needs its running GUI reservation")
     expected = {key: launch[key] for key in ("pid", "launch_pid", "launch_generation", "launch_started_at")
-                if key in launch and not launch.get("launch_identity_unavailable")}
+                if key in launch and launch.get("launch_pid") and not launch.get("launch_identity_unavailable")}
     source_launch_metadata(launch, {"provider": "openai", "env": {"CODEX_HOME": str(home)}})
     if (launch.get("launch_identity_unavailable") or launch.get("pid") != launch.get("launch_pid")
             or any(launch.get(key) != value for key, value in expected.items())):
@@ -2062,14 +2062,15 @@ def local_codex_native(launch: dict, native: dict) -> dict:
     identity = path.stat()
     if not stat.S_ISREG(identity.st_mode) or identity.st_ino != inode:
         raise ValueError("local Codex open transcript identity changed")
-    records = session_record.read_jsonl(path)
-    meta = records[0].get("payload", {}) if records and records[0].get("type") == "session_meta" else {}
+    with path.open(encoding="utf-8") as stream:
+        header = json.loads(stream.readline())
+    session_record.validate_record(header)
+    meta = header.get("payload", {}) if header.get("type") == "session_meta" else {}
     session = meta.get("id")
     if (session_liveness.native_uuid(session) != session or not session or meta.get("source") != "cli"
-            or meta.get("forked_from_id") or claim_history.inline_history(records)
+            or meta.get("forked_from_id")
             or datetime.fromisoformat(meta["timestamp"]) < started):
         raise ValueError("local Codex transcript lacks a fresh native root identity")
-    claim_history.root_records(path, "codex", session, records)
     current = path.stat()
     if ((current.st_dev, current.st_ino) != (identity.st_dev, identity.st_ino)
             or session_liveness.native_process_details(pid) != before

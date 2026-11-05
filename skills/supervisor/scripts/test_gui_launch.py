@@ -620,6 +620,10 @@ class LocalCodexRegistrationTests(unittest.TestCase):
             with self.subTest(backend=backend):
                 self.ledger.write_bytes(original)
                 result = {**self.launch, "backend": backend, "file_native": self.native}
+                if backend == "tmux":
+                    result["pid"] = 7
+                else:
+                    result.pop("pid")
                 asyncio.run(iterm_tab.register_fresh_launch(args, result, None))
                 registered = self.ledger.read_bytes()
                 asyncio.run(iterm_tab.register_fresh_launch(args, dict(result), None))
