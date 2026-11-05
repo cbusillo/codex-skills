@@ -3607,9 +3607,9 @@ def claim_once(args: argparse.Namespace) -> None:
                 if handoff_required:
                     handoff_error = github_plan_claim.ClaimProofError("claim_handoff_pr_required",
                         "Released work requires a qualified source-authored retained PR or exact unpublished local-source handoff. Scoped prerequisite evidence "
-                        "cannot clear product waits. For a genuinely resolved wait on released work without a PR, use an "
-                        "ordinary new-branch claim without --resume-from, or record its verified resolution with "
-                        "gh-plan.py wait --clear --evidence before resuming.")
+                        "cannot clear product waits. Restore the exact authored source proof before resuming retained work. "
+                        "For independent work without retained-source custody, use an ordinary new-branch claim "
+                        "without --resume-from or --wait-resolved.")
                     requirements = [recovery_requirement("retained_handoff", "released_source",
                                                         source_repo=issue_repo, source_number=source_number)]
                     if same_source_branch:

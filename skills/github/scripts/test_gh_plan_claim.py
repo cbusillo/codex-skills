@@ -4233,13 +4233,14 @@ class ClaimTests(unittest.TestCase):
         claim = self.emitted.call_args.args[0]["claim"]
         self.assertEqual(claim["retained_source_head"], self.inventory["branch_heads"][source["branch"]])
         self.assertEqual(claim["resume_from"], str(self.args.resume_from))
-        self.assertTrue(claim["retained_handoff"].endswith(f"#issuecomment-{self.comments[2]['id']}"))
+        handoff = next(c for c in before[1] if CLAIM.released_claim_id(c["body"]) == self.args.resume_from)
+        self.assertTrue(claim["retained_handoff"].endswith(f"#issuecomment-{handoff['id']}"))
         self.assertEqual(wait_record.current(self.issue, self.comments, {TEST_BOT}), self.wait)
         self.assertEqual(self.inventory, before[0])
         self.assertEqual(self.comments[:-1], before[1])
 
     def test_unscoped_clear_wait_resume_keeps_plain_claim_contract(self) -> None:
-        self.no_pr_resume_fixture()
+        self.local_handoff_fixture(clear=True)
         self.inventory["worktrees"] = []
         self.args.wait_resolved = None
         self.run_claim()
