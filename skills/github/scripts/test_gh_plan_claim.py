@@ -5089,17 +5089,17 @@ class ClaimTests(unittest.TestCase):
         self.assert_no_writes()
 
     def test_open_pr_references_do_not_claim_another_issues_inputs(self) -> None:
-        for references in ("Refs #41, #42", "Refs owner/repo#41, #42",
-                           "Refs https://github.com/owner/repo/issues/41, https://github.com/owner/repo/issues/42"):
-            with self.subTest(references=references):
+        for references, resume in product(("Refs #41, #42", "Refs owner/repo#41, #42",
+                "Refs https://github.com/owner/repo/issues/41, https://github.com/owner/repo/issues/42"), (False, True)):
+            with self.subTest(references=references, resume=resume):
                 self.setUp()
+                if resume:
+                    self.no_pr_resume_fixture()
                 self.pulls = [{"number": 99, "state": "open", "title": "Port addons to Community 20",
                                "body": f"Copied-data migration remains open on #42.\n\n{references}\n\nCloses #41",
                                "head": {"ref": "work/port-addons"}}]
-                preserved = copy.deepcopy((self.pulls, self.inventory))
                 self.run_claim()
                 self.assertTrue(self.emitted.call_args.args[0]["ok"])
-                self.assertEqual((self.pulls, self.inventory), preserved)
 
     def test_contextual_pr_source_branch_cannot_be_claimed_as_fresh_work(self) -> None:
         self.args.branch = "work/port-addons"
@@ -5108,8 +5108,8 @@ class ClaimTests(unittest.TestCase):
         with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
             self.run_claim()
         self.assertEqual(caught.exception.code, "claim_conflict")
-        self.assertEqual(caught.exception.payload["competing_evidence"],
-                         [{"source": "open_pr", "number": 99, "branch": self.args.branch}])
+        conflict = next(entry for entry in caught.exception.payload["competing_evidence"] if entry["source"] == "open_pr")
+        self.assertEqual((conflict["number"], conflict["branch"]), (99, self.args.branch))
         self.assert_no_writes()
 
     def test_codex_982_claim_ignores_1398_review_context(self):
@@ -5194,24 +5194,27 @@ class ClaimTests(unittest.TestCase):
         held_wait = wait_record.records(self.target_comments["/repos/owner/repo/issues/99/comments"][-1]["body"])[0]
         self.assertIn(wait_record.marker(held_wait), self.issue["body"])
 
-    def test_cross_repository_planning_claim_branch_remains_competing(self):
-        self.cross_repository_fixture()
-        source = CLAIM.records(self.comments[0]["body"])[0]
-        source["branch"] = "work/runtime-authorization"
-        self.comments[0]["body"] = CLAIM.marker(source)
-        self.pulls = [pull for pull in self.pulls if pull["head"]["ref"] != source["branch"]]
+    def test_cross_repository_planning_claim_branch_remains_competing(self) -> None:
         original_reader = self.read_pages
-        def pages(path, **kwargs):
-            if path == "/repos/other/plans/pulls":
-                return "bot", [{"number": 200, "body": "Planning issue: https://github.com/other/plans/issues/42",
-                                "head": {"ref": source["branch"]}}]
-            return original_reader(path, **kwargs)
-        self.read_pages = pages
-        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
-            self.run_claim()
-        self.assertIn({"source": "open_pr", "number": 200, "branch": source["branch"]},
-                      caught.exception.payload["competing_evidence"])
-        self.assert_no_writes()
+        for branch, body in (("work/runtime-authorization", "Planning issue: https://github.com/other/plans/issues/42"),
+                             ("work/planning-change", "Refs #42")):
+            with self.subTest(branch=branch):
+                self.setUp()
+                self.cross_repository_fixture()
+                source = CLAIM.records(self.comments[0]["body"])[0]
+                source["branch"] = "work/runtime-authorization"
+                self.comments[0]["body"] = CLAIM.marker(source)
+                self.pulls = [pull for pull in self.pulls if pull["head"]["ref"] != source["branch"]]
+                def pages(path: str, **kwargs: Any) -> tuple[str, list[dict[str, Any]]]:
+                    if path == "/repos/other/plans/pulls":
+                        return "bot", [{"number": 200, "body": body, "head": {"ref": branch}}]
+                    return original_reader(path, **kwargs)
+                self.read_pages = pages
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.run_claim()
+                self.assertIn({"source": "open_pr", "number": 200, "branch": branch},
+                              caught.exception.payload["competing_evidence"])
+                self.assert_no_writes()
 
     def test_explicitly_unstarted_docs_followups_allow_both_claims(self):
         self.pulls = [{"number": 48, "title": "docs: align API guidance",

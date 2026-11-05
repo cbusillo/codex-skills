@@ -1398,8 +1398,10 @@ by its timestamp-proved, exact source release. See the abandoned-claim section
 below for #1737's guarded recovery. Q219 does not change that release path.
 
 An issue URL or `Refs` list in a PR body is context alone for an independent
-issue claim. Title or branch ownership, implementation references (`Fixes`, `Closes`, `Resolves`, `Implements`,
-including full issue URLs), and a PR branch recorded in the issue's structured
+issue claim, including a released-source resume without retained PRs. A partial
+PR using only `Refs` protects its implementation through its recorded claim branch.
+Title or branch ownership, implementation references (`Fixes`, `Closes`,
+`Resolves`, `Implements`, including full issue URLs), and a PR branch recorded in the issue's structured
 claim still cause refusal. A fresh claim cannot reuse an open PR's source branch.
 Each issue in a comma- or `and`-separated list after
 an implementation keyword counts. Releasing a claim does not release its retained PR.

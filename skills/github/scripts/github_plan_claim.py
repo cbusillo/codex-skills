@@ -915,14 +915,14 @@ def artifact_evidence(
                                 or subject_pr is not None and tree["branch"] in (recorded_branches or set())):
             if not permitted(tree["branch"]) and tree["branch"] not in (ended_branches or set()):
                 conflicts.append({"source": "worktree", **tree, "certainty": "current_or_stale"})
-    retained_scope = bool(retained or retained_branches) or subject_pr is not None
+    retained_scope = bool(retained_branches or claim.get("retained_handoff")) or subject_pr is not None
     for pull in pulls:
         branch = (pull.get("head") or {}).get("ref", "")
         if pull["number"] == subject_pr or (is_train_batch(pull) and not permitted(branch)):
             continue
         if (pr_issue_reference(pull, number, repo=repo, local_references=local_references,
                                record_kind="pr" if subject_pr is not None else "issue",
-                               include_refs=retained_scope or pull.get("state") == "closed")
+                               include_refs=retained_scope)
                 or branch == claim["branch"]
                 or branch in (recorded_branches or set())
                 or (local_references and references_issue(branch, number))):
