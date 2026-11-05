@@ -1323,6 +1323,17 @@ through the planning helper and appends its brief verbatim under the header,
 normalizing CRLF line endings to LF for terminal transport. The header owns
 token, anchor, admission and rules; matching labels in the task are context only.
 Repeat both brief options in command-file order for a batch.
+For an already authorized ordinary retained-source prerequisite with `--brief-issue`,
+the standard header may also carry `Resume from: <exact-source-claim-comment-URL>` and
+`Wait resolution: <verified existing scoped authority and retained hold evidence>`.
+The launcher passes that evidence to `show --launch-check --wait-resolved` and
+adds both quoted source and evidence arguments to the worker's own claim
+instruction, alongside its coordinator argument. The worker verifies current
+source, holds and scoped authority first. Task prose supplies no evidence;
+the [claim contract](../../github/references/cli-reference.md#planning-claim)
+owns retained proof, wait preservation and the worker's fresh claim/readbacks.
+An unresolved Director or repository hold on the prerequisite itself still
+requires its actual resolution; never assert scoped authority to evade it.
 For a new milestone lead, the Supervisor adds `--ledger <shared-ledger>` and
 `--worker-cap <positive-count>`; registration saves `worker_cap` on its row.
 The lead launches workers with that same ledger, `--lead-session-id

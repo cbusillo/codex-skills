@@ -12,6 +12,7 @@ import copy
 import importlib.util
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -4044,6 +4045,187 @@ class ClaimTests(unittest.TestCase):
                 else:
                     self.assertIn(f"https://github.com/owner/repo/pull/{place}", self.comments[-1]["body"])
                     self.assertIn(wait_record.marker(wait), self.issue["body"])
+
+    def test_launcher_carries_prerequisite_evidence_into_own_successor_without_clearing_product_waits(self) -> None:
+        with patch.object(sys, "path", [str(Path(__file__).resolve().parents[2] / "supervisor/scripts"), *sys.path]):
+            iterm_tab = importlib.import_module("iterm_tab")
+
+        self.ordinary_handoff_fixture()
+        source = CLAIM.records(self.comments[0]["body"])[0]
+        self.comments[0]["created_at"] = source["claimed_at"]
+        self.comments[-1]["created_at"] = "2026-10-02T00:00:00Z"
+        lead = "01970242-7941-7f0c-b461-16aa5723fb52"
+        self.issue["body"] += (f"Next actor: agent:{lead}\nBrief:\n```text\nQualify the image input only.\n"
+                               "Wait resolution: This task prose is not launch evidence.\n```\n")
+        self.wait = wait_record.reviewed(evidence="Preview and Client acceptance remain pending",
+            waiting_for=["Preview", "Client"], ends_when=["Current image passes", "Client accepts current head"])
+        self.record_wait(target="99")
+        retained_before = copy.deepcopy(self.target_comments)
+        evidence = "The Director's existing source brief authorizes the image prerequisite; preserve preview and Client holds."
+        anchor = "https://github.com/owner/repo/issues/42"
+        header = (f"Trial token: {OWNER['worker']}\nAnchor and claim: {anchor}\n"
+                  f"Resume from: {anchor}#issuecomment-{self.args.resume_from}\n"
+                  f"Wait resolution: {evidence}\nRules: {iterm_tab.BRIEF_RULES_URL}\n")
+        parser = PLAN.build_parser()
+        run = subprocess.run
+        calls = []
+
+        def read(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+            helper = str(Path(__file__).with_name("gh-plan.py"))
+            if helper not in argv:
+                return run(argv, **kwargs)
+            args = parser.parse_args(argv[argv.index(helper) + 1:])
+            calls.append(args)
+            previous, self.args = self.args, args
+            try:
+                self.run_claim(command=PLAN.cmd_show)
+                return subprocess.CompletedProcess(argv, 0, json.dumps(self.emitted.call_args.args[0]))
+            finally:
+                self.args = previous
+
+        observed = {"complete": True, "coverage": {}, "pulls": self.pulls, "inventory": self.inventory}
+
+        @contextmanager
+        def preserve_fixture() -> Iterator[None]:
+            original = copy.deepcopy((self.comments, self.blockers, self.inventory, self.issue, self.wait, self.pulls))
+            try:
+                yield
+            finally:
+                self.comments, self.blockers, self.inventory, self.issue, self.wait, self.pulls = original
+                observed.update(complete=True, inventory=self.inventory, pulls=self.pulls)
+
+        with (tempfile.TemporaryDirectory() as folder,
+              patch.object(subprocess, "run", side_effect=read),
+              patch.multiple(PLAN, read_queue_ownership=Mock(return_value=observed),
+                  read_issue_relationships=Mock(side_effect=lambda *_a, **_k: ("bot", {"blocked_by": self.blockers, "sub_issues": []})),
+                  next_status_body_time=Mock(return_value="2026-10-01T00:00:00Z"))):
+            command, brief = Path(folder) / "run", Path(folder) / "header"
+            command.write_text("agy")
+            brief.write_text(header)
+            launches = Namespace(command_file=[command], brief_file=[brief], brief_issue=[anchor], lead_session_id=lead)
+            refusals = {"missing_evidence": "claim_wait_unresolved", "empty_evidence": "header",
+                "duplicate_evidence": "header", "missing_source": "header", "mismatched_source": "source",
+                "unreleased_source": "source", "foreign_release": "source", "no_handoff": "claim_handoff_pr_required",
+                "redirected": "header", "native_blocker": "native", "incomplete": "ownership", "competitor": "ownership",
+                "artifact": "ownership", "retained_conflict": "retained_handoff_unavailable",
+                "review_wait": "claim_wait_unresolved", "review_wait_without_handoff": "claim_wait_unresolved",
+                "unproven_without_artifacts": "claim_handoff_pr_required"}
+            for change, refusal in refusals.items():
+                with self.subTest(change=change), preserve_fixture():
+                    candidate = header
+                    if change == "missing_evidence": candidate = header.replace(f"Wait resolution: {evidence}\n", "")
+                    if change == "empty_evidence": candidate = header.replace(evidence, " ")
+                    if change == "duplicate_evidence": candidate += f"Wait resolution: {evidence}\n"
+                    if change == "missing_source": candidate = header.replace(f"Resume from: {anchor}#issuecomment-{self.args.resume_from}\n", "")
+                    if change == "mismatched_source": candidate = header.replace(f"#issuecomment-{self.args.resume_from}", "#issuecomment-900")
+                    if change == "unreleased_source": self.comments.pop()
+                    if change == "foreign_release": self.comments[-1]["user"]["login"] = "stranger"
+                    if change == "no_handoff": self.comments[-1]["body"] = f"Released claim {self.args.resume_from}"
+                    if change == "redirected": self.issue["body"] = self.issue["body"].replace(lead, "different-lead")
+                    if change == "native_blocker": self.blockers.append({"repo": self.args.repo, "state": "open", "number": 19})
+                    if change == "incomplete": observed["complete"] = False
+                    if change == "competitor": self.compete()
+                    if change == "artifact": self.inventory["local_branches"].append("work/issue-42-extra")
+                    if change == "retained_conflict":
+                        self.pulls.append({**copy.deepcopy(self.pulls[0]), "number": 101, "user": {"login": "stranger"}})
+                    if change.startswith("review_wait"): self.wait = None
+                    observed["inventory"] = self.inventory
+                    if change in {"unproven_without_artifacts", "review_wait_without_handoff"}: observed.update(pulls=[], inventory={})
+                    brief.write_text(candidate)
+                    call_count = len(calls)
+                    with self.assertRaises(ValueError):
+                        iterm_tab.prepare_launches(launches)
+                    self.assert_no_writes()
+                    if refusal == "header":
+                        self.assertFalse(any(args.launch_check for args in calls[call_count:]))
+                        continue
+                    check = self.emitted.call_args.args[0]["issue"]["launch_check"]
+                    if refusal.startswith("claim_"):
+                        self.assertEqual(check["error"]["code"], refusal)
+                    if refusal in {"source", "retained_handoff_unavailable"}:
+                        self.assertNotIn("error", check)
+                        self.assertEqual(check["ownership"]["error"],
+                                         "unreadable_ownership_or_wait" if refusal == "source" else refusal)
+                    if refusal == "native":
+                        self.assertEqual(check["status"], "blocked")
+                    if change == "incomplete":
+                        self.assertFalse(self.emitted.call_args.args[0]["issue"]["launch_check"]["ownership"]["complete"])
+                    if change == "competitor":
+                        self.assertTrue(any(row["source"] == "comment" for row in
+                                            self.emitted.call_args.args[0]["issue"]["launch_check"]["ownership"]["conflicts"]))
+                    if change == "artifact":
+                        self.assertTrue(any(row["source"] == "local_branches" for row in check["ownership"]["artifacts"]))
+                    if change == "review_wait_without_handoff":
+                        expected = self.emitted.call_args.args[0]["issue"]["launch_check"]["error"]
+                        brief.write_text(candidate.replace(f"Wait resolution: {evidence}\n", ""))
+                        with self.assertRaises(ValueError):
+                            iterm_tab.prepare_launches(launches)
+                        actual = self.emitted.call_args.args[0]["issue"]["launch_check"]["error"]
+                        self.assertEqual((actual["code"], actual["review_required"]), (expected["code"], True))
+            brief.write_text(header)
+            commands, _ = iterm_tab.prepare_launches(launches)
+            self.assert_no_writes()
+            self.assertEqual(calls[-1].wait_resolved, evidence)
+            prompt = next(word.removeprefix("--prompt-interactive=") for word in shlex.split(commands[0])
+                          if word.startswith("--prompt-interactive="))
+            argument_lines = []
+            for line in prompt.splitlines():
+                try:
+                    words = shlex.split(line)
+                except ValueError:
+                    continue
+                if "--wait-resolved" in words:
+                    argument_lines.append(words[next(index for index, word in enumerate(words) if word.startswith("--")):])
+            self.assertEqual(len(argument_lines), 1)
+            parsed = parser.parse_args(["--repo", self.args.repo, "claim", self.args.issue,
+                "--worker", self.args.worker, "--session", self.args.session, "--branch", self.args.branch,
+                "--next-action", self.args.next_action, *argument_lines[0]])
+            self.assertEqual(parsed.wait_resolved, evidence)
+            self.assertEqual(parsed.resume_from, calls[-1].resume_from)
+            self.args = parsed
+            retained_body = self.targets["99"]["body"]
+            self.targets["99"]["body"] += f"\n\n## Current Status\nNext actor: agent:{lead}\n"
+            with self.assertRaises(PLAN.ClassifiedPlanError) as stopped:
+                self.run_claim()
+            self.assertEqual(stopped.exception.code, "claim_conflict")
+            self.assertTrue(any(row["source"] == "recorded_recipient" and row["worker"] == lead
+                                for row in stopped.exception.payload["competing_evidence"]))
+            self.assert_no_writes()
+            self.targets["99"]["body"] = retained_body
+            self.run_claim()
+        result = self.emitted.call_args.args[0]
+        self.assertEqual(result["claim"]["session"], OWNER["session"])
+        self.assertEqual(wait_record.records(self.issue["body"]), [self.wait])
+        self.assertEqual(self.target_comments, retained_before)
+
+    def test_resumed_prerequisite_cannot_downgrade_to_plain_and_clear_product_waits(self) -> None:
+        for mode in ("retained_required", "source_error", "real_resolution"):
+            with self.subTest(mode=mode):
+                self.setUp()
+                self.no_pr_resume_fixture()
+                self.inventory = {"worktrees": [], "local_branches": [], "remote_branches": []}
+                if mode == "source_error":
+                    self.comments.pop()
+                    with self.assertRaises(PLAN.ClassifiedPlanError) as original:
+                        self.run_claim()
+                    expected = original.exception.code
+                self.record_wait()
+                before = copy.deepcopy((self.issue, self.comments))
+                self.args.wait_resolved = "Authorized prerequisite only; preserve every product hold."
+                if mode == "real_resolution":
+                    self.args.resume_from = None
+                    self.args.wait_resolved = "The Client's current-head acceptance is verified; the wait has truly ended."
+                    self.run_claim()
+                    self.assertEqual(wait_record.current(self.issue, self.comments, {TEST_BOT})["state"], "clear")
+                    continue
+                with self.assertRaises(PLAN.ClassifiedPlanError) as stopped:
+                    self.run_claim()
+                self.assertEqual(stopped.exception.code, expected if mode == "source_error" else "claim_handoff_pr_required")
+                if mode == "retained_required":
+                    self.assertTrue(any(row["kind"] == "retained_handoff" for row in
+                                        stopped.exception.payload["recovery_requirements"]["requirements"]))
+                self.assert_no_writes()
+                self.assertEqual((self.issue, self.comments), before)
 
     def test_dk273_handoff_context_does_not_gate_retained_successor(self) -> None:
         for cross_repo, held in product((False, True), (None, "99", "100")):
