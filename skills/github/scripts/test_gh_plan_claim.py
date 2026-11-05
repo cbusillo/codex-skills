@@ -4313,7 +4313,7 @@ class ClaimTests(unittest.TestCase):
                 return subprocess.CompletedProcess(argv, 0, json.dumps(self.emitted.call_args.args[0]))
             finally:
                 self.args = previous
-        observed = {"complete": True, "coverage": {}, "pulls": self.pulls, "inventory": self.inventory}
+        observed: dict[str, Any] = {"complete": True, "coverage": {}, "pulls": self.pulls, "inventory": self.inventory}
         with (tempfile.TemporaryDirectory() as folder, patch.object(subprocess, "run", side_effect=read),
               patch.multiple(PLAN, read_queue_ownership=Mock(return_value=observed),
                 read_issue_relationships=Mock(side_effect=lambda *_a, **_k: ("bot", {"blocked_by": self.blockers, "sub_issues": []})),

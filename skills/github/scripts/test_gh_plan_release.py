@@ -2249,7 +2249,7 @@ class OwnReleaseTests(ReleaseHarness):
                 if changed:
                     self.f.comments[2]["body"] = self.f.comments[2]["body"].replace(head, "b" * 40)
                 before = copy.deepcopy(self.f.inventory)
-                with patch.object(CLAIM, "local_inventory", side_effect=ValueError("Run claim from its repository")):
+                with patch.object(github_plan_claim, "local_inventory", side_effect=ValueError("Run claim from its repository")):
                     if changed:
                         with self.assertRaises(PLAN.ClassifiedPlanError) as stopped:
                             self.run_own_release()

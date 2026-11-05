@@ -3006,7 +3006,7 @@ def claim_once(args: argparse.Namespace) -> None:
     handoff_id = None
     retained_mode = False
     preserve_waits = bool(args.resume_from and args.wait_resolved)
-    selection = None
+    selection: dict[str, Any] | None = None
     claim["claimed_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
     completed: list[str] = []
     claim_comment: dict[str, Any] = {}
@@ -3497,8 +3497,7 @@ def claim_once(args: argparse.Namespace) -> None:
                     for context in github_plan_release._released_source_contexts(source_comments))):
                 release_identity = "canonical-native-release"
             projection = (issue_repo.casefold(), source_number, source["comment"]["id"],
-                          source["author"], source["record"], release_identity,
-                          source["exact_release"]["id"] if source.get("exact_release") else None)
+                          source["author"], source["record"], release_identity)
             if selection is not None and projection != selection["source"]:
                 raise github_plan_claim.ClaimProofError("claim_resume_source_changed",
                     "Selected released source changed during claim readback")
