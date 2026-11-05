@@ -13,6 +13,7 @@ import json
 import math
 import os
 import random
+import re
 import stat
 import subprocess
 import sys
@@ -640,10 +641,12 @@ def claims_on(reader, github_read, records: list[tuple[str, int]], branches: set
                                      step_prefix="landed_claim_discussion")
         comments = github_plan_release.verified_comments(comments, release_evidence)
         released = {source["claim_id"] for source in github_plan_claim.ended_ownership(comments, NO_WORKTREES)}
-        conflicts, _ = github_plan_claim.discussion_evidence((issue or {}).get("body") or "", comments, ANY_CLAIM,
+        body = (issue or {}).get("body") or ""
+        names_branch = any(re.search(rf"(?<![\w./-]){re.escape(branch)}(?![\w./-])", body) for branch in branches)
+        conflicts, _ = github_plan_claim.discussion_evidence(body, comments, ANY_CLAIM,
                                                              ended_claims=released)
         found += [json.dumps(c["record"]) if "record" in c else c.get("text", "") for c in conflicts
-                  if not isinstance(c.get("record"), dict)
+                  if names_branch or not isinstance(c.get("record"), dict)
                   or not isinstance(c["record"].get("branch"), str) or c["record"]["branch"] in branches]
     return "\n".join(found)
 

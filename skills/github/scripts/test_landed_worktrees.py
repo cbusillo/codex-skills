@@ -974,6 +974,24 @@ class MainTests(Fixture):
         self.assertEqual({r["path"]: r["decision"] for r in result["worktrees"]}[str(refresh)], "retired")
         self.assertIn(mock.call(str(refresh), dry_run=False), run.call_args_list)
 
+    def test_continuing_record_keeps_its_named_branch_only_while_claimed(self):
+        target = self.settled_worktree("continuing")
+        branch = "work/continuing"
+        search = {"total_count": 1, "incomplete_results": False, "items": [
+            {"repository_url": "https://api.github.com/repos/o/programme", "number": 3}]}
+        for released, association, kept in ((False, branch, True), (True, branch, False),
+                                             (False, branch + "-other", False),
+                                             (False, branch + "/child", False), (False, "", False)):
+            with self.subTest(released=released, association=association):
+                ownership = self.claimed_source(released=released, branch="work/programme")
+                ownership["bodies"]["3"] += f"\nContinuing artifact custody: `{association}`.\n"
+                code, result, run = self.run_main(None, branch=branch, search=search, **ownership)
+                self.assertEqual(code, 0)
+                self.assertIn(mock.call("repos/o/programme/issues/3", step="landed_claim_record"),
+                              self.reader.get_json.call_args_list)
+                self.assertEqual(result["worktrees"][0]["decision"], "kept" if kept else "retired")
+                self.assertEqual(mock.call(str(target), dry_run=False) in run.call_args_list, not kept)
+
     def test_fast_forward_landing_keeps_worktrees_on_its_commits(self):
         refresh, pull, commits = self.merged_refresh()
         code, result, run = self.run_main({**pull, "merge_commit_sha": commits[-1]}, commits=commits)
