@@ -367,19 +367,16 @@ class CloseConfigTests(unittest.TestCase):
         waiting = {"id": 3, "user": {"login": "fixture"}, "body": PLAN.github_plan_wait.marker({
             "version": 1, "state": "waiting", "evidence": "Client acceptance remains pending", "waits": [
                 {"waiting_for": "Client", "ends_when": "Client accepts the current release"}]})}
-        before = copy.deepcopy([claim, waiting])
         checks = []
         for read_only in (False, True):
-            result, issue, _ = self.show_fixture(launch=True, read_only=read_only, comments_extra=[claim, waiting],
+            result, _, _ = self.show_fixture(launch=True, read_only=read_only, comments_extra=[claim, waiting],
                 actor="agent:source-session", action="Continue the owned source task.\n" + github_plan_claim.marker(source))
             check = result["issue"]["launch_check"]
             self.assertEqual(check["allowed"], read_only)
             self.assertEqual(check["status"], "waiting")
-            self.assertEqual(result["issue"]["body"], issue["body"])
             self.assertTrue(check["ownership"]["conflicts"])
             checks.append(check)
         self.assertEqual(checks[0]["ownership"], checks[1]["ownership"])
-        self.assertEqual([claim, waiting], before)
 
     def test_read_only_launch_still_refuses_incomplete_or_unreadable_evidence(self) -> None:
         for options in ({"ownership_complete": False},

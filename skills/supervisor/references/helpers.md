@@ -1489,8 +1489,8 @@ For read-only work that answers a wait, use `Read-only anchor: <issue URL>`;
 that worker must not claim or implement the held work. Ownership evidence is
 still returned, but a live claim, wait, named recipient or static artifact does
 not block the read. Incomplete or unreadable evidence still refuses. The same
-issue cannot also be an execution anchor, and a read-only brief carries no
-`Resume from:` or `Wait resolution:` execution fields. A later execution claim
+issue cannot also be an execution anchor. A brief whose only anchors are
+read-only carries no `Resume from:` or `Wait resolution:` execution fields. A later execution claim
 keeps every custody and wait check; this route grants no ownership or effects.
 A retained-delivery
 successor adds `Resume from: <source claim comment ID or URL>` on its own line. The

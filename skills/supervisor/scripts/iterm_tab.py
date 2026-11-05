@@ -1427,15 +1427,16 @@ def check_launch_issue(brief: str, *, dispatch_recipient: str | None = None, dis
         except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError) as error:
             raise ValueError(f"Launch state unavailable for {anchor}; read its full status before dispatch") from error
         if not check.get("allowed"):
-            if mode.casefold() == "read-only anchor":
-                raise ValueError(f"Read-only launch state unavailable for {anchor}; read its full status before dispatch")
             error = check.get("error") or payload.get("error") or {}
             if error:
                 raise ValueError(f"Launch refused for {anchor}: {error.get('code', 'claim_preflight')}: "
                                  f"{error.get('message', error)}")
             facts = check.get("ownership") or {}
-            evidence = (facts.get("detail") or facts.get("conflicts") or facts.get("artifacts") or facts.get("recipients")
-                        or check.get("resume_source") or facts.get("error") or check.get("status"))
+            evidence = (facts.get("detail") or facts.get("error") or (payload["issue"].get("derived") or {}).get("error")
+                        or facts.get("conflicts") or facts.get("artifacts") or facts.get("recipients")
+                        or check.get("resume_source") or check.get("status"))
+            if mode.casefold() == "read-only anchor":
+                raise ValueError(f"Read-only launch state unavailable for {anchor}: {evidence}; read its full status before dispatch")
             raise ValueError(f"Launch refused for {anchor}: {check.get('status', 'unknown')}, "
                              f"{evidence}; dispatch only after the relevant fact changes. "
                              f"For review/legacy waits, read gh-plan.py --repo {repo} wait {anchor}; "
