@@ -1354,8 +1354,10 @@ def read_issue_brief(issue: str, header: str, lead_session_id: str | None = None
             raise ValueError("Wait resolution needs its exact Resume from source claim")
         claim_arguments.extend(["--resume-from", source, "--wait-resolved", wait_resolved])
     if claim_arguments:
-        header = (header.rstrip("\n") + "\nVerify the current source, every hold and the scoped evidence before your own-identity "
-                  "gh-plan.py claim. Pass these arguments together:\n" + shlex.join(claim_arguments) + "\n")
+        instruction = ("Verify the current source, every hold and the scoped evidence before your own-identity "
+                       "gh-plan.py claim. Pass these arguments together:" if wait_resolved
+                       else "For this issue's gh-plan.py claim, pass:")
+        header = header.rstrip("\n") + f"\n{instruction}\n" + shlex.join(claim_arguments) + "\n"
     return header.rstrip("\n") + "\n\n" + brief
 
 

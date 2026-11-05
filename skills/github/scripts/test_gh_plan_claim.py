@@ -4087,11 +4087,11 @@ class ClaimTests(unittest.TestCase):
 
         @contextmanager
         def preserve_fixture() -> Iterator[None]:
-            original = copy.deepcopy((self.comments, self.blockers, self.inventory, self.issue, self.wait))
+            original = copy.deepcopy((self.comments, self.blockers, self.inventory, self.issue, self.wait, self.pulls))
             try:
                 yield
             finally:
-                self.comments, self.blockers, self.inventory, self.issue, self.wait = original
+                self.comments, self.blockers, self.inventory, self.issue, self.wait, self.pulls = original
                 observed.update(complete=True, inventory=self.inventory, pulls=self.pulls)
 
         with (tempfile.TemporaryDirectory() as folder,
@@ -4103,14 +4103,13 @@ class ClaimTests(unittest.TestCase):
             command.write_text("agy")
             brief.write_text(header)
             launches = Namespace(command_file=[command], brief_file=[brief], brief_issue=[anchor], lead_session_id=lead)
-            refusals = {"missing_evidence": "claim_wait_unresolved", "empty_evidence": "one nonempty Wait resolution",
-                "duplicate_evidence": "one nonempty Wait resolution", "missing_source": "Wait resolution needs",
-                "mismatched_source": "verified retained-source handoff", "unreleased_source": "verified retained-source handoff",
-                "foreign_release": "verified retained-source handoff", "no_handoff": "verified retained-source handoff",
-                "redirected": "needs Next actor", "native_blocker": "Launch refused.*blocked",
-                "incomplete": "Launch refused", "competitor": "Launch refused", "artifact": "local_branches",
+            refusals = {"missing_evidence": "claim_wait_unresolved", "empty_evidence": "header",
+                "duplicate_evidence": "header", "missing_source": "header", "mismatched_source": "source",
+                "unreleased_source": "source", "foreign_release": "source", "no_handoff": "claim_handoff_pr_required",
+                "redirected": "header", "native_blocker": "native", "incomplete": "ownership", "competitor": "ownership",
+                "artifact": "ownership", "retained_conflict": "retained_handoff_unavailable",
                 "review_wait": "claim_wait_unresolved", "review_wait_without_handoff": "claim_wait_unresolved",
-                "unproven_without_artifacts": "verified retained-source handoff"}
+                "unproven_without_artifacts": "claim_handoff_pr_required"}
             for change, refusal in refusals.items():
                 with self.subTest(change=change), preserve_fixture():
                     candidate = header
@@ -4127,22 +4126,39 @@ class ClaimTests(unittest.TestCase):
                     if change == "incomplete": observed["complete"] = False
                     if change == "competitor": self.compete()
                     if change == "artifact": self.inventory["local_branches"].append("work/issue-42-extra")
+                    if change == "retained_conflict":
+                        self.pulls.append({**copy.deepcopy(self.pulls[0]), "number": 101, "user": {"login": "stranger"}})
                     if change.startswith("review_wait"): self.wait = None
                     observed["inventory"] = self.inventory
                     if change in {"unproven_without_artifacts", "review_wait_without_handoff"}: observed.update(pulls=[], inventory={})
                     brief.write_text(candidate)
-                    with self.assertRaisesRegex(ValueError, refusal):
+                    call_count = len(calls)
+                    with self.assertRaises(ValueError):
                         iterm_tab.prepare_launches(launches)
                     self.assert_no_writes()
+                    if refusal == "header":
+                        self.assertFalse(any(args.launch_check for args in calls[call_count:]))
+                        continue
+                    check = self.emitted.call_args.args[0]["issue"]["launch_check"]
+                    if refusal.startswith("claim_"):
+                        self.assertEqual(check["error"]["code"], refusal)
+                    if refusal in {"source", "retained_handoff_unavailable"}:
+                        self.assertNotIn("error", check)
+                        self.assertEqual(check["ownership"]["error"],
+                                         "unreadable_ownership_or_wait" if refusal == "source" else refusal)
+                    if refusal == "native":
+                        self.assertEqual(check["status"], "blocked")
                     if change == "incomplete":
                         self.assertFalse(self.emitted.call_args.args[0]["issue"]["launch_check"]["ownership"]["complete"])
                     if change == "competitor":
                         self.assertTrue(any(row["source"] == "comment" for row in
                                             self.emitted.call_args.args[0]["issue"]["launch_check"]["ownership"]["conflicts"]))
+                    if change == "artifact":
+                        self.assertTrue(any(row["source"] == "local_branches" for row in check["ownership"]["artifacts"]))
                     if change == "review_wait_without_handoff":
                         expected = self.emitted.call_args.args[0]["issue"]["launch_check"]["error"]
                         brief.write_text(candidate.replace(f"Wait resolution: {evidence}\n", ""))
-                        with self.assertRaisesRegex(ValueError, expected["code"]):
+                        with self.assertRaises(ValueError):
                             iterm_tab.prepare_launches(launches)
                         actual = self.emitted.call_args.args[0]["issue"]["launch_check"]["error"]
                         self.assertEqual((actual["code"], actual["review_required"]), (expected["code"], True))

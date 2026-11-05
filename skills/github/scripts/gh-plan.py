@@ -2155,8 +2155,8 @@ def cmd_show(args: argparse.Namespace) -> None:
                 validate_wait_resolution(args.wait_resolved, issue["repo"])
                 check_claim_wait({**issue, "claim_wait": wait}, claim_current_status(issue, read_plan_sections(issue)[0], comments), config,
                                  wait_resolved=args.wait_resolved if wait["state"] != "review" else None)
-                if args.wait_resolved and not facts.get("retained_handoff"):
-                    raise PlanError("Launch wait evidence needs a verified retained-source handoff")
+                if args.wait_resolved and not facts.get("retained_handoff") and not facts.get("error"):
+                    raise ClassifiedPlanError("claim_handoff_pr_required", "Launch wait evidence needs a verified retained-source handoff")
                 admission, admission_links, _ = claim_admission_options(args)
                 if admission == "milestone":
                     track = milestone_claim_track(issue, admission_links)
