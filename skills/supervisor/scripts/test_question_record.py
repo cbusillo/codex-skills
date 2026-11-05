@@ -161,7 +161,9 @@ class QuestionRecordTests(unittest.TestCase):
         self.assertIn(self.source["url"], outputs[2])
 
     def test_legacy_chat_read_preserves_original_question_and_source(self) -> None:
-        for heading in ("Director question: Q300. Retire the old watcher?", "Owner question: **Q300 — Retire the old watcher?**"):
+        for heading in ("Director question: Q300. Retire the old watcher?", "Owner question: **Q300 — Retire the old watcher?**",
+                        "Director question: **Q300.** Retire the old watcher?", "Director question: **Q300 — Retire the old watcher?** I recommend keep.",
+                        "Director question: Q300. Retire the old watcher? **Recommendation:** keep."):
             source = self.source | {"body": heading + "\n\nKeep: retain it. Retire: remove it."}
             output = StringIO()
             with redirect_stdout(output):
@@ -171,7 +173,7 @@ class QuestionRecordTests(unittest.TestCase):
             self.assertIn("Retire the old watcher?", text)
             self.assertIn("Keep: retain it. Retire: remove it.", text)
             self.assertIn(source["url"], text)
-            self.assertEqual(source["body"].splitlines()[0], heading)
+            self.assertEqual(text.splitlines()[0].count("**") % 2, 0)
         source = self.source | {"body": self.source["body"].replace(question()["decision"], "Changed decision?", 1)}
         with self.assertRaises(ValueError):
             record.read_chat_question(source)

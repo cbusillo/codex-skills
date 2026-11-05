@@ -321,7 +321,7 @@ decision record. A script's match does not itself establish what was decided.
 `scripts/q_number_guard.py hook` is a Claude Code Stop hook enforcing the
 [shared question guidance](../../references/talking-with-the-director.md#director-questions).
 It blocks once when a Director question does not match the helper's full printed
-text in the local transcript. It makes no network read.
+text in the local transcript.
 `stop_hook_active` lets the retry through.
 Quoted text, code and links are ignored, as is a question the reply answers in
 place ("Merged yet? No, CI is running."), so a status report that quotes an old

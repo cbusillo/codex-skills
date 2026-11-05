@@ -303,8 +303,9 @@ def read_chat_question(source: dict[str, Any]) -> dict[str, Any]:
     if not number:
         raise ValueError("source is not a numbered Director question")
     body = github_comment.canonical_comment_body(source["body"])
-    first, separator, rest = body[body.index(number) :].partition("\n")
-    return {"text": f"**{first.rstrip('*')}**{separator}{rest}", "url": source["url"]}
+    position = body.index(number)
+    text = "**" + body[position:] if body[:position].endswith("**") else f"**{number}**{body[position + len(number) :]}"
+    return {"text": text, "url": source["url"]}
 
 
 def main(argv: list[str], fetch: DiscussionReader) -> int:

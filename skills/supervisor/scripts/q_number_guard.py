@@ -17,9 +17,9 @@ from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import TextIO
 
-NUMBERED = re.compile(r"^\*\*Q[0-9]+[. —–-]", re.MULTILINE)
+NUMBERED = re.compile(r"\*\*(Q[0-9]+)\b")
 QUOTED = re.compile(r'(?s:```.*?```)|`[^`\n]*`|^[ \t]*>.*$|"[^"\n]*"|“[^”\n]*”|‘[^’\n]*’|https?://\S+', re.MULTILINE)
-SENTENCE = re.compile(r"[^.!?:;\n]*[?]")
+SENTENCE = re.compile(rf"{NUMBERED.pattern}[^?\n]*[?]|[^.!?:;\n]*[?]")
 ADDRESSED = re.compile(
     r"\b(you|your|chris|director|ok|okay|sound good|any objections?)\b"
     r"|^\W*(should|shall|may|can|could|do|does|want|ok|okay|approve|which|go ahead|proceed|merge|land)\b",
@@ -30,8 +30,9 @@ QUESTION_COMMAND = re.compile(r"(?:^|[\s/])oq\.py['\"]?\s+(?:create|update|show-
 
 
 def asks_director(text: str) -> bool:
-    return bool(NUMBERED.search(text)) or any(
-        ADDRESSED.search(match[0].strip(" \t*_-")) and not ANSWERED.match(text, match.end()) for match in SENTENCE.finditer(text)
+    return any(
+        (NUMBERED.search(match[0]) or ADDRESSED.search(match[0].strip(" \t*_-"))) and not ANSWERED.match(text, match.end())
+        for match in SENTENCE.finditer(text)
     )
 
 
@@ -115,8 +116,8 @@ def transcript_context(payload: Mapping) -> tuple[str | None, tuple[str, ...]]:
             if not isinstance(output, str):
                 continue
             question = output.split("\nRegistration:", 1)[0].strip()
-            if NUMBERED.match(question):
-                printed[question.split(" ", 1)[0]] = question
+            if number := NUMBERED.match(question):
+                printed[number[1]] = question
     return last_text, tuple(printed.values())
 
 

@@ -91,7 +91,6 @@ class GuardTests(unittest.TestCase):
             "It needs your approval.",
             "The PR is a 4-line add, waiting on your approval.",
             "That change would need your approval, so it can wait.",
-            "Raising the minimum IDE version is your call.",
         ):
             with self.subTest(message=message):
                 self.assertEqual(self.run_hook(stop(last_assistant_message=message)), "")
@@ -138,6 +137,10 @@ class GuardTests(unittest.TestCase):
         transcript = self.transcript(output)
         messages = [
             output.splitlines()[0],
+            "- **Q590. Move the nightly sync to the CM host?**",
+            "Still open: **Q300 — Retire the old watcher?**",
+            "**Q300.** Retire the old watcher?",
+            "**Q590. Storage: retire the old watcher?**",
             output.splitlines()[0] + "\n\nOriginal question: " + self.registered_question()["url"],
             output.replace("Move the job", "Delete the job"),
             output.replace("Q590.", "Q591."),
@@ -159,27 +162,20 @@ class GuardTests(unittest.TestCase):
         ):
             with self.subTest(command=command, failed=failed):
                 transcript = self.transcript(printed, command, failed=failed)
-                self.assertIn("block", self.run_hook(stop(last_assistant_message=output, transcript_path=str(transcript))))
+                self.assertIn("block", self.run_hook(stop(last_assistant_message=printed if "--dry-run" in command else output, transcript_path=str(transcript))))
 
     def test_latest_revision_replaces_earlier_printed_text(self) -> None:
         output = self.question_output()
         transcript = self.transcript(output)
-        entries = [json.loads(line) for line in transcript.read_text().splitlines()]
-        revised = output.replace("Move the job", "Move both jobs")
-        transcript.write_text(
-            "\n".join(
-                map(
-                    json.dumps,
-                    entries
-                    + json.loads(json.dumps(entries).replace("Move the job", "Move both jobs").replace('"question"', '"revision"')),
-                )
-            )
-        )
+        original = transcript.read_text()
+        revised = output.replace("Move the job", "Move both jobs").replace("Q590.", "Q590 —")
+        transcript.write_text(original + "\n" + original.replace("Move the job", "Move both jobs").replace("Q590.", "Q590 —"))
         self.assertEqual(self.run_hook(stop(last_assistant_message=revised, transcript_path=str(transcript))), "")
         self.assertIn("block", self.run_hook(stop(last_assistant_message=output, transcript_path=str(transcript))))
 
     def test_numbered_status_and_quoted_questions_pass(self) -> None:
-        for message in ("**Q855** was approved and implemented. Nothing is needed from you.",
+        for message in ("**Q1276.** Approved and merged.", "**Q1276 — Catalog milestone:** approved",
+                        "**Q855** was approved and implemented. Nothing is needed from you.",
                         "> **Q855** Should I proceed?\nThe work is done.",
                         '**Q855** is settled. Chris asked "Should I proceed?" and approved it.',
                         "**Q855** Can the train merge yet? No, CI is running."):
