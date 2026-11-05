@@ -1291,9 +1291,10 @@ legacy review's verified absence on the claim itself. It grants no permission
 to clear a Director/repository hold and must account for the full record.
 Ordinary retained-work successor claims preserve the issue and retained PR
 wait records; scoped prerequisite authority never clears those product holds.
-A resumed prerequisite with unresolved waits needs a qualified retained handoff.
-For scoped preparation with unresolved waits, unpublished source on that same
-issue and repository may use an authored local-commit handoff instead of a PR.
+A resumed source claim with scoped evidence needs a qualified retained handoff.
+For scoped source work, unpublished source on that same issue and repository
+may use an authored local-commit handoff instead of a PR, including after its
+recorded waits have been cleared.
 The source needs an exact authored, timestamp-proved release; that release or
 a later source-author handoff names `<recorded source branch> at <full commit>`
 (inline Markdown is accepted). Git verifies the repository and local branch
