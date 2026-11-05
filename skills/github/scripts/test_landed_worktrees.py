@@ -884,7 +884,7 @@ class MainTests(Fixture):
         self.assertNotIn(mock.call(str(refresh), dry_run=False), run.call_args_list)
 
     @staticmethod
-    def claimed_source(*, released, branch="work/source"):
+    def claimed_source(*, released, branch="work/source") -> dict[str, Any]:
         record = {"worker": "author", "session": "s1", "branch": branch, "claimed_at": "2026-10-22T00:00:00Z"}
         claim = {"id": 11, "user": {"login": "bot"}, "created_at": "2026-10-22T00:00:00Z",
                  "body": "Claimed by author\n" + github_plan_claim.marker(record)}
@@ -973,6 +973,36 @@ class MainTests(Fixture):
         refresh, result, run = self.referenced_issue_claim("work/umbrella-lead")
         self.assertEqual({r["path"]: r["decision"] for r in result["worktrees"]}[str(refresh)], "retired")
         self.assertIn(mock.call(str(refresh), dry_run=False), run.call_args_list)
+
+    def test_continuing_record_keeps_its_named_branch_only_while_claimed(self):
+        target = self.settled_worktree("continuing")
+        branch = "work/continuing"
+        search = {"total_count": 1, "incomplete_results": False, "items": [
+            {"repository_url": "https://api.github.com/repos/o/programme", "number": 3}]}
+        for released, association, kept in ((False, branch, True), (False, branch + ".", True),
+                                             (False, branch + "?", True),
+                                             (True, branch, False),
+                                             (False, branch + "-other", False),
+                                             (False, branch + "/child", False),
+                                             (False, branch + ".other", False),
+                                             (False, branch + "+other", False), (False, "", False)):
+            with self.subTest(released=released, association=association):
+                ownership = self.claimed_source(released=released, branch="work/programme")
+                ownership["bodies"]["3"] += f"\nContinuing artifact custody: {association}\n"
+                _, result, run = self.run_main(None, branch=branch, search=search, **ownership)
+                self.assertEqual(result["worktrees"][0]["decision"], "kept" if kept else "retired")
+                self.assertEqual(mock.call(str(target), dry_run=False) in run.call_args_list, not kept)
+
+    def test_released_body_marker_does_not_extend_a_later_claim_to_the_old_branch(self):
+        target = self.settled_worktree("continuing")
+        old = self.claimed_source(released=True, branch="work/continuing")
+        current = self.claimed_source(released=False, branch="work/programme")
+        current["discussions"]["3"][0]["id"] = 13
+        current["discussions"]["3"] = old["discussions"]["3"] + current["discussions"]["3"]
+        current["bodies"]["3"] += "\n" + old["bodies"]["3"]
+        _, result, run = self.run_main(None, branch="work/continuing", claim_issues=[3], **current)
+        self.assertEqual(result["worktrees"][0]["decision"], "retired")
+        self.assertIn(mock.call(str(target), dry_run=False), run.call_args_list)
 
     def test_fast_forward_landing_keeps_worktrees_on_its_commits(self):
         refresh, pull, commits = self.merged_refresh()

@@ -156,6 +156,10 @@ with `Refs`, `Fixes` or `Closes`, or a record naming the exact branch keeps the
 related trees, even across repositories. Use `Refs OWNER/REPO#N` in the PR body
 for delivery associations. Branch-name discovery searches repositories in the
 target GitHub account; name every related branch on the existing claimed record.
+The current issue body may name a retained branch even when its live claim's
+own branch differs. Bare exact branch names count; a prefix of another branch does
+not. Unquoted body text remains an association until removed or its claim ends;
+private briefs, quoted or fenced history, and old comments alone do not create it.
 An ordinary URL in the body is not a recognized reference;
 an unrecorded association is unprotected. Incomplete evidence or a kept target
 returns nonzero.
