@@ -4047,8 +4047,8 @@ class ClaimTests(unittest.TestCase):
                     self.assertIn(wait_record.marker(wait), self.issue["body"])
 
     def test_launcher_carries_prerequisite_evidence_into_own_successor_without_clearing_product_waits(self) -> None:
-        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "supervisor/scripts"))
-        iterm_tab = importlib.import_module("iterm_tab")
+        with patch.object(sys, "path", [str(Path(__file__).resolve().parents[2] / "supervisor/scripts"), *sys.path]):
+            iterm_tab = importlib.import_module("iterm_tab")
 
         self.ordinary_handoff_fixture()
         source = CLAIM.records(self.comments[0]["body"])[0]
@@ -4084,6 +4084,16 @@ class ClaimTests(unittest.TestCase):
                 self.args = previous
 
         observed = {"complete": True, "coverage": {}, "pulls": self.pulls, "inventory": self.inventory}
+
+        @contextmanager
+        def preserve_fixture() -> Iterator[None]:
+            original = copy.deepcopy((self.comments, self.blockers, self.inventory, self.issue, self.wait))
+            try:
+                yield
+            finally:
+                self.comments, self.blockers, self.inventory, self.issue, self.wait = original
+                observed.update(complete=True, inventory=self.inventory, pulls=self.pulls)
+
         with (tempfile.TemporaryDirectory() as folder,
               patch.object(subprocess, "run", side_effect=read),
               patch.multiple(PLAN, read_queue_ownership=Mock(return_value=observed),
@@ -4093,10 +4103,15 @@ class ClaimTests(unittest.TestCase):
             command.write_text("agy")
             brief.write_text(header)
             launches = Namespace(command_file=[command], brief_file=[brief], brief_issue=[anchor], lead_session_id=lead)
-            for change in ("missing_evidence", "empty_evidence", "duplicate_evidence", "missing_source", "mismatched_source",
-                           "unreleased_source", "foreign_release", "no_handoff", "redirected", "native_blocker", "incomplete", "competitor", "artifact"):
-                with self.subTest(change=change):
-                    original = copy.deepcopy((self.comments, self.blockers, self.inventory, self.issue))
+            refusals = {"missing_evidence": "claim_wait_unresolved", "empty_evidence": "one nonempty Wait resolution",
+                "duplicate_evidence": "one nonempty Wait resolution", "missing_source": "Wait resolution needs",
+                "mismatched_source": "verified retained-source handoff", "unreleased_source": "verified retained-source handoff",
+                "foreign_release": "verified retained-source handoff", "no_handoff": "verified retained-source handoff",
+                "redirected": "needs Next actor", "native_blocker": "Launch refused.*blocked",
+                "incomplete": "Launch refused", "competitor": "comment", "artifact": "local_branches",
+                "review_wait": "claim_wait_unresolved", "unproven_without_artifacts": "verified retained-source handoff"}
+            for change, refusal in refusals.items():
+                with self.subTest(change=change), preserve_fixture():
                     candidate = header
                     if change == "missing_evidence": candidate = header.replace(f"Wait resolution: {evidence}\n", "")
                     if change == "empty_evidence": candidate = header.replace(evidence, " ")
@@ -4107,28 +4122,32 @@ class ClaimTests(unittest.TestCase):
                     if change == "foreign_release": self.comments[-1]["user"]["login"] = "stranger"
                     if change == "no_handoff": self.comments[-1]["body"] = f"Released claim {self.args.resume_from}"
                     if change == "redirected": self.issue["body"] = self.issue["body"].replace(lead, "different-lead")
-                    if change == "native_blocker": self.blockers.append({"state": "open", "number": 19})
+                    if change == "native_blocker": self.blockers.append({"repo": self.args.repo, "state": "open", "number": 19})
                     if change == "incomplete": observed["complete"] = False
                     if change == "competitor": self.compete()
                     if change == "artifact": self.inventory["local_branches"].append("work/issue-42-extra")
+                    if change == "review_wait": self.wait = None
                     observed["inventory"] = self.inventory
+                    if change == "unproven_without_artifacts": observed.update(pulls=[], inventory={})
                     brief.write_text(candidate)
-                    with self.assertRaises(ValueError):
+                    with self.assertRaisesRegex(ValueError, refusal):
                         iterm_tab.prepare_launches(launches)
                     self.assert_no_writes()
-                    self.comments, self.blockers, self.inventory, self.issue = original
-                    observed.update(complete=True, inventory=self.inventory)
+                    if change == "incomplete":
+                        self.assertFalse(self.emitted.call_args.args[0]["issue"]["launch_check"]["ownership"]["complete"])
             brief.write_text(header)
             commands, _ = iterm_tab.prepare_launches(launches)
             self.assert_no_writes()
             self.assertEqual(calls[-1].wait_resolved, evidence)
             prompt = next(word.removeprefix("--prompt-interactive=") for word in shlex.split(commands[0])
                           if word.startswith("--prompt-interactive="))
-            instruction = next(line.split("pass ", 1)[1] for line in prompt.splitlines()
-                               if line.startswith("For this issue's gh-plan.py claim, pass --wait-resolved "))
-            self.args.wait_resolved = shlex.split(instruction)[1]
-            self.args.dispatch_recipient = lead
-            self.args.resume_from = calls[-1].resume_from
+            arguments = next(shlex.split(line) for line in prompt.splitlines() if line.startswith("--dispatch-recipient "))
+            parsed = parser.parse_args(["--repo", self.args.repo, "claim", self.args.issue,
+                "--worker", self.args.worker, "--session", self.args.session, "--branch", self.args.branch,
+                "--next-action", self.args.next_action, *arguments])
+            self.assertEqual(parsed.wait_resolved, evidence)
+            self.assertEqual(parsed.resume_from, calls[-1].resume_from)
+            self.args = parsed
             retained_body = self.targets["99"]["body"]
             self.targets["99"]["body"] += f"\n\n## Current Status\nNext actor: agent:{lead}\n"
             with self.assertRaises(PLAN.ClassifiedPlanError) as stopped:
@@ -4141,10 +4160,20 @@ class ClaimTests(unittest.TestCase):
             self.run_claim()
         result = self.emitted.call_args.args[0]
         self.assertEqual(result["claim"]["session"], OWNER["session"])
-        self.assertNotEqual(result["claim"]["session"], lead)
         self.assertEqual(wait_record.records(self.issue["body"]), [self.wait])
         self.assertEqual(self.target_comments, retained_before)
-        self.assertTrue(self.pulls[0]["draft"])
+
+    def test_resumed_prerequisite_cannot_downgrade_to_plain_and_clear_product_waits(self) -> None:
+        self.no_pr_resume_fixture()
+        self.inventory = {"worktrees": [], "local_branches": [], "remote_branches": []}
+        self.record_wait()
+        before = copy.deepcopy((self.issue, self.comments))
+        self.args.wait_resolved = "Authorized prerequisite only; preserve every product hold."
+        with self.assertRaises(PLAN.ClassifiedPlanError) as stopped:
+            self.run_claim()
+        self.assertEqual(stopped.exception.code, "claim_handoff_pr_required")
+        self.assert_no_writes()
+        self.assertEqual((self.issue, self.comments), before)
 
     def test_dk273_handoff_context_does_not_gate_retained_successor(self) -> None:
         for cross_repo, held in product((False, True), (None, "99", "100")):

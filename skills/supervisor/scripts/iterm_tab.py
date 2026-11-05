@@ -1323,7 +1323,7 @@ def read_launch_text(path: Path) -> str:
         return path.read_text(encoding="utf-8")
 
 
-def read_issue_brief(issue: str, header: str, lead_session_id: str | None = None) -> str:
+def read_issue_brief(issue: str, header: str, lead_session_id: str | None = None, wait_resolved: str | None = None) -> str:
     github = str(Path(__file__).resolve().parents[2] / "github/scripts")
     if github not in sys.path:
         sys.path.append(github)
@@ -1347,20 +1347,33 @@ def read_issue_brief(issue: str, header: str, lead_session_id: str | None = None
     brief = next_actor.launch_brief(status)
     if brief is None or next_actor.read(status) != actor:
         raise ValueError(f"{issue} needs Next actor: {actor} and a fenced Brief: in Current Status; use ###, not ##, inside briefs")
-    if lead_session_id:
-        header = header.rstrip("\n") + f"\nFor this issue's gh-plan.py claim, pass --dispatch-recipient {lead_session_id}.\n"
+    claim_arguments = ["--dispatch-recipient", lead_session_id] if lead_session_id else []
+    if wait_resolved:
+        source = launch_resume_source(header)
+        if not source:
+            raise ValueError("Wait resolution needs its exact Resume from source claim")
+        claim_arguments.extend(["--resume-from", source, "--wait-resolved", wait_resolved])
+    if claim_arguments:
+        header = (header.rstrip("\n") + "\nVerify the current source, every hold and the scoped evidence before your own-identity "
+                  "gh-plan.py claim. Pass these arguments together:\n" + shlex.join(claim_arguments) + "\n")
     return header.rstrip("\n") + "\n\n" + brief
 
 
 def launch_wait_resolution(brief: str) -> str | None:
-    resolutions = re.findall(r"(?mi)^Wait resolution:[^\S\n]*([^\n]*)$", brief)
+    resolutions = re.findall(r"(?mi)^[^\S\n]*(?:[-*] )?(?:\*\*)?Wait resolution:(?:\*\*)?[^\S\n]*([^\n]*)$", brief)
     if len(resolutions) > 1 or (resolutions and not resolutions[0].strip()):
         raise ValueError("A launch header needs one nonempty Wait resolution line for existing scoped evidence")
     return resolutions[0].strip() if resolutions else None
 
 
-def check_launch_issue(brief: str, *, dispatch_recipient: str | None = None, dispatch_issue: str | None = None) -> None:
-    resolution = launch_wait_resolution(brief)
+def launch_resume_source(brief: str) -> str | None:
+    resume = re.search(r"(?mi)^\s*(?:[-*] )?(?:\*\*)?Resume from:(?:\*\*)?\s*"
+                       r"([1-9]\d*|https://github\.com/[\w.-]+/[\w.-]+/issues/[1-9]\d*#issuecomment-[1-9]\d*)\s*$", brief)
+    return resume[1] if resume else None
+
+
+def check_launch_issue(brief: str, *, dispatch_recipient: str | None = None, dispatch_issue: str | None = None,
+                       wait_resolved: str | None = None) -> None:
     labels = re.findall(r"(?mi)^\s*(?:[-*] )?(?:\*\*)?(Read-only anchor|Anchor(?: and claim)?):(?:\*\*)?[^\S\n]*([^\n]*)", brief)
     anchors = []
     for mode, value in labels:
@@ -1369,13 +1382,12 @@ def check_launch_issue(brief: str, *, dispatch_recipient: str | None = None, dis
             anchors.append((mode, match[1]))
         elif not re.search(r"https://github\.com/[\w.-]+/[\w.-]+/pull/[1-9]\d*", value):
             raise ValueError("An explicit issue anchor needs its full https://github.com/OWNER/REPO/issues/N URL")
-    if not anchors and not resolution:
-        return None
-    resume = re.search(r"(?mi)^\s*(?:[-*] )?(?:\*\*)?Resume from:(?:\*\*)?\s*"
-                       r"([1-9]\d*|https://github\.com/[\w.-]+/[\w.-]+/issues/[1-9]\d*#issuecomment-[1-9]\d*)\s*$", brief)
+    if not anchors and not wait_resolved:
+        return
+    resume = launch_resume_source(brief)
     if resume and len(set(anchor for _, anchor in anchors)) != 1:
         raise ValueError("A retained-delivery brief needs one anchor for its source claim")
-    if resolution and (not resume or len(set(anchors)) != 1 or anchors[0][0].casefold() == "read-only anchor"):
+    if wait_resolved and (not resume or len(set(anchors)) != 1 or anchors[0][0].casefold() == "read-only anchor"):
         raise ValueError("Wait resolution needs one execution anchor and its exact Resume from source claim")
     declarations = re.findall(r"(?mi)^[^\S\n]*(?:[-*] )?(?:\*\*)?Admission(?: for [^:\n]+)?:(?:\*\*)?[^\S\n]*([^\n]*)", brief)
     if len(declarations) > 1:
@@ -1398,9 +1410,9 @@ def check_launch_issue(brief: str, *, dispatch_recipient: str | None = None, dis
             for link in re.findall(r"https://github\.com/[\w.-]+/[\w.-]+/(?:issues|pull)/[1-9]\d*(?:#issuecomment-[1-9]\d*)?", admission[2]):
                 argv.extend(["--admission-link", link])
         if resume:
-            argv.extend(["--resume-from", resume[1]])
-        if resolution:
-            argv.extend(["--wait-resolved", resolution])
+            argv.extend(["--resume-from", resume])
+        if wait_resolved:
+            argv.extend(["--wait-resolved", wait_resolved])
         try:
             result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
             payload = json.loads(result.stdout)
@@ -1512,11 +1524,12 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
         raise ValueError("provide one --brief-file per --command-file, in launch order")
     headers = [read_launch_text(path) for path in brief_files]
     brief_issues = getattr(args, "brief_issue", None) or []
+    resolutions = [launch_wait_resolution(header) for header in headers] if brief_issues else [None] * len(headers)
     if brief_issues:
         if len(brief_issues) != len(files):
             raise ValueError("provide one --brief-issue per --command-file, in launch order")
-        briefs = [read_issue_brief(issue, header, getattr(args, "lead_session_id", None))
-                  for issue, header in zip(brief_issues, headers)]
+        briefs = [read_issue_brief(issue, header, getattr(args, "lead_session_id", None), resolution)
+                  for issue, header, resolution in zip(brief_issues, headers, resolutions)]
     else:
         briefs = headers
     for brief in briefs:
@@ -1526,10 +1539,7 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
     for index, brief in enumerate(headers):
         validate_brief_rules(brief)
         check_launch_issue(brief, dispatch_recipient=getattr(args, "lead_session_id", None) if brief_issues else None,
-                           dispatch_issue=brief_issues[index] if brief_issues else None)
-        resolution = launch_wait_resolution(brief)
-        if resolution:
-            briefs[index] += f"\nFor this issue's gh-plan.py claim, pass --wait-resolved {shlex.quote(resolution)}\n"
+                           dispatch_issue=brief_issues[index] if brief_issues else None, wait_resolved=resolutions[index])
     validate_computer_use_launch(args, command_texts, briefs)
     apps = [gui_launch.declared_app(brief) for brief in briefs]
     if any(apps):

@@ -1323,13 +1323,14 @@ through the planning helper and appends its brief verbatim under the header,
 normalizing CRLF line endings to LF for terminal transport. The header owns
 token, anchor, admission and rules; matching labels in the task are context only.
 Repeat both brief options in command-file order for a batch.
-For an already authorized ordinary retained-source prerequisite, the standard
-header may also carry `Resume from: <exact-source-claim-comment-URL>` and
+For an already authorized ordinary retained-source prerequisite with `--brief-issue`,
+the standard header may also carry `Resume from: <exact-source-claim-comment-URL>` and
 `Wait resolution: <verified existing scoped authority and retained hold evidence>`.
 The launcher passes that evidence to `show --launch-check --wait-resolved` and
-adds the matching quoted `--wait-resolved` argument to the worker's own claim
-instruction. Task prose supplies no evidence. This route needs the existing
-authored release and retained-PR handoff, a reviewed wait record, complete
+adds both quoted source and evidence arguments to the worker's own claim
+instruction, alongside its coordinator argument. The worker verifies current
+source, holds and scoped authority first. Task prose supplies no evidence. This route needs the existing
+authored release and retained-PR handoff, a reviewed anchor wait record, complete
 ownership reads and no native blocker; the worker still performs the full
 fresh claim and readbacks under its own identity. It preserves product and
 Client waits and grants no Ready, merge, cleanup or product-operation authority.

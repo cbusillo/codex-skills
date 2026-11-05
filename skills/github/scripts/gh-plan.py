@@ -2153,10 +2153,10 @@ def cmd_show(args: argparse.Namespace) -> None:
         if not args.read_only:
             try:
                 validate_wait_resolution(args.wait_resolved, issue["repo"])
-                if args.wait_resolved and (not facts.get("retained_handoff") or wait["state"] == "review"):
-                    raise PlanError("Launch wait evidence needs a verified retained-source handoff and a reviewed wait record")
+                if args.wait_resolved and not facts.get("retained_handoff"):
+                    raise PlanError("Launch wait evidence needs a verified retained-source handoff")
                 check_claim_wait({**issue, "claim_wait": wait}, claim_current_status(issue, read_plan_sections(issue)[0], comments), config,
-                                 wait_resolved=args.wait_resolved)
+                                 wait_resolved=args.wait_resolved if wait["state"] != "review" else None)
                 admission, admission_links, _ = claim_admission_options(args)
                 if admission == "milestone":
                     track = milestone_claim_track(issue, admission_links)
@@ -3988,6 +3988,9 @@ def claim_once(args: argparse.Namespace) -> None:
         if conflicts:
             refuse_or_route(conflicts, comments)
         check_wait(issue, status)
+        if args.resume_from and args.wait_resolved and issue["claim_wait"]["state"] != "clear" and not retained_mode:
+            raise ClassifiedPlanError("claim_handoff_pr_required",
+                "Resumed prerequisite evidence cannot clear product waits without a verified retained-PR handoff")
         planned_wait = previous_wait if retained_mode else github_plan_wait.marker(
             github_plan_wait.reviewed(evidence=args.wait_resolved or issue["claim_wait"]["evidence"]))
         if owned:

@@ -1294,10 +1294,11 @@ Ordinary retained-work successor claims preserve the issue and retained PR
 wait records; scoped prerequisite authority never clears those product holds.
 `show --launch-check --resume-from <source> --wait-resolved <evidence>` carries
 the same existing scoped evidence for a retained-source launch, without a claim
-or wait write. Missing or unreviewed wait records and unproven retained handoffs
-still refuse this launch route. The launcher accepts the evidence only from its
-standard header's explicit `Wait resolution:` line and gives the worker the
-matching claim argument; see [terminal launches](../../supervisor/references/helpers.md#terminal-launches).
+or wait write. A missing or unreviewed anchor wait record or an unproven retained
+handoff still refuses this launch route. With `--brief-issue`, the launcher accepts
+the standard header's explicit `Wait resolution:` line and gives the worker the
+source and evidence arguments together for verification before its own claim;
+see [terminal launches](../../supervisor/references/helpers.md#terminal-launches).
 Only named PRs from the source author, in the target repository and linked to
 the owning record enter retained PR ownership and wait checks; other handoff
 mentions supply no custody.
