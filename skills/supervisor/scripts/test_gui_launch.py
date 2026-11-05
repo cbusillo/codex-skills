@@ -21,6 +21,7 @@ import time
 import unittest
 import uuid
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
 import account_choice
@@ -508,6 +509,7 @@ class GuiLaunchTests(unittest.TestCase):
         self.command.write_text(self.command.read_text() + " -c model_reasoning_effort=high")
         commands, choices = iterm_tab.prepare_launches(self.args)
         choice = choices[0]
+        assert choice is not None
         self.assertEqual(choice["file_native"], {"harness": "codex", "home": str(self.account)})
         self.assertNotIn("native_receipt", choice)
         wrapper = shlex.split(commands[0])
@@ -576,13 +578,13 @@ class LocalCodexRegistrationTests(unittest.TestCase):
         self.path = self.root / "sessions" / (self.session + ".jsonl")
         self.path.parent.mkdir()
         self.started = datetime.now(timezone.utc) - timedelta(seconds=2)
-        self.meta = {"id": self.session, "timestamp": datetime.now(timezone.utc).isoformat(), "source": "cli"}
+        self.meta: dict[str, Any] = {"id": self.session, "timestamp": datetime.now(timezone.utc).isoformat(), "source": "cli"}
         self.path.write_text(json.dumps({"type": "session_meta", "payload": self.meta}) + "\n")
         self.ledger = self.root / "ledger.json"
         self.ledger.write_text(json.dumps([{"session_id": "lead", "harness": "codex", "transcript": "lead.jsonl", "supervisor_owned": True,
                                            "worker_cap": 1, "worker_launches": {"batch": 1}}]))
         self.native = {"harness": "codex", "home": str(self.root)}
-        self.launch = {"session_id": "terminal", "backend": "tmux", "pid": 8, "tty": "ttys001",
+        self.launch: dict[str, Any] = {"session_id": "terminal", "backend": "tmux", "pid": 8, "tty": "ttys001",
                        "codex_home": str(self.root), "lead_session_id": "lead", "lead_launch_id": "batch",
                        "account": {"gui": {"app": "com.example.Task", "token": uuid.uuid4().hex}}}
         self.argv = ["codex", "--no-daemon", "--", "fixture brief"]
@@ -593,7 +595,7 @@ class LocalCodexRegistrationTests(unittest.TestCase):
         self.enterContext(patch.object(tmux_terminal, "process_parents", return_value={8: 7, 7: 1}))
         self.enterContext(patch.object(gui_launch, "matching", return_value={
             **self.launch["account"]["gui"], "phase": "running", "pid": 7}))
-        self.details = {"pid": 8, "identity": {"unique_id": 91}}
+        self.details: dict[str, Any] = {"pid": 8, "identity": {"unique_id": 91}}
         self.enterContext(patch.object(session_liveness, "native_process_details", return_value=self.details))
         self.enterContext(patch.object(session_liveness, "process_started_at", return_value=self.started))
         import github_plan_closure
@@ -610,7 +612,7 @@ class LocalCodexRegistrationTests(unittest.TestCase):
     def arguments(self, pid: int) -> list[str]:
         if pid == 7:
             token = self.launch["account"]["gui"]["token"]
-            return [sys.executable, str(Path(gui_launch.__file__).resolve()), "run", "--token", token,
+            return [sys.executable, str(Path(__file__).with_name("gui_launch.py").resolve()), "run", "--token", token,
                     "--state", str(gui_launch.state_path()), "--command-file", str(gui_launch.command_path(gui_launch.state_path(), token))]
         self.assertEqual(pid, 8)
         return self.argv
@@ -642,8 +644,9 @@ class LocalCodexRegistrationTests(unittest.TestCase):
 
     def test_unknown_or_changed_local_identity_preserves_capacity(self) -> None:
         original = self.ledger.read_bytes()
-        for failure in ("missing", "ambiguous", "inode", "home", "metadata", "old", "child", "remote", "generation",
-                        "no_gui", "wrapper", "read_only", "access_unknown", "bound", "daemon"):
+        failures: tuple[str, ...] = ("missing", "ambiguous", "inode", "home", "metadata", "old", "child", "remote", "generation",
+                                     "no_gui", "wrapper", "read_only", "access_unknown", "bound", "daemon")
+        for failure in failures:
             with self.subTest(failure=failure):
                 self.ledger.write_bytes(original)
                 self.opened = f"p8\nf9\nau\ni{self.path.stat().st_ino}\nn{self.path}\n"

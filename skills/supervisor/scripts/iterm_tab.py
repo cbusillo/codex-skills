@@ -2027,7 +2027,7 @@ def local_codex_native(launch: dict, native: dict) -> dict:
     wrapper = session_liveness.native_arguments(reservation["pid"])
     required = {"--token": gui["token"], "--state": str(gui_launch.state_path()),
                 "--command-file": str(gui_launch.command_path(gui_launch.state_path(), gui["token"]))}
-    if (len(wrapper) < 3 or Path(wrapper[1]).resolve() != Path(gui_launch.__file__).resolve() or wrapper[2] != "run"
+    if (len(wrapper) < 3 or Path(wrapper[1]).resolve() != Path(__file__).with_name("gui_launch.py").resolve() or wrapper[2] != "run"
             or any(wrapper.count(option) != 1 or wrapper.index(option) + 1 >= len(wrapper)
                    or wrapper[wrapper.index(option) + 1] != value for option, value in required.items())
             or not tmux_terminal.belongs_to(pid, reservation["pid"], tmux_terminal.process_parents())):
