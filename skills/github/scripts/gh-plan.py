@@ -2152,7 +2152,11 @@ def cmd_show(args: argparse.Namespace) -> None:
         milestone_admission = None
         if not args.read_only:
             try:
-                check_claim_wait({**issue, "claim_wait": wait}, claim_current_status(issue, read_plan_sections(issue)[0], comments), config)
+                validate_wait_resolution(args.wait_resolved, issue["repo"])
+                if args.wait_resolved and (not facts.get("retained_handoff") or wait["state"] == "review"):
+                    raise PlanError("Launch wait evidence needs a verified retained-source handoff and a reviewed wait record")
+                check_claim_wait({**issue, "claim_wait": wait}, claim_current_status(issue, read_plan_sections(issue)[0], comments), config,
+                                 wait_resolved=args.wait_resolved)
                 admission, admission_links, _ = claim_admission_options(args)
                 if admission == "milestone":
                     track = milestone_claim_track(issue, admission_links)
@@ -2168,7 +2172,8 @@ def cmd_show(args: argparse.Namespace) -> None:
             "allowed": (claim_error is None and derived["relationships_complete"] and facts["complete"] and not facts.get("error")
                         and not facts["conflicts"] and (args.read_only or not facts["artifacts"])
                         and (args.read_only or not facts["recipients"])
-                        and source_clear and (args.read_only or derived["status"] == "active")),
+                        and source_clear and (args.read_only or derived["status"] == "active"
+                                              or (bool(args.wait_resolved) and derived["status"] == "waiting"))),
             "status": derived["status"], "ownership": facts,
             **({"milestone_admission": milestone_admission} if milestone_admission else {}),
             **({"error": claim_error} if claim_error else {}),
@@ -2969,18 +2974,23 @@ def claim_admission_options(args: argparse.Namespace) -> tuple[str | None, list[
     return admission, admission_links, admission_unlinked
 
 
+def validate_wait_resolution(evidence: str | None, repo: str) -> None:
+    if evidence is not None and (not evidence.strip() or any(c in evidence for c in "\n\r")):
+        raise PlanError("Wait resolution must record existing evidence on one line")
+    validate_plan_references([evidence], repo)
+
+
 def claim_once(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
     issue_repo, number = issue_ref(args.issue, repo)
-    validate_plan_references([args.next_action, getattr(args, "wait_resolved", None)], issue_repo)
+    validate_plan_references([args.next_action], issue_repo)
+    validate_wait_resolution(args.wait_resolved, issue_repo)
     claim = {key: getattr(args, key) for key in ("worker", "session", "branch")}
     for key, value in claim.items():
         if not value or re.search(r"\s|[<>]", value):
             raise PlanError(f"Claim {key} must be a nonempty single-line token")
     if not args.next_action.strip() or any(c in args.next_action for c in "\n\r"):
         raise PlanError("Claim next action must be a nonempty single line")
-    if args.wait_resolved is not None and (not args.wait_resolved.strip() or any(c in args.wait_resolved for c in "\n\r")):
-        raise PlanError("Wait resolution must record existing evidence on one line")
     override_input: str | None = getattr(args, "agent_override", None)
     if override_input is not None and (not override_input.strip() or any(c in override_input for c in "\n\r")):
         raise PlanError("Agent override must record the Director decision on one nonempty line")
@@ -7735,6 +7745,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--admission-link", action="append", default=[], metavar="URL", help="Exact claim admission evidence; repeat for each occurrence")
     p.add_argument("--read-only", action="store_true", help="Allow a launch check to answer waits without claiming or changing held work")
     p.add_argument("--resume-from", help="Existing source claim comment ID or URL for a retained-delivery launch check")
+    p.add_argument("--wait-resolved", help="Existing scoped prerequisite evidence for a retained-source launch; preserves product waits")
     p.add_argument("--sections", nargs="+")
     p.set_defaults(func=cmd_show)
 

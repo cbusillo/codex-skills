@@ -12,6 +12,7 @@ import copy
 import importlib.util
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -4044,6 +4045,106 @@ class ClaimTests(unittest.TestCase):
                 else:
                     self.assertIn(f"https://github.com/owner/repo/pull/{place}", self.comments[-1]["body"])
                     self.assertIn(wait_record.marker(wait), self.issue["body"])
+
+    def test_launcher_carries_prerequisite_evidence_into_own_successor_without_clearing_product_waits(self) -> None:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "supervisor/scripts"))
+        iterm_tab = importlib.import_module("iterm_tab")
+
+        self.ordinary_handoff_fixture()
+        source = CLAIM.records(self.comments[0]["body"])[0]
+        self.comments[0]["created_at"] = source["claimed_at"]
+        self.comments[-1]["created_at"] = "2026-10-02T00:00:00Z"
+        lead = "01970242-7941-7f0c-b461-16aa5723fb52"
+        self.issue["body"] += (f"Next actor: agent:{lead}\nBrief:\n```text\nQualify the image input only.\n"
+                               "Wait resolution: This task prose is not launch evidence.\n```\n")
+        self.wait = wait_record.reviewed(evidence="Preview and Client acceptance remain pending",
+            waiting_for=["Preview", "Client"], ends_when=["Current image passes", "Client accepts current head"])
+        self.record_wait(target="99")
+        retained_before = copy.deepcopy(self.target_comments)
+        evidence = "Existing source brief authorizes the image prerequisite; preserve preview and Client holds."
+        anchor = "https://github.com/owner/repo/issues/42"
+        header = (f"Trial token: {OWNER['worker']}\nAnchor and claim: {anchor}\n"
+                  f"Resume from: {anchor}#issuecomment-{self.args.resume_from}\n"
+                  f"Wait resolution: {evidence}\nRules: {iterm_tab.BRIEF_RULES_URL}\n")
+        parser = PLAN.build_parser()
+        run = subprocess.run
+        calls = []
+
+        def read(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+            helper = str(Path(__file__).with_name("gh-plan.py"))
+            if helper not in argv:
+                return run(argv, **kwargs)
+            args = parser.parse_args(argv[argv.index(helper) + 1:])
+            calls.append(args)
+            previous, self.args = self.args, args
+            try:
+                self.run_claim(command=PLAN.cmd_show)
+                return subprocess.CompletedProcess(argv, 0, json.dumps(self.emitted.call_args.args[0]))
+            finally:
+                self.args = previous
+
+        observed = {"complete": True, "coverage": {}, "pulls": self.pulls, "inventory": self.inventory}
+        with (tempfile.TemporaryDirectory() as folder,
+              patch.object(subprocess, "run", side_effect=read),
+              patch.multiple(PLAN, read_queue_ownership=Mock(return_value=observed),
+                  read_issue_relationships=Mock(side_effect=lambda *_a, **_k: ("bot", {"blocked_by": self.blockers, "sub_issues": []})),
+                  next_status_body_time=Mock(return_value="2026-10-01T00:00:00Z"))):
+            command, brief = Path(folder) / "run", Path(folder) / "header"
+            command.write_text("agy")
+            brief.write_text(header)
+            launches = Namespace(command_file=[command], brief_file=[brief], brief_issue=[anchor], lead_session_id=lead)
+            for change in ("missing_evidence", "empty_evidence", "duplicate_evidence", "missing_source", "mismatched_source",
+                           "unreleased_source", "foreign_release", "no_handoff", "redirected", "native_blocker", "incomplete", "competitor", "artifact"):
+                with self.subTest(change=change):
+                    original = copy.deepcopy((self.comments, self.blockers, self.inventory, self.issue))
+                    candidate = header
+                    if change == "missing_evidence": candidate = header.replace(f"Wait resolution: {evidence}\n", "")
+                    if change == "empty_evidence": candidate = header.replace(evidence, " ")
+                    if change == "duplicate_evidence": candidate += f"Wait resolution: {evidence}\n"
+                    if change == "missing_source": candidate = header.replace(f"Resume from: {anchor}#issuecomment-{self.args.resume_from}\n", "")
+                    if change == "mismatched_source": candidate = header.replace(f"#issuecomment-{self.args.resume_from}", "#issuecomment-900")
+                    if change == "unreleased_source": self.comments.pop()
+                    if change == "foreign_release": self.comments[-1]["user"]["login"] = "stranger"
+                    if change == "no_handoff": self.comments[-1]["body"] = f"Released claim {self.args.resume_from}"
+                    if change == "redirected": self.issue["body"] = self.issue["body"].replace(lead, "different-lead")
+                    if change == "native_blocker": self.blockers.append({"state": "open", "number": 19})
+                    if change == "incomplete": observed["complete"] = False
+                    if change == "competitor": self.compete()
+                    if change == "artifact": self.inventory["local_branches"].append("work/issue-42-extra")
+                    observed["inventory"] = self.inventory
+                    brief.write_text(candidate)
+                    with self.assertRaises(ValueError):
+                        iterm_tab.prepare_launches(launches)
+                    self.assert_no_writes()
+                    self.comments, self.blockers, self.inventory, self.issue = original
+                    observed.update(complete=True, inventory=self.inventory)
+            brief.write_text(header)
+            commands, _ = iterm_tab.prepare_launches(launches)
+            self.assert_no_writes()
+            self.assertEqual(calls[-1].wait_resolved, evidence)
+            prompt = next(word.removeprefix("--prompt-interactive=") for word in shlex.split(commands[0])
+                          if word.startswith("--prompt-interactive="))
+            instruction = next(line.split("pass ", 1)[1] for line in prompt.splitlines()
+                               if line.startswith("For this issue's gh-plan.py claim, pass --wait-resolved "))
+            self.args.wait_resolved = shlex.split(instruction)[1]
+            self.args.dispatch_recipient = lead
+            self.args.resume_from = calls[-1].resume_from
+            retained_body = self.targets["99"]["body"]
+            self.targets["99"]["body"] += f"\n\n## Current Status\nNext actor: agent:{lead}\n"
+            with self.assertRaises(PLAN.ClassifiedPlanError) as stopped:
+                self.run_claim()
+            self.assertEqual(stopped.exception.code, "claim_conflict")
+            self.assertTrue(any(row["source"] == "recorded_recipient" and row["worker"] == lead
+                                for row in stopped.exception.payload["competing_evidence"]))
+            self.assert_no_writes()
+            self.targets["99"]["body"] = retained_body
+            self.run_claim()
+        result = self.emitted.call_args.args[0]
+        self.assertEqual(result["claim"]["session"], OWNER["session"])
+        self.assertNotEqual(result["claim"]["session"], lead)
+        self.assertEqual(wait_record.records(self.issue["body"]), [self.wait])
+        self.assertEqual(self.target_comments, retained_before)
+        self.assertTrue(self.pulls[0]["draft"])
 
     def test_dk273_handoff_context_does_not_gate_retained_successor(self) -> None:
         for cross_repo, held in product((False, True), (None, "99", "100")):

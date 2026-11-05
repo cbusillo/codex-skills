@@ -985,8 +985,9 @@ selection is unchanged.
   Successful milestone checks return `milestone_admission` with the verified
   compact `scope` and supported `admission_arguments`. Native qualification
   needs no repeated Track citation or extra lookup.
-  `issue.launch_check.allowed` requires active native status and no
-  observed claim holder or retained-delivery hold; next-action wording does not gate
+  `issue.launch_check.allowed` requires active native status, or the
+  [ordinary retained-source prerequisite evidence](#planning-claim), and no
+  observed claim holder or retained-delivery conflict; next-action wording does not gate
   dispatch. `--read-only` permits answering a wait without claiming or changing
   held work, while still checking live claims; static PR/branch artifacts do
   not prevent a read-only review. Launch checks honor the existing claim lease
@@ -1291,6 +1292,12 @@ legacy review's verified absence on the claim itself. It grants no permission
 to clear a Director/repository hold and must account for the full record.
 Ordinary retained-work successor claims preserve the issue and retained PR
 wait records; scoped prerequisite authority never clears those product holds.
+`show --launch-check --resume-from <source> --wait-resolved <evidence>` carries
+the same existing scoped evidence for a retained-source launch, without a claim
+or wait write. Missing or unreviewed wait records and unproven retained handoffs
+still refuse this launch route. The launcher accepts the evidence only from its
+standard header's explicit `Wait resolution:` line and gives the worker the
+matching claim argument; see [terminal launches](../../supervisor/references/helpers.md#terminal-launches).
 Only named PRs from the source author, in the target repository and linked to
 the owning record enter retained PR ownership and wait checks; other handoff
 mentions supply no custody.

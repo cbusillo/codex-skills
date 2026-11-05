@@ -132,6 +132,7 @@ def ownership_facts(item: dict[str, Any], ownership: dict[str, Any], *, trusted:
     except (ValueError, KeyError, TypeError) as exc:
         return {**row, "error": "unreadable_ownership_or_wait", "detail": str(exc)}
     return {**row, "conflicts": conflicts, "artifacts": artifacts, "wait": wait, "ended_ownership": ended, "recipients": recipients,
+            **({"retained_handoff": retained["url"]} if retained else {}),
             "event_completed": wait != original_wait and wait["state"] == "clear"}
 
 

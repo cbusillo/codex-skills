@@ -1352,7 +1352,15 @@ def read_issue_brief(issue: str, header: str, lead_session_id: str | None = None
     return header.rstrip("\n") + "\n\n" + brief
 
 
+def launch_wait_resolution(brief: str) -> str | None:
+    resolutions = re.findall(r"(?mi)^Wait resolution:[^\S\n]*([^\n]*)$", brief)
+    if len(resolutions) > 1 or (resolutions and not resolutions[0].strip()):
+        raise ValueError("A launch header needs one nonempty Wait resolution line for existing scoped evidence")
+    return resolutions[0].strip() if resolutions else None
+
+
 def check_launch_issue(brief: str, *, dispatch_recipient: str | None = None, dispatch_issue: str | None = None) -> None:
+    resolution = launch_wait_resolution(brief)
     labels = re.findall(r"(?mi)^\s*(?:[-*] )?(?:\*\*)?(Read-only anchor|Anchor(?: and claim)?):(?:\*\*)?[^\S\n]*([^\n]*)", brief)
     anchors = []
     for mode, value in labels:
@@ -1361,12 +1369,14 @@ def check_launch_issue(brief: str, *, dispatch_recipient: str | None = None, dis
             anchors.append((mode, match[1]))
         elif not re.search(r"https://github\.com/[\w.-]+/[\w.-]+/pull/[1-9]\d*", value):
             raise ValueError("An explicit issue anchor needs its full https://github.com/OWNER/REPO/issues/N URL")
-    if not anchors:
-        return
+    if not anchors and not resolution:
+        return None
     resume = re.search(r"(?mi)^\s*(?:[-*] )?(?:\*\*)?Resume from:(?:\*\*)?\s*"
                        r"([1-9]\d*|https://github\.com/[\w.-]+/[\w.-]+/issues/[1-9]\d*#issuecomment-[1-9]\d*)\s*$", brief)
     if resume and len(set(anchor for _, anchor in anchors)) != 1:
         raise ValueError("A retained-delivery brief needs one anchor for its source claim")
+    if resolution and (not resume or len(set(anchors)) != 1 or anchors[0][0].casefold() == "read-only anchor"):
+        raise ValueError("Wait resolution needs one execution anchor and its exact Resume from source claim")
     declarations = re.findall(r"(?mi)^[^\S\n]*(?:[-*] )?(?:\*\*)?Admission(?: for [^:\n]+)?:(?:\*\*)?[^\S\n]*([^\n]*)", brief)
     if len(declarations) > 1:
         raise ValueError("An execution brief needs one Admission line naming the claim kind and its evidence links")
@@ -1389,6 +1399,8 @@ def check_launch_issue(brief: str, *, dispatch_recipient: str | None = None, dis
                 argv.extend(["--admission-link", link])
         if resume:
             argv.extend(["--resume-from", resume[1]])
+        if resolution:
+            argv.extend(["--wait-resolved", resolution])
         try:
             result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
             payload = json.loads(result.stdout)
@@ -1515,6 +1527,9 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
         validate_brief_rules(brief)
         check_launch_issue(brief, dispatch_recipient=getattr(args, "lead_session_id", None) if brief_issues else None,
                            dispatch_issue=brief_issues[index] if brief_issues else None)
+        resolution = launch_wait_resolution(brief)
+        if resolution:
+            briefs[index] += f"\nFor this issue's gh-plan.py claim, pass --wait-resolved {shlex.quote(resolution)}\n"
     validate_computer_use_launch(args, command_texts, briefs)
     apps = [gui_launch.declared_app(brief) for brief in briefs]
     if any(apps):
