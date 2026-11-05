@@ -3096,6 +3096,24 @@ class TerminalTests(unittest.TestCase):
         self.assertEqual(result["delivery"], "queued")
         self.assertEqual([call.args[0] for call in terminal.async_send_text.await_args_list], [message, "\t"])
 
+    def test_codex_quit_closes_slash_popup_before_return(self) -> None:
+        terminal = SimpleNamespace(session_id="exact", async_send_text=AsyncMock(),
+                                   async_get_variable=AsyncMock(return_value=None))
+        app = SimpleNamespace(terminal_windows=[SimpleNamespace(tabs=[SimpleNamespace(sessions=[terminal])])])
+        args = argparse.Namespace(command="send", session_id="exact", text="/quit", text_file=None,
+                                  verified_target=True, no_submit=False)
+        lines = ["› /quit "]
+
+        async def screen() -> SimpleNamespace:
+            return SimpleNamespace(number_of_lines=len(lines), line=lambda i: SimpleNamespace(
+                string=lines[i], string_at=lambda x: lines[i][x],
+                style_at=lambda _x: SimpleNamespace(faint=False, inverse=False)))
+
+        terminal.async_get_screen_contents = screen
+        with patch("asyncio.sleep", new=AsyncMock()):
+            asyncio.run(iterm_tab.operate(app, args))
+        self.assertEqual([call.args[0] for call in terminal.async_send_text.await_args_list], ["/quit ", "\r"])
+
     def test_verified_send_read_failure_preserves_partial_delivery(self) -> None:
         press = AsyncMock()
         with self.assertRaises(iterm_tab.SendFailure) as caught:
