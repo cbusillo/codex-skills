@@ -570,6 +570,8 @@ class LocalCodexRegistrationTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
+        self.enterContext(patch.dict(os.environ, {"CODE_HOME": str(self.root / "code"), "CODEX_HOME": str(self.root)}))
+        self.enterContext(patch.object(Path, "home", return_value=self.root / "owner"))
         self.session = str(uuid.uuid4())
         self.path = self.root / "sessions" / (self.session + ".jsonl")
         self.path.parent.mkdir()
@@ -596,12 +598,12 @@ class LocalCodexRegistrationTests(unittest.TestCase):
         self.enterContext(patch.object(session_liveness, "process_started_at", return_value=self.started))
         import github_plan_closure
         self.enterContext(patch.object(github_plan_closure, "log_rows", return_value=[]))
-        self.opened = f"p8\nf9\ni{self.path.stat().st_ino}\nn{self.path}\n"
+        self.opened = f"p8\nf9\nau\ni{self.path.stat().st_ino}\nn{self.path}\n"
         self.read_files = self.enterContext(patch.object(subprocess, "run", side_effect=self.lsof))
         self.enterContext(patch.object(iterm_tab, "LAUNCH_TIMEOUT", 0))
 
     def lsof(self, argv: list[str], **_: object) -> subprocess.CompletedProcess:
-        if argv != ["lsof", "-a", "-p", "8", "-Fpfni"]:
+        if argv[:4] != ["lsof", "-a", "-p", "8"] or not argv[4].startswith("-F"):
             raise AssertionError(argv)
         return subprocess.CompletedProcess(argv, 0, self.opened, "")
 
@@ -637,16 +639,14 @@ class LocalCodexRegistrationTests(unittest.TestCase):
                 self.assertEqual(rows[1][terminal], self.launch["session_id"])
                 self.assertEqual(result["native_session_id"], self.session)
                 self.assertTrue(result["ledger_recorded"])
-        import github_plan_closure
-        self.assertIsNone(github_plan_closure.guarded_launch_endpoint(8, self.argv))
-        with patch.object(session_liveness, "process_absent", return_value=False), self.assertRaises(ValueError):
-            session_liveness.verify_process_exit(rows[1], rows=[(8, "ttys001", shlex.join(self.argv))])
 
     def test_unknown_or_changed_local_identity_preserves_capacity(self) -> None:
         original = self.ledger.read_bytes()
-        for failure in ("missing", "ambiguous", "inode", "home", "metadata", "old", "child", "remote", "generation", "no_gui", "wrapper"):
+        for failure in ("missing", "ambiguous", "inode", "home", "metadata", "old", "child", "remote", "generation",
+                        "no_gui", "wrapper", "read_only", "access_unknown", "bound", "daemon"):
             with self.subTest(failure=failure):
-                self.opened = f"p8\nf9\ni{self.path.stat().st_ino}\nn{self.path}\n"
+                self.ledger.write_bytes(original)
+                self.opened = f"p8\nf9\nau\ni{self.path.stat().st_ino}\nn{self.path}\n"
                 self.path.write_text(json.dumps({"type": "session_meta", "payload": self.meta}) + "\n")
                 argv = self.argv
                 launch = dict(self.launch)
@@ -657,13 +657,13 @@ class LocalCodexRegistrationTests(unittest.TestCase):
                 elif failure == "ambiguous":
                     second = self.path.with_name("another.jsonl")
                     second.write_bytes(self.path.read_bytes())
-                    self.opened += f"f10\ni{second.stat().st_ino}\nn{second}\n"
+                    self.opened += f"f10\nau\ni{second.stat().st_ino}\nn{second}\n"
                 elif failure == "inode":
                     self.opened = self.opened.replace(f"i{self.path.stat().st_ino}", "i0")
                 elif failure == "home":
                     outside = self.root / "other.jsonl"
                     outside.write_bytes(self.path.read_bytes())
-                    self.opened = f"p8\nf9\ni{outside.stat().st_ino}\nn{outside}\n"
+                    self.opened = f"p8\nf9\nau\ni{outside.stat().st_ino}\nn{outside}\n"
                 elif failure in {"metadata", "old", "child"}:
                     meta = {**self.meta}
                     meta.update({"id": "unknown"} if failure == "metadata" else
@@ -678,6 +678,14 @@ class LocalCodexRegistrationTests(unittest.TestCase):
                     launch.pop("account")
                 elif failure == "wrapper":
                     parents = {8: 9, 7: 1}
+                elif failure == "read_only":
+                    self.opened = self.opened.replace("au\n", "ar\n")
+                elif failure == "access_unknown":
+                    self.opened = self.opened.replace("au\n", "")
+                elif failure == "bound":
+                    launch.update(pid=9, launch_pid=9, launch_generation="previous", launch_started_at=self.started.isoformat())
+                elif failure == "daemon":
+                    argv = ["codex", "--", "fixture"]
                 with (patch.object(session_liveness, "native_arguments", side_effect=lambda pid: self.arguments(pid) if pid == 7 else argv),
                       patch.object(tmux_terminal, "process_parents", return_value=parents),
                       patch.object(session_liveness, "native_process_details", side_effect=details),

@@ -2042,17 +2042,19 @@ def local_codex_native(launch: dict, native: dict) -> dict:
     started = session_liveness.process_started_at(pid)
     if started.isoformat() != launch["launch_started_at"]:
         raise ValueError("local Codex process generation changed")
-    opened = subprocess.run(["lsof", "-a", "-p", str(pid), "-Fpfni"],
+    opened = subprocess.run(["lsof", "-a", "-p", str(pid), "-Fpfnia"],
                             capture_output=True, text=True, check=True, timeout=10).stdout
-    paths, inode, process = {}, None, None
+    paths, inode, process, access = {}, None, None, None
     for line in opened.splitlines():
         if line.startswith("p"):
             process = line[1:]
         elif line.startswith("f"):
-            inode = None
+            inode, access = None, None
+        elif line.startswith("a"):
+            access = line[1:]
         elif line.startswith("i"):
             inode = int(line[1:])
-        elif line.startswith("n") and process == str(pid) and inode is not None:
+        elif line.startswith("n") and process == str(pid) and inode is not None and access in {"u", "w"}:
             path = Path(line[1:])
             if path.is_absolute() and path.suffix == ".jsonl" and path.resolve().is_relative_to((home / "sessions").resolve()):
                 paths[path.resolve(strict=True)] = inode

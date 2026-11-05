@@ -1199,7 +1199,7 @@ local invocation and client-side overrides; they do not use the managed RPC
 ingress or acquire a managed-client exemption. A live local GUI client therefore
 keeps idle-closure admission conservative. Other briefs create no GUI state.
 Pass the same `--ledger` and `--lead-session-id` as other lead workers. The
-existing file registrar binds the live local Codex PID to its unique open native
+existing file registrar binds the live local Codex PID to its unique writable native
 root transcript in the selected home, under its running GUI reservation.
 Missing or ambiguous native evidence retains the launch receipt and capacity;
 recover with `register --receipt-file` after inspection, without relaunching.
