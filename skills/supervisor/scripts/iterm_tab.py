@@ -1432,7 +1432,7 @@ def check_launch_issue(brief: str, *, dispatch_recipient: str | None = None, dis
                 raise ValueError(f"Launch refused for {anchor}: {error.get('code', 'claim_preflight')}: "
                                  f"{error.get('message', error)}")
             facts = check.get("ownership") or {}
-            evidence = (facts.get("detail") or facts.get("error") or (payload["issue"].get("derived") or {}).get("error")
+            evidence = (facts.get("detail") or facts.get("error") or ((payload.get("issue") or {}).get("derived") or {}).get("error")
                         or facts.get("conflicts") or facts.get("artifacts") or facts.get("recipients")
                         or check.get("resume_source") or check.get("status"))
             if mode.casefold() == "read-only anchor":
