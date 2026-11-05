@@ -3569,7 +3569,7 @@ def claim_once(args: argparse.Namespace) -> None:
                 issue_repo=issue_repo, issue_number=source_number, target_repo=target_repo,
                 selected_id=selected_id, usable=usable,
                 inventory=phase["inventory"] if source_number == number and record_kind == "issue"
-                    and args.wait_resolved and phase_records[(issue_repo.casefold(), number)][0]["claim_wait"]["state"] != "clear" else None)
+                    and args.wait_resolved else None)
                 if selection is None or selection["handoff"] is not None else None)
             source_head = handoff.get("source_head") if handoff else None
             if source_head:
@@ -3602,14 +3602,14 @@ def claim_once(args: argparse.Namespace) -> None:
             handoff_id = selection["handoff"]
             if not retained_mode:
                 handoff_required = (source_number != number or issue_repo.casefold() != target_repo.casefold() or source_open
-                    or (args.wait_resolved and phase_records[(issue_repo.casefold(), number)][0]["claim_wait"]["state"] != "clear"))
+                    or args.wait_resolved)
                 same_source_branch = claim["branch"] == record["branch"]
                 if handoff_required:
                     handoff_error = github_plan_claim.ClaimProofError("claim_handoff_pr_required",
                         "Released work requires a qualified source-authored retained PR or exact unpublished local-source handoff. Scoped prerequisite evidence "
-                        "cannot clear product waits. For a genuinely resolved wait on released work without a PR, use an "
-                        "ordinary new-branch claim without --resume-from, or record its verified resolution with "
-                        "gh-plan.py wait --clear --evidence before resuming.")
+                        "cannot clear product waits. Restore the exact authored source proof before resuming retained work. "
+                        "For independent work without retained-source custody, use an ordinary new-branch claim "
+                        "without --resume-from or --wait-resolved.")
                     requirements = [recovery_requirement("retained_handoff", "released_source",
                                                         source_repo=issue_repo, source_number=source_number)]
                     if same_source_branch:

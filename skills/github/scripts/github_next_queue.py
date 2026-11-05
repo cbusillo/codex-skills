@@ -109,7 +109,7 @@ def ownership_facts(item: dict[str, Any], ownership: dict[str, Any], *, trusted:
             source_comments = ([{**comment, "user": {"login": comment.get("author") or ""}}
                                 for comment in source_item["discussion"]["comments"]] if resume_source else comments)
             source = github_plan_claim.released_source(source_comments, resume_from)
-            local_proof = bool(wait_resolved and wait["state"] != "clear"
+            local_proof = bool(wait_resolved
                 and source_item["number"] == item["number"] and item.get("record_type") != "pull_request")
             retained = github_plan_claim.retained_handoff(
                 source, github_plan_claim.handoff_candidates(source_comments, source), ownership.get("pulls") or [],
