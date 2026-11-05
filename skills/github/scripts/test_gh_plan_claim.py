@@ -4198,6 +4198,139 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(wait_record.records(self.issue["body"]), [self.wait])
         self.assertEqual(self.target_comments, retained_before)
 
+    def local_handoff_fixture(self) -> dict[str, str]:
+        source = self.no_pr_resume_fixture()
+        head = "a" * 40
+        self.inventory.update(repo=self.args.repo, branch_heads={source["branch"]: head}, remote_branches=[])
+        self.inventory["worktrees"][0]["head"] = head
+        self.comments[-1]["body"] = (f"Released claim {self.args.resume_from}\n\n"
+            f"**Source:** clean local `{source['branch']}` at **{head}**, retained for the next source owner.\n"
+            "Publication and Client acceptance remain held.")
+        self.args.wait_resolved = "The recorded brief authorizes local preparation; preserve all publication and Client waits."
+        self.wait = self.record_wait()
+        return source
+
+    def test_unpublished_source_prerequisite_preserves_waits_and_exact_source_on_own_claim(self) -> None:
+        source = self.local_handoff_fixture()
+        before = copy.deepcopy(self.inventory)
+        self.run_claim()
+        output = self.emitted.call_args.args[0]
+        self.assertEqual(output["claim"]["session"], self.args.session)
+        self.assertEqual(output["claim"]["retained_source_head"], self.inventory["branch_heads"][source["branch"]])
+        self.assertEqual(output["claim"]["resume_from"], str(self.args.resume_from))
+        self.assertEqual(wait_record.current(self.issue, self.comments, {TEST_BOT}), self.wait)
+        self.assertEqual(self.inventory, before)
+        self.assertIn("metadata_readback", output["completed_steps"])
+        self.run_claim()
+        self.assertEqual(len([c for c in self.comments if CLAIM.records(c["body"]) and
+                             CLAIM.records(c["body"])[0]["session"] == self.args.session]), 1)
+
+    def test_unpublished_source_proof_refuses_missing_mismatched_or_published_custody(self) -> None:
+        for change in ("head", "tree_head", "missing_tree", "missing_head", "repository", "publication",
+                       "foreign_release", "edited_source", "no_authored_head", "quoted", "source_branch", "competitor", "artifact"):
+            with self.subTest(change=change):
+                self.setUp()
+                source = self.local_handoff_fixture()
+                if change == "head": self.inventory["branch_heads"][source["branch"]] = "b" * 40
+                if change == "tree_head": self.inventory["worktrees"][0]["head"] = "b" * 40
+                if change == "missing_tree": self.inventory["worktrees"] = []
+                if change == "missing_head": self.inventory.pop("branch_heads")
+                if change == "repository": self.inventory["repo"] = "foreign/repo"
+                if change == "publication": self.inventory["remote_branches"] = [source["branch"]]
+                if change == "foreign_release": self.comments[-2]["user"]["login"] = "stranger"
+                if change == "edited_source": self.comments[0]["updated_at"] = "2026-10-03T00:00:00Z"
+                if change == "no_authored_head": self.comments[-2]["body"] = f"Released claim {self.args.resume_from}"
+                if change == "quoted":
+                    self.comments[-2]["body"] = self.comments[-2]["body"].replace("**Source:**", "> **Source:**")
+                if change == "source_branch": self.args.branch = source["branch"]
+                if change == "competitor": self.compete()
+                if change == "artifact": self.inventory["local_branches"].append("work/issue-42-other")
+                with self.assertRaises(PLAN.PlanError):
+                    self.run_claim()
+                self.assert_no_writes()
+
+    def test_unpublished_source_head_publication_and_wait_races_stop_both_readbacks(self) -> None:
+        for timing, change in product(("after_post", "after_status"), ("head", "publication", "wait", "handoff_head")):
+            with self.subTest(timing=timing, change=change):
+                self.setUp()
+                source = self.local_handoff_fixture()
+                def race() -> None:
+                    if change == "head": self.inventory["branch_heads"][source["branch"]] = "b" * 40
+                    if change == "publication": self.inventory["remote_branches"].append(source["branch"])
+                    if change == "wait": self.record_wait("A new product hold was recorded")
+                    if change == "handoff_head":
+                        self.comments[2]["body"] = self.comments[2]["body"].replace("a" * 40, "b" * 40)
+                        self.inventory["branch_heads"][source["branch"]] = "b" * 40
+                        self.inventory["worktrees"][0]["head"] = "b" * 40
+                setattr(self, timing, race)
+                with self.assertRaises(PLAN.PlanError) as stopped:
+                    self.run_claim()
+                self.assertTrue(stopped.exception.payload["claim_recovery"]["release_own_claim"])
+                if timing == "after_post": self.assertNotIn("status", self.events)
+
+    def test_pr_self_resume_keeps_product_waits_for_scoped_prerequisite(self) -> None:
+        self.pr_fixture()
+        self.comments = [{"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}},
+                         {"id": 2, "body": "Released claim 1", "user": {"login": TEST_BOT}}]
+        self.args.resume_from = 1
+        self.wait = self.record_wait("Client acceptance of the retained PR")
+        self.args.wait_resolved = "Existing source prerequisite authority only; preserve Client acceptance."
+        self.run_claim()
+        self.assertEqual(wait_record.current(self.issue, self.comments, {TEST_BOT}), self.wait)
+
+    def test_launcher_qualifies_unpublished_source_before_own_successor_without_launching(self) -> None:
+        with patch.object(sys, "path", [str(Path(__file__).resolve().parents[2] / "supervisor/scripts"), *sys.path]):
+            iterm_tab = importlib.import_module("iterm_tab")
+        self.local_handoff_fixture()
+        lead = "01970242-7941-7f0c-b461-16aa5723fb52"
+        self.issue["body"] += f"Next actor: agent:{lead}\nBrief:\n```text\nQualify unpublished source; preserve publication holds.\n```\n"
+        anchor = "https://github.com/owner/repo/issues/42"
+        header = (f"Trial token: {self.args.worker}\nAnchor and claim: {anchor}\n"
+                  f"Resume from: {anchor}#issuecomment-{self.args.resume_from}\n"
+                  f"Wait resolution: {self.args.wait_resolved}\nRules: {iterm_tab.BRIEF_RULES_URL}\n")
+        parser, run = PLAN.build_parser(), subprocess.run
+        def read(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+            helper = str(Path(__file__).with_name("gh-plan.py"))
+            if helper not in argv:
+                return run(argv, **kwargs)
+            previous, self.args = self.args, parser.parse_args(argv[argv.index(helper) + 1:])
+            try:
+                self.run_claim(command=PLAN.cmd_show)
+                return subprocess.CompletedProcess(argv, 0, json.dumps(self.emitted.call_args.args[0]))
+            finally:
+                self.args = previous
+        observed = {"complete": True, "coverage": {}, "pulls": self.pulls, "inventory": self.inventory}
+        with (tempfile.TemporaryDirectory() as folder, patch.object(subprocess, "run", side_effect=read),
+              patch.multiple(PLAN, read_queue_ownership=Mock(return_value=observed),
+                read_issue_relationships=Mock(side_effect=lambda *_a, **_k: ("bot", {"blocked_by": self.blockers, "sub_issues": []})),
+                next_status_body_time=Mock(return_value="2026-10-01T00:00:00Z"))):
+            command, brief = Path(folder) / "run", Path(folder) / "header"
+            command.write_text("agy")
+            brief.write_text(header)
+            launch = Namespace(command_file=[command], brief_file=[brief], brief_issue=[anchor], lead_session_id=lead)
+            for change in ("incomplete", "missing_head", "publication", "native_blocker", "recipient"):
+                with self.subTest(change=change):
+                    old = copy.deepcopy((self.inventory, self.blockers, self.issue))
+                    if change == "incomplete": observed["complete"] = False
+                    if change == "missing_head": self.inventory.pop("branch_heads")
+                    if change == "publication": self.inventory["remote_branches"] = list(self.inventory["local_branches"])
+                    if change == "native_blocker": self.blockers.append({"repo": self.args.repo, "state": "open", "number": 19})
+                    if change == "recipient": self.issue["body"] = self.issue["body"].replace(lead, "different-recipient")
+                    with self.assertRaises(ValueError):
+                        iterm_tab.prepare_launches(launch)
+                    self.assert_no_writes()
+                    self.inventory, self.blockers, self.issue = old
+                    observed.update(complete=True, inventory=self.inventory)
+            commands, _ = iterm_tab.prepare_launches(launch)
+            self.assertTrue(self.emitted.call_args.args[0]["issue"]["launch_check"]["allowed"])
+            self.assert_no_writes()
+            prompt = next(word.removeprefix("--prompt-interactive=") for word in shlex.split(commands[0])
+                          if word.startswith("--prompt-interactive="))
+            self.assertIn(shlex.quote(self.args.wait_resolved), prompt)
+            self.args.dispatch_recipient = lead
+            self.run_claim()
+            self.assertEqual(wait_record.current(self.issue, self.comments, {TEST_BOT}), self.wait)
+
     def test_resumed_prerequisite_cannot_downgrade_to_plain_and_clear_product_waits(self) -> None:
         for mode in ("retained_required", "source_error", "real_resolution"):
             with self.subTest(mode=mode):
@@ -6339,6 +6472,26 @@ class ClaimTests(unittest.TestCase):
     def test_upstream_release_notes_and_cross_repo_pr_refs_do_not_claim_local_issue(self):
         self.pulls = [{"number": 99, "title": "Update dependency", "body": "Changes (#42)\nhttps://github.com/other/repo/issues/42\nRefs other/repo#42", "head": {"ref": "dependabot/pkg-2.0"}}]
         self.run_claim()
+
+    def test_local_source_inventory_reads_real_commit_and_registered_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            def git(*args: str) -> str:
+                return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout.strip()
+            git("init", "--initial-branch=main")
+            git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false",
+                "commit", "--allow-empty", "-m", "Fixture source")
+            git("switch", "-c", OTHER["branch"])
+            git("remote", "add", "origin", "https://github.com/owner/repo.git")
+            head, original = git("rev-parse", "HEAD"), CLAIM.run_read
+            def read(argv: list[str], **kwargs: Any) -> str:
+                return "" if argv[1] == "ls-remote" else original(argv, **kwargs)
+            with patch.object(CLAIM, "run_read", side_effect=read):
+                inventory = CLAIM.local_inventory("owner/repo", 42, cwd=root)
+            self.assertEqual(inventory["repo"], self.args.repo)
+            self.assertEqual(inventory["branch_heads"][OTHER["branch"]], head)
+            self.assertEqual(inventory["worktrees"], [{"branch": OTHER["branch"], "path": str(root.resolve()), "head": head}])
+            self.assertFalse(inventory["remote_branches"])
 
     def test_local_inventory_uses_live_remote_heads(self):
         replies = ["git@github.com:owner/repo.git\n", "worktree /fixture/repo\nbranch refs/heads/main\n",

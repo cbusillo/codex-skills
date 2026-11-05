@@ -1332,6 +1332,9 @@ instruction, alongside its coordinator argument. The worker verifies current
 source, holds and scoped authority first. Task prose supplies no evidence;
 the [claim contract](../../github/references/cli-reference.md#planning-claim)
 owns retained proof, wait preservation and the worker's fresh claim/readbacks.
+An unpublished same-issue source handoff uses this same header and claim route
+when its authored release and Git-verified branch/commit qualify under that
+contract; it needs no placeholder PR or early publication.
 An unresolved Director or repository hold on the prerequisite itself still
 requires its actual resolution; never assert scoped authority to evade it.
 For a new milestone lead, the Supervisor adds `--ledger <shared-ledger>` and

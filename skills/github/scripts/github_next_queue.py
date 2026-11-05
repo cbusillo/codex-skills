@@ -111,7 +111,8 @@ def ownership_facts(item: dict[str, Any], ownership: dict[str, Any], *, trusted:
             source = github_plan_claim.released_source(source_comments, resume_from)
             retained = github_plan_claim.retained_handoff(
                 source, github_plan_claim.handoff_candidates(source_comments, source), ownership.get("pulls") or [],
-                issue_repo=source_item["repo"], issue_number=source_item["number"], target_repo=item["repo"])
+                issue_repo=source_item["repo"], issue_number=source_item["number"], target_repo=item["repo"],
+                inventory=inventory if source_item["number"] == item["number"] and item.get("record_type") != "pull_request" else None)
             if retained and retained["open_conflicts"]:
                 return {**row, "error": "retained_handoff_unavailable"}
     except (ValueError, KeyError, TypeError) as exc:
@@ -133,6 +134,7 @@ def ownership_facts(item: dict[str, Any], ownership: dict[str, Any], *, trusted:
         return {**row, "error": "unreadable_ownership_or_wait", "detail": str(exc)}
     return {**row, "conflicts": conflicts, "artifacts": artifacts, "wait": wait, "ended_ownership": ended, "recipients": recipients,
             **({"retained_handoff": retained["url"]} if retained else {}),
+            **({"retained_source_head": retained["source_head"]} if retained and retained.get("source_head") else {}),
             "event_completed": wait != original_wait and wait["state"] == "clear"}
 
 

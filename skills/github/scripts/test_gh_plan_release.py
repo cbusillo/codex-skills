@@ -2232,6 +2232,33 @@ class OwnReleaseTests(ReleaseHarness):
         self.assertEqual(caught.exception.code, "release_owned_pr_not_excludable")
         self.f.assert_no_writes()
 
+    def test_release_requalifies_inherited_local_source_without_requiring_a_future_pr(self) -> None:
+        for changed in (False, True):
+            with self.subTest(changed=changed):
+                self.setUp()
+                predecessor = {**fixtures.OTHER, "session": "predecessor", "branch": "work/predecessor",
+                               "claimed_at": "2026-09-28T00:00:00Z"}
+                head = "a" * 40
+                current = {**fixtures.OTHER, "resume_from": "11", "retained_handoff": CLAIM.handoff_url("owner/repo", 42, 13),
+                           "retained_source_head": head}
+                self.f.comments = [self.comment(11, CLAIM.marker(predecessor), predecessor["claimed_at"]),
+                    self.comment(13, f"Released claim 11\n\nSource: `{predecessor['branch']}` at **{head}**", "2026-09-30T00:00:00Z"),
+                    self.comment(1, CLAIM.marker(current), current["claimed_at"])]
+                self.f.inventory.update(repo=self.args.repo, local_branches=[predecessor["branch"]], remote_branches=[],
+                    branch_heads={predecessor["branch"]: "b" * 40 if changed else head},
+                    worktrees=[{"branch": predecessor["branch"], "path": "/retained", "head": head}])
+                before = copy.deepcopy(self.f.inventory)
+                with patch.object(CLAIM, "local_inventory", side_effect=self.f.inventory_for):
+                    if changed:
+                        with self.assertRaises(PLAN.ClassifiedPlanError) as stopped:
+                            self.run_own_release()
+                        self.assertEqual(stopped.exception.code, "release_inherited_handoff_changed")
+                        self.f.assert_no_writes()
+                    else:
+                        self.run_own_release()
+                        self.assertTrue(self.f.emitted.call_args.args[0]["ok"])
+                self.assertEqual(self.f.inventory, before)
+
     def test_release_carries_inherited_prs_created_before_this_claim(self) -> None:
         predecessor = {**fixtures.OTHER, "session": "predecessor", "branch": "work/predecessor",
                        "claimed_at": "2026-09-28T00:00:00Z"}
