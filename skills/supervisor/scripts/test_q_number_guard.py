@@ -218,7 +218,7 @@ class GuardTests(unittest.TestCase):
         output = self.question_output()
         transcript = self.transcript(output)
         entries = [json.loads(line) for line in transcript.read_text().splitlines()]
-        malformed = [{"type": "assistant", "message": value} for value in (None, "old text", [])]
+        malformed: list[dict] = [{"type": "assistant", "message": value} for value in (None, "old text", [])]
         malformed += [
             {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Bash", "input": value}]}}
             for value in (None, [], {"command": []})

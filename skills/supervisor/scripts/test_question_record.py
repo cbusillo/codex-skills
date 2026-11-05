@@ -167,7 +167,7 @@ class QuestionRecordTests(unittest.TestCase):
             source = self.source | {"body": heading + "\n\nKeep: retain it. Retire: remove it."}
             output = StringIO()
             with redirect_stdout(output):
-                self.assertEqual(record.main(["show-question", source["url"], "--chat"], lambda _item, saved=source: [saved]), 0)
+                self.assertEqual(record.main(["show-question", source["url"], "--chat"], unittest.mock.Mock(return_value=[source])), 0)
             text = output.getvalue()
             self.assertTrue(text.startswith("**Q300"))
             self.assertIn("Retire the old watcher?", text)
