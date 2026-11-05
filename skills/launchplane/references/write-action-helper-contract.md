@@ -600,13 +600,12 @@ installed local helper bindings.
   whole read.
 - The shared ready-handoff Client reader (`launchplane_acceptance.py`) uses the
   bounded helper `repo-product-mapping-read` route internally, then
-  `product-profile-read` and, for Odoo products with a Client, prod and testing
-  `product-environment-read` addon-source pins. The dedicated mapping read is
+  `product-profile-read` for direct repository matches. The dedicated mapping read is
   GET-only; it is not an exposed write-action CLI command. It answers Client,
   Director standing (every mapped Client product releases on
   `director_standing`), no Client, or unknown. Missing credentials, a failed
-  read, an ambiguous or malformed mapping, a mismatched profile, truncated lanes
-  or unreadable addon sources answer unknown, which keeps the Client path and is
+  read, an ambiguous or malformed mapping, or a mismatched profile answer
+  unknown, which keeps the Client path and is
   never an exemption. The [ready handoff rule](../../github/references/cli-reference.md#ready-handoffs)
   owns what each answer requires.
 - An odd value in an optional field (for example a status Launchplane added
