@@ -411,7 +411,7 @@ def whole_plan_wait(parent: dict[str, Any]) -> bool:
     if parent.get("exclusion") in {"waiting", "wait_review_required"} and (record is None or parent.get("wait_review_required")):
         return True  # Legacy scope is unreviewed; do not release its links.
     record = record or {}
-    conditions = " ".join(value for wait in record.get("waits", []) for value in wait.values())
+    conditions = " ".join(wait[field] for wait in record.get("waits", []) for field in ("waiting_for", "ends_when"))
     return bool(re.search(r"\b(?:all|any|whole|entire)\s+(?:(?:source|further|engineering)\s+)?(?:work|preparation|implementation|plan)\b", conditions, re.I))
 
 
