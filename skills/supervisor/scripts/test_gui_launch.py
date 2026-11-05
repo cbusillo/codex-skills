@@ -623,7 +623,7 @@ class LocalCodexRegistrationTests(unittest.TestCase):
         for backend in ("tmux", "iterm"):
             with self.subTest(backend=backend):
                 self.ledger.write_bytes(original)
-                result = {**self.launch, "backend": backend, "file_native": self.native}
+                result: dict[str, Any] = {**self.launch, "backend": backend, "file_native": self.native}
                 if backend == "tmux":
                     result["pid"] = 7
                 else:
