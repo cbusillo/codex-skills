@@ -205,9 +205,8 @@ class LaunchIssueTests(unittest.TestCase):
     def test_read_only_refusal_preserves_the_unreadable_evidence_cause(self) -> None:
         for location in ("ownership", "derived"):
             cause = "Fixture evidence parse failed"
-            issue = {"launch_check": {"allowed": False, "ownership": {}}, "derived": {}}
-            issue["launch_check"]["ownership"] = {"error": cause} if location == "ownership" else {}
-            issue["derived"] = {"error": cause} if location == "derived" else {}
+            issue = {"launch_check": {"allowed": False, "ownership": {"error": cause} if location == "ownership" else {}},
+                     "derived": {"error": cause} if location == "derived" else {}}
             with self.subTest(location=location), patch.object(iterm_tab.subprocess, "run", return_value=
                     subprocess.CompletedProcess([], 0, json.dumps({"ok": True, "issue": issue}))):
                 with self.assertRaises(ValueError) as caught:

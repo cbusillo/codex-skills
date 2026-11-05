@@ -6613,9 +6613,9 @@ class ClaimTests(unittest.TestCase):
         before = copy.deepcopy((self.issue, self.comments, self.wait))
         observations = {"complete": True, "coverage": {}, "inventory": self.inventory, "pulls": []}
         def inspect(_args: Namespace) -> None:
-            with patch.object(PLAN, "read_queue_ownership", return_value=observations), \
-                    patch.object(PLAN, "wait_authors", return_value={TEST_BOT}), \
-                    patch.object(PLAN, "read_issue_relationships", return_value=("bot", {"blocked_by": [], "sub_issues": []})):
+            with patch.multiple(PLAN, read_queue_ownership=Mock(return_value=observations),
+                    wait_authors=Mock(return_value={TEST_BOT}),
+                    read_issue_relationships=Mock(return_value=("bot", {"blocked_by": [], "sub_issues": []}))):
                 PLAN.cmd_show(PLAN.build_parser().parse_args(["--repo", "owner/repo", "show", "42", "--full",
                                                             "--launch-check", "--read-only"]))
         self.run_claim(command=inspect)
