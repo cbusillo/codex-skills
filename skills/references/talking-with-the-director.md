@@ -106,8 +106,9 @@ The JSON record has `version: 1`, `issue` (exact owning issue URL), `decision`,
 would do and why), and `manual` (the Director's work, including "answer only").
 Each option has `answer`, `changes`, `cost` (ongoing cost; explicit zero is valid),
 and `next` (the agent's action after that answer). Recommendation names one answer.
-State a wrong premise or prior choice plainly in the basis; completeness does
-not prove the premise. Validation reports all field errors before posting.
+Use one short line in `basis` saying why this needs the Director; do not paste
+the stop-boundary quote. State a wrong premise or prior choice plainly;
+completeness does not prove the premise. Validation reports all field errors before posting.
 
 The terminal text and `show-question`'s `text` use this shape:
 
@@ -139,7 +140,13 @@ agree with configured `[questions].queue`; without either, the result names the
 recipient and says `not_configured`, never queued or delivered. `--dry-run`
 validates and renders without writes or allocation. Read the same source with
 `oq.py show-question ORIGINAL_URL`; it returns the validated record, text and
-source author and `updated_at` without local counter state.
+source author and `updated_at` without local counter state. Add `--chat` to
+print the full question and original link in the same format as create and update.
+Paste that printed question and link unchanged, including all choices. The stop
+hook checks it against successful helper output in the local transcript; it
+does not read GitHub. Re-read an existing question with `--chat` before presenting
+it. Historical prose questions print their full original body and link without
+rewriting the source or allocating a new number.
 Revise an unanswered question with
 `oq.py update ORIGINAL_URL --record-file FILE --expected-updated-at TIMESTAMP --owner OWNER`, using `show-question`'s timestamp.
 The update keeps the number, URL and queue registration,
