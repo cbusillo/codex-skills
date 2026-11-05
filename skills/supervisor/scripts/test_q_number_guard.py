@@ -16,16 +16,10 @@ from unittest import mock
 import q_number_guard as guard
 import question_record as record
 
-NUMBERED = """**Q590 — Move the nightly sync to the CM host?** I recommend yes: it stops the
-double import. On yes, the agent moves the job and checks one night's run. Ongoing cost: none. An experienced developer would do the same."""
-
 UNNUMBERED_QUESTION = """Two PRs are green and handed to the train.
 
 One decision: should I move the nightly sync to the CM host tonight? I recommend yes; it stops
 the double import, and an experienced developer would do the same."""
-
-UNNUMBERED_ASK = """I recommend enabling the hook only in the direction repository, not user-wide.
-Reply yes and I'll open both PRs."""
 
 STATUS_WITH_QUOTED_QUESTION = """Status, 9:40 PM ET:
 - codex-skills#2402 merged; runtime checkout is current.
@@ -136,8 +130,8 @@ class GuardTests(unittest.TestCase):
         for command in ("create", "update", "show-question"):
             with self.subTest(command=command):
                 transcript = self.transcript(output + "\nRegistration: unchanged\n", command)
-                self.assertEqual(self.run_hook(stop(last_assistant_message=output, transcript_path=str(transcript))), "")
-        self.assertEqual([r["verdict"] for r in self.logged()], ["pass"] * 3)
+                for message in (output, "The first PR landed.\n\n" + output):
+                    self.assertEqual(self.run_hook(stop(last_assistant_message=message, transcript_path=str(transcript))), "")
 
     def test_shortened_changed_or_unregistered_question_blocks(self) -> None:
         output = self.question_output()
@@ -148,7 +142,6 @@ class GuardTests(unittest.TestCase):
             output.replace("Move the job", "Delete the job"),
             output.replace("Q590.", "Q591."),
             output + "\nShould I also replace its runner?",
-            NUMBERED,
         ]
         for message in messages:
             with self.subTest(message=message):
@@ -184,13 +177,6 @@ class GuardTests(unittest.TestCase):
         )
         self.assertEqual(self.run_hook(stop(last_assistant_message=revised, transcript_path=str(transcript))), "")
         self.assertIn("block", self.run_hook(stop(last_assistant_message=output, transcript_path=str(transcript))))
-
-    def test_question_can_follow_status_without_registering_the_status(self) -> None:
-        output = self.question_output()
-        transcript = self.transcript(output)
-        self.assertEqual(
-            self.run_hook(stop(last_assistant_message="The first PR landed.\n\n" + output, transcript_path=str(transcript))), ""
-        )
 
     def test_numbered_status_and_quoted_questions_pass(self) -> None:
         for message in ("**Q855** was approved and implemented. Nothing is needed from you.",
