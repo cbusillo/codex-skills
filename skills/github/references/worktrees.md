@@ -157,7 +157,7 @@ related trees, even across repositories. Use `Refs OWNER/REPO#N` in the PR body
 for delivery associations. Branch-name discovery searches repositories in the
 target GitHub account; name every related branch on the existing claimed record.
 The current issue body may name a retained branch even when its live claim's
-own branch differs. Exact branch tokens count; a prefix of another branch does
+own branch differs. Bare exact branch names count; a prefix of another branch does
 not. An authored release ends that claim's protection, including named retained
 branches; private briefs and historical discussion alone do not associate them.
 An ordinary URL in the body is not a recognized reference;

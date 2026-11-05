@@ -642,7 +642,10 @@ def claims_on(reader, github_read, records: list[tuple[str, int]], branches: set
         comments = github_plan_release.verified_comments(comments, release_evidence)
         released = {source["claim_id"] for source in github_plan_claim.ended_ownership(comments, NO_WORKTREES)}
         body = (issue or {}).get("body") or ""
-        names_branch = any(re.search(rf"(?<![\w./-]){re.escape(branch)}(?![\w./-])", body) for branch in branches)
+        custody = re.sub(r"<!--.*?-->", "", github_plan_claim.unquoted_text(body), flags=re.S)
+        names_branch = any(re.search(
+            rf"(?:^|[\s`'\"(<\[,;:*]){re.escape(branch)}(?=$|[\s`'\")>\],;:*]|\.(?:\s|$))", custody,
+        ) for branch in branches)
         conflicts, _ = github_plan_claim.discussion_evidence(body, comments, ANY_CLAIM,
                                                              ended_claims=released)
         found += [json.dumps(c["record"]) if "record" in c else c.get("text", "") for c in conflicts
