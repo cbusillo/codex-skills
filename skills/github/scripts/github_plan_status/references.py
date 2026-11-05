@@ -5,7 +5,8 @@ from typing import Any
 
 
 def pr_issue_reference(pull: dict[str, Any], number: int, *, repo: str,
-                       local_references: bool = True, attestation: bool = False, record_kind: str = "issue") -> bool:
+                       local_references: bool = True, attestation: bool = False, record_kind: str = "issue",
+                       include_refs: bool = True) -> bool:
     title = pull.get("title") or ""
     body = pull.get("body") or ""
     path_kind = "pull" if record_kind == "pr" else "issues"
@@ -16,8 +17,9 @@ def pr_issue_reference(pull: dict[str, Any], number: int, *, repo: str,
     any_issue = r"(?:https://github\.com/[\w.-]+/[\w.-]+/issues/[1-9]\d*(?:#[\w-]+)?|[\w.-]+/[\w.-]+#[1-9]\d*|#[1-9]\d*)"
     list_item = rf"(?:{any_issue}|<{any_issue}>|\[[^\]\n]+\]\({any_issue}(?:[ \t]+\"[^\"]*\")?\))"
     separator = r"(?:[ \t]*,[ \t]*(?:and[ \t]+)?|[ \t]+and[ \t]+)"
+    reference_keyword = r"refs?|" if include_refs else ""
     ownership_reference = (
-        rf"(?i)(?<![\w])(?:__)?(?:refs?|fix(?:es|ed)?|clos(?:e|es|ed)|resolv(?:e|es|ed)|implement(?:s|ed|ing)?)"
+        rf"(?i)(?<![\w])(?:__)?(?:{reference_keyword}fix(?:es|ed)?|clos(?:e|es|ed)|resolv(?:e|es|ed)|implement(?:s|ed|ing)?)"
         rf"(?:\*\*|__)?\s*:?(?:\*\*|__)?\s+(?:{list_item}{separator})*"
         rf"(?:{issue_reference}|<{issue_url}(?!\d)[^>]*>|"
         rf"\[[^\]\n]+\]\({issue_url}(?!\d)[^\n)]*\))"

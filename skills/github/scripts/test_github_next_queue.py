@@ -233,7 +233,7 @@ def test_local_adapter_reads_current_ownership_and_splits_counts_without_writing
     def read(path: str, **_kwargs):
         observed_paths.append(path)
         if path.endswith('/pulls'):
-            return 'bot', [{'number': 99, 'state': 'open', 'title': 'Implementation', 'body': 'Refs #3', 'head': {'ref': 'work/started'}}]
+            return 'bot', [{'number': 99, 'state': 'open', 'title': 'Implementation', 'body': 'Refs #1, #3\nCloses #3', 'head': {'ref': 'work/started'}}]
         if path.endswith('/branches'):
             return 'bot', []
         raise AssertionError(path)
