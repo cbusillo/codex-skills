@@ -28,8 +28,8 @@ ADDRESSED = re.compile(
 ANSWERED = re.compile(r"\s*[*_]*(yes|no|not yet)[*_]*\s*[,.;—–-]", re.IGNORECASE)
 QUESTION_OUTPUT = re.compile(
     r"^\*\*Q[0-9]+[.] [^\n]+\*\*\n\n- \*\*Context:.*?"
-    r"\nOwning issue: https://github\.com/[^\s]+\n\nOriginal question: "
-    r"https://github\.com/[^\s]+/issues/[0-9]+#issuecomment-[0-9]+",
+    r"\nOwning issue: https://github\.com/\S+\n\nOriginal question: "
+    r"https://github\.com/\S+/issues/[0-9]+#issuecomment-[0-9]+",
     re.MULTILINE | re.DOTALL,
 )
 QUESTION_COMMAND = re.compile(r"(?:^|[\s/])oq\.py['\"]?\s+(?:create|update|show-question)\b")
@@ -105,7 +105,7 @@ def printed_questions(entries: list[dict]) -> tuple[str, ...]:
                 continue
             for match in QUESTION_OUTPUT.finditer(result.get("stdout", "")):
                 question = match[0]
-                printed[NUMBERED.match(question)[0]] = question
+                printed[question.split(" ", 1)[0]] = question
     return tuple(printed.values())
 
 
