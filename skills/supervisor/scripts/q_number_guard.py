@@ -10,187 +10,116 @@ import datetime as dt
 import json
 import os
 import re
-import signal
 import stat
-import subprocess
 import sys
-import time
 from collections import Counter
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Mapping
+from typing import TextIO
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
-
-NUMBERED = re.compile(r"[*][*]Q[0-9]{3,}\b")
-# Quoted material repeats old questions; only the reply's own words count. Only a
-# code fence spans lines, so a blockquote never hides the text after it.
-QUOTED = re.compile(r"(?s:```.*?```)|`[^`\n]*`|^[ \t]*>.*$|\"[^\"\n]*\"|“[^”\n]*”|‘[^’\n]*’|https?://\S+",
-                    re.MULTILINE)
-# A clause, so a lead-in such as "One decision:" does not hide "should I ...?".
+NUMBERED = re.compile(r"^\*\*Q[0-9]+[. —–-]", re.MULTILINE)
+QUOTED = re.compile(r'(?s:```.*?```)|`[^`\n]*`|^[ \t]*>.*$|"[^"\n]*"|“[^”\n]*”|‘[^’\n]*’|https?://\S+', re.MULTILINE)
 SENTENCE = re.compile(r"[^.!?:;\n]*[?]")
 ADDRESSED = re.compile(
     r"\b(you|your|chris|director|ok|okay|sound good|any objections?)\b"
     r"|^\W*(should|shall|may|can|could|do|does|want|ok|okay|approve|which|go ahead|proceed|merge|land)\b",
     re.IGNORECASE,
 )
-# Asks that need no question mark, in the Supervisor's usual phrasings.
-ASK = re.compile(
-    r"\b(reply yes|say yes|say the word|let me know (if|whether|which)|your call|needs your (decision|approval|answer|ok)"
-    r"|waiting on your (decision|approval|answer)|for you to decide)\b",
-    re.IGNORECASE,
-)
-# A status report answers its own question in place: "Can the train merge yet? No, CI is running."
 ANSWERED = re.compile(r"\s*[*_]*(yes|no|not yet)[*_]*\s*[,.;—–-]", re.IGNORECASE)
-NEGATED = re.compile(r"\b(nothing|no|not|never)\b[^.!?\n]{0,20}$", re.IGNORECASE)
-COST = re.compile(r"\b(costs?|upkeep|maintenance|ongoing effort)\b", re.IGNORECASE)
-DEVELOPER = re.compile(r"\b(experienced|senior|sr\.?)\s+(professional\s+)?(developers?|devs?|engineers?)\b", re.IGNORECASE)
-LOOKUP_TIMEOUT = 3
-API_HELPER = Path(__file__).resolve().parents[2] / "github/scripts/github_api.py"
+QUESTION_OUTPUT = re.compile(
+    r"^\*\*Q[0-9]+[.] [^\n]+\*\*\n\n- \*\*Context:.*?"
+    r"\nOwning issue: https://github\.com/[^\s]+\n\nOriginal question: "
+    r"https://github\.com/[^\s]+/issues/[0-9]+#issuecomment-[0-9]+",
+    re.MULTILINE | re.DOTALL,
+)
+QUESTION_COMMAND = re.compile(r"(?:^|[\s/])oq\.py['\"]?\s+(?:create|update|show-question)\b")
 
 
 def asks_director(text: str) -> bool:
-    questions = (match[0] for match in SENTENCE.finditer(text)
-                 if not ANSWERED.match(text, match.end()))
-    # "Nothing is waiting on your approval" reports that there is no ask.
-    return (any(NUMBERED.search(question) or ADDRESSED.search(question.strip(" \t*_-")) for question in questions)
-            or any(not NEGATED.search(text, endpos=ask.start()) for ask in ASK.finditer(text)))
-
-
-def director_question_rule() -> str:
-    try:
-        from question_record import OPTION_FIELDS, TEXT_FIELDS
-
-        fields = ", ".join(("version", *TEXT_FIELDS, f"options ({', '.join(OPTION_FIELDS)})"))
-    except (ImportError, SyntaxError, OSError):
-        fields = "see talking-with-the-director.md#director-questions"
-    return (
-        "Create the Director question with `oq.py create --record-file FILE --owner OWNER`, or revise an unanswered one with `oq.py update`.\n"
-        f"Required record keys: {fields}.\n"
-        "Send only the numbered question returned by the helper; do not repeat the whole reply. If no question was asked, end unchanged."
+    return bool(NUMBERED.search(text)) or any(
+        ADDRESSED.search(match[0].strip(" \t*_-")) and not ANSWERED.match(text, match.end()) for match in SENTENCE.finditer(text)
     )
 
 
-def missing_context(message: str) -> str | None:
-    text = QUOTED.sub(" ", message)
-    if not asks_director(text):
-        return None
-    has_context = bool(COST.search(text) and DEVELOPER.search(text))
-    if not NUMBERED.search(text):
-        return director_question_rule()
-    if has_context:
-        return None
-    if not has_unnumbered_ask(text) and registered_records_cover(message):
-        return None
-    return director_question_rule()
+def director_question_rule() -> str:
+    return (
+        "Create the Director question with `oq.py create --record-file FILE --owner OWNER`, "
+        "or revise an unanswered one with `oq.py update`. "
+        "For an existing question, run `oq.py show-question ORIGINAL_URL --chat`.\n"
+        "Paste the helper's full printed question and original link unchanged, including all choices; "
+        "do not send just the heading or a link. If no question was asked, end unchanged."
+    )
 
 
-def has_unnumbered_ask(text: str) -> bool:
-    if any(match[0].count("?") > 1 for match in re.finditer(NUMBERED.pattern + r"[^*\n]*\*\*", text)):
-        return True
-    text = re.sub(NUMBERED.pattern + r"[^*?\n]*\?\*\*", " ", text)
-    questions = [match[0] for match in SENTENCE.finditer(text)
-                 if not ANSWERED.match(text, match.end()) and ADDRESSED.search(match[0].strip(" \t*_-"))]
-    if any(not NUMBERED.search(question) for question in questions):
-        return True
-    for ask in ASK.finditer(text):
-        if not NEGATED.search(text, endpos=ask.start()):
-            start = max(text.rfind(separator, 0, ask.start()) for separator in ".!?:;\n") + 1
-            if not NUMBERED.search(text[start:ask.end()]):
-                return True
-    return False
+def missing_context(message: str, printed: tuple[str, ...] = ()) -> str | None:
+    for question in printed:
+        message = message.replace(question, "")
+    return director_question_rule() if asks_director(QUOTED.sub(" ", message)) else None
 
 
-def read_question(url: str, deadline: float) -> dict:
-    from question_record import delivery
-
-    match = delivery.COMMENT_URL.fullmatch(url)
-    if match is None:
-        raise ValueError("question source link is invalid")
-    if time.time() >= deadline:
-        raise TimeoutError("question lookup deadline elapsed")
-    command = [sys.executable, str(API_HELPER), "call", "--method", "GET",
-               f"/repos/{match[1]}/issues/comments/{match[3]}", "--operation", "github.read", "--read"]
-    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, start_new_session=True,
-                          env={**os.environ, "GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH": "1",
-                               "GITHUB_RETRY_DEADLINE_AT": str(deadline)}) as child:
-        try:
-            output, _ = child.communicate(timeout=max(0, deadline - time.time()))
-        except subprocess.TimeoutExpired:
+def transcript_entries(payload: Mapping) -> list[dict]:
+    path = payload.get("transcript_path")
+    if not isinstance(path, str) or not path:
+        return []
+    path = Path(path).expanduser()
+    if not path.is_file():
+        return []
+    entries = []
+    with path.open(encoding="utf-8") as transcript:
+        for line in transcript:
             try:
-                os.killpg(child.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                child.wait()
-            raise
-    payload = json.loads(output)
-    if child.returncode or payload.get("ok") is not True or payload.get("outcome_certainty") != "confirmed":
-        raise ValueError("question source read is unavailable")
-    comment = payload["body"]
-    if comment["html_url"] != url:
-        raise ValueError("question source identity changed")
-    return {"body": comment["body"], "url": url, "author": comment["user"]["login"],
-            "issue": f"https://github.com/{match[1]}/issues/{match[2]}"}
-
-
-def registered_records_cover(message: str) -> bool:
-    if "github.com/" not in message:
-        return False
-    try:
-        import question_record
-
-        links = dict.fromkeys(match[0] for match in question_record.delivery.COMMENT_URL.finditer(message))
-        if not links:
-            return False
-        queue = question_record.question_id.configured_queue()
-        if not queue:
-            return False
-        deadline = time.time() + LOOKUP_TIMEOUT
-        owner = queue.split("/", 1)[0]
-        trusted = {
-            owner.casefold(),
-            *(author.casefold() for author in question_record.delivery.oq.default_decision_authors()),
-        }
-        requested_ids = {match[0].strip("*") for match in NUMBERED.finditer(QUOTED.sub(" ", message))}
-        registered_ids = set()
-        for url in links:
-            source = read_question(url, deadline)
-            if source["author"].casefold() not in trusted:
-                continue
-            try:
-                registered_ids.add(question_record.read_record(source)["question_id"])
+                entry = json.loads(line)
             except ValueError:
                 continue
-            if requested_ids <= registered_ids:
-                return True
-        return False
-    except (OSError, ValueError, KeyError, TypeError, ImportError, AttributeError, SyntaxError, RuntimeError,
-            IndexError, subprocess.SubprocessError):
-        return False
+            if isinstance(entry, dict):
+                entries.append(entry)
+    return entries
+
+
+def printed_questions(entries: list[dict]) -> tuple[str, ...]:
+    calls = set()
+    printed = {}
+    for entry in entries:
+        content = entry.get("message", {}).get("content", [])
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if (
+                entry.get("type") == "assistant"
+                and block.get("type") == "tool_use"
+                and block.get("name") == "Bash"
+                and QUESTION_COMMAND.search(block.get("input", {}).get("command", ""))
+            ):
+                calls.add(block.get("id"))
+            if (
+                entry.get("type") != "user"
+                or block.get("type") != "tool_result"
+                or block.get("tool_use_id") not in calls
+                or block.get("is_error")
+            ):
+                continue
+            result = entry.get("toolUseResult", {})
+            if not isinstance(result, dict) or result.get("interrupted") or result.get("exitCode", 0) != 0:
+                continue
+            for match in QUESTION_OUTPUT.finditer(result.get("stdout", "")):
+                question = match[0]
+                printed[NUMBERED.match(question)[0]] = question
+    return tuple(printed.values())
 
 
 def last_message(payload: Mapping) -> str | None:
     message = payload.get("last_assistant_message")
     if isinstance(message, str):
         return message
-    # Older harnesses omit the field; the transcript may lag but is the only other source.
-    path = payload.get("transcript_path")
-    if not isinstance(path, str) or not path:
-        return None
-    path = Path(path).expanduser()
-    if not path.is_file():  # A FIFO or device could block until the harness timeout.
-        return None
     text = None
-    with open(path, encoding="utf-8") as transcript:
-        for line in transcript:
-            try:
-                entry = json.loads(line)
-            except ValueError:
-                continue
-            content = entry.get("message", {}).get("content") if entry.get("type") == "assistant" else None
-            parts = [part.get("text", "") for part in content if isinstance(part, dict) and part.get("type") == "text"] \
-                if isinstance(content, list) else [content] if isinstance(content, str) else []
-            if any(parts):
-                text = "\n".join(parts)
+    for entry in transcript_entries(payload):
+        content = entry.get("message", {}).get("content") if entry.get("type") == "assistant" else None
+        parts = [part.get("text", "") for part in content if isinstance(part, dict) and part.get("type") == "text"] \
+            if isinstance(content, list) else [content] if isinstance(content, str) else []
+        if any(parts):
+            text = "\n".join(parts)
     return text
 
 
@@ -200,7 +129,7 @@ def verdict(payload: object) -> tuple[str | None, str | None]:
     if payload.get("stop_hook_active"):
         return "second-pass", None
     message = last_message(payload)
-    reason = missing_context(message) if message is not None else None
+    reason = missing_context(message, printed_questions(transcript_entries(payload))) if message is not None else None
     return ("caught" if reason else "pass"), reason
 
 
@@ -221,7 +150,7 @@ def append(path: Path, record: dict) -> None:
         os.close(fd)
 
 
-def hook(stdin, stdout, env: Mapping[str, str]) -> int:
+def hook(stdin: TextIO, stdout: TextIO, env: Mapping[str, str]) -> int:
     try:
         payload = json.load(stdin)
         result, reason = verdict(payload)
@@ -233,7 +162,7 @@ def hook(stdin, stdout, env: Mapping[str, str]) -> int:
     try:
         session = payload.get("session_id")
         append(log_path(env), {
-            "time": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+            "time": dt.datetime.now(dt.UTC).isoformat(timespec="seconds"),
             "session": session if isinstance(session, str) else None,
             "verdict": result,
         })

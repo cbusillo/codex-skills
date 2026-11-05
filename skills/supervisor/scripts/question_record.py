@@ -292,6 +292,10 @@ def create(record: Any, args: argparse.Namespace, storage: QuestionStorage, fetc
     return {**view, "registration": row["registration_url"], "queue": queue}
 
 
+def chat_text(result: dict[str, Any]) -> str:
+    return result["text"] + (f"\n\nOriginal question: {result['url']}" if result.get("url") else "")
+
+
 def main(argv: list[str], fetch: DiscussionReader) -> int:
     parser = argparse.ArgumentParser(description="Create or read one structured Director question")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -309,17 +313,17 @@ def main(argv: list[str], fetch: DiscussionReader) -> int:
     revise.add_argument("--decision-author", action="append", default=delivery.oq.default_decision_authors())
     show = commands.add_parser("show-question")
     show.add_argument("url")
+    show.add_argument("--chat", action="store_true", help="Print the full question for pasting unchanged into chat")
     args = parser.parse_args(argv)
     storage = GitHubComments(fetch)
     try:
         if args.command == "show-question":
-            print(json.dumps(read_record(storage.read(args.url))))
+            result = read_record(storage.read(args.url))
+            print(chat_text(result) if args.chat else json.dumps(result))
             return 0
         action = update if args.command == "update" else create
         result = action(json.loads(args.record_file.read_text()), args, storage, fetch)
-        print(result["text"])
-        if result.get("url"):
-            print(f"\nOriginal question: {result['url']}")
+        print(chat_text(result))
         print(f"Registration: {result['registration']}")
         if result.get("recipient"):
             print(f"Next actor: present the link to {result['recipient']}.")

@@ -166,9 +166,9 @@ Rules for this brief (every Supervisor brief carries them):
   with their original Q and source link; do not create them again. Leave presentation
   to the Supervisor; never use a
   native question UI (`request_user_input`, `request_user_input_async` or
-  `AskUserQuestion`) in a Supervisor-launched worker. Quote the exact
-  stop-boundary line from the overall or
-  repository DIRECTION.md in the record's `basis`, then continue with what you can. Write no Q number
+  `AskUserQuestion`) in a Supervisor-launched worker. Use one short line in
+  `basis` saying why this needs the Director, without pasting the stop boundary,
+  then continue with what you can. Write no Q number
   yourself: the comment helpers number it from the
   [shared counter](../../references/talking-with-the-director.md#decisions-holds-and-work-state)
   and keep any number already there. Only a reply from

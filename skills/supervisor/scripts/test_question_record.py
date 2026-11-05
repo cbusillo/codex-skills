@@ -115,7 +115,7 @@ class QuestionRecordTests(unittest.TestCase):
         self.assertTrue(lines[0].endswith("**"))
         choices = [line for line in lines if line.startswith("  - **")]
         self.assertEqual(len(choices), len(view["record"]["options"]))
-        for option, line in zip(view["record"]["options"], choices):
+        for option, line in zip(view["record"]["options"], choices, strict=True):
             for field in record.OPTION_FIELDS:
                 self.assertIn(str(option[field]), line)
             self.assertNotIn("..", line)
@@ -135,6 +135,31 @@ class QuestionRecordTests(unittest.TestCase):
         source["body"] = original.replace(view["record"]["manual"], "Do something else", 1)
         with self.assertRaises(ValueError):
             record.read_record(source)
+
+    def test_existing_question_chat_print_matches_create_and_update(self) -> None:
+        path = Path(self.temporary.name) / "question.json"
+        path.write_text(json.dumps(question()))
+        outputs = []
+        for command in ("create", "update", "show-question"):
+            output = StringIO()
+            arguments = (
+                [command, self.source["url"], "--chat"]
+                if command == "show-question"
+                else [command, "--record-file", str(path), "--owner", self.args.owner]
+            )
+            if command == "update":
+                arguments += [self.source["url"], "--expected-updated-at", self.source["updated_at"]]
+            with (
+                patch.object(record, "create", return_value=record.read_record(self.source) | {"registration": "not_configured"}),
+                patch.object(record, "update", return_value=record.read_record(self.source) | {"registration": "unchanged"}),
+                redirect_stdout(output),
+            ):
+                self.assertEqual(record.main(arguments, lambda _item: [self.source]), 0)
+            outputs.append(output.getvalue().split("Registration:")[0].strip())
+        self.assertEqual(outputs[0], outputs[1])
+        self.assertEqual(outputs[0], outputs[2])
+        self.assertIn(record.read_record(self.source)["text"], outputs[2])
+        self.assertIn(self.source["url"], outputs[2])
 
     def test_dry_run_and_no_queue_preserve_truthful_registration(self) -> None:
         self.args.dry_run = True
@@ -247,7 +272,7 @@ class QuestionRecordTests(unittest.TestCase):
             record.question_id.verify_number(counter, int(first["question_id"][1:]), first["url"])
             self.assertEqual(record.read_record(storage.read(first["url"]))["text"], first["text"])
             self.assertIsNone(record.RECORD.search(first["text"]))
-            self.assertIsNone(guard.missing_context(first["text"]))
+            self.assertIsNotNone(guard.missing_context(first["text"]))
             state = Path(self.temporary.name) / "questions-state.json"
 
             def routine_check(*options: str) -> dict:
