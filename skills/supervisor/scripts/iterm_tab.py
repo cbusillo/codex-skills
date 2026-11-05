@@ -518,6 +518,10 @@ def message_sections(readback: dict[str, Any]) -> tuple[str, str]:
     return normalize(lines[:queued]), normalize(lines[queued:])
 
 
+def close_codex_slash_popup(text: str) -> str:
+    return text + " " if text == "/quit" else text
+
+
 def exit_observer(text: str, tty: str | None) -> Callable[[], bool] | None:
     import session_liveness
 
@@ -562,7 +566,7 @@ async def submit_message(
                     and any(re.search(r"\btab to queue(?: message)?\b", line) for line in footer)):
                 key = "\t"
         if submit:
-            if text in {"/quit", "/exit"} and (prompt.get("text") != text or key != "\r"):
+            if text in {"/quit", "/exit"} and ((prompt.get("text") or "").rstrip() != text or key != "\r"):
                 raise SendFailure(identity, "not_attempted", "exit input changed or would be queued")
             submission = "unknown"
             await press(key)
@@ -2125,7 +2129,7 @@ async def operate(app, args):
                 )
                 ended = exit_observer(text, await session.async_get_variable("tty")) if (
                     not args.no_submit and text in {"/quit", "/exit"}) else None
-            await send(session, text, submit=False)
+            await send(session, close_codex_slash_popup(text), submit=False)
 
             async def read_message() -> dict[str, Any]:
                 return await read_session(select_session(app, args.session_id))

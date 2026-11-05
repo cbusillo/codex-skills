@@ -387,7 +387,7 @@ async def operate(args):
                 text = args.text_file.read_text(encoding="utf-8") if args.text_file else args.text
                 row = terminal.select(args.session_id)
                 ended = iterm_tab.exit_observer(text, row.get("tty")) if not args.no_submit else None
-            await terminal.send(args.session_id, text, submit=False)
+            await terminal.send(args.session_id, iterm_tab.close_codex_slash_popup(text), submit=False)
 
             async def read_message() -> dict:
                 if target_identity(terminal.select(args.session_id)) != target_identity(row):
