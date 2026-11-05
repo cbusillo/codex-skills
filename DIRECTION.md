@@ -66,4 +66,6 @@ rule above, not a reason to drop inspection.
 
 ## Milestones
 
-None.
+- `Catalog under 250,000 lines` proves the catalog is under 250,000 lines of
+  code, tests and docs by December 5, 2026, with the journey above still
+  passing on both harnesses; ends if a cut breaks a journey step twice.
