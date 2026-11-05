@@ -2153,10 +2153,10 @@ def cmd_show(args: argparse.Namespace) -> None:
         if not args.read_only:
             try:
                 validate_wait_resolution(args.wait_resolved, issue["repo"])
-                if args.wait_resolved and not facts.get("retained_handoff"):
-                    raise PlanError("Launch wait evidence needs a verified retained-source handoff")
                 check_claim_wait({**issue, "claim_wait": wait}, claim_current_status(issue, read_plan_sections(issue)[0], comments), config,
                                  wait_resolved=args.wait_resolved if wait["state"] != "review" else None)
+                if args.wait_resolved and not facts.get("retained_handoff"):
+                    raise PlanError("Launch wait evidence needs a verified retained-source handoff")
                 admission, admission_links, _ = claim_admission_options(args)
                 if admission == "milestone":
                     track = milestone_claim_track(issue, admission_links)
@@ -3585,11 +3585,15 @@ def claim_once(args: argparse.Namespace) -> None:
             retained_mode = selection["mode"] != "plain"
             handoff_id = selection["handoff"]
             if not retained_mode:
-                handoff_required = source_number != number or issue_repo.casefold() != target_repo.casefold() or source_open
+                handoff_required = (source_number != number or issue_repo.casefold() != target_repo.casefold() or source_open
+                    or (args.wait_resolved and phase_records[(issue_repo.casefold(), number)][0]["claim_wait"]["state"] != "clear"))
                 same_source_branch = claim["branch"] == record["branch"]
                 if handoff_required:
                     handoff_error = github_plan_claim.ClaimProofError("claim_handoff_pr_required",
-                        "Released work requires a qualified source-authored retained-PR handoff")
+                        "Released work requires a qualified source-authored retained-PR handoff. Scoped prerequisite evidence "
+                        "cannot clear product waits. For a genuinely resolved wait on released work without a PR, use an "
+                        "ordinary new-branch claim without --resume-from, or record its verified resolution with "
+                        "gh-plan.py wait --clear --evidence before resuming.")
                     requirements = [recovery_requirement("retained_handoff", "released_source",
                                                         source_repo=issue_repo, source_number=source_number)]
                     if same_source_branch:
@@ -3988,9 +3992,6 @@ def claim_once(args: argparse.Namespace) -> None:
         if conflicts:
             refuse_or_route(conflicts, comments)
         check_wait(issue, status)
-        if args.resume_from and args.wait_resolved and issue["claim_wait"]["state"] != "clear" and not retained_mode:
-            raise ClassifiedPlanError("claim_handoff_pr_required",
-                "Resumed prerequisite evidence cannot clear product waits without a verified retained-PR handoff")
         planned_wait = previous_wait if retained_mode else github_plan_wait.marker(
             github_plan_wait.reviewed(evidence=args.wait_resolved or issue["claim_wait"]["evidence"]))
         if owned:

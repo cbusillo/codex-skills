@@ -1292,6 +1292,11 @@ legacy review's verified absence on the claim itself. It grants no permission
 to clear a Director/repository hold and must account for the full record.
 Ordinary retained-work successor claims preserve the issue and retained PR
 wait records; scoped prerequisite authority never clears those product holds.
+A resumed prerequisite with unresolved waits needs a qualified retained handoff.
+For a genuinely resolved wait on released work without a PR, use the ordinary
+new-branch claim without `--resume-from`, or record the verified resolution with
+`wait --clear --evidence` first. Neither route treats scoped source authority as
+a product hold's resolution.
 `show --launch-check --resume-from <source> --wait-resolved <evidence>` carries
 the same existing scoped evidence for a retained-source launch, without a claim
 or wait write. A missing or unreviewed anchor wait record or an unproven retained

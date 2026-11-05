@@ -4061,7 +4061,7 @@ class ClaimTests(unittest.TestCase):
             waiting_for=["Preview", "Client"], ends_when=["Current image passes", "Client accepts current head"])
         self.record_wait(target="99")
         retained_before = copy.deepcopy(self.target_comments)
-        evidence = "Existing source brief authorizes the image prerequisite; preserve preview and Client holds."
+        evidence = "The Director's existing source brief authorizes the image prerequisite; preserve preview and Client holds."
         anchor = "https://github.com/owner/repo/issues/42"
         header = (f"Trial token: {OWNER['worker']}\nAnchor and claim: {anchor}\n"
                   f"Resume from: {anchor}#issuecomment-{self.args.resume_from}\n"
@@ -4108,8 +4108,9 @@ class ClaimTests(unittest.TestCase):
                 "mismatched_source": "verified retained-source handoff", "unreleased_source": "verified retained-source handoff",
                 "foreign_release": "verified retained-source handoff", "no_handoff": "verified retained-source handoff",
                 "redirected": "needs Next actor", "native_blocker": "Launch refused.*blocked",
-                "incomplete": "Launch refused", "competitor": "comment", "artifact": "local_branches",
-                "review_wait": "claim_wait_unresolved", "unproven_without_artifacts": "verified retained-source handoff"}
+                "incomplete": "Launch refused", "competitor": "Launch refused", "artifact": "local_branches",
+                "review_wait": "claim_wait_unresolved", "review_wait_without_handoff": "claim_wait_unresolved",
+                "unproven_without_artifacts": "verified retained-source handoff"}
             for change, refusal in refusals.items():
                 with self.subTest(change=change), preserve_fixture():
                     candidate = header
@@ -4126,25 +4127,43 @@ class ClaimTests(unittest.TestCase):
                     if change == "incomplete": observed["complete"] = False
                     if change == "competitor": self.compete()
                     if change == "artifact": self.inventory["local_branches"].append("work/issue-42-extra")
-                    if change == "review_wait": self.wait = None
+                    if change.startswith("review_wait"): self.wait = None
                     observed["inventory"] = self.inventory
-                    if change == "unproven_without_artifacts": observed.update(pulls=[], inventory={})
+                    if change in {"unproven_without_artifacts", "review_wait_without_handoff"}: observed.update(pulls=[], inventory={})
                     brief.write_text(candidate)
                     with self.assertRaisesRegex(ValueError, refusal):
                         iterm_tab.prepare_launches(launches)
                     self.assert_no_writes()
                     if change == "incomplete":
                         self.assertFalse(self.emitted.call_args.args[0]["issue"]["launch_check"]["ownership"]["complete"])
+                    if change == "competitor":
+                        self.assertTrue(any(row["source"] == "comment" for row in
+                                            self.emitted.call_args.args[0]["issue"]["launch_check"]["ownership"]["conflicts"]))
+                    if change == "review_wait_without_handoff":
+                        expected = self.emitted.call_args.args[0]["issue"]["launch_check"]["error"]
+                        brief.write_text(candidate.replace(f"Wait resolution: {evidence}\n", ""))
+                        with self.assertRaisesRegex(ValueError, expected["code"]):
+                            iterm_tab.prepare_launches(launches)
+                        actual = self.emitted.call_args.args[0]["issue"]["launch_check"]["error"]
+                        self.assertEqual((actual["code"], actual["review_required"]), (expected["code"], True))
             brief.write_text(header)
             commands, _ = iterm_tab.prepare_launches(launches)
             self.assert_no_writes()
             self.assertEqual(calls[-1].wait_resolved, evidence)
             prompt = next(word.removeprefix("--prompt-interactive=") for word in shlex.split(commands[0])
                           if word.startswith("--prompt-interactive="))
-            arguments = next(shlex.split(line) for line in prompt.splitlines() if line.startswith("--dispatch-recipient "))
+            argument_lines = []
+            for line in prompt.splitlines():
+                try:
+                    words = shlex.split(line)
+                except ValueError:
+                    continue
+                if "--wait-resolved" in words:
+                    argument_lines.append(words[next(index for index, word in enumerate(words) if word.startswith("--")):])
+            self.assertEqual(len(argument_lines), 1)
             parsed = parser.parse_args(["--repo", self.args.repo, "claim", self.args.issue,
                 "--worker", self.args.worker, "--session", self.args.session, "--branch", self.args.branch,
-                "--next-action", self.args.next_action, *arguments])
+                "--next-action", self.args.next_action, *argument_lines[0]])
             self.assertEqual(parsed.wait_resolved, evidence)
             self.assertEqual(parsed.resume_from, calls[-1].resume_from)
             self.args = parsed
@@ -4164,16 +4183,33 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(self.target_comments, retained_before)
 
     def test_resumed_prerequisite_cannot_downgrade_to_plain_and_clear_product_waits(self) -> None:
-        self.no_pr_resume_fixture()
-        self.inventory = {"worktrees": [], "local_branches": [], "remote_branches": []}
-        self.record_wait()
-        before = copy.deepcopy((self.issue, self.comments))
-        self.args.wait_resolved = "Authorized prerequisite only; preserve every product hold."
-        with self.assertRaises(PLAN.ClassifiedPlanError) as stopped:
-            self.run_claim()
-        self.assertEqual(stopped.exception.code, "claim_handoff_pr_required")
-        self.assert_no_writes()
-        self.assertEqual((self.issue, self.comments), before)
+        for mode in ("retained_required", "source_error", "real_resolution"):
+            with self.subTest(mode=mode):
+                self.setUp()
+                self.no_pr_resume_fixture()
+                self.inventory = {"worktrees": [], "local_branches": [], "remote_branches": []}
+                if mode == "source_error":
+                    self.comments.pop()
+                    with self.assertRaises(PLAN.ClassifiedPlanError) as original:
+                        self.run_claim()
+                    expected = original.exception.code
+                self.record_wait()
+                before = copy.deepcopy((self.issue, self.comments))
+                self.args.wait_resolved = "Authorized prerequisite only; preserve every product hold."
+                if mode == "real_resolution":
+                    self.args.resume_from = None
+                    self.args.wait_resolved = "The Client's current-head acceptance is verified; the wait has truly ended."
+                    self.run_claim()
+                    self.assertEqual(wait_record.current(self.issue, self.comments, {TEST_BOT})["state"], "clear")
+                    continue
+                with self.assertRaises(PLAN.ClassifiedPlanError) as stopped:
+                    self.run_claim()
+                self.assertEqual(stopped.exception.code, expected if mode == "source_error" else "claim_handoff_pr_required")
+                if mode == "retained_required":
+                    self.assertTrue(any(row["kind"] == "retained_handoff" for row in
+                                        stopped.exception.payload["recovery_requirements"]["requirements"]))
+                self.assert_no_writes()
+                self.assertEqual((self.issue, self.comments), before)
 
     def test_dk273_handoff_context_does_not_gate_retained_successor(self) -> None:
         for cross_repo, held in product((False, True), (None, "99", "100")):

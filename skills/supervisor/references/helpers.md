@@ -1329,11 +1329,9 @@ the standard header may also carry `Resume from: <exact-source-claim-comment-URL
 The launcher passes that evidence to `show --launch-check --wait-resolved` and
 adds both quoted source and evidence arguments to the worker's own claim
 instruction, alongside its coordinator argument. The worker verifies current
-source, holds and scoped authority first. Task prose supplies no evidence. This route needs the existing
-authored release and retained-PR handoff, a reviewed anchor wait record, complete
-ownership reads and no native blocker; the worker still performs the full
-fresh claim and readbacks under its own identity. It preserves product and
-Client waits and grants no Ready, merge, cleanup or product-operation authority.
+source, holds and scoped authority first. Task prose supplies no evidence;
+the [claim contract](../../github/references/cli-reference.md#planning-claim)
+owns retained proof, wait preservation and the worker's fresh claim/readbacks.
 An unresolved Director or repository hold on the prerequisite itself still
 requires its actual resolution; never assert scoped authority to evade it.
 For a new milestone lead, the Supervisor adds `--ledger <shared-ledger>` and

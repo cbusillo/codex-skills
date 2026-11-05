@@ -1382,13 +1382,11 @@ def check_launch_issue(brief: str, *, dispatch_recipient: str | None = None, dis
             anchors.append((mode, match[1]))
         elif not re.search(r"https://github\.com/[\w.-]+/[\w.-]+/pull/[1-9]\d*", value):
             raise ValueError("An explicit issue anchor needs its full https://github.com/OWNER/REPO/issues/N URL")
-    if not anchors and not wait_resolved:
+    if not anchors:
         return
     resume = launch_resume_source(brief)
     if resume and len(set(anchor for _, anchor in anchors)) != 1:
         raise ValueError("A retained-delivery brief needs one anchor for its source claim")
-    if wait_resolved and (not resume or len(set(anchors)) != 1 or anchors[0][0].casefold() == "read-only anchor"):
-        raise ValueError("Wait resolution needs one execution anchor and its exact Resume from source claim")
     declarations = re.findall(r"(?mi)^[^\S\n]*(?:[-*] )?(?:\*\*)?Admission(?: for [^:\n]+)?:(?:\*\*)?[^\S\n]*([^\n]*)", brief)
     if len(declarations) > 1:
         raise ValueError("An execution brief needs one Admission line naming the claim kind and its evidence links")
@@ -1411,7 +1409,7 @@ def check_launch_issue(brief: str, *, dispatch_recipient: str | None = None, dis
                 argv.extend(["--admission-link", link])
         if resume:
             argv.extend(["--resume-from", resume])
-        if wait_resolved:
+        if wait_resolved and mode.casefold() != "read-only anchor":
             argv.extend(["--wait-resolved", wait_resolved])
         try:
             result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)

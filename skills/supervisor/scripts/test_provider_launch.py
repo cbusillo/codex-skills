@@ -46,19 +46,6 @@ def patch_attr(target: object, name: str, **kwargs: Any) -> Any:
 
 
 class LaunchIssueTests(unittest.TestCase):
-    def test_prerequisite_evidence_needs_one_execution_anchor_and_is_never_inferred_from_task_prose(self) -> None:
-        evidence = "Existing scoped source authority; all product holds remain."
-        anchor = "https://github.com/fixture/repo/issues/7"
-        resume = f"\nResume from: {anchor}#issuecomment-123"
-        with patch.object(iterm_tab.subprocess, "run") as reader:
-            for brief in ("", f"Read-only anchor: {anchor}",
-                          f"Anchor: {anchor}\nAnchor: https://github.com/fixture/repo/issues/8"):
-                with self.subTest(brief=brief), self.assertRaisesRegex(ValueError, "Wait resolution needs|retained-delivery brief"):
-                    iterm_tab.check_launch_issue(brief + resume, wait_resolved=evidence)
-            reader.assert_not_called()
-            iterm_tab.check_launch_issue(f"Ordinary task prose.\nWait resolution: {evidence}")
-            reader.assert_not_called()
-
     def test_child_issue_brief_reaches_worker_verbatim_under_supervisor_header(self) -> None:
         issue = "https://github.com/fixture/repo/issues/7"
         task = ("Keep  two spaces.\n\n### Goal\nUse `quotes`, 'apostrophes' and $literal.\n> Preserve this.\n"
