@@ -6607,6 +6607,27 @@ class ClaimTests(unittest.TestCase):
                             for row in caught.exception.payload["competing_evidence"]))
         self.assert_no_writes()
 
+    def test_read_only_preflight_does_not_authorize_a_later_claim_of_live_work(self) -> None:
+        self.issue["body"] += CLAIM.marker(OTHER)
+        self.comments = [{"id": 1, "user": {"login": TEST_BOT}, "body": CLAIM.marker(OTHER)}]
+        before = copy.deepcopy((self.issue, self.comments, self.wait))
+        observations = {"complete": True, "coverage": {}, "inventory": self.inventory, "pulls": []}
+        def inspect(_args: Namespace) -> None:
+            with patch.multiple(PLAN, read_queue_ownership=Mock(return_value=observations),
+                    wait_authors=Mock(return_value={TEST_BOT}),
+                    read_issue_relationships=Mock(return_value=("bot", {"blocked_by": [], "sub_issues": []}))):
+                PLAN.cmd_show(PLAN.build_parser().parse_args(["--repo", "owner/repo", "show", "42", "--full",
+                                                            "--launch-check", "--read-only"]))
+        self.run_claim(command=inspect)
+        check = self.emitted.call_args.args[0]["issue"]["launch_check"]
+        self.assertTrue(check["allowed"])
+        self.assertTrue(check["ownership"]["conflicts"])
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_claim()
+        self.assertEqual(caught.exception.code, "claim_conflict")
+        self.assertEqual((self.issue, self.comments, self.wait), before)
+        self.assert_no_writes()
+
     def test_lead_launch_request_allows_a_fresh_worker_but_keeps_claims_and_waits(self) -> None:
         lead = "01970242-7941-7f0c-b461-16aa5723fb52"
         for retained, mode in product((None, "numeric", "url", "case-url"), ("clear", "competitor", "wait", "redirected", "no-dispatch")):

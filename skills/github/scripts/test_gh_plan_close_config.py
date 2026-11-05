@@ -229,7 +229,7 @@ class CloseConfigTests(unittest.TestCase):
                      admission_links: list[str] | None = None, milestone: dict | None = None,
                      track: dict | None = None, actor: str | None = None, worker: str | None = None, body_time: str | None = None,
                      dispatch_recipient: str | None = None,
-                     source_number: int = 6,
+                     source_number: int = 6, ownership_complete: bool = True,
                      ancestry: set[tuple[str, int]] | None = None) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
         target = "fixture/target"
         configs = {repo: copy.deepcopy(PLAN.DEFAULT_CONFIG) for repo in ("fixture/local", target)}
@@ -268,7 +268,7 @@ class CloseConfigTests(unittest.TestCase):
                 patch.object(github_plan_claim, "local_inventory", return_value={
                     "local_branches": [], "remote_branches": [], "worktrees": [], "sessions": []}), \
                 patch.object(github_work_graph, "ownership_inventory", return_value={
-                    "complete": True, "pulls": pulls or [], "coverage": {}, "inventory": {}}), contextlib.redirect_stdout(output):
+                    "complete": ownership_complete, "pulls": pulls or [], "coverage": {}, "inventory": {}}), contextlib.redirect_stdout(output):
             PLAN.cmd_show(PLAN.build_parser().parse_args(["--repo", "fixture/local", "show", "fixture/target#7", "--full",
                                                         *(["--launch-check"] if launch else []),
                                                         *(["--worker", worker] if worker else []),
@@ -346,7 +346,7 @@ class CloseConfigTests(unittest.TestCase):
         for read_only in (False, True):
             result, _, _ = self.show_fixture(launch=True, read_only=read_only, pulls=[{**retained, "user": {"login": "human"}}])
             self.assertEqual(result["issue"]["launch_check"]["allowed"], read_only)
-        for read_only, extra, allowed in ((False, [], False), (True, [], True), (True, [claim], False)):
+        for read_only, extra, allowed in ((False, [], False), (True, [], True), (True, [claim], True)):
             result, _, _ = self.show_fixture(launch=True, read_only=read_only, comments_extra=extra,
                 enrichment={"blocked_by": [{"repo": "fixture/gate", "number": 8, "state": "open"}], "sub_issues": []})
             self.assertEqual(result["issue"]["launch_check"]["allowed"], allowed)
@@ -359,6 +359,35 @@ class CloseConfigTests(unittest.TestCase):
             result, _, _ = self.show_fixture(launch=True, pulls=[retained], source_comments=owner_comments,
                 resume="https://github.com/fixture/target/issues/6#issuecomment-2")
             self.assertEqual(result["issue"]["launch_check"]["allowed"], allowed)
+
+    def test_read_only_launch_observes_live_custody_without_changing_waits_or_issue(self) -> None:
+        source = {"worker": "source-worker", "session": "source-session", "branch": "work/export",
+                  "claimed_at": "2026-10-01T00:00:00Z"}
+        claim = {"id": 2, "user": {"login": "fixture"}, "body": github_plan_claim.marker(source)}
+        waiting = {"id": 3, "user": {"login": "fixture"}, "body": PLAN.github_plan_wait.marker({
+            "version": 1, "state": "waiting", "evidence": "Client acceptance remains pending", "waits": [
+                {"waiting_for": "Client", "ends_when": "Client accepts the current release"}]})}
+        checks = []
+        for read_only in (False, True):
+            result, _, _ = self.show_fixture(launch=True, read_only=read_only, comments_extra=[claim, waiting],
+                actor="agent:source-session", action="Continue the owned source task.\n" + github_plan_claim.marker(source))
+            check = result["issue"]["launch_check"]
+            self.assertEqual(check["allowed"], read_only)
+            self.assertEqual(check["status"], "waiting")
+            self.assertTrue(check["ownership"]["conflicts"])
+            checks.append(check)
+        self.assertEqual(checks[0]["ownership"], checks[1]["ownership"])
+
+    def test_read_only_launch_still_refuses_incomplete_or_unreadable_evidence(self) -> None:
+        for options in ({"ownership_complete": False},
+                        {"enrichment": PLAN.PlanError("Native relationship read unavailable")},
+                        {"comments_extra": [{"id": 2, "user": {"login": "fixture"},
+                                             "body": "<!-- github-plan:claim {broken} -->"}]}):
+            with self.subTest(options=options):
+                result, _, _ = self.show_fixture(launch=True, read_only=True, **options)
+                self.assertFalse(result["issue"]["launch_check"]["allowed"])
+        with self.assertRaises(PLAN.PlanError):
+            self.show_fixture(launch=True, read_only=True, resume=2)
 
     def test_retained_launch_resolves_same_record_urls_without_inheriting_other_source_recipients(self) -> None:
         lead = "01970242-7941-7f0c-b461-16aa5723fb52"

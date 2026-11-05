@@ -985,12 +985,11 @@ selection is unchanged.
   Successful milestone checks return `milestone_admission` with the verified
   compact `scope` and supported `admission_arguments`. Native qualification
   needs no repeated Track citation or extra lookup.
-  `issue.launch_check.allowed` requires active native status, or the
+  For execution, `issue.launch_check.allowed` requires active native status, or the
   [ordinary retained-source prerequisite evidence](#planning-claim), and no
   observed claim holder or retained-delivery conflict; next-action wording does not gate
-  dispatch. `--read-only` permits answering a wait without claiming or changing
-  held work, while still checking live claims; static PR/branch artifacts do
-  not prevent a read-only review. Launch checks honor the existing claim lease
+  dispatch. See the [read-only anchor contract](../../supervisor/references/helpers.md#terminal-launches)
+  for `--read-only` inspection without execution custody. Launch checks honor the existing claim lease
   expiry. `--resume-from <comment ID or issue-comment URL>` validates the
   source's authored release and qualifies a handoff to exempt current
   retained artifacts. With no current artifacts, dispatch can proceed and the

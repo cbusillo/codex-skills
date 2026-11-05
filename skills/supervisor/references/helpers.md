@@ -1486,8 +1486,12 @@ is written. Repeated attempts against the same hold keep refusing; clearing one
 hold still leaves the others in force. Read the existing issue and stopped
 worker's handoff, then dispatch only after the relevant fact changes.
 For read-only work that answers a wait, use `Read-only anchor: <issue URL>`;
-that worker must not claim or implement the held work. Its ownership check
-still runs, while waits and static PR/branch artifacts can be investigated.
+that worker must not claim or implement the held work. Ownership evidence is
+still returned, but a live claim, wait, named recipient or static artifact does
+not block the read. Incomplete or unreadable evidence still refuses. The same
+issue cannot also be an execution anchor. A brief whose only anchors are
+read-only carries no `Resume from:` or `Wait resolution:` execution fields. A later execution claim
+keeps every custody and wait check; this route grants no ownership or effects.
 A retained-delivery
 successor adds `Resume from: <source claim comment ID or URL>` on its own line. The
 source's authored release must exist. A qualified retained-PR handoff is

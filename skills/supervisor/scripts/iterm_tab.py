@@ -1386,6 +1386,13 @@ def check_launch_issue(brief: str, *, dispatch_recipient: str | None = None, dis
             raise ValueError("An explicit issue anchor needs its full https://github.com/OWNER/REPO/issues/N URL")
     if not anchors:
         return
+    read_only_anchors = {anchor.casefold() for mode, anchor in anchors if mode.casefold() == "read-only anchor"}
+    execution_anchors = {anchor.casefold() for mode, anchor in anchors if mode.casefold() != "read-only anchor"}
+    if read_only_anchors & execution_anchors:
+        raise ValueError("An issue cannot be both a read-only anchor and an execution anchor")
+    if read_only_anchors and not execution_anchors and (wait_resolved is not None or re.search(
+            r"(?mi)^[^\S\n]*(?:[-*] )?(?:\*\*)?(?:Resume from|Wait resolution):", brief)):
+        raise ValueError("Read-only briefs cannot resume execution custody or resolve waits")
     resume = launch_resume_source(brief)
     if resume and len(set(anchor for _, anchor in anchors)) != 1:
         raise ValueError("A retained-delivery brief needs one anchor for its source claim")
@@ -1425,8 +1432,11 @@ def check_launch_issue(brief: str, *, dispatch_recipient: str | None = None, dis
                 raise ValueError(f"Launch refused for {anchor}: {error.get('code', 'claim_preflight')}: "
                                  f"{error.get('message', error)}")
             facts = check.get("ownership") or {}
-            evidence = (facts.get("detail") or facts.get("conflicts") or facts.get("artifacts") or facts.get("recipients")
-                        or check.get("resume_source") or facts.get("error") or check.get("status"))
+            evidence = (facts.get("detail") or facts.get("error") or ((payload.get("issue") or {}).get("derived") or {}).get("error")
+                        or facts.get("conflicts") or facts.get("artifacts") or facts.get("recipients")
+                        or check.get("resume_source") or check.get("status"))
+            if mode.casefold() == "read-only anchor":
+                raise ValueError(f"Read-only launch state unavailable for {anchor}: {evidence}; read its full status before dispatch")
             raise ValueError(f"Launch refused for {anchor}: {check.get('status', 'unknown')}, "
                              f"{evidence}; dispatch only after the relevant fact changes. "
                              f"For review/legacy waits, read gh-plan.py --repo {repo} wait {anchor}; "

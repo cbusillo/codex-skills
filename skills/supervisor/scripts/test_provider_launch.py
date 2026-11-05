@@ -149,6 +149,12 @@ class LaunchIssueTests(unittest.TestCase):
             self.assertFalse(calls[-1].read_only)
             iterm_tab.check_launch_issue(brief.replace("Anchor:", "Read-only anchor:"))
             self.assertTrue(calls[-1].read_only)
+            iterm_tab.check_launch_issue(brief + "\nRead-only anchor: https://github.com/fixture/repo/issues/8\n"
+                                         "Wait resolution: Existing scoped authority", wait_resolved="Existing scoped authority")
+            self.assertFalse(calls[-2].read_only)
+            self.assertEqual(calls[-2].wait_resolved, "Existing scoped authority")
+            self.assertTrue(calls[-1].read_only)
+            self.assertIsNone(calls[-1].wait_resolved)
             for anchor, resume in (("- Anchor:", "- Resume from: 123"), ("**Anchor:**", "**Resume from:** 123")):
                 iterm_tab.check_launch_issue(brief.replace("Anchor:", anchor) + "#issuecomment-123\n" + resume)
                 self.assertEqual(calls[-1].resume_from, "123")
@@ -186,6 +192,26 @@ class LaunchIssueTests(unittest.TestCase):
         with patch.object(iterm_tab.subprocess, "run") as reader, self.assertRaises(ValueError):
             iterm_tab.check_launch_issue(brief)
         reader.assert_not_called()
+
+    def test_read_only_anchor_rejects_contradictory_execution_fields_before_preflight(self) -> None:
+        anchor = "https://github.com/fixture/repo/issues/7"
+        for extra in (f"Anchor: {anchor}", f"Anchor and claim: {anchor}", "Resume from: 123",
+                      "Resume from: invalid", "Wait resolution: Existing scoped authority", "Wait resolution:"):
+            with self.subTest(extra=extra), patch.object(iterm_tab.subprocess, "run") as reader:
+                with self.assertRaises(ValueError):
+                    iterm_tab.check_launch_issue(f"Read-only anchor: {anchor}\n{extra}")
+                reader.assert_not_called()
+
+    def test_read_only_refusal_preserves_the_unreadable_evidence_cause(self) -> None:
+        for location in ("ownership", "derived"):
+            cause = "Fixture evidence parse failed"
+            issue = {"launch_check": {"allowed": False, "ownership": {"error": cause} if location == "ownership" else {}},
+                     "derived": {"error": cause} if location == "derived" else {}}
+            with self.subTest(location=location), patch.object(iterm_tab.subprocess, "run", return_value=
+                    subprocess.CompletedProcess([], 0, json.dumps({"ok": True, "issue": issue}))):
+                with self.assertRaises(ValueError) as caught:
+                    iterm_tab.check_launch_issue("Read-only anchor: https://github.com/fixture/repo/issues/7")
+                self.assertIn(cause, str(caught.exception))
 
     def test_claim_refusal_code_and_details_reach_the_launcher(self) -> None:
         anchor = "Anchor: https://github.com/fixture/repo/issues/7"
