@@ -742,7 +742,7 @@ releases on `director_standing` is the Director's, so it keeps standing
 acceptance unless explicitly held. A repository with no Client gets a plain
 Ready with no notes, `Client change:` statement or no-test declaration.
 Launchplane answers Client, Director standing, no Client, or unknown. Missing
-credentials and a failed, ambiguous, malformed or truncated read are unknown:
+credentials and a failed, ambiguous or malformed read are unknown:
 the PR stays on the Client path and the refusal names the read, so
 `Nothing for the Client to test: <reason>` still gets a plain Ready. This read
 grants no release authority.
