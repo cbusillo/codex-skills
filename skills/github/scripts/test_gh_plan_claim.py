@@ -4944,7 +4944,7 @@ class ClaimTests(unittest.TestCase):
                 elif source == "branch": self.inventory["remote_branches"] = ["work/issue-42-other"]
                 elif source == "worktree":
                     self.inventory["worktrees"] = [{"branch": "work/issue-42-other", "path": "/retained/repair"}]
-                else: self.pulls = [{"number": 99, "state": "open", "body": "Refs #42", "head": {"ref": "work/repair"}}]
+                else: self.pulls = [{"number": 99, "state": "open", "body": "Fixes #42", "head": {"ref": "work/repair"}}]
                 with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
                     self.run_claim()
                 self.assertEqual(caught.exception.code, "claim_conflict")
@@ -5082,10 +5082,34 @@ class ClaimTests(unittest.TestCase):
                 self.assert_no_writes()
                 self.inventory[source] = []
 
-    def test_open_pr_refuses(self):
-        self.pulls = [{"number": 99, "body": "Refs #42", "head": {"ref": "work/repair"}}]
+    def test_open_pr_closing_the_issue_refuses(self) -> None:
+        self.pulls = [{"number": 99, "body": "Closes #42", "head": {"ref": "work/repair"}}]
         with self.assertRaises(PLAN.ClassifiedPlanError):
             self.run_claim()
+        self.assert_no_writes()
+
+    def test_open_pr_references_do_not_claim_another_issues_inputs(self) -> None:
+        for references in ("Refs #41, #42", "Refs owner/repo#41, #42",
+                           "Refs https://github.com/owner/repo/issues/41, https://github.com/owner/repo/issues/42"):
+            with self.subTest(references=references):
+                self.setUp()
+                self.pulls = [{"number": 99, "state": "open", "title": "Port addons to Community 20",
+                               "body": f"Copied-data migration remains open on #42.\n\n{references}\n\nCloses #41",
+                               "head": {"ref": "work/port-addons"}}]
+                preserved = copy.deepcopy((self.pulls, self.inventory))
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
+                self.assertEqual((self.pulls, self.inventory), preserved)
+
+    def test_contextual_pr_source_branch_cannot_be_claimed_as_fresh_work(self) -> None:
+        self.args.branch = "work/port-addons"
+        self.pulls = [{"number": 99, "state": "open", "body": "Refs #41, #42\nCloses #41",
+                       "head": {"ref": self.args.branch}}]
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_claim()
+        self.assertEqual(caught.exception.code, "claim_conflict")
+        self.assertEqual(caught.exception.payload["competing_evidence"],
+                         [{"source": "open_pr", "number": 99, "branch": self.args.branch}])
         self.assert_no_writes()
 
     def test_codex_982_claim_ignores_1398_review_context(self):
@@ -5135,10 +5159,10 @@ class ClaimTests(unittest.TestCase):
 
     def test_implementation_reference_list_keeps_each_competing_issue(self):
         for body in (
-            "Refs https://github.com/owner/repo/issues/10, https://github.com/owner/repo/issues/42",
+            "Implements https://github.com/owner/repo/issues/10, https://github.com/owner/repo/issues/42",
             "Fixes #10 and https://github.com/owner/repo/issues/42",
             "Closes [first](https://github.com/other/repo/issues/10), and [repair](https://github.com/owner/repo/issues/42)",
-            "Refs #10, #42",
+            "Resolves #10, #42",
         ):
             with self.subTest(body=body):
                 self.setUp()
@@ -5211,7 +5235,6 @@ class ClaimTests(unittest.TestCase):
             {"title": "Implement #42"},
             {"title": "Implement https://github.com/owner/repo/issues/42"},
             {"head": {"ref": "work/issue-42"}},
-            {"body": context + "\n\nRefs #42"},
             {"body": context + "\nFixes https://github.com/owner/repo/issues/42"},
             {"body": context + "; Fixes #42"},
             {"body": context + "; Fixes https://github.com/owner/repo/issues/42"},

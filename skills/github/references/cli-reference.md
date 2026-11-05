@@ -1397,13 +1397,15 @@ claims. An earlier same-worker explanatory claim note is accounted for only
 by its timestamp-proved, exact source release. See the abandoned-claim section
 below for #1737's guarded recovery. Q219 does not change that release path.
 
-An issue URL in a PR body is context alone. Title or branch ownership,
-implementation references (`Refs`, `Fixes`, `Closes`, `Resolves`, `Implements`,
+An issue URL or `Refs` list in a PR body is context alone for an independent
+issue claim. Title or branch ownership, implementation references (`Fixes`, `Closes`, `Resolves`, `Implements`,
 including full issue URLs), and a PR branch recorded in the issue's structured
-claim still cause refusal. Each issue in a comma- or `and`-separated list after
+claim still cause refusal. A fresh claim cannot reuse an open PR's source branch.
+Each issue in a comma- or `and`-separated list after
 an implementation keyword counts. Releasing a claim does not release its retained PR.
-Retained handoffs keep their independent issue-link check: an ordinary body
-URL may attest a PR named by its source author. An unwrapped body line starting
+Retained handoffs and PR-scoped claims keep their existing artifact checks,
+including `Refs` links. Their independent issue-link check still lets an ordinary
+body URL attest a PR named by its source author. An unwrapped body line starting
 exactly `Code follow-ups recorded without starting implementation:` supplies
 no attestation by itself; an implementation keyword on it still counts.
 Identity, same-repository and active-peer checks remain required.
