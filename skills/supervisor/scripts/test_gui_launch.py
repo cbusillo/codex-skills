@@ -607,7 +607,9 @@ class LocalCodexRegistrationTests(unittest.TestCase):
     def lsof(self, argv: list[str], **_: object) -> subprocess.CompletedProcess:
         if argv[:4] != ["lsof", "-a", "-p", "8"] or not argv[4].startswith("-F"):
             raise AssertionError(argv)
-        return subprocess.CompletedProcess(argv, 0, self.opened, "")
+        fields = set(argv[4][2:])
+        output = "\n".join(line for line in self.opened.splitlines() if line[:1] in fields) + "\n"
+        return subprocess.CompletedProcess(argv, 0, output, "")
 
     def arguments(self, pid: int) -> list[str]:
         if pid == 7:
