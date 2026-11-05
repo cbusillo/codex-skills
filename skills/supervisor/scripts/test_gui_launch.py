@@ -19,6 +19,7 @@ import tempfile
 import threading
 import time
 import unittest
+import uuid
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -28,6 +29,7 @@ import gui_launch
 import iterm_tab
 from codex_session_proxy import MEMORY_SETTING
 import tmux_terminal
+import session_liveness
 
 # Launch fixtures carry the rules link every Supervisor brief needs.
 RULES = "\nRules for this brief: " + iterm_tab.BRIEF_RULES_URL
@@ -500,6 +502,23 @@ class GuiLaunchTests(unittest.TestCase):
         self.daemon.assert_not_called()
         self.assertFalse((self.account / ".tmp").exists())
 
+    def test_gui_ledger_uses_local_file_registration(self) -> None:
+        self.args.ledger = self.root / "ledger.json"
+        self.args.ledger.write_text("[]")
+        self.command.write_text(self.command.read_text() + " -c model_reasoning_effort=high")
+        commands, choices = iterm_tab.prepare_launches(self.args)
+        choice = choices[0]
+        self.assertEqual(choice["file_native"], {"harness": "codex", "home": str(self.account)})
+        self.assertNotIn("native_receipt", choice)
+        wrapper = shlex.split(commands[0])
+        words = shlex.split(Path(wrapper[wrapper.index("--command-file") + 1]).read_text())
+        self.assertIn("--no-daemon", words)
+        self.assertIn("model_reasoning_effort=high", words)
+        self.assertFalse(any(word.split("=", 1)[0] == "--remote" for word in words))
+        self.assertEqual(choice["gui"]["app"], gui_launch.declared_app(self.brief.read_text()))
+        self.assertEqual(json.loads(self.args.ledger.read_text()), [])
+        self.daemon.assert_not_called()
+
     def test_default_home_uses_existing_marketplace_without_a_link(self):
         result = gui_launch.marketplace(self.home / ".codex", self.home / ".codex")
         self.assertEqual(Path(result["path"]), self.source)
@@ -544,6 +563,123 @@ class GuiLaunchTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             gui_launch.marketplace(self.account, self.home / ".codex")
         self.assertEqual(list(elsewhere.iterdir()), [])
+
+
+class LocalCodexRegistrationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.session = str(uuid.uuid4())
+        self.path = self.root / "sessions" / (self.session + ".jsonl")
+        self.path.parent.mkdir()
+        self.started = datetime.now(timezone.utc) - timedelta(seconds=2)
+        self.meta = {"id": self.session, "timestamp": datetime.now(timezone.utc).isoformat(), "source": "cli"}
+        self.path.write_text(json.dumps({"type": "session_meta", "payload": self.meta}) + "\n")
+        self.ledger = self.root / "ledger.json"
+        self.ledger.write_text(json.dumps([{"session_id": "lead", "harness": "codex", "transcript": "lead.jsonl", "supervisor_owned": True,
+                                           "worker_cap": 1, "worker_launches": {"batch": 1}}]))
+        self.native = {"harness": "codex", "home": str(self.root)}
+        self.launch = {"session_id": "terminal", "backend": "tmux", "pid": 8, "tty": "ttys001",
+                       "codex_home": str(self.root), "lead_session_id": "lead", "lead_launch_id": "batch",
+                       "account": {"gui": {"app": "com.example.Task", "token": uuid.uuid4().hex}}}
+        self.argv = ["codex", "--no-daemon", "--", "fixture brief"]
+        self.enterContext(patch.object(session_liveness, "inventory", return_value=[
+            (7, "ttys001", "python gui_launch.py run -- codex --no-daemon"),
+            (8, "ttys001", shlex.join(self.argv))]))
+        self.enterContext(patch.object(session_liveness, "native_arguments", side_effect=self.arguments))
+        self.enterContext(patch.object(tmux_terminal, "process_parents", return_value={8: 7, 7: 1}))
+        self.enterContext(patch.object(gui_launch, "matching", return_value={
+            **self.launch["account"]["gui"], "phase": "running", "pid": 7}))
+        self.details = {"pid": 8, "identity": {"unique_id": 91}}
+        self.enterContext(patch.object(session_liveness, "native_process_details", return_value=self.details))
+        self.enterContext(patch.object(session_liveness, "process_started_at", return_value=self.started))
+        import github_plan_closure
+        self.enterContext(patch.object(github_plan_closure, "log_rows", return_value=[]))
+        self.opened = f"p8\nf9\ni{self.path.stat().st_ino}\nn{self.path}\n"
+        self.read_files = self.enterContext(patch.object(subprocess, "run", side_effect=self.lsof))
+        self.enterContext(patch.object(iterm_tab, "LAUNCH_TIMEOUT", 0))
+
+    def lsof(self, argv: list[str], **_: object) -> subprocess.CompletedProcess:
+        if argv != ["lsof", "-a", "-p", "8", "-Fpfni"]:
+            raise AssertionError(argv)
+        return subprocess.CompletedProcess(argv, 0, self.opened, "")
+
+    def arguments(self, pid: int) -> list[str]:
+        if pid == 7:
+            token = self.launch["account"]["gui"]["token"]
+            return [sys.executable, str(Path(gui_launch.__file__).resolve()), "run", "--token", token,
+                    "--state", str(gui_launch.state_path()), "--command-file", str(gui_launch.command_path(gui_launch.state_path(), token))]
+        self.assertEqual(pid, 8)
+        return self.argv
+
+    def test_local_native_binding_consumes_only_its_reserved_slot(self) -> None:
+        args = argparse.Namespace(ledger=self.ledger)
+        original = self.ledger.read_bytes()
+        for backend in ("tmux", "iterm"):
+            with self.subTest(backend=backend):
+                self.ledger.write_bytes(original)
+                result = {**self.launch, "backend": backend, "file_native": self.native}
+                asyncio.run(iterm_tab.register_fresh_launch(args, result, None))
+                registered = self.ledger.read_bytes()
+                asyncio.run(iterm_tab.register_fresh_launch(args, dict(result), None))
+                self.assertEqual(self.ledger.read_bytes(), registered)
+                rows = json.loads(registered)
+                self.assertEqual(rows[0]["worker_launches"], {})
+                self.assertEqual(rows[1]["session_id"], self.session)
+                self.assertEqual(rows[1]["pid"], 8)
+                self.assertEqual(rows[1]["transcript"], str(self.path))
+                terminal = "tmux_session_id" if backend == "tmux" else "iterm_session_id"
+                self.assertEqual(rows[1][terminal], self.launch["session_id"])
+                self.assertEqual(result["native_session_id"], self.session)
+                self.assertTrue(result["ledger_recorded"])
+        import github_plan_closure
+        self.assertIsNone(github_plan_closure.guarded_launch_endpoint(8, self.argv))
+        with patch.object(session_liveness, "process_absent", return_value=False), self.assertRaises(ValueError):
+            session_liveness.verify_process_exit(rows[1], rows=[(8, "ttys001", shlex.join(self.argv))])
+
+    def test_unknown_or_changed_local_identity_preserves_capacity(self) -> None:
+        original = self.ledger.read_bytes()
+        for failure in ("missing", "ambiguous", "inode", "home", "metadata", "old", "child", "remote", "generation", "no_gui", "wrapper"):
+            with self.subTest(failure=failure):
+                self.opened = f"p8\nf9\ni{self.path.stat().st_ino}\nn{self.path}\n"
+                self.path.write_text(json.dumps({"type": "session_meta", "payload": self.meta}) + "\n")
+                argv = self.argv
+                launch = dict(self.launch)
+                parents = {8: 7, 7: 1}
+                details = [self.details, self.details]
+                if failure == "missing":
+                    self.opened = "p8\n"
+                elif failure == "ambiguous":
+                    second = self.path.with_name("another.jsonl")
+                    second.write_bytes(self.path.read_bytes())
+                    self.opened += f"f10\ni{second.stat().st_ino}\nn{second}\n"
+                elif failure == "inode":
+                    self.opened = self.opened.replace(f"i{self.path.stat().st_ino}", "i0")
+                elif failure == "home":
+                    outside = self.root / "other.jsonl"
+                    outside.write_bytes(self.path.read_bytes())
+                    self.opened = f"p8\nf9\ni{outside.stat().st_ino}\nn{outside}\n"
+                elif failure in {"metadata", "old", "child"}:
+                    meta = {**self.meta}
+                    meta.update({"id": "unknown"} if failure == "metadata" else
+                                {"timestamp": (self.started - timedelta(seconds=1)).isoformat()} if failure == "old" else
+                                {"source": {"subagent": {"thread_spawn": {"parent_thread_id": str(uuid.uuid4())}}}})
+                    self.path.write_text(json.dumps({"type": "session_meta", "payload": meta}) + "\n")
+                elif failure == "remote":
+                    argv = ["codex", "--remote", "unix://", "--no-daemon", "--", "fixture"]
+                elif failure == "generation":
+                    details = [self.details, {"pid": 8, "identity": {"unique_id": 92}}]
+                elif failure == "no_gui":
+                    launch.pop("account")
+                elif failure == "wrapper":
+                    parents = {8: 9, 7: 1}
+                with (patch.object(session_liveness, "native_arguments", side_effect=lambda pid: self.arguments(pid) if pid == 7 else argv),
+                      patch.object(tmux_terminal, "process_parents", return_value=parents),
+                      patch.object(session_liveness, "native_process_details", side_effect=details),
+                      self.assertRaises(ValueError)):
+                    iterm_tab.register_file_launch(launch, self.native, self.ledger)
+                self.assertEqual(self.ledger.read_bytes(), original)
 
 
 class ConsoleTests(unittest.TestCase):

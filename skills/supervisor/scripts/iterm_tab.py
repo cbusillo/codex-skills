@@ -12,6 +12,7 @@ import argparse
 import asyncio
 from collections.abc import Awaitable, Callable, Coroutine, Iterator, Sequence
 from contextlib import contextmanager
+from datetime import datetime
 from functools import wraps
 import errno
 import json
@@ -21,6 +22,7 @@ import re
 import shlex
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -1522,8 +1524,6 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
                 if any(word.split("=", 1)[0] in {"--conversation", "--continue", "-c", "--log-file", "--print", "-p"}
                        for word in launch_words(text)):
                     raise ValueError("fresh AGY --ledger registration needs a fresh interactive launch without conversation or log overrides")
-        elif provider == "openai" and any(not codex_daemon_without_ingress(text) for text in command_texts):
-            raise ValueError("fresh --ledger registration needs managed Codex --remote launches")
     for text in command_texts:
         validate_text(text)
     brief_input: Path | list[Path] = getattr(args, "brief_file", None) or []
@@ -1552,6 +1552,9 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
                            dispatch_issue=brief_issues[index] if brief_issues else None, wait_resolved=resolutions[index])
     validate_computer_use_launch(args, command_texts, briefs)
     apps = [gui_launch.declared_app(brief) for brief in briefs]
+    if (getattr(args, "ledger", None) and provider == "openai" and not any(apps)
+            and any(not codex_daemon_without_ingress(text) for text in command_texts)):
+        raise ValueError("fresh --ledger registration needs managed Codex --remote launches")
     if any(apps):
         if len(files) != 1 or getattr(args, "account_provider", None) != "openai":
             raise ValueError("GUI tasks require one local Codex launch with --account-provider openai")
@@ -1608,11 +1611,14 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
                 native_commands.append(f"{text} --log-file {shlex.quote(str(log))}")
             command_texts = native_commands
         if getattr(args, "ledger", None) and provider == "openai":
-            if any(choice.get("tools", {}).get("route") == "local" for choice in choices):
+            if not any(apps) and any(choice.get("tools", {}).get("route") == "local" for choice in choices):
                 raise ValueError("fresh --ledger registration needs the managed remote route")
             args.ledger.parent.mkdir(parents=True, exist_ok=True)
             for choice in choices:
-                choice["native_receipt"] = str(args.ledger.parent / f".native-launch-{uuid.uuid4()}.json")
+                if any(apps):
+                    choice["file_native"] = {"harness": "codex", "home": str(Path(choice["env"]["CODEX_HOME"]).expanduser().resolve())}
+                else:
+                    choice["native_receipt"] = str(args.ledger.parent / f".native-launch-{uuid.uuid4()}.json")
         command_texts = [with_account(text, choice, brief,
                                      coordinate=not app and choice.get("tools", {}).get("route") != "local")
                          for text, choice, brief, app in zip(command_texts, choices, briefs, apps)]
@@ -1998,11 +2004,93 @@ async def register_fresh_launch(args: argparse.Namespace, result: dict, choice: 
 
 
 
+def local_codex_native(launch: dict, native: dict) -> dict:
+    import session_liveness
+    import session_record
+    import tmux_terminal
+
+    home = Path(native["home"]).resolve(strict=True)
+    if home != Path(launch["codex_home"]).resolve(strict=True):
+        raise ValueError("local Codex account differs from its retained launch")
+    gui = launch.get("account", {}).get("gui", {})
+    reservation = gui_launch.matching(gui_launch.state_path(), gui.get("token"))
+    if (not gui.get("token") or reservation.get("phase") != "running" or reservation.get("app") != gui.get("app")
+            or type(reservation.get("pid")) is not int):
+        raise ValueError("local Codex registration needs its running GUI reservation")
+    expected = {key: launch[key] for key in ("pid", "launch_pid", "launch_generation", "launch_started_at")
+                if key in launch and not launch.get("launch_identity_unavailable")}
+    source_launch_metadata(launch, {"provider": "openai", "env": {"CODEX_HOME": str(home)}})
+    if (launch.get("launch_identity_unavailable") or launch.get("pid") != launch.get("launch_pid")
+            or any(launch.get(key) != value for key, value in expected.items())):
+        raise ValueError("local Codex process identity unavailable; preserve its terminal")
+    pid = launch["pid"]
+    wrapper = session_liveness.native_arguments(reservation["pid"])
+    required = {"--token": gui["token"], "--state": str(gui_launch.state_path()),
+                "--command-file": str(gui_launch.command_path(gui_launch.state_path(), gui["token"]))}
+    if (len(wrapper) < 3 or Path(wrapper[1]).resolve() != Path(gui_launch.__file__).resolve() or wrapper[2] != "run"
+            or any(wrapper.count(option) != 1 or wrapper.index(option) + 1 >= len(wrapper)
+                   or wrapper[wrapper.index(option) + 1] != value for option, value in required.items())
+            or not tmux_terminal.belongs_to(pid, reservation["pid"], tmux_terminal.process_parents())):
+        raise ValueError("local Codex process is outside its GUI wrapper")
+    before = session_liveness.native_process_details(pid)
+    argv = session_liveness.native_arguments(pid)
+    options = argv[:argv.index("--")] if "--" in argv else argv
+    if (not argv or session_liveness.harness_family(argv[0]) != "codex" or "--no-daemon" not in options
+            or any(word.split("=", 1)[0] == "--remote" for word in options)
+            or session_liveness.invocation(argv)[1] is not None):
+        raise ValueError("file registration requires the fresh local Codex GUI client")
+    started = session_liveness.process_started_at(pid)
+    if started.isoformat() != launch["launch_started_at"]:
+        raise ValueError("local Codex process generation changed")
+    opened = subprocess.run(["lsof", "-a", "-p", str(pid), "-Fpfni"],
+                            capture_output=True, text=True, check=True, timeout=10).stdout
+    paths, inode, process = {}, None, None
+    for line in opened.splitlines():
+        if line.startswith("p"):
+            process = line[1:]
+        elif line.startswith("f"):
+            inode = None
+        elif line.startswith("i"):
+            inode = int(line[1:])
+        elif line.startswith("n") and process == str(pid) and inode is not None:
+            path = Path(line[1:])
+            if path.is_absolute() and path.suffix == ".jsonl" and path.resolve().is_relative_to((home / "sessions").resolve()):
+                paths[path.resolve(strict=True)] = inode
+    if len(paths) != 1:
+        raise ValueError("exact local Codex open transcript unavailable; preserve its terminal")
+    path, inode = next(iter(paths.items()))
+    identity = path.stat()
+    if not stat.S_ISREG(identity.st_mode) or identity.st_ino != inode:
+        raise ValueError("local Codex open transcript identity changed")
+    records = session_record.read_jsonl(path)
+    meta = records[0].get("payload", {}) if records and records[0].get("type") == "session_meta" else {}
+    session = meta.get("id")
+    if (session_liveness.native_uuid(session) != session or not session or meta.get("source") != "cli"
+            or meta.get("forked_from_id") or claim_history.inline_history(records)
+            or datetime.fromisoformat(meta["timestamp"]) < started):
+        raise ValueError("local Codex transcript lacks a fresh native root identity")
+    claim_history.root_records(path, "codex", session, records)
+    current = path.stat()
+    if ((current.st_dev, current.st_ino) != (identity.st_dev, identity.st_ino)
+            or session_liveness.native_process_details(pid) != before
+            or gui_launch.matching(gui_launch.state_path(), gui["token"]) != reservation):
+        raise ValueError("local Codex identity changed during registration")
+    return {**native, "session_id": session, "transcript": str(path)}
+
+
 def register_file_launch(launch: dict, native: dict, ledger: Path) -> dict:
     import session_liveness
     import session_record
     harness = native.get("harness", "claude")
     deadline = time.monotonic() + LAUNCH_TIMEOUT
+    while harness == "codex":
+        try:
+            native = local_codex_native(launch, native)
+            break
+        except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+            if time.monotonic() >= deadline:
+                raise ValueError("local Codex registration pending; retain the receipt and use register after inspection") from error
+            time.sleep(0.2)
     while harness == "agy":
         try:
             identities = claim_history.agy_conversations(Path(native["log"]).read_text())
@@ -2023,8 +2111,12 @@ def register_file_launch(launch: dict, native: dict, ledger: Path) -> dict:
             raise ValueError(f"native {harness} identity belongs to another terminal")
         return entry
     while True:
-        paths = (list((Path(native["home"]) / "conversations").glob(native["session_id"] + ".db")) if harness == "agy" else
-                 list((Path(native["home"]) / "projects").glob("*/" + native["session_id"] + ".jsonl")))
+        if harness == "codex":
+            paths = [Path(native["transcript"])]
+        elif harness == "agy":
+            paths = list((Path(native["home"]) / "conversations").glob(native["session_id"] + ".db"))
+        else:
+            paths = list((Path(native["home"]) / "projects").glob("*/" + native["session_id"] + ".jsonl"))
         if paths or time.monotonic() >= deadline:
             break
         time.sleep(0.2)
