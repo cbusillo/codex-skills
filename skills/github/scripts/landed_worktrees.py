@@ -644,7 +644,7 @@ def claims_on(reader, github_read, records: list[tuple[str, int]], branches: set
         body = (issue or {}).get("body") or ""
         custody = re.sub(r"<!--.*?-->", "", github_plan_claim.unquoted_text(body), flags=re.S)
         names_branch = any(re.search(
-            rf"(?:^|[\s`'\"(<\[,;:*]){re.escape(branch)}(?=$|[\s`'\")>\],;:*]|\.(?:\s|$))", custody,
+            rf"(?:^|[\s`'\"(<\[,;:*]){re.escape(branch)}(?=$|[\s`'\")>\],;:*?]|\.(?:\s|$))", custody,
         ) for branch in branches)
         conflicts, _ = github_plan_claim.discussion_evidence(body, comments, ANY_CLAIM,
                                                              ended_claims=released)

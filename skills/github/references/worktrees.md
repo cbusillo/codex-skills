@@ -158,8 +158,8 @@ for delivery associations. Branch-name discovery searches repositories in the
 target GitHub account; name every related branch on the existing claimed record.
 The current issue body may name a retained branch even when its live claim's
 own branch differs. Bare exact branch names count; a prefix of another branch does
-not. An authored release ends that claim's protection, including named retained
-branches; private briefs and historical discussion alone do not associate them.
+not. Unquoted body text remains an association until removed or its claim ends;
+private briefs, quoted or fenced history, and old comments alone do not create it.
 An ordinary URL in the body is not a recognized reference;
 an unrecorded association is unprotected. Incomplete evidence or a kept target
 returns nonzero.
