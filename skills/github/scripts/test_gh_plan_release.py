@@ -2244,9 +2244,10 @@ class OwnReleaseTests(ReleaseHarness):
                 self.f.comments = [self.comment(11, CLAIM.marker(predecessor), predecessor["claimed_at"]),
                     self.comment(13, f"Released claim 11\n\nSource: `{predecessor['branch']}` at **{head}**", "2026-09-30T00:00:00Z"),
                     self.comment(1, CLAIM.marker(current), current["claimed_at"])]
+                self.f.comments.insert(1, self.comment(12, f"Released by {predecessor['worker']}", "2026-09-29T00:00:00Z"))
                 self.f.inventory.update(local_branches=[], remote_branches=[predecessor["branch"]], worktrees=[])
                 if changed:
-                    self.f.comments[1]["body"] = self.f.comments[1]["body"].replace(head, "b" * 40)
+                    self.f.comments[2]["body"] = self.f.comments[2]["body"].replace(head, "b" * 40)
                 before = copy.deepcopy(self.f.inventory)
                 with patch.object(CLAIM, "local_inventory", side_effect=ValueError("Run claim from its repository")):
                     if changed:

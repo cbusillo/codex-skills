@@ -3483,8 +3483,7 @@ def claim_once(args: argparse.Namespace) -> None:
         try:
             source = github_plan_claim.released_source(source_comments, args.resume_from)
             if getattr(args, "resume_issue", None):
-                exact = next((release for release in source_comments if release.get("id") != source["comment"]["id"]
-                              and github_plan_release.exact_source_release(source["comment"]["id"], release, source_comments)), None)
+                exact = source["exact_release"]
                 if exact is None:
                     raise github_plan_claim.ClaimProofError("claim_resume_source_unreleased",
                         "Explicit source requires an exact authored, timestamp-proved release")
@@ -3498,7 +3497,8 @@ def claim_once(args: argparse.Namespace) -> None:
                     for context in github_plan_release._released_source_contexts(source_comments))):
                 release_identity = "canonical-native-release"
             projection = (issue_repo.casefold(), source_number, source["comment"]["id"],
-                          source["author"], source["record"], release_identity)
+                          source["author"], source["record"], release_identity,
+                          source["exact_release"]["id"] if source.get("exact_release") else None)
             if selection is not None and projection != selection["source"]:
                 raise github_plan_claim.ClaimProofError("claim_resume_source_changed",
                     "Selected released source changed during claim readback")

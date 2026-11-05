@@ -1296,9 +1296,9 @@ A resumed prerequisite with unresolved waits needs a qualified retained handoff.
 For scoped preparation with unresolved waits, unpublished source on that same
 issue and repository may use an authored local-commit handoff instead of a PR.
 The source needs an exact authored, timestamp-proved release; that release or
-a later source-author handoff names `work/<source-branch> at <full-commit>`
+a later source-author handoff names `<recorded source branch> at <full commit>`
 (inline Markdown is accepted). Git verifies the repository and local branch
-head, plus registered source worktree heads when present, with no published
+head, with no published
 source branch or PR. A path alone supplies no proof. The successor uses the same
 `--resume-from` and scoped `--wait-resolved`
 arguments, its own native identity and a new branch, then creates its configured

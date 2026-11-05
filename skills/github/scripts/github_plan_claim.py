@@ -730,7 +730,7 @@ def local_inventory(repo: str, number: int, *, cwd: pathlib.Path | None = None,
         fields = dict(line.split(" ", 1) for line in block.splitlines() if " " in line)
         branch = fields.get("branch", "").removeprefix("refs/heads/")
         path = fields.get("worktree", "")
-        worktrees.append({"branch": branch, "path": path, "head": fields.get("HEAD", "")})
+        worktrees.append({"branch": branch, "path": path})
     local = run_read(["git", "for-each-ref", "--format=%(refname:short) %(objectname)", "refs/heads"], cwd=cwd, **deadline_options).splitlines()
     branch_heads = dict(line.split(" ", 1) for line in local if " " in line)
     remote_branches = [
@@ -755,12 +755,13 @@ def released_source(comments: list[dict[str, Any]], comment_id: int) -> dict[str
     if not author:
         raise ClaimProofError("claim_resume_author_missing", "Resume source author is unavailable")
     source_index = comments.index(original)
+    exact_release = next((comments[j] for i, _, j in exact_released_sources(comments) if i == source_index), None)
     for comment in comments[source_index + 1:]:
         if (comment.get("user") or {}).get("login") != author:
             continue
         if (released_claim_id(comment.get("body") or "") == comment_id
                 or legacy_release_worker(comment.get("body") or "") == parsed[0]["worker"]):
-            return {"comment": original, "record": parsed[0], "author": author, "release": comment}
+            return {"comment": original, "record": parsed[0], "author": author, "release": comment, "exact_release": exact_release}
     raise ClaimProofError("claim_resume_source_unreleased", "Resume source claim has not been released by its author")
 
 
@@ -832,10 +833,17 @@ def is_retained_work(pull: dict[str, Any], *, author: str, issue_repo: str, issu
 
 
 def handoff_source_head(source: dict[str, Any], handoff: dict[str, Any]) -> str | None:
-    from github_plan_release import exact_source_release
+    from github_plan_status.discussion import stamp
 
-    if not exact_source_release(source["comment"]["id"], source["release"], [source["comment"], source["release"]]):
+    exact = source.get("exact_release")
+    if exact is None:
         return None
+    if handoff.get("id") != exact["id"]:
+        try:
+            if stamp(handoff.get("created_at")) <= stamp(exact["created_at"]):
+                return None
+        except (ValueError, TypeError):
+            return None
     branch = source["record"]["branch"]
     pattern = rf"(?<![\w/.-]){re.escape(branch)}(?![\w/.-]) +at +([0-9a-f]{{40}}|[0-9a-f]{{64}})(?![0-9a-f])"
     text = unquoted_text(handoff.get("body") or "").translate(str.maketrans("", "", "`*"))
@@ -852,9 +860,6 @@ def local_source_handoff(
         return None
     head = (inventory.get("branch_heads") or {}).get(branch)
     if not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", head):
-        return None
-    trees = [tree for tree in inventory.get("worktrees", []) if tree.get("branch") == branch]
-    if any(tree.get("head") != head for tree in trees):
         return None
     for handoff in candidates:
         if selected_id is not None and handoff.get("id") != selected_id:

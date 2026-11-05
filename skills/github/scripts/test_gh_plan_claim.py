@@ -4201,8 +4201,7 @@ class ClaimTests(unittest.TestCase):
     def local_handoff_fixture(self) -> dict[str, str]:
         source = self.no_pr_resume_fixture()
         head = "a" * 40
-        self.inventory.update(repo=self.args.repo, branch_heads={source["branch"]: head}, remote_branches=[])
-        self.inventory["worktrees"][0]["head"] = head
+        self.inventory.update(branch_heads={source["branch"]: head}, remote_branches=[])
         self.comments[-1]["body"] = (f"Released claim {self.args.resume_from}\n\n"
             f"**Source:** clean local `{source['branch']}` at **{head}**, retained for the next source owner.\n"
             "Publication and Client acceptance remain held.")
@@ -4220,12 +4219,11 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(output["claim"]["resume_from"], str(self.args.resume_from))
         self.assertEqual(wait_record.current(self.issue, self.comments, {TEST_BOT}), self.wait)
         self.assertEqual(self.inventory, before)
-        self.assertIn("metadata_readback", output["completed_steps"])
         self.run_claim()
         self.assertEqual(len([c for c in self.comments if CLAIM.records(c["body"]) and
                              CLAIM.records(c["body"])[0]["session"] == self.args.session]), 1)
 
-    def test_local_source_proof_does_not_require_a_checkout_or_bind_clear_wait_resumes(self) -> None:
+    def test_clear_wait_resume_does_not_gain_local_source_binding(self) -> None:
         for scoped in (False, True):
             with self.subTest(scoped=scoped):
                 self.setUp()
@@ -4239,13 +4237,12 @@ class ClaimTests(unittest.TestCase):
                 self.assertEqual("retained_source_head" in self.emitted.call_args.args[0]["claim"], scoped)
 
     def test_unpublished_source_proof_refuses_missing_mismatched_or_published_custody(self) -> None:
-        for change in ("head", "tree_head", "missing_head", "publication",
+        for change in ("head", "missing_head", "publication",
                        "foreign_release", "edited_source", "no_authored_head", "quoted", "fenced", "source_branch", "competitor", "artifact"):
             with self.subTest(change=change):
                 self.setUp()
                 source = self.local_handoff_fixture()
                 if change == "head": self.inventory["branch_heads"][source["branch"]] = "b" * 40
-                if change == "tree_head": self.inventory["worktrees"][0]["head"] = "b" * 40
                 if change == "missing_head": self.inventory.pop("branch_heads")
                 if change == "publication": self.inventory["remote_branches"] = [source["branch"]]
                 if change == "foreign_release": self.comments[-2]["user"]["login"] = "stranger"
@@ -4279,7 +4276,6 @@ class ClaimTests(unittest.TestCase):
                     if change == "handoff_head":
                         self.comments[2]["body"] = self.comments[2]["body"].replace("a" * 40, "b" * 40)
                         self.inventory["branch_heads"][source["branch"]] = "b" * 40
-                        self.inventory["worktrees"][0]["head"] = "b" * 40
                 setattr(self, timing, race)
                 with self.assertRaises(PLAN.PlanError) as stopped:
                     self.run_claim()
@@ -4326,19 +4322,27 @@ class ClaimTests(unittest.TestCase):
             command.write_text("agy")
             brief.write_text(header)
             launch = Namespace(command_file=[command], brief_file=[brief], brief_issue=[anchor], lead_session_id=lead)
-            for change in ("incomplete", "missing_head", "publication", "native_blocker", "recipient"):
+            for change in ("incomplete", "missing_head", "unread_inventory", "publication", "native_blocker", "recipient"):
                 with self.subTest(change=change):
                     old = copy.deepcopy((self.inventory, self.blockers, self.issue))
                     if change == "incomplete": observed["complete"] = False
                     if change == "missing_head": self.inventory.pop("branch_heads")
+                    if change == "unread_inventory":
+                        observed.pop("inventory")
+                        observed["coverage"]["local_error"] = "Local Git read unavailable"
                     if change == "publication": self.inventory["remote_branches"] = list(self.inventory["local_branches"])
                     if change == "native_blocker": self.blockers.append({"repo": self.args.repo, "state": "open", "number": 19})
                     if change == "recipient": self.issue["body"] = self.issue["body"].replace(lead, "different-recipient")
                     with self.assertRaises(ValueError):
                         iterm_tab.prepare_launches(launch)
                     self.assert_no_writes()
+                    if change == "unread_inventory":
+                        self.assertEqual(self.emitted.call_args.args[0]["issue"]["launch_check"]["ownership"]["detail"], observed["coverage"]["local_error"])
                     self.inventory, self.blockers, self.issue = old
-                    observed.update(complete=True, inventory=self.inventory)
+                    observed.update(complete=True, inventory=self.inventory, coverage={})
+            source = CLAIM.records(self.comments[0]["body"])[0]
+            self.comments.insert(2, {"id": 44, "body": f"Released by {source['worker']}",
+                "user": {"login": TEST_BOT}, "created_at": "2026-10-01T12:00:00Z"})
             commands, _ = iterm_tab.prepare_launches(launch)
             self.assertTrue(self.emitted.call_args.args[0]["issue"]["launch_check"]["allowed"])
             self.assert_no_writes()
@@ -6507,7 +6511,7 @@ class ClaimTests(unittest.TestCase):
             with patch.object(CLAIM, "run_read", side_effect=read):
                 inventory = CLAIM.local_inventory("owner/repo", 42, cwd=root)
             self.assertEqual(inventory["branch_heads"][OTHER["branch"]], head)
-            self.assertEqual(inventory["worktrees"], [{"branch": OTHER["branch"], "path": str(root.resolve()), "head": head}])
+            self.assertEqual(inventory["worktrees"], [{"branch": OTHER["branch"], "path": str(root.resolve())}])
             self.assertFalse(inventory["remote_branches"])
 
     def test_local_inventory_uses_live_remote_heads(self):

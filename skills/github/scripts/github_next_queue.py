@@ -109,11 +109,15 @@ def ownership_facts(item: dict[str, Any], ownership: dict[str, Any], *, trusted:
             source_comments = ([{**comment, "user": {"login": comment.get("author") or ""}}
                                 for comment in source_item["discussion"]["comments"]] if resume_source else comments)
             source = github_plan_claim.released_source(source_comments, resume_from)
+            local_proof = bool(wait_resolved and wait["state"] != "clear"
+                and source_item["number"] == item["number"] and item.get("record_type") != "pull_request")
             retained = github_plan_claim.retained_handoff(
                 source, github_plan_claim.handoff_candidates(source_comments, source), ownership.get("pulls") or [],
                 issue_repo=source_item["repo"], issue_number=source_item["number"], target_repo=item["repo"],
-                inventory=inventory if wait_resolved and wait["state"] != "clear"
-                    and source_item["number"] == item["number"] and item.get("record_type") != "pull_request" else None)
+                inventory=inventory if local_proof else None)
+            if retained is None and local_proof and "inventory" not in ownership:
+                return {**row, "error": "unreadable_ownership_or_wait",
+                        "detail": row["coverage"].get("local_error") or f"Local Git inventory unavailable for {item['repo']}; restore the source checkout and retry this preflight"}
             if retained and retained["open_conflicts"]:
                 return {**row, "error": "retained_handoff_unavailable"}
     except (ValueError, KeyError, TypeError) as exc:
