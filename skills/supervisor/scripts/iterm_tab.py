@@ -1430,7 +1430,7 @@ def check_launch_issue(brief: str, *, dispatch_recipient: str | None = None, dis
             raise ValueError(f"Launch refused for {anchor}: {check.get('status', 'unknown')}, "
                              f"{evidence}; dispatch only after the relevant fact changes. "
                              f"For review/legacy waits, read gh-plan.py --repo {repo} wait {anchor}; "
-                             "record actual waits or verified absence with --clear --evidence before dispatch. "
+                             "preserve actual waits; use --clear --evidence only for verified absence or genuine resolution. "
                              "For another source issue, use its full issue-comment URL in Resume from")
 
 

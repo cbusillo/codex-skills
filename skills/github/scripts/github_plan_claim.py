@@ -94,7 +94,7 @@ def marker(claim: dict[str, str]) -> str:
 def same_owner(record: dict[str, Any], claim: dict[str, Any]) -> bool:
     return (all(record.get(key) == claim[key] for key in ("worker", "session", "branch"))
             and all(record.get(key) == claim.get(key)
-                    for key in ("refresh_pr", "retained_handoff", "resume_from")))
+                    for key in ("refresh_pr", "retained_handoff", "resume_from", "retained_source_head")))
 
 
 def legacy_release_worker(text: str) -> str | None:
@@ -731,12 +731,14 @@ def local_inventory(repo: str, number: int, *, cwd: pathlib.Path | None = None,
         branch = fields.get("branch", "").removeprefix("refs/heads/")
         path = fields.get("worktree", "")
         worktrees.append({"branch": branch, "path": path})
-    local = run_read(["git", "for-each-ref", "--format=%(refname:short)", "refs/heads"], cwd=cwd, **deadline_options).splitlines()
+    local = run_read(["git", "for-each-ref", "--format=%(refname:short) %(objectname)", "refs/heads"], cwd=cwd, **deadline_options).splitlines()
+    branch_heads = dict(line.split(" ", 1) for line in local if " " in line)
     remote_branches = [
         line.split("\t", 1)[1].removeprefix("refs/heads/")
         for line in run_read(["git", "ls-remote", "--heads", "origin"], cwd=cwd, **deadline_options).splitlines()
     ]
-    return {"worktrees": worktrees, "local_branches": local, "remote_branches": remote_branches, "issue": number}
+    return {"worktrees": worktrees, "local_branches": [line.split(" ", 1)[0] for line in local],
+            "remote_branches": remote_branches, "branch_heads": branch_heads, "issue": number}
 
 
 def released_source(comments: list[dict[str, Any]], comment_id: int) -> dict[str, Any]:
@@ -753,12 +755,13 @@ def released_source(comments: list[dict[str, Any]], comment_id: int) -> dict[str
     if not author:
         raise ClaimProofError("claim_resume_author_missing", "Resume source author is unavailable")
     source_index = comments.index(original)
+    exact_release = next((comments[j] for i, _, j in exact_released_sources(comments) if i == source_index), None)
     for comment in comments[source_index + 1:]:
         if (comment.get("user") or {}).get("login") != author:
             continue
         if (released_claim_id(comment.get("body") or "") == comment_id
                 or legacy_release_worker(comment.get("body") or "") == parsed[0]["worker"]):
-            return {"comment": original, "record": parsed[0], "author": author, "release": comment}
+            return {"comment": original, "record": parsed[0], "author": author, "release": comment, "exact_release": exact_release}
     raise ClaimProofError("claim_resume_source_unreleased", "Resume source claim has not been released by its author")
 
 
@@ -829,10 +832,49 @@ def is_retained_work(pull: dict[str, Any], *, author: str, issue_repo: str, issu
                               local_references=issue_repo.casefold() == target_repo.casefold(), attestation=True)
 
 
+def handoff_source_head(source: dict[str, Any], handoff: dict[str, Any]) -> str | None:
+    from github_plan_status.discussion import stamp
+
+    exact = source.get("exact_release")
+    if exact is None:
+        return None
+    if handoff.get("id") != exact["id"]:
+        try:
+            if stamp(handoff.get("created_at")) <= stamp(exact["created_at"]):
+                return None
+        except (ValueError, TypeError):
+            return None
+    branch = source["record"]["branch"]
+    pattern = rf"(?<![\w/.-]){re.escape(branch)}(?![\w/.-]) +at +([0-9a-f]{{40}}|[0-9a-f]{{64}})(?![0-9a-f])"
+    text = unquoted_text(handoff.get("body") or "").translate(str.maketrans("", "", "`*"))
+    heads = set(re.findall(pattern, text))
+    return heads.pop() if len(heads) == 1 else None
+
+
+def local_source_handoff(
+    source: dict[str, Any], candidates: list[dict[str, Any]], inventory: dict[str, Any], *,
+    repo: str, number: int, selected_id: int | None = None,
+) -> dict[str, Any] | None:
+    branch = source["record"]["branch"]
+    if branch not in inventory.get("local_branches", []) or branch in inventory.get("remote_branches", []):
+        return None
+    head = (inventory.get("branch_heads") or {}).get(branch)
+    if not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", head):
+        return None
+    for handoff in candidates:
+        if selected_id is not None and handoff.get("id") != selected_id:
+            continue
+        if handoff_source_head(source, handoff) == head:
+            return {"comment": handoff, "named": set(), "qualified": [], "permitted": {branch},
+                    "open_conflicts": [], "url": handoff_url(repo, number, handoff["id"]), "source_head": head}
+    return None
+
+
 def retained_handoff(
     source: dict[str, Any], candidates: list[dict[str, Any]], pulls: list[dict[str, Any]], *,
     issue_repo: str, issue_number: int, target_repo: str, selected_id: int | None = None,
     usable: Callable[[dict[str, Any]], bool] | None = None,
+    inventory: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Prefer the first usable qualified handoff, preserving a selected ID."""
     author = source["author"]
@@ -860,6 +902,10 @@ def retained_handoff(
                 return candidate
     if first is not None:
         return first
+    if inventory is not None and issue_repo.casefold() == target_repo.casefold():
+        local = local_source_handoff(source, candidates, inventory, repo=issue_repo, number=issue_number, selected_id=selected_id)
+        if local is not None and not any((pull.get("head") or {}).get("ref") in local["permitted"] for pull in pulls):
+            return local
     if selected_id is not None:
         raise ClaimProofError("claim_handoff_changed", "Selected source handoff no longer qualifies its retained work")
     return None

@@ -2145,7 +2145,7 @@ def cmd_show(args: argparse.Namespace) -> None:
         facts = github_next_queue.ownership_facts(candidate, observed,
             trusted=wait_authors(issue["repo"]), resume_from=resume_id, resume_source=source_item,
             dispatch_recipient=getattr(args, "dispatch_recipient", None) or "",
-            expired_sessions=github_plan_claim.expired_lease_sessions(comments), worker=getattr(args, "worker", None) or "")
+            expired_sessions=github_plan_claim.expired_lease_sessions(comments), worker=getattr(args, "worker", None) or "", wait_resolved=args.wait_resolved)
         source_clear = (source_facts is None or (source_facts["complete"] and not source_facts.get("error")
                         and not source_facts["conflicts"] and (args.read_only or not source_facts["recipients"])))
         claim_error = None
@@ -2549,6 +2549,10 @@ def read_release_inherited_prs(record: dict[str, str]) -> set[str]:
     candidates = [comment for comment in github_plan_claim.handoff_candidates(comments, source) if comment["id"] == handoff_id]
     if len(candidates) != 1:
         raise github_plan_claim.ClaimProofError("release_inherited_handoff_changed", "Inherited retained handoff changed; preserve its source")
+    if record.get("retained_source_head"):
+        if github_plan_claim.handoff_source_head(source, candidates[0]) != record["retained_source_head"]:
+            raise github_plan_claim.ClaimProofError("release_inherited_handoff_changed", "Inherited local source proof changed; preserve its source")
+        return set()
     text = candidates[0].get("body") or ""
     repos = {repo, *re.findall(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/[1-9]\d*", text),
              *re.findall(r"(?<![\w/])([\w.-]+/[\w.-]+)#[1-9]\d*", text)}
@@ -3001,7 +3005,8 @@ def claim_once(args: argparse.Namespace) -> None:
     target_repo = issue_repo
     handoff_id = None
     retained_mode = False
-    selection = None
+    preserve_waits = bool(args.resume_from and args.wait_resolved)
+    selection: dict[str, Any] | None = None
     claim["claimed_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
     completed: list[str] = []
     claim_comment: dict[str, Any] = {}
@@ -3136,7 +3141,7 @@ def claim_once(args: argparse.Namespace) -> None:
         observed_holds = github_plan_wait.marker(checked_issue["claim_wait"])
         if observed_holds not in {expected, planned_wait}:
             raise PlanError("Structured wait changed during claim readback; verify the new record before recovery")
-        if retained_mode and observed_holds != expected:
+        if (retained_mode or preserve_waits) and observed_holds != expected:
             raise PlanError("Issue holds changed during retained-handoff readback; verify the new evidence before recovery")
 
     def resume_source(
@@ -3478,8 +3483,7 @@ def claim_once(args: argparse.Namespace) -> None:
         try:
             source = github_plan_claim.released_source(source_comments, args.resume_from)
             if getattr(args, "resume_issue", None):
-                exact = next((release for release in source_comments if release.get("id") != source["comment"]["id"]
-                              and github_plan_release.exact_source_release(source["comment"]["id"], release, source_comments)), None)
+                exact = source["exact_release"]
                 if exact is None:
                     raise github_plan_claim.ClaimProofError("claim_resume_source_unreleased",
                         "Explicit source requires an exact authored, timestamp-proved release")
@@ -3561,8 +3565,18 @@ def claim_once(args: argparse.Namespace) -> None:
             selected_id = selection["handoff"] if selection else owned_ids[0] if len(owned_ids) == 1 else None
             handoff = (github_plan_claim.retained_handoff(source, candidates, target_pulls,
                 issue_repo=issue_repo, issue_number=source_number, target_repo=target_repo,
-                selected_id=selected_id, usable=usable)
+                selected_id=selected_id, usable=usable,
+                inventory=phase["inventory"] if source_number == number and record_kind == "issue"
+                    and args.wait_resolved and phase_records[(issue_repo.casefold(), number)][0]["claim_wait"]["state"] != "clear" else None)
                 if selection is None or selection["handoff"] is not None else None)
+            source_head = handoff.get("source_head") if handoff else None
+            if source_head:
+                if (claim.get("retained_source_head", source_head) != source_head
+                        or selection is not None and selection.get("source_head") != source_head):
+                    raise github_plan_claim.ClaimProofError("claim_handoff_changed", "Retained local source head changed during claim readback")
+                claim["retained_source_head"] = source_head
+            elif claim.get("retained_source_head"):
+                raise github_plan_claim.ClaimProofError("claim_handoff_changed", "Retained local source proof disappeared during claim readback")
             record = source["record"]
             source_open = any(pull.get("state") == "open" and (pull.get("head") or {}).get("ref") == record["branch"]
                               for pull in open_pulls)
@@ -3581,7 +3595,7 @@ def claim_once(args: argparse.Namespace) -> None:
                         mode, next_pr = "next", matching[0]["number"]
                 selection = {"source": projection, "mode": mode,
                              "handoff": handoff["comment"]["id"] if handoff is not None else None,
-                             "next_pr": next_pr}
+                             "next_pr": next_pr, "source_head": source_head}
             retained_mode = selection["mode"] != "plain"
             handoff_id = selection["handoff"]
             if not retained_mode:
@@ -3590,7 +3604,7 @@ def claim_once(args: argparse.Namespace) -> None:
                 same_source_branch = claim["branch"] == record["branch"]
                 if handoff_required:
                     handoff_error = github_plan_claim.ClaimProofError("claim_handoff_pr_required",
-                        "Released work requires a qualified source-authored retained-PR handoff. Scoped prerequisite evidence "
+                        "Released work requires a qualified source-authored retained PR or exact unpublished local-source handoff. Scoped prerequisite evidence "
                         "cannot clear product waits. For a genuinely resolved wait on released work without a PR, use an "
                         "ordinary new-branch claim without --resume-from, or record its verified resolution with "
                         "gh-plan.py wait --clear --evidence before resuming.")
@@ -3992,7 +4006,7 @@ def claim_once(args: argparse.Namespace) -> None:
         if conflicts:
             refuse_or_route(conflicts, comments)
         check_wait(issue, status)
-        planned_wait = previous_wait if retained_mode else github_plan_wait.marker(
+        planned_wait = previous_wait if retained_mode or preserve_waits else github_plan_wait.marker(
             github_plan_wait.reviewed(evidence=args.wait_resolved or issue["claim_wait"]["evidence"]))
         if owned:
             claim = {key: owned[0][key] for key in claim}
@@ -4050,7 +4064,7 @@ def claim_once(args: argparse.Namespace) -> None:
             + github_plan_claim.lease_takeovers(ended_owners)
             + github_plan_claim.marker(claim)
             + "\n" + planned_wait
-            + (f"\n\nRetained-work handoff: released claim {args.resume_from}; handoff comment {handoff_id}. This successor claim preserves retained PRs and their product holds." if retained_mode else "")
+            + (f"\n\nRetained-work handoff: released claim {args.resume_from}; handoff comment {handoff_id}. This successor claim preserves retained source and its product holds." if retained_mode else "")
             + ("\n\nRetained PR waits verified for this step: " + ", ".join(
                 f"https://github.com/{target_repo}/pull/{pr}" for pr in sorted(retained_waits)
             ) if retained_waits else "")
@@ -4116,13 +4130,13 @@ def claim_once(args: argparse.Namespace) -> None:
             f"Next actor: agent:{claim['session']}\n"
             f"Branch: {claim['branch']}\nNext action: {args.next_action}\n"
             + f"Last verified: {claim['claimed_at']}\n\n"
-            + (f"Wait resolution: {args.wait_resolved}\n\n" if retained_mode and args.wait_resolved else "")
+            + (f"Wait resolution: {args.wait_resolved}\n\n" if (retained_mode or preserve_waits) and args.wait_resolved else "")
             + github_plan_claim.marker(claim)
             + "\n" + planned_wait
             + wait_receipt
         )
         if can_update:
-            if retained_mode:
+            if retained_mode or preserve_waits:
                 _, pre_write_issue = get_issue(args.issue, repo)
                 if pre_write_issue.get("body") != issue.get("body"):
                     raise PlanError("Issue body changed before retained-handoff status write; preserve the new hold and verify before recovery")

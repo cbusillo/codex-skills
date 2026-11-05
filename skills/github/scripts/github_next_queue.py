@@ -43,7 +43,7 @@ def compact_output(value: Any) -> Any:
 def ownership_facts(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[str],
                     resume_from: int | None = None, resume_source: dict[str, Any] | None = None,
                     expired_sessions: set[str] | frozenset[str] | None = None,
-                    worker: str = "", session: str = "", dispatch_recipient: str = "") -> dict[str, Any]:
+                    worker: str = "", session: str = "", dispatch_recipient: str = "", wait_resolved: str | None = None) -> dict[str, Any]:
     discussion = item.get("discussion") or {}
     status = current_status(discussion, trusted, body_recorded_at=discussion.get("body_recorded_at"),
                             preserve_markers=True, preserve_content=True)
@@ -109,9 +109,15 @@ def ownership_facts(item: dict[str, Any], ownership: dict[str, Any], *, trusted:
             source_comments = ([{**comment, "user": {"login": comment.get("author") or ""}}
                                 for comment in source_item["discussion"]["comments"]] if resume_source else comments)
             source = github_plan_claim.released_source(source_comments, resume_from)
+            local_proof = bool(wait_resolved and wait["state"] != "clear"
+                and source_item["number"] == item["number"] and item.get("record_type") != "pull_request")
             retained = github_plan_claim.retained_handoff(
                 source, github_plan_claim.handoff_candidates(source_comments, source), ownership.get("pulls") or [],
-                issue_repo=source_item["repo"], issue_number=source_item["number"], target_repo=item["repo"])
+                issue_repo=source_item["repo"], issue_number=source_item["number"], target_repo=item["repo"],
+                inventory=inventory if local_proof else None)
+            if retained is None and local_proof and "inventory" not in ownership:
+                return {**row, "error": "unreadable_ownership_or_wait",
+                        "detail": row["coverage"].get("local_error") or f"Local Git inventory unavailable for {item['repo']}; restore the source checkout and retry this preflight"}
             if retained and retained["open_conflicts"]:
                 return {**row, "error": "retained_handoff_unavailable"}
     except (ValueError, KeyError, TypeError) as exc:
@@ -133,6 +139,7 @@ def ownership_facts(item: dict[str, Any], ownership: dict[str, Any], *, trusted:
         return {**row, "error": "unreadable_ownership_or_wait", "detail": str(exc)}
     return {**row, "conflicts": conflicts, "artifacts": artifacts, "wait": wait, "ended_ownership": ended, "recipients": recipients,
             **({"retained_handoff": retained["url"]} if retained else {}),
+            **({"retained_source_head": retained["source_head"]} if retained and retained.get("source_head") else {}),
             "event_completed": wait != original_wait and wait["state"] == "clear"}
 
 
