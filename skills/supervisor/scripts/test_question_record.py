@@ -21,7 +21,6 @@ AUTHOR = "fixture-automation"
 os.environ["CODEX_AUTOMATION_LOGIN"] = AUTHOR
 os.environ["CODEX_SKILLS_ENV_FILE"] = "/missing/fixture.env"
 
-import q_number_guard as guard
 import question_record as record
 
 from skills.github.scripts.github_fixture_support import api_success, with_call_stub
@@ -161,6 +160,22 @@ class QuestionRecordTests(unittest.TestCase):
         self.assertIn(record.read_record(self.source)["text"], outputs[2])
         self.assertIn(self.source["url"], outputs[2])
 
+    def test_legacy_chat_read_preserves_original_question_and_source(self) -> None:
+        for heading in ("Director question: Q300. Retire the old watcher?", "Owner question: **Q300 — Retire the old watcher?**"):
+            source = self.source | {"body": heading + "\n\nKeep: retain it. Retire: remove it."}
+            output = StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(record.main(["show-question", source["url"], "--chat"], lambda _item: [source]), 0)
+            text = output.getvalue()
+            self.assertTrue(text.startswith("**Q300"))
+            self.assertIn("Retire the old watcher?", text)
+            self.assertIn("Keep: retain it. Retire: remove it.", text)
+            self.assertIn(source["url"], text)
+            self.assertEqual(source["body"].splitlines()[0], heading)
+        source = self.source | {"body": self.source["body"].replace(question()["decision"], "Changed decision?", 1)}
+        with self.assertRaises(ValueError):
+            record.read_chat_question(source)
+
     def test_dry_run_and_no_queue_preserve_truthful_registration(self) -> None:
         self.args.dry_run = True
         self.assertEqual(self.create(question())["registration"], "dry_run")
@@ -272,7 +287,6 @@ class QuestionRecordTests(unittest.TestCase):
             record.question_id.verify_number(counter, int(first["question_id"][1:]), first["url"])
             self.assertEqual(record.read_record(storage.read(first["url"]))["text"], first["text"])
             self.assertIsNone(record.RECORD.search(first["text"]))
-            self.assertIsNotNone(guard.missing_context(first["text"]))
             state = Path(self.temporary.name) / "questions-state.json"
 
             def routine_check(*options: str) -> dict:

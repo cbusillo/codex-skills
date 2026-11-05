@@ -9,7 +9,6 @@ import io
 import json
 import os
 import tempfile
-import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -208,9 +207,6 @@ class GuardTests(unittest.TestCase):
                                             stop_hook_active=True)), "")
         self.assertEqual([r["verdict"] for r in self.logged()], ["caught", "second-pass"])
 
-    def test_free_text_phrase_matching_is_removed(self) -> None:
-        self.assertEqual(self.run_hook(stop(last_assistant_message=UNNUMBERED_ASK)), "")
-
     def test_status_report_with_quoted_old_question_passes(self) -> None:
         self.assertEqual(self.run_hook(stop(last_assistant_message=STATUS_WITH_QUOTED_QUESTION)), "")
 
@@ -228,33 +224,52 @@ class GuardTests(unittest.TestCase):
 
     def test_transcript_is_read_when_the_message_field_is_missing(self) -> None:
         transcript = Path(self.home.name, "t.jsonl")
-        lines = [{"type": "user", "message": {"content": "go"}},
-                 {"type": "assistant", "message": {"content": [{"type": "text", "text": UNNUMBERED_QUESTION}]}},
-                 {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Bash"}]}}]
+        lines = [
+            {"type": "user", "message": {"content": "go"}},
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": UNNUMBERED_QUESTION}]}},
+            {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Bash"}]}},
+        ]
         transcript.write_text("\n".join(map(json.dumps, lines)) + "\nnot json\n")
         self.assertIn("block", self.run_hook(stop(transcript_path=str(transcript))))
 
-    def test_transcript_disappearing_after_read_keeps_original_decision(self) -> None:
-        transcript = Path(self.home.name, "t.jsonl")
-        transcript.write_text(json.dumps({"type": "assistant", "message": {"content": UNNUMBERED_QUESTION}}))
-        read_message = guard.last_message
+    def test_malformed_entries_do_not_disable_question_checks(self) -> None:
+        output = self.question_output()
+        transcript = self.transcript(output)
+        entries = [json.loads(line) for line in transcript.read_text().splitlines()]
+        malformed = [{"type": "assistant", "message": value} for value in (None, "old text", [])]
+        malformed += [
+            {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Bash", "input": value}]}}
+            for value in (None, [], {"command": []})
+        ]
+        malformed.append(
+            {
+                "type": "user",
+                "toolUseResult": {"stdout": None},
+                "message": {"content": [{"type": "tool_result", "tool_use_id": "question"}]},
+            }
+        )
+        transcript.write_text("\n".join(map(json.dumps, entries + malformed)))
+        self.assertEqual(self.run_hook(stop(last_assistant_message=output, transcript_path=str(transcript))), "")
+        self.assertIn("block", self.run_hook(stop(last_assistant_message=UNNUMBERED_QUESTION, transcript_path=str(transcript))))
 
-        def read_then_remove(payload: dict) -> str | None:
-            message = read_message(payload)
-            transcript.unlink()
-            return message
-
-        with mock.patch.object(guard, "last_message", side_effect=read_then_remove):
-            decision = json.loads(self.run_hook(stop(transcript_path=str(transcript))))
-        self.assertEqual(decision["decision"], "block")
-        self.assertTrue(decision["reason"])
+    def test_legacy_helper_output_and_format_changes_pass_without_template_matching(self) -> None:
+        output = self.question_output()
+        legacy = "**Q300. Retire the old watcher?**\n\nKeep or retire it.\n\nOriginal question: " + self.registered_question()["url"]
+        for printed in (legacy, output.replace("Context:", "Reason:").replace("Owning issue:", "Source issue:")):
+            with self.subTest(printed=printed):
+                transcript = self.transcript(printed, "show-question --chat")
+                self.assertEqual(self.run_hook(stop(last_assistant_message=printed, transcript_path=str(transcript))), "")
 
     def test_errors_and_unreadable_input_fail_open(self) -> None:
         fifo = Path(self.home.name, "fifo")
         os.mkfifo(fifo)  # Opening a FIFO with no writer would hang the hook.
-        for payload in ("not json", stop(transcript_path="/nonexistent/t.jsonl"), stop(transcript_path=str(fifo)),
-                        stop(last_assistant_message=None), {"hook_event_name": "SubagentStop",
-                                                           "last_assistant_message": UNNUMBERED_ASK}):
+        for payload in (
+            "not json",
+            stop(transcript_path="/nonexistent/t.jsonl"),
+            stop(transcript_path=str(fifo)),
+            stop(last_assistant_message=None),
+            {"hook_event_name": "SubagentStop", "last_assistant_message": UNNUMBERED_QUESTION},
+        ):
             self.assertEqual(self.run_hook(payload), "")
 
     def test_unwritable_log_still_blocks(self) -> None:

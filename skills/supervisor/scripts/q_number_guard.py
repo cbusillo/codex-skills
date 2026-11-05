@@ -13,7 +13,7 @@ import re
 import stat
 import sys
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import TextIO
 
@@ -26,12 +26,6 @@ ADDRESSED = re.compile(
     re.IGNORECASE,
 )
 ANSWERED = re.compile(r"\s*[*_]*(yes|no|not yet)[*_]*\s*[,.;—–-]", re.IGNORECASE)
-QUESTION_OUTPUT = re.compile(
-    r"^\*\*Q[0-9]+[.] [^\n]+\*\*\n\n- \*\*Context:.*?"
-    r"\nOwning issue: https://github\.com/\S+\n\nOriginal question: "
-    r"https://github\.com/\S+/issues/[0-9]+#issuecomment-[0-9]+",
-    re.MULTILINE | re.DOTALL,
-)
 QUESTION_COMMAND = re.compile(r"(?:^|[\s/])oq\.py['\"]?\s+(?:create|update|show-question)\b")
 
 
@@ -57,14 +51,13 @@ def missing_context(message: str, printed: tuple[str, ...] = ()) -> str | None:
     return director_question_rule() if asks_director(QUOTED.sub(" ", message)) else None
 
 
-def transcript_entries(payload: Mapping) -> list[dict]:
+def transcript_entries(payload: Mapping) -> Iterator[dict]:
     path = payload.get("transcript_path")
     if not isinstance(path, str) or not path:
-        return []
+        return
     path = Path(path).expanduser()
     if not path.is_file():
-        return []
-    entries = []
+        return
     with path.open(encoding="utf-8") as transcript:
         for line in transcript:
             try:
@@ -72,25 +65,40 @@ def transcript_entries(payload: Mapping) -> list[dict]:
             except ValueError:
                 continue
             if isinstance(entry, dict):
-                entries.append(entry)
-    return entries
+                yield entry
 
 
-def printed_questions(entries: list[dict]) -> tuple[str, ...]:
+def transcript_context(payload: Mapping) -> tuple[str | None, tuple[str, ...]]:
     calls = set()
     printed = {}
-    for entry in entries:
-        content = entry.get("message", {}).get("content", [])
+    last_text = None
+    for entry in transcript_entries(payload):
+        message = entry.get("message")
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content", [])
+        if entry.get("type") == "assistant" and isinstance(content, str):
+            last_text = content
         if not isinstance(content, list):
             continue
+        parts = [
+            block["text"]
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str)
+        ]
+        if entry.get("type") == "assistant" and any(parts):
+            last_text = "\n".join(parts)
         for block in content:
             if not isinstance(block, dict):
                 continue
+            inputs = block.get("input")
+            command = inputs.get("command") if isinstance(inputs, dict) else None
             if (
                 entry.get("type") == "assistant"
                 and block.get("type") == "tool_use"
                 and block.get("name") == "Bash"
-                and QUESTION_COMMAND.search(block.get("input", {}).get("command", ""))
+                and isinstance(command, str)
+                and QUESTION_COMMAND.search(command)
             ):
                 calls.add(block.get("id"))
             if (
@@ -103,24 +111,13 @@ def printed_questions(entries: list[dict]) -> tuple[str, ...]:
             result = entry.get("toolUseResult", {})
             if not isinstance(result, dict) or result.get("interrupted") or result.get("exitCode", 0) != 0:
                 continue
-            for match in QUESTION_OUTPUT.finditer(result.get("stdout", "")):
-                question = match[0]
+            output = result.get("stdout")
+            if not isinstance(output, str):
+                continue
+            question = output.split("\nRegistration:", 1)[0].strip()
+            if NUMBERED.match(question):
                 printed[question.split(" ", 1)[0]] = question
-    return tuple(printed.values())
-
-
-def last_message(payload: Mapping) -> str | None:
-    message = payload.get("last_assistant_message")
-    if isinstance(message, str):
-        return message
-    text = None
-    for entry in transcript_entries(payload):
-        content = entry.get("message", {}).get("content") if entry.get("type") == "assistant" else None
-        parts = [part.get("text", "") for part in content if isinstance(part, dict) and part.get("type") == "text"] \
-            if isinstance(content, list) else [content] if isinstance(content, str) else []
-        if any(parts):
-            text = "\n".join(parts)
-    return text
+    return last_text, tuple(printed.values())
 
 
 def verdict(payload: object) -> tuple[str | None, str | None]:
@@ -128,8 +125,12 @@ def verdict(payload: object) -> tuple[str | None, str | None]:
         return None, None
     if payload.get("stop_hook_active"):
         return "second-pass", None
-    message = last_message(payload)
-    reason = missing_context(message, printed_questions(transcript_entries(payload))) if message is not None else None
+    message = payload.get("last_assistant_message")
+    if isinstance(message, str) and not asks_director(QUOTED.sub(" ", message)):
+        return "pass", None
+    last_text, printed = transcript_context(payload)
+    message = message if isinstance(message, str) else last_text
+    reason = missing_context(message, printed) if message is not None else None
     return ("caught" if reason else "pass"), reason
 
 

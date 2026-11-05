@@ -144,7 +144,9 @@ source author and `updated_at` without local counter state. Add `--chat` to
 print the full question and original link in the same format as create and update.
 Paste that printed question and link unchanged, including all choices. The stop
 hook checks it against successful helper output in the local transcript; it
-does not read GitHub. Re-read an existing question with `--chat` before presenting it.
+does not read GitHub. Re-read an existing question with `--chat` before presenting
+it. Historical prose questions print their full original body and link without
+rewriting the source or allocating a new number.
 Revise an unanswered question with
 `oq.py update ORIGINAL_URL --record-file FILE --expected-updated-at TIMESTAMP --owner OWNER`, using `show-question`'s timestamp.
 The update keeps the number, URL and queue registration,
