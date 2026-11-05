@@ -187,6 +187,15 @@ class LaunchIssueTests(unittest.TestCase):
             iterm_tab.check_launch_issue(brief)
         reader.assert_not_called()
 
+    def test_read_only_anchor_rejects_contradictory_execution_fields_before_preflight(self) -> None:
+        anchor = "https://github.com/fixture/repo/issues/7"
+        for extra in (f"Anchor: {anchor}", f"Anchor and claim: {anchor}", "Resume from: 123",
+                      "Resume from: invalid", "Wait resolution: Existing scoped authority", "Wait resolution:"):
+            with self.subTest(extra=extra), patch.object(iterm_tab.subprocess, "run") as reader:
+                with self.assertRaises(ValueError):
+                    iterm_tab.check_launch_issue(f"Read-only anchor: {anchor}\n{extra}")
+                reader.assert_not_called()
+
     def test_claim_refusal_code_and_details_reach_the_launcher(self) -> None:
         anchor = "Anchor: https://github.com/fixture/repo/issues/7"
         for code in ("claim_wait_unresolved", "claim_milestone_graph_incomplete", "claim_preflight_unavailable"):

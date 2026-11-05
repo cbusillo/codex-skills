@@ -2123,6 +2123,8 @@ def cmd_show(args: argparse.Namespace) -> None:
         result["recorded_current_status"] = result["sections"]["Current Status"]
         result["sections"]["Current Status"] = github_plan_status.render_status(result["sections"]["Current Status"], derived)
     if getattr(args, "launch_check", False):
+        if args.read_only and (args.resume_from or args.wait_resolved):
+            raise PlanError("Read-only launch checks cannot resume execution custody or resolve waits")
         candidate = {**result, "discussion": github_direction_next.discussion_snapshot(issue, comments, complete=True)}
         candidate["discussion"]["body_recorded_at"] = next_status_body_time(candidate, wait_authors(issue["repo"]))
         observed = read_queue_ownership(issue["repo"])
@@ -2170,7 +2172,7 @@ def cmd_show(args: argparse.Namespace) -> None:
                                "message": str(error), **(error.payload if isinstance(error.payload, dict) else {})}
         result["launch_check"] = {
             "allowed": (claim_error is None and derived["relationships_complete"] and facts["complete"] and not facts.get("error")
-                        and not facts["conflicts"] and (args.read_only or not facts["artifacts"])
+                        and (args.read_only or not facts["conflicts"]) and (args.read_only or not facts["artifacts"])
                         and (args.read_only or not facts["recipients"])
                         and source_clear and (args.read_only or derived["status"] == "active"
                                               or (bool(args.wait_resolved) and derived["status"] == "waiting"))),
