@@ -4225,28 +4225,46 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(len([c for c in self.comments if CLAIM.records(c["body"]) and
                              CLAIM.records(c["body"])[0]["session"] == self.args.session]), 1)
 
+    def test_local_source_proof_does_not_require_a_checkout_or_bind_clear_wait_resumes(self) -> None:
+        for scoped in (False, True):
+            with self.subTest(scoped=scoped):
+                self.setUp()
+                self.local_handoff_fixture()
+                self.inventory["worktrees"] = []
+                if not scoped:
+                    self.comments.pop()
+                    self.wait = wait_record.reviewed(evidence="The prerequisite and all product holds are resolved")
+                    self.args.wait_resolved = None
+                self.run_claim()
+                self.assertEqual("retained_source_head" in self.emitted.call_args.args[0]["claim"], scoped)
+
     def test_unpublished_source_proof_refuses_missing_mismatched_or_published_custody(self) -> None:
-        for change in ("head", "tree_head", "missing_tree", "missing_head", "repository", "publication",
-                       "foreign_release", "edited_source", "no_authored_head", "quoted", "source_branch", "competitor", "artifact"):
+        for change in ("head", "tree_head", "missing_head", "publication",
+                       "foreign_release", "edited_source", "no_authored_head", "quoted", "fenced", "source_branch", "competitor", "artifact"):
             with self.subTest(change=change):
                 self.setUp()
                 source = self.local_handoff_fixture()
                 if change == "head": self.inventory["branch_heads"][source["branch"]] = "b" * 40
                 if change == "tree_head": self.inventory["worktrees"][0]["head"] = "b" * 40
-                if change == "missing_tree": self.inventory["worktrees"] = []
                 if change == "missing_head": self.inventory.pop("branch_heads")
-                if change == "repository": self.inventory["repo"] = "foreign/repo"
                 if change == "publication": self.inventory["remote_branches"] = [source["branch"]]
                 if change == "foreign_release": self.comments[-2]["user"]["login"] = "stranger"
                 if change == "edited_source": self.comments[0]["updated_at"] = "2026-10-03T00:00:00Z"
                 if change == "no_authored_head": self.comments[-2]["body"] = f"Released claim {self.args.resume_from}"
                 if change == "quoted":
                     self.comments[-2]["body"] = self.comments[-2]["body"].replace("**Source:**", "> **Source:**")
+                if change == "fenced":
+                    self.comments[-2]["body"] = f"Released claim {self.args.resume_from}\n```text\n" + self.comments[-2]["body"].split("\n\n", 1)[1] + "\n```"
                 if change == "source_branch": self.args.branch = source["branch"]
                 if change == "competitor": self.compete()
                 if change == "artifact": self.inventory["local_branches"].append("work/issue-42-other")
-                with self.assertRaises(PLAN.PlanError):
+                with self.assertRaises(PLAN.PlanError) as stopped:
                     self.run_claim()
+                if change == "source_branch":
+                    self.assertTrue(stopped.exception.payload["recovery_requirements"]["requirements"])
+                else:
+                    expected = "claim_conflict" if change in {"foreign_release", "competitor", "artifact"} else "claim_handoff_pr_required"
+                    self.assertEqual(stopped.exception.code, expected)
                 self.assert_no_writes()
 
     def test_unpublished_source_head_publication_and_wait_races_stop_both_readbacks(self) -> None:
@@ -6488,7 +6506,6 @@ class ClaimTests(unittest.TestCase):
                 return "" if argv[1] == "ls-remote" else original(argv, **kwargs)
             with patch.object(CLAIM, "run_read", side_effect=read):
                 inventory = CLAIM.local_inventory("owner/repo", 42, cwd=root)
-            self.assertEqual(inventory["repo"], self.args.repo)
             self.assertEqual(inventory["branch_heads"][OTHER["branch"]], head)
             self.assertEqual(inventory["worktrees"], [{"branch": OTHER["branch"], "path": str(root.resolve()), "head": head}])
             self.assertFalse(inventory["remote_branches"])

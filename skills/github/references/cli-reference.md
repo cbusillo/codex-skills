@@ -1293,18 +1293,21 @@ to clear a Director/repository hold and must account for the full record.
 Ordinary retained-work successor claims preserve the issue and retained PR
 wait records; scoped prerequisite authority never clears those product holds.
 A resumed prerequisite with unresolved waits needs a qualified retained handoff.
-For unpublished source on that same issue and repository, the existing handoff
-may retain a local commit instead of a PR. Its exact authored, timestamp-proved
-release must name the claimed source branch and full commit as
-`Source: work/<source-branch> at <full-commit>` (inline Markdown is accepted).
-Git must verify the repository, local branch head and registered source
-worktree head, with no published source branch or PR. A path alone supplies no
-proof. The successor uses the same `--resume-from` and scoped `--wait-resolved`
+For scoped preparation with unresolved waits, unpublished source on that same
+issue and repository may use an authored local-commit handoff instead of a PR.
+The source needs an exact authored, timestamp-proved release; that release or
+a later source-author handoff names `work/<source-branch> at <full-commit>`
+(inline Markdown is accepted). Git verifies the repository and local branch
+head, plus registered source worktree heads when present, with no published
+source branch or PR. A path alone supplies no proof. The successor uses the same
+`--resume-from` and scoped `--wait-resolved`
 arguments, its own native identity and a new branch, then creates its configured
 task tree from that exact commit. Keep the original source tree intact.
-The existing claim record binds the retained commit; launch, claim readbacks
-and release requalify its proof. Missing or changed proof refuses without
-clearing waits. The source author supplies missing branch/commit evidence in
+The existing claim record binds the retained commit; launch and both claim
+readbacks requalify its local proof. Release verifies the recorded authored
+commit, so later permitted publication or source-tree retirement cannot strand
+the successor claim. Missing or changed authored proof still refuses. The
+source author supplies missing branch/commit evidence in
 the normal authored handoff; ended-session recovery uses the existing verified
 Supervisor release procedure. No future PR or early publication is required.
 For a genuinely resolved wait on released work without a PR, use the ordinary
@@ -1325,8 +1328,8 @@ Conflict-refresh and ordinary resolved claims record their evidenced absence
 for that step. New wait records on readback stop the claim even with earlier
 resolution evidence. Every route independently rechecks native blockers and
 real competing claims.
-PR self-resumes with scoped prerequisite evidence also preserve their product
-waits; resuming a released claim never resolves those waits by itself.
+PR self-resumes through `claim` with scoped prerequisite evidence also preserve
+their product waits; resuming a released claim never resolves those waits by itself.
 The helper returns previous Current Status in the recovery result; it links
 the work record without copying that history into the claim comment.
 

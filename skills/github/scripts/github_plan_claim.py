@@ -738,7 +738,7 @@ def local_inventory(repo: str, number: int, *, cwd: pathlib.Path | None = None,
         for line in run_read(["git", "ls-remote", "--heads", "origin"], cwd=cwd, **deadline_options).splitlines()
     ]
     return {"worktrees": worktrees, "local_branches": [line.split(" ", 1)[0] for line in local],
-            "remote_branches": remote_branches, "branch_heads": branch_heads, "repo": repo, "issue": number}
+            "remote_branches": remote_branches, "branch_heads": branch_heads, "issue": number}
 
 
 def released_source(comments: list[dict[str, Any]], comment_id: int) -> dict[str, Any]:
@@ -831,31 +831,35 @@ def is_retained_work(pull: dict[str, Any], *, author: str, issue_repo: str, issu
                               local_references=issue_repo.casefold() == target_repo.casefold(), attestation=True)
 
 
-def local_source_handoff(
-    source: dict[str, Any], candidates: list[dict[str, Any]], inventory: dict[str, Any], *,
-    repo: str, number: int, selected_id: int | None = None,
-) -> dict[str, Any] | None:
+def handoff_source_head(source: dict[str, Any], handoff: dict[str, Any]) -> str | None:
     from github_plan_release import exact_source_release
 
     if not exact_source_release(source["comment"]["id"], source["release"], [source["comment"], source["release"]]):
         return None
     branch = source["record"]["branch"]
-    if ((inventory.get("repo") or "").casefold() != repo.casefold()
-            or branch not in inventory.get("local_branches", [])
-            or branch in inventory.get("remote_branches", [])):
+    pattern = rf"(?<![\w/.-]){re.escape(branch)}(?![\w/.-]) +at +([0-9a-f]{{40}}|[0-9a-f]{{64}})(?![0-9a-f])"
+    text = unquoted_text(handoff.get("body") or "").translate(str.maketrans("", "", "`*"))
+    heads = set(re.findall(pattern, text))
+    return heads.pop() if len(heads) == 1 else None
+
+
+def local_source_handoff(
+    source: dict[str, Any], candidates: list[dict[str, Any]], inventory: dict[str, Any], *,
+    repo: str, number: int, selected_id: int | None = None,
+) -> dict[str, Any] | None:
+    branch = source["record"]["branch"]
+    if branch not in inventory.get("local_branches", []) or branch in inventory.get("remote_branches", []):
         return None
     head = (inventory.get("branch_heads") or {}).get(branch)
     if not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", head):
         return None
     trees = [tree for tree in inventory.get("worktrees", []) if tree.get("branch") == branch]
-    if not trees or any(tree.get("head") != head for tree in trees):
+    if any(tree.get("head") != head for tree in trees):
         return None
-    pattern = rf"(?<![\w/.-]){re.escape(branch)}(?![\w/.-]) +at +([0-9a-f]{{40}}|[0-9a-f]{{64}})(?![0-9a-f])"
     for handoff in candidates:
         if selected_id is not None and handoff.get("id") != selected_id:
             continue
-        text = unquoted_text(handoff.get("body") or "").translate(str.maketrans("", "", "`*"))
-        if set(re.findall(pattern, text)) == {head}:
+        if handoff_source_head(source, handoff) == head:
             return {"comment": handoff, "named": set(), "qualified": [], "permitted": {branch},
                     "open_conflicts": [], "url": handoff_url(repo, number, handoff["id"]), "source_head": head}
     return None

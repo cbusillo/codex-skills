@@ -2145,7 +2145,7 @@ def cmd_show(args: argparse.Namespace) -> None:
         facts = github_next_queue.ownership_facts(candidate, observed,
             trusted=wait_authors(issue["repo"]), resume_from=resume_id, resume_source=source_item,
             dispatch_recipient=getattr(args, "dispatch_recipient", None) or "",
-            expired_sessions=github_plan_claim.expired_lease_sessions(comments), worker=getattr(args, "worker", None) or "")
+            expired_sessions=github_plan_claim.expired_lease_sessions(comments), worker=getattr(args, "worker", None) or "", wait_resolved=args.wait_resolved)
         source_clear = (source_facts is None or (source_facts["complete"] and not source_facts.get("error")
                         and not source_facts["conflicts"] and (args.read_only or not source_facts["recipients"])))
         claim_error = None
@@ -2550,12 +2550,7 @@ def read_release_inherited_prs(record: dict[str, str]) -> set[str]:
     if len(candidates) != 1:
         raise github_plan_claim.ClaimProofError("release_inherited_handoff_changed", "Inherited retained handoff changed; preserve its source")
     if record.get("retained_source_head"):
-        inventory = github_plan_claim.local_inventory(repo, number)
-        _, pulls = collect_paged_rest_items(f"/repos/{repo}/pulls", query={"state": "open"},
-                                           bucket="rest_core", step_prefix="release_local_source_pulls")
-        local = github_plan_claim.retained_handoff(source, candidates, pulls, issue_repo=repo,
-            issue_number=number, target_repo=repo, selected_id=handoff_id, inventory=inventory)
-        if not local or local.get("source_head") != record["retained_source_head"]:
+        if github_plan_claim.handoff_source_head(source, candidates[0]) != record["retained_source_head"]:
             raise github_plan_claim.ClaimProofError("release_inherited_handoff_changed", "Inherited local source proof changed; preserve its source")
         return set()
     text = candidates[0].get("body") or ""
@@ -3572,7 +3567,8 @@ def claim_once(args: argparse.Namespace) -> None:
             handoff = (github_plan_claim.retained_handoff(source, candidates, target_pulls,
                 issue_repo=issue_repo, issue_number=source_number, target_repo=target_repo,
                 selected_id=selected_id, usable=usable,
-                inventory=phase["inventory"] if source_number == number and record_kind == "issue" else None)
+                inventory=phase["inventory"] if source_number == number and record_kind == "issue"
+                    and args.wait_resolved and phase_records[(issue_repo.casefold(), number)][0]["claim_wait"]["state"] != "clear" else None)
                 if selection is None or selection["handoff"] is not None else None)
             source_head = handoff.get("source_head") if handoff else None
             if source_head:

@@ -43,7 +43,7 @@ def compact_output(value: Any) -> Any:
 def ownership_facts(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[str],
                     resume_from: int | None = None, resume_source: dict[str, Any] | None = None,
                     expired_sessions: set[str] | frozenset[str] | None = None,
-                    worker: str = "", session: str = "", dispatch_recipient: str = "") -> dict[str, Any]:
+                    worker: str = "", session: str = "", dispatch_recipient: str = "", wait_resolved: str | None = None) -> dict[str, Any]:
     discussion = item.get("discussion") or {}
     status = current_status(discussion, trusted, body_recorded_at=discussion.get("body_recorded_at"),
                             preserve_markers=True, preserve_content=True)
@@ -112,7 +112,8 @@ def ownership_facts(item: dict[str, Any], ownership: dict[str, Any], *, trusted:
             retained = github_plan_claim.retained_handoff(
                 source, github_plan_claim.handoff_candidates(source_comments, source), ownership.get("pulls") or [],
                 issue_repo=source_item["repo"], issue_number=source_item["number"], target_repo=item["repo"],
-                inventory=inventory if source_item["number"] == item["number"] and item.get("record_type") != "pull_request" else None)
+                inventory=inventory if wait_resolved and wait["state"] != "clear"
+                    and source_item["number"] == item["number"] and item.get("record_type") != "pull_request" else None)
             if retained and retained["open_conflicts"]:
                 return {**row, "error": "retained_handoff_unavailable"}
     except (ValueError, KeyError, TypeError) as exc:
