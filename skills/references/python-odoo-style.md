@@ -228,10 +228,9 @@ unclear code stand by explaining it.
   quotes from the PyCharm types, and `ANN401`, which rejects the `Any` that
   `**kwargs` and Odoo overrides need. House rule: the repositories already
   format at 133.
-- Target the repository's supported Python versions. For Odoo, target the
-  Python version its images run (today 3.13; Ruff `target-version` matches it).
-  Upgrade the images first, then raise the target in one change, and let Ruff's
-  `UP` rules and `ruff check --fix` modernize the code.
+- Target the repository's supported Python versions; for Odoo, match the images.
+  Upgrade images first, then raise Ruff's target in one change. Modernize with
+  `UP` and `ruff check --fix`; see [shared Odoo tooling](https://github.com/cbusillo/odoo-devkit/blob/HEAD/docs/tooling/style-checks.md).
 - PyCharm inspection is the cleanup list. Leave touched files with no
   actionable warnings. Fix the cause before you add a `noinspection`.
 - Follow the [shared test rules](../../instructions/global.md#tests).
