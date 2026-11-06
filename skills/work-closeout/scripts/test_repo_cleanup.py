@@ -195,9 +195,9 @@ class CleanupContracts(unittest.TestCase):
                 return result
 
             with self.subTest(committed=committed), patch.object(cleanup_git, "snapshot", mutate):
-                report = self.inventory()
-            self.assertFalse(report["git_stable"])
-            self.assertFalse(report["complete"])
+                report = self.inventory(self.repo)
+                self.assertFalse(report["git_stable"])
+                self.assertFalse(report["complete"])
 
     def test_stale_lock_and_runtime_binding_remain_holds(self):
         run_git(self.repo, "worktree", "lock", str(self.worktree), "--reason", "synthetic stale lock")
