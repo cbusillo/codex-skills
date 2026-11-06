@@ -1635,7 +1635,6 @@ terminal_failure = _terminal_failure
 
 
 def main() -> int:
-    operation = "github.comment.unknown"
     try:
         args = build_parser().parse_args()
     except github_api_core.ArgumentParsingError as exc:

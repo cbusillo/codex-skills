@@ -1655,7 +1655,6 @@ def _resolve_cli_target(value: str, repo: Optional[str], *, operation: str) -> t
 
 
 def main() -> int:
-    operation = "github.issue.unknown"
     try:
         args = build_parser().parse_args()
     except github_api_core.ArgumentParsingError as exc:

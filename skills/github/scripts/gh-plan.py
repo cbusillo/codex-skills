@@ -2999,7 +2999,6 @@ def claim_once(args: argparse.Namespace) -> None:
     previous_status = ""
     record_kind = "issue"
     retained_waits: dict[int, str] | None = None
-    previous_wait_labels: set[str] = set()
     previous_wait = ""
     planned_wait = ""
     ended_owners: list[dict[str, Any]] = []
