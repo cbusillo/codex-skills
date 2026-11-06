@@ -90,6 +90,16 @@ class CommandPolicyHookTests(unittest.TestCase):
             f"bash -c {shlex.quote(watcher + ' &')}", f"nohup bash -c {shlex.quote(watcher)}",
             f"({watcher}) &", f"{watcher} 2>&1 &",
             f"{watcher} && true &", f"({watcher}; true) &", f"setsid -f {watcher}",
+            f"{{ {watcher}; }} &", f"{{ {watcher}; }} >/dev/null 2>&1 &",
+            f"while true; do {watcher}; sleep 5; done &", f"until false; do {watcher}; done &",
+            f"for item in a; do {watcher}; done &", f"if true; then {watcher}; fi &",
+            f"case x in x) {watcher} ;; esac &", f"{watcher} | (tee watch.log) &",
+            f"{watcher} && (echo started) &", f"caffeinate -i {watcher} &",
+            f"nohup caffeinate -i {watcher}", f"nice -n 5 {watcher} &",
+            f"timeout 1d {watcher} &", f"stdbuf -oL {watcher} &", f"sudo -u x {watcher} &",
+            f"sudo nohup {watcher}", f"timeout 5 setsid {watcher}",
+            f"nohup sudo bash -c {shlex.quote(watcher)}", f"uv run python skills/supervisor/scripts/foreign_watch.py &",
+            f"nohup bash <<'EOF'\n{watcher}\nEOF", f"printf '%s' \"$({watcher})\" &",
         )
         allowed = (
             watcher, f"{watcher} 2>&1", f"true && {watcher}", f"true & {watcher}",
@@ -98,11 +108,16 @@ class CommandPolicyHookTests(unittest.TestCase):
             f"{watcher} --state '&'", "nohup sleep 1", "sleep 1 &",
             f"env -u nohup {watcher}", f"{watcher}; sleep 1 &", "kill 123 &",
             f"echo foreign_watch.py &", f"printf '%s' 'foreign_watch.py' &",
+            f"caffeinate -i {watcher}", f"nice -n 5 {watcher}", f"sudo -u nohup {watcher}",
+            f"{watcher} &>watch.log", f"{watcher} \\&", f"{watcher} # & disown\ntrue",
         )
+        expected = SIMULATOR.simulate(["&", "foreign_watch.py"])[0]
         for command in refused:
             with self.subTest(command=command):
                 result = bash(command)
                 self.assertEqual(result.returncode, 2, result.stderr)
+                policy, skill, _ = command_policy_hook.blocking_policy(command)
+                self.assertEqual((skill, policy["id"]), (expected.skill, expected.policy_id))
         for command in allowed:
             with self.subTest(command=command):
                 result = bash(command)

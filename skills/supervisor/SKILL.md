@@ -189,7 +189,15 @@ policy:
   command_policies:
     - id: prefer-tracked-foreign-watch
       match:
-        shell_regex: "\\A'&'\\s+foreign_watch\\.py(?:\\s|$)"
+        shell_regex: >-
+          (?x)\A(?P<b>'&'\s+)?(?:(?:\S*/)?
+          (?>(?P<d>nohup|setsid)|sudo(?:\s+(?>-[ughpDT]\s+\S+|-\S+))*
+          |nice(?:\s+-n\s+-?\d+)?|timeout\s+\S+
+          |uv\s+run(?:\s+(?>--(?:python|with|project|directory)\s+\S+|-\S+))*
+          |caffeinate(?:\s+(?>-[tw]\s+\d+|-\S+))*|stdbuf|python[\d.]*|command|exec|time)
+          (?:\s+-\S+)*\s+)*
+          (?:\S*/)?foreign_watch\.py(?:\s|$)
+          (?(b)|(?(d)|(?!)))
       action: require_preferred
       message: "Run foreign_watch.py as its own shell call with the harness's background option (Claude Code run_in_background: true; Codex background terminal). Shell &, disown, nohup and setsid starts lose the harness's exit notice."
       preferred:

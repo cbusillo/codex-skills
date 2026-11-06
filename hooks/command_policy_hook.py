@@ -20,13 +20,9 @@ can fail open on startup errors without confusing uv's exit 2 with a denial. Any
 hook cannot read or parse lets the command run: a broken entrypoint must not
 stop every shell command on the host.
 
-Policies match an argv prefix, so the hook first removes what an agent commonly
-puts in front of a tool: leading assignments, `command`/`exec`/`time`/`nohup`,
-`env` with its flags and assignments, `uv run` with its flags, a directory in
-front of the tool name, `gh-with-env-token`, and `sh`/`bash`/`zsh -c '...'` wrappers. This is a
-guardrail for habits, not a security boundary. Forms that need real option
-parsing to unwrap, such as `xargs` and `sudo`, are deliberately left alone,
-though a shell script behind one is still read.
+Policies match normalized argv and command-position text under the maintained
+command-policy contract. Detachment context is kept separately from argv.
+This is a guardrail for habits, not a security boundary.
 
 Policies match commands, not data (#671, #1014). A heredoc body is data unless
 a shell, ssh or script interpreter reads it; command substitutions in an unquoted-delimiter body,
@@ -105,12 +101,16 @@ def shell_tokens(shell: str, operator_positions: set[int] | None = None) -> list
     lexer = shlex.shlex(ShellStream(shell), posix=True, punctuation_chars="();<>|&\n")
     lexer.whitespace = " \t\r"
     lexer.whitespace_split = True
+    if operator_positions is None:
+        return list(lexer)
     tokens: list[str] = []
     cursor = 0
     for token in lexer:
         end = lexer.instream.tell() - len(lexer._pushback_chars)
         raw = shell[cursor:end].strip(" \t\r")
-        if operator_positions is not None and OPERATORS.fullmatch(token) and (raw == token or token.endswith("\n") and raw.endswith(token)):
+        if operator_positions is not None and (OPERATORS.fullmatch(token) or token in {"{", "}"}) and (
+            raw == token or token.endswith("\n") and raw.endswith(token)
+        ):
             operator_positions.add(len(tokens))
         tokens.append(token)
         cursor = end
@@ -128,24 +128,28 @@ def shell_commands(shell: str, detached: list[list[str]] | None = None) -> list[
     commands: list[list[str]] = [[]]
     operators: set[int] = set()
     list_start = 0
-    groups: list[int] = []
-    closed_group: int | None = None
+    groups: list[tuple[str, int]] = []
     for index, token in enumerate(shell_tokens(shell, operators)):
+        if token == "{" and commands[-1] or token == "}" and (not groups or groups[-1][0] != "}"):
+            commands[-1].append(token)
+            continue
         if index in operators:
-            for operator in re.findall(r"&&|\|\||\|&|[();&\n|]", token):
-                if operator == "(":
-                    groups.append(len(commands))
-                elif operator == ")" and groups:
-                    closed_group = groups.pop()
+            for operator in re.findall(r"&&|\|\||\|&|[(){};&\n|]", token):
+                if operator in {"(", "{"}:
+                    groups.append(({"(": ")", "{": "}"}[operator], list_start))
+                elif groups and operator == groups[-1][0]:
+                    list_start = groups.pop()[1]
                 elif operator == "&" and detached is not None:
-                    detached.extend(commands[closed_group if closed_group is not None else list_start:])
+                    detached.extend(commands[list_start:])
                 commands.append([])
                 if operator in {";", "\n", "&"}:
                     list_start = len(commands) - 1
-                    closed_group = None
         else:
+            if not commands[-1] and token in {"while", "until", "for", "if", "case"}:
+                groups.append(({"if": "fi", "case": "esac"}.get(token, "done"), list_start))
+            elif not commands[-1] and groups and token == groups[-1][0]:
+                list_start = groups.pop()[1]
             commands[-1].append(token)
-            closed_group = None
     return [argv for argv in commands if argv]
 
 
@@ -443,7 +447,8 @@ def simple_commands(shell: str) -> list[ShellCommand]:
     for argv in raw_commands:
         unwrapped.extend(replace(command, detached=command.detached or any(argv is item for item in detached))
                          for command in unwrap(argv))
-    unwrapped.extend(nested_commands(script.substitutions))
+    backgrounded = bool(raw_commands) and all(any(argv is item for item in detached) for argv in raw_commands)
+    unwrapped.extend(replace(command, detached=command.detached or backgrounded) for command in nested_commands(script.substitutions))
     unwrapped.extend(ShellCommand(argv) for argv in literal_pipeline_programs(script.text))
     shell_reads_bodies = any(reads_script_from_input(argv) for argv in [*raw_commands, *(command.argv for command in unwrapped)])
     for body, expands, header, delimiter, occurrence in script.bodies:
@@ -452,7 +457,12 @@ def simple_commands(shell: str) -> list[ShellCommand]:
         script_readers = heredoc_script_readers(header, delimiter, occurrence)
         unwrapped.extend(ShellCommand([*argv, body]) for argv in script_readers)
         if shell_reads_bodies:
-            unwrapped.extend(nested_commands([body]))
+            background_readers: list[list[str]] = []
+            body_detached = any(
+                reads_script_from_input(command.argv) and (command.detached or any(argv is item for item in background_readers))
+                for argv in shell_commands(header, background_readers) for command in unwrap(argv)
+            )
+            unwrapped.extend(replace(command, detached=command.detached or body_detached) for command in nested_commands([body]))
         elif expands:
             unwrapped.extend(nested_commands(ShellScript(body, expanding=True).substitutions))
     return unwrapped
@@ -534,7 +544,7 @@ def unwrap(argv: list[str]) -> list[ShellCommand]:
         if shells:
             flag = next((index for index in range(shells[0] + 1, len(span) - 1) if SHELL_COMMAND_FLAG.match(span[index])), None)
             if flag is not None:
-                commands += nested_commands([span[flag + 1]])
+                commands += [replace(command, detached=command.detached or detached) for command in nested_commands([span[flag + 1]])]
     if argv[0] == "ssh":
         # The remote command runs too; the host and option values read as harmless words.
         commands += nested_commands([" ".join(argv[1:])])
@@ -693,9 +703,7 @@ def blocking_policy(shell: str, cwd: Path | None = None) -> tuple[dict[str, Any]
         wrapped_gh = argv[0] == "gh-with-env-token"
         matched_argv = ["gh", *argv[1:]] if wrapped_gh else argv
         # Regex policies see the command as written, wrapper included, from command position only.
-        matches = simulator.simulate(matched_argv, cwd=context, command_argv=argv)
-        if command.detached:
-            matches += simulator.simulate(matched_argv, cwd=context, command_argv=["&", *argv])
+        matches = simulator.simulate(matched_argv, cwd=context, command_argv=argv, detached=command.detached)
         for match in matches:
             policy = catalog[(match.skill, match.policy_id)]
             if wrapped_gh and policy.get("action") == "require_preferred" and any(
