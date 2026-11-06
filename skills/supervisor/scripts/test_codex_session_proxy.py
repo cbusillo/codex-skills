@@ -1083,7 +1083,7 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                     result = await self.send(task, request, response, method, target, **params)
                     self.assertIn("result", result)
                     self.assertEqual(next(r for r in closure.log_rows() if r.get("session_id") == f.session), before)
-                    closed = await asyncio.to_thread(f.release.record_closure, f.log, f.entry, "supervisor")
+                    closed = await asyncio.to_thread(lambda: f.release.record_closure(f.log, f.entry, "supervisor"))
                     self.assertEqual(closed["ended_at"], before["ended_at"])
             self.assertFalse(f.mutations)
         finally:

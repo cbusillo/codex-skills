@@ -15,7 +15,7 @@ from unittest.mock import Mock, patch
 
 import goal_board
 from skills.github.scripts.github_api import ApiResult
-from skills.github.scripts import github_plan_body, github_plan_graph, github_plan_wait, github_plan_status, github_plan_claim
+from skills.github.scripts import github_plan_body, github_plan_graph, github_plan_wait, github_plan_claim
 
 BOT = {"__typename": "Bot", "login": "shiny-code-app"}
 TRUSTED = {"owner", "shiny-code-app[bot]"}

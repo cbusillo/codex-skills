@@ -8,7 +8,6 @@
 import json
 import argparse
 from contextlib import redirect_stdout
-from datetime import datetime
 from types import SimpleNamespace
 import io
 from pathlib import Path
@@ -16,7 +15,6 @@ import tempfile
 import tomllib
 import unittest
 from typing import Any
-from urllib.parse import parse_qs, urlparse
 from unittest.mock import Mock, patch, create_autospec
 
 import foreign_watch
