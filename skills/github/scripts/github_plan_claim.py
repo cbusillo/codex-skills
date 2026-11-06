@@ -16,11 +16,11 @@ from typing import Any, Callable
 
 try:
     from github_plan_status import next_actor
-    from github_plan_status.discussion import MARKER, live_lines, records, without_operation_marker, released_claim_id, exact_released_sources, unquoted_text
+    from github_plan_status.discussion import MARKER, live_lines, records, without_operation_marker, released_claim_id, exact_released_sources, unquoted_text, section_ranges
     from github_plan_status.references import ISSUE_REFERENCE, pr_issue_reference as pr_issue_reference
 except ModuleNotFoundError:
     from skills.github.scripts.github_plan_status import next_actor
-    from skills.github.scripts.github_plan_status.discussion import MARKER, live_lines, records, without_operation_marker, released_claim_id, exact_released_sources, unquoted_text
+    from skills.github.scripts.github_plan_status.discussion import MARKER, live_lines, records, without_operation_marker, released_claim_id, exact_released_sources, unquoted_text, section_ranges
     from skills.github.scripts.github_plan_status.references import ISSUE_REFERENCE, pr_issue_reference as pr_issue_reference
 
 
@@ -376,14 +376,18 @@ def belongs_to_session(body: str, session: str, *, record: tuple[str, int]) -> b
             if not repo or (repo.casefold(), int(target[3])) == (record[0].casefold(), record[1]):
                 continue
             if re.fullmatch(
-                r"[ \t,()<>]*(?:which\s+)?(?:is|remains)\s+(?:now\s+)?(?:independently\s+)?(?:owned|claimed) by",
+                r"[ \t,()<>]*(?:which\s+)?(?:is|remains)\s+(?:now\s+)?(?:(?:independently|separately)\s+)?(?:owned|claimed) by",
                 prefix[target.end():], re.IGNORECASE,
             ):
                 return True
         return False
 
+    def current_context(text: str) -> str:
+        contexts = [text[span] for name, span in section_ranges(text) if name == "Current Status"]
+        return "\n\n".join(contexts or [text])
+
     actors = next_actor.fields(prose)
-    if any(actor == f"agent:{session}" for _, actor in actors):
+    if any(actor == f"agent:{session}" for _, actor in next_actor.fields(current_context(prose))):
         return True
     actor_lines = {index for index, _ in actors}
     prose = "\n".join(line for index, line in enumerate(prose.splitlines()) if index not in actor_lines)
@@ -396,7 +400,7 @@ def belongs_to_session(body: str, session: str, *, record: tuple[str, int]) -> b
     if fields:
         return False
     local = []
-    for paragraph in re.split(r"\n[ \t]*\n", prose):
+    for paragraph in re.split(r"\n[ \t]*\n", current_context(prose)):
         owners = ownership_assertions(paragraph, include_sessions=False)
         if not owners or not all(foreign_assertion(prefix) for prefix, _ in owners):
             local.append(paragraph)
