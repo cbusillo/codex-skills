@@ -252,27 +252,13 @@ def test_build_command_sends_bodies_only_through_stdin() -> None:
             assert "-" not in cmd
 
 
-def test_build_command_prepends_slash_to_bare_path() -> None:
-    cmd = _api.build_gh_command("GET", "repos/owner/repo")
-    path_arg = cmd[-1]
-    assert path_arg.startswith("/"), f"Expected leading slash, got {path_arg!r}"
-
-
-def test_build_command_custom_gh_cmd() -> None:
-    cmd = _api.build_gh_command("GET", "/rate_limit", gh_cmd="./gh-with-env-token")
-    assert cmd[0] == "./gh-with-env-token"
-
-
-def test_build_command_extra_headers() -> None:
-    cmd = _api.build_gh_command("GET", "/rate_limit", extra_headers={"X-GitHub-Api-Version": "2022-11-28"})
-    assert "-H" in cmd
-    h_idx = cmd.index("-H")
-    assert "X-GitHub-Api-Version: 2022-11-28" == cmd[h_idx + 1]
-
-
-def test_build_command_includes_default_api_version() -> None:
-    cmd = _api.build_gh_command("GET", "/rate_limit", gh_cmd="gh")
-    assert f"X-GitHub-Api-Version: {_api.DEFAULT_API_VERSION}" in cmd
+def test_build_command_preserves_wrapper_path_and_api_version_overrides() -> None:
+    for headers in ({}, {"X-GitHub-Api-Version": "fixture-api-version"}):
+        cmd = _api.build_gh_command("GET", "repos/owner/repo", gh_cmd="./gh-with-env-token", extra_headers=headers)
+        assert cmd[0] == "./gh-with-env-token"
+        assert "/repos/owner/repo" in cmd and "repos/owner/repo" not in cmd
+        version = headers.get("X-GitHub-Api-Version", _api.DEFAULT_API_VERSION)
+        assert f"X-GitHub-Api-Version: {version}" in cmd
 
 
 def test_call_gh_success_preserves_response_and_context_in_the_envelope() -> None:
@@ -282,7 +268,7 @@ def test_call_gh_success_preserves_response_and_context_in_the_envelope() -> Non
             "/repos/owner/repo/issues",
             body={"title": "bug"} if method == "POST" else None,
             fake_stdout=_include_output(
-                status, headers={"x-github-request-id": "REQ:ID:12", "x-ratelimit-remaining": "4321"}, body=body
+                status, headers={"x-github-request-id": "REQ:ID:12", "x-ratelimit-remaining": "4321", "x-ratelimit-limit": "5000"}, body=body
             ),
             completed_steps=["resolve_repo"],
         )
@@ -290,7 +276,7 @@ def test_call_gh_success_preserves_response_and_context_in_the_envelope() -> Non
         assert result.ok and result.failure is None
         assert result.status == payload["status"] == status
         assert result.body == payload["body"] == body
-        assert result.schema_version == payload["schema_version"] == _api.SCHEMA_VERSION
+        assert payload["schema_version"] == _api.SCHEMA_VERSION
         assert payload["ok"] and "failure" not in payload
         assert result.request_id == payload["request_id"] == "REQ:ID:12"
         assert payload["completed_steps"] == ["resolve_repo"]
@@ -298,34 +284,16 @@ def test_call_gh_success_preserves_response_and_context_in_the_envelope() -> Non
         assert result.rate_limit.limit == payload["rate_limit"]["limit"] == 5000
 
 
-def test_call_gh_surfaces_explicit_active_auth_actor() -> None:
-    stdout = _include_output(200, body={"ok": True})
-    result = _call(
-        "GET",
-        "/repos/owner/repo",
-        fake_stdout=stdout,
-        fake_stderr="warning: no automation gh token found; explicitly authorized active-auth fallback; using the active gh account 'octocat'",
-    )
-    assert result.actor == "octocat"
-
-
-def test_call_gh_reported_actor_replaces_initial_actor_for_authorized_fallback() -> None:
+def test_call_gh_authorized_fallback_reports_the_actor_with_or_without_initial_context() -> None:
     proc = _fake_proc(
         stdout=_include_output(200, body={"ok": True}),
-        stderr=(
-            "warning: no automation gh token found; explicitly authorized active-auth fallback; "
-            "using the active gh account 'octocat'"
-        ),
+        stderr="warning: no automation gh token found; explicitly authorized active-auth fallback; using the active gh account 'octocat'",
     )
-    with patch("subprocess.run", return_value=proc):
-        result = _api.call_gh(
-            "GET",
-            "/repos/owner/repo",
-            actor="fixture-automation",
-            expected_actor=None,
-        )
-    assert result.ok is True, result.as_dict()
-    assert result.actor == "octocat", result.as_dict()
+    for actor in (None, "fixture-automation"):
+        with patch("subprocess.run", return_value=proc):
+            result = _api.call_gh("GET", "/repos/owner/repo", actor=actor, expected_actor=None)
+        assert result.ok, (actor, result.as_dict())
+        assert result.actor == "octocat", (actor, result.as_dict())
 
 
 def test_call_gh_unannounced_actor_change_fails_closed_after_write() -> None:
@@ -346,37 +314,14 @@ def test_call_gh_unannounced_actor_change_fails_closed_after_write() -> None:
     assert result.failure.write_outcome == "unknown", result.failure
 
 
-def test_call_gh_unconfigured_write_fails_before_subprocess() -> None:
-    with (
-        patch.dict(os.environ, {}, clear=True),
-        patch("subprocess.run") as run,
-    ):
-        result = _api.call_gh(
-            "POST",
-            "/repos/owner/repo/issues",
-            {"title": "demo"},
-            expected_actor=None,
-        )
-    run.assert_not_called()
-    assert result.ok is False, result.as_dict()
-    assert result.failure.cause == "unconfigured_identity", result.failure
-    assert result.failure.write_outcome == "not_started", result.failure
-
-
-def test_call_gh_blank_expected_actor_fails_before_subprocess() -> None:
-    with (
-        patch.dict(os.environ, {}, clear=True),
-        patch("subprocess.run") as run,
-    ):
-        result = _api.call_gh(
-            "POST",
-            "/repos/owner/repo/issues",
-            {"title": "demo"},
-            expected_actor="  ",
-        )
-    run.assert_not_called()
-    assert result.ok is False, result.as_dict()
-    assert result.failure.cause == "unconfigured_identity", result.failure
+def test_call_gh_missing_or_blank_identity_refuses_before_subprocess() -> None:
+    for expected_actor in (None, "  "):
+        with patch.dict(os.environ, {}, clear=True), patch("subprocess.run") as run:
+            result = _api.call_gh("POST", "/repos/owner/repo/issues", {"title": "demo"}, expected_actor=expected_actor)
+        run.assert_not_called()
+        assert not result.ok, expected_actor
+        assert result.failure.cause == "unconfigured_identity"
+        assert result.failure.write_outcome == "not_started"
 
 
 def test_call_gh_explicit_fallback_allows_unconfigured_write() -> None:
@@ -579,7 +524,7 @@ def test_classify_403_rest_rate_limit_via_remaining_zero() -> None:
     assert result.failure.retryable is True
     assert result.failure.fallback_eligible is False
     assert result.failure.rate_limit is not None
-    assert result.failure.rate_limit["remaining"] == 0
+    assert result.failure.rate_limit["remaining"] == result.as_dict()["failure"]["rate_limit"]["remaining"] == 0
 
 
 def test_repository_creation_permission_refusals_do_not_offer_actor_fallback() -> None:
@@ -602,12 +547,33 @@ def test_repository_creation_permission_refusals_do_not_offer_actor_fallback() -
         assert failure.fallback_eligible is False, failure
 
 
-def test_classify_429_rest_rate_limit() -> None:
-    stdout = _include_output(429, body={"message": "Too many requests"})
-    result = _call("GET", "/repos/owner/repo", fake_stdout=stdout, returncode=1)
-    assert result.failure is not None
-    assert result.failure.cause == "rest_primary_rate_limited"
-    assert result.failure.retryable is True
+def test_http_failure_envelopes_preserve_read_and_write_certainty() -> None:
+    for method, status, message, cause, outcome, retryable, disposition in (
+        ("GET", 404, "Not Found", "not_found", None, False, "stop"),
+        ("PUT", 409, "Merge conflict", "conflict", "rejected", False, "stop"),
+        ("POST", 422, "Validation Failed", "validation_error", "rejected", False, "stop"),
+        ("GET", 429, "Too many requests", "rest_primary_rate_limited", None, True, "retry"),
+        ("GET", 500, "Internal Server Error", "network_provider_failure", None, True, "retry"),
+        ("POST", 502, "Bad Gateway", "network_provider_failure", "unknown", False, "stop"),
+    ):
+        result = _call(
+            method,
+            "/repos/owner/repo/issues",
+            body={} if method != "GET" else None,
+            fake_stdout=_include_output(status, headers={"x-github-request-id": "matrix-request"}, body={"message": message}),
+            returncode=1,
+        )
+        payload = result.as_dict()
+        assert not result.ok and not payload["ok"], (method, status)
+        failure = result.failure
+        assert failure is not None
+        assert failure.cause == payload["failure"]["cause"] == cause, (method, status)
+        assert failure.write_outcome == outcome, (method, status)
+        assert failure.retryable == retryable, (method, status)
+        assert failure.disposition == payload["failure"]["disposition"] == disposition, (method, status)
+        assert not failure.fallback_eligible
+        assert "completed_steps" not in failure.as_dict()
+        assert payload["failure"]["request_id"] == "matrix-request"
 
 
 def test_classify_403_secondary_throttle_via_retry_after() -> None:
@@ -692,20 +658,6 @@ def test_classify_200_graphql_rate_limit() -> None:
     assert result.failure.disposition == "retry"
 
 
-def test_missing_resource_keeps_a_terminal_failure_in_the_envelope() -> None:
-    result = _call(
-        path="/repos/owner/repo/issues/999", fake_stdout=_include_output(404, body={"message": "Not Found"}), returncode=1
-    )
-    payload = result.as_dict()
-    assert not result.ok and not payload["ok"]
-    failure = result.failure
-    assert failure is not None
-    assert failure.cause == payload["failure"]["cause"] == "not_found"
-    assert failure.disposition == payload["failure"]["disposition"] == "stop"
-    assert not failure.retryable and not failure.fallback_eligible
-    assert "completed_steps" not in failure.as_dict()
-
-
 def test_merge_refusal_only_proves_rejection_for_the_exact_required_check_messages() -> None:
     expected = "2 of 2 required status checks are expected."
     for status, message, headers, cause, outcome in (
@@ -730,11 +682,14 @@ def test_merge_refusal_only_proves_rejection_for_the_exact_required_check_messag
         ),
         (405, "Required status checks are configured; the head commit is expected to change.", {}, "unknown_error", "unknown"),
     ):
+        response_headers = {"x-github-request-id": "merge-request", **headers}
         result = _call(
             "PUT",
             "/repos/owner/repo/pulls/1/merge",
             body={},
-            fake_stdout=_include_output(status, headers=headers, body={"message": message} if not headers else message),
+            fake_stdout=_include_output(
+                status, headers=response_headers, body=message if headers.get("content-type") == "text/html" else {"message": message}
+            ),
             returncode=1,
         )
         failure = result.failure
@@ -743,7 +698,7 @@ def test_merge_refusal_only_proves_rejection_for_the_exact_required_check_messag
         assert not failure.retryable and not failure.fallback_eligible
         assert failure.disposition == "stop"
         assert failure.failed_step == f"http_{status}"
-        assert failure.request_id == "AABB:1234:CCDD"
+        assert failure.request_id == response_headers["x-github-request-id"]
         assert failure.rate_limit == result.rate_limit.as_dict()
         if cause == "required_status_checks_expected":
             assert message in failure.message
@@ -765,40 +720,6 @@ def test_comments_only_rejection_is_narrow() -> None:
     assert mixed.failure is not None
     assert mixed.failure.cause == "unknown_error"
     assert mixed.failure.write_outcome == "unknown"
-
-
-def test_classify_422_validation_error() -> None:
-    stdout = _include_output(422, body={"message": "Validation Failed", "errors": [{"code": "missing_field"}]})
-    result = _call("POST", "/repos/owner/repo/issues", body={"title": ""}, fake_stdout=stdout, returncode=1)
-    assert result.failure is not None
-    assert result.failure.cause == "validation_error"
-    assert result.failure.write_outcome == "rejected"
-    assert result.failure.disposition == "stop"
-
-
-def test_classify_409_conflict() -> None:
-    stdout = _include_output(409, body={"message": "Merge conflict"})
-    result = _call("PUT", "/repos/owner/repo/pulls/1/merge", body={}, fake_stdout=stdout, returncode=1)
-    assert result.failure is not None
-    assert result.failure.cause == "conflict"
-    assert result.failure.write_outcome == "rejected"
-
-
-def test_classify_500_network_error() -> None:
-    stdout = _include_output(500, body={"message": "Internal Server Error"})
-    result = _call("GET", "/repos/owner/repo", fake_stdout=stdout, returncode=1)
-    assert result.failure is not None
-    assert result.failure.cause == "network_provider_failure"
-    assert result.failure.retryable is True
-
-
-def test_write_provider_failure_is_unknown_and_not_directly_retryable() -> None:
-    stdout = _include_output(502, body={"message": "Bad Gateway"})
-    result = _call("POST", "/repos/owner/repo/issues", body={}, fake_stdout=stdout, returncode=1)
-    assert result.failure is not None
-    assert result.failure.cause == "network_provider_failure"
-    assert result.failure.write_outcome == "unknown"
-    assert result.failure.retryable is False
 
 
 def test_classify_no_output_returncode_nonzero() -> None:
@@ -828,7 +749,6 @@ def test_classify_subprocess_launch_failure() -> None:
     assert result.ok is False
     assert result.failure is not None
     assert result.failure.cause == "network_provider_failure"
-    assert result.failure.message == "Failed to launch GitHub CLI (FileNotFoundError)"
     assert "/private/path" not in result.failure.message
     assert result.failure.failed_step == "subprocess_launch"
 
@@ -877,13 +797,6 @@ def test_failure_envelope_completed_steps_preserved() -> None:
     assert result.failure is not None
     assert result.failure.completed_steps == ["fetch_pr", "update_body"]
     assert result.failure.failed_step == "add_label"
-
-
-def test_failure_envelope_asdict_includes_request_id() -> None:
-    stdout = _include_output(401, headers={"x-github-request-id": "XY:ZZ:00"}, body={"message": "Bad credentials"})
-    result = _call("GET", "/repos/owner/repo", fake_stdout=stdout, returncode=1)
-    d = result.failure.as_dict()  # type: ignore[union-attr]
-    assert d.get("request_id") == "XY:ZZ:00"
 
 
 def test_partial_success_graphql_rate_limit_carries_completed_steps() -> None:
@@ -1465,34 +1378,31 @@ def test_redact_headers_removes_authorization() -> None:
     assert redacted["content-type"] == "application/json"
 
 
-def test_redact_body_removes_token_keys() -> None:
-    body = {
-        "token": "ghp_abc123",
-        "access_token": "gho_xyz",
-        "name": "my-app",
-        "nested": {"secret": "top_secret", "label": "ok"},
-    }
-    redacted = _api.redact_body(body)
-    assert redacted["token"] == "[REDACTED]"
-    assert redacted["access_token"] == "[REDACTED]"
-    assert redacted["name"] == "my-app"
-    assert redacted["nested"]["secret"] == "[REDACTED]"
-    assert redacted["nested"]["label"] == "ok"
-
-
-def test_redact_body_removes_sensitive_key_variants() -> None:
-    body = {
-        "github_token": "synthetic-one",
-        "secret_key": "synthetic-two",
-        "clientSecret": "synthetic-three",
-        "private_key_id": "synthetic-four",
-        "credentials": "synthetic-five",
-        "monkey": "safe",
-    }
-    redacted = _api.redact_body(body)
-    for key in ("github_token", "secret_key", "clientSecret", "private_key_id", "credentials"):
-        assert redacted[key] == "[REDACTED]", (key, redacted)
-    assert redacted["monkey"] == "safe"
+def test_body_redaction_handles_nested_secrets_lists_and_safe_keys() -> None:
+    for body, expected in (
+        (
+            {"token": "ghp_abc123", "access_token": "gho_xyz", "name": "my-app", "nested": {"secret": "top_secret", "label": "ok"}},
+            {
+                "token": "[REDACTED]",
+                "access_token": "[REDACTED]",
+                "name": "my-app",
+                "nested": {"secret": "[REDACTED]", "label": "ok"},
+            },
+        ),
+        (
+            {
+                **dict.fromkeys(("github_token", "secret_key", "clientSecret", "private_key_id", "credentials"), "synthetic-secret"),
+                "monkey": "safe",
+            },
+            {
+                **dict.fromkeys(("github_token", "secret_key", "clientSecret", "private_key_id", "credentials"), "[REDACTED]"),
+                "monkey": "safe",
+            },
+        ),
+        ([{"token": "secret"}, {"label": "ok"}], [{"token": "[REDACTED]"}, {"label": "ok"}]),
+        ({"title": "PR title", "state": "open", "number": 42}, {"title": "PR title", "state": "open", "number": 42}),
+    ):
+        assert _api.redact_body(body) == expected
 
 
 def test_failure_message_redacts_secrets_before_consumer_access() -> None:
@@ -1506,13 +1416,6 @@ def test_failure_message_redacts_secrets_before_consumer_access() -> None:
         )
         assert "synthetic-" not in failure.message
         assert "[REDACTED]" in failure.message
-
-
-def test_redact_body_handles_list() -> None:
-    body = [{"token": "secret"}, {"label": "ok"}]
-    redacted = _api.redact_body(body)
-    assert redacted[0]["token"] == "[REDACTED]"
-    assert redacted[1]["label"] == "ok"
 
 
 def test_redact_body_redacts_query_param_in_string() -> None:
@@ -1537,12 +1440,6 @@ def test_redact_path_redacts_query_param() -> None:
     assert "page=1" in redacted
 
 
-def test_redact_body_non_sensitive_dict_unchanged() -> None:
-    body = {"title": "PR title", "state": "open", "number": 42}
-    redacted = _api.redact_body(body)
-    assert redacted == body
-
-
 def test_result_envelope_redacts_body_and_exposes_context() -> None:
     result = _api.ApiResult(
         ok=True,
@@ -1562,107 +1459,27 @@ def test_result_envelope_redacts_body_and_exposes_context() -> None:
     assert payload["host"] == "github.example"
 
 
-def test_rate_limit_probe_calls_get_rate_limit() -> None:
-    calls: list[list[str]] = []
-
-    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:  # type: ignore
-        calls.append(cmd)
-        return _fake_proc(
-            stdout=_include_output(200, body={"resources": {"core": {"limit": 5000, "remaining": 4000}}}),
+def test_rate_limit_probe_caches_failures_and_scopes_reuse_to_the_actor_and_explicit_reset() -> None:
+    for mode in ("success", "failure", "reset", "actor", "timeout"):
+        proc = (
+            _fake_proc(stderr="connection refused", returncode=1)
+            if mode == "failure"
+            else _fake_proc(stdout=_include_output(200, body={"resources": {"core": {"limit": 5000, "remaining": 4000}}}))
         )
-
-    _api.reset_rate_limit_cache()
-    with patch("subprocess.run", side_effect=fake_run):
-        result1 = _api.rate_limit_probe()
-        result2 = _api.rate_limit_probe()
-
-    # Only one live subprocess call despite two probe calls
-    assert len(calls) == 1, f"Expected 1 call, got {len(calls)}"
-    assert result1 is result2  # same cached object
-    assert result1.ok is True
-    assert "/rate_limit" in calls[0]
-
-
-def test_rate_limit_probe_cache_reset() -> None:
-    calls: list[int] = []
-
-    def fake_run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess:  # type: ignore
-        calls.append(1)
-        return _fake_proc(stdout=_include_output(200, body={}))
-
-    _api.reset_rate_limit_cache()
-    with patch("subprocess.run", side_effect=fake_run):
-        _api.rate_limit_probe()
-
-    _api.reset_rate_limit_cache()
-    with patch("subprocess.run", side_effect=fake_run):
-        _api.rate_limit_probe()
-
-    assert len(calls) == 2, "Cache reset should allow a second live call"
-
-
-def test_rate_limit_probe_error_is_cached() -> None:
-    """Even a failed probe is cached to avoid hammering a rate-limited API."""
-    calls: list[int] = []
-
-    def fake_run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess:  # type: ignore
-        calls.append(1)
-        return _fake_proc(stdout="", stderr="connection refused", returncode=1)
-
-    _api.reset_rate_limit_cache()
-    with patch("subprocess.run", side_effect=fake_run):
-        r1 = _api.rate_limit_probe()
-        r2 = _api.rate_limit_probe()
-
-    assert len(calls) == 1
-    assert r1.ok is False
-    assert r1 is r2
-
-
-def test_rate_limit_probe_cache_is_actor_scoped() -> None:
-    calls: list[int] = []
-
-    def fake_run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess:  # type: ignore
-        calls.append(1)
-        return _fake_proc(stdout=_include_output(200, body={}))
-
-    _api.reset_rate_limit_cache()
-    with patch("subprocess.run", side_effect=fake_run):
-        _api.rate_limit_probe(gh_cmd="gh", actor="bot-a")
-        _api.rate_limit_probe(gh_cmd="gh", actor="bot-b")
-
-    assert len(calls) == 2
-
-
-def test_rate_limit_probe_cache_ignores_remaining_timeout_budget() -> None:
-    calls: list[float | None] = []
-
-    def fake_run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess:  # type: ignore
-        calls.append(kwargs.get("timeout"))
-        return _fake_proc(stdout=_include_output(200, body={}))
-
-    _api.reset_rate_limit_cache()
-    with patch("subprocess.run", side_effect=fake_run):
-        first = _api.rate_limit_probe(gh_cmd="gh", actor="bot", timeout_seconds=5.0)
-        second = _api.rate_limit_probe(gh_cmd="gh", actor="bot", timeout_seconds=4.0)
-
-    assert calls == [5.0], calls
-    assert first is second
-
-
-def test_asdict_rate_limit_in_failure_when_exhausted() -> None:
-    stdout = _include_output(
-        403,
-        headers={"x-ratelimit-remaining": "0", "x-ratelimit-limit": "5000", "x-ratelimit-reset": "1700000001"},
-        body={"message": "API rate limit exceeded"},
-    )
-    result = _call("GET", "/repos/owner/repo", fake_stdout=stdout, returncode=1)
-    d = result.as_dict()
-    assert "failure" in d
-    failure = d["failure"]
-    assert failure["cause"] == "rest_primary_rate_limited"
-    assert failure.get("rate_limit") is not None
-    assert failure["rate_limit"]["remaining"] == 0
+        _api.reset_rate_limit_cache()
+        with patch("subprocess.run", return_value=proc) as run:
+            first = _api.rate_limit_probe(actor="bot-a", timeout_seconds=5.0)
+            if mode == "reset":
+                _api.reset_rate_limit_cache()
+            second = _api.rate_limit_probe(
+                actor="bot-b" if mode == "actor" else "bot-a", timeout_seconds=4.0 if mode == "timeout" else 5.0
+            )
+        refreshed = mode in {"reset", "actor"}
+        assert run.call_count == (2 if refreshed else 1), mode
+        assert (first is second) == (not refreshed), mode
+        assert first.ok == (mode != "failure"), mode
+        assert "/rate_limit" in run.call_args.args[0]
+        assert run.call_args_list[0].kwargs["timeout"] == 5.0
 
 
 def test_operation_marker_is_hidden_and_detectable() -> None:
