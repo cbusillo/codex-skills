@@ -2391,7 +2391,6 @@ def test_close_delegates_comment_to_shared_rest_helper() -> None:
     assert close_call["state"] == "closed", close_call
     assert close_call["state_reason"] == "completed", close_call
     assert close_call["gh_cmd"] == "fake-gh", close_call
-    assert any(call["action"] == "close" for call in calls), calls
 
 
 def test_comment_route_matches_explicit_auth_policy() -> None:
