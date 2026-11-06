@@ -297,6 +297,9 @@ class CleanupContracts(unittest.TestCase):
         snapshot = cleanup_git.snapshot(str(self.repo), self.key)
         self.assertEqual(snapshot["ref_coverage"]["refs/heads/retained"]["state"], "covered")
         self.assertEqual(len(snapshot["worktrees"]), len(cleanup_git.registrations(str(self.repo))))
+        for tree in snapshot["worktrees"]:
+            raw = cleanup_git.git(tree["path"], "status", "--porcelain=v1", "-z", "--untracked-files=no")[1]
+            self.assertEqual(tree["_status_tag"], cleanup_probe.tag(self.key, raw))
 
     def test_registration_boundary_and_scoped_inventory_above_it(self):
         run_git(self.repo, "worktree", "lock", str(self.worktree), "--reason", "fixture owner")

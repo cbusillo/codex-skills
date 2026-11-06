@@ -165,8 +165,15 @@ def snapshot(repo: str, key: bytes, remote_probe: bool = True,
                         tracked=[os.fsdecode(p) for p in git(path, "ls-files", "-z")[1].split(b"\0") if p],
                         ignored=[os.fsdecode(p) for p in git(path, "ls-files", "--others", "--ignored",
                                                           "--exclude-standard", "-z")[1].split(b"\0") if p])
-            dirty = read_status(lambda *args: git(path, *args)[1], untracked=False)
-            item.update(dirty_tracked=bool(dirty), _status_tag=tag(key, os.fsencode(repr(dirty))), coverage="completed")
+            raw_status = b""
+
+            def status_git(*args: str, checkout: str = path) -> bytes:
+                nonlocal raw_status
+                raw_status = git(checkout, *args)[1]
+                return raw_status
+
+            dirty = read_status(status_git, untracked=False)
+            item.update(dirty_tracked=bool(dirty), _status_tag=tag(key, raw_status), coverage="completed")
         except (OSError, ProbeError, ValueError):
             item["coverage"] = "unavailable"
         worktrees.append(item)

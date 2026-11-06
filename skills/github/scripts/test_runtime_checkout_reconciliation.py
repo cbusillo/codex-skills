@@ -231,13 +231,16 @@ def test_status_reader_changes_require_a_matching_landed_copy(tmp_path: Path) ->
     git(fixture.landing, "push", "origin", "main")
     proc, receipt = fixture.run()
     assert proc.returncode == 1
-    assert receipt["reason_code"] == "helper_status_reader_source_mismatch"
+    assert receipt["reason_code"] == "helper_tip_source_mismatch"
     assert receipt["helper_source_verified"] is False
     assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
 
 
-def test_reconcile_fast_forwards_symlinked_runtime_and_is_idempotent(tmp_path: Path) -> None:
+def test_reconcile_fast_forwards_symlinked_source_and_runtime_and_is_idempotent(tmp_path: Path) -> None:
     fixture = build_runtime_fixture(tmp_path)
+    source_link = tmp_path / "source-link"
+    source_link.symlink_to(fixture.merged, target_is_directory=True)
+    fixture.merged = source_link
 
     first_proc, first = fixture.run()
 

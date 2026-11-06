@@ -476,7 +476,11 @@ def branch_diff(repo: Path) -> bytes:
     def git(*args: str) -> bytes:
         return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, check=True).stdout
 
-    if read_status(git, allow_review_scratch=True):
+    try:
+        changes = read_status(git, allow_review_scratch=True)
+    except (ValueError, subprocess.CalledProcessError) as exc:
+        raise RuntimeError("could not read review checkout status") from exc
+    if changes:
         raise RuntimeError("review checkout has uncommitted or untracked files; commit the change first")
     base = subprocess.run(
         ["git", "-C", str(repo), "merge-base", "HEAD", default],

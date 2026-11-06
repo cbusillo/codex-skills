@@ -694,6 +694,11 @@ class ReviewWithModelTests(unittest.TestCase):
         self.assertIn("untracked", result["error"])
         self.assertFalse(source_copy.exists(), "dirty reviews must not invoke the provider")
         self.assertTrue(leftover.exists(), "another review's scratch stays intact")
+        (self.repo / ".git/index").write_bytes(b"invalid index")
+        code, result = self.review("anthropic", **env)
+        self.assertEqual((code, result["ok"]), (1, False))
+        self.assertIn("status", result["error"])
+        self.assertFalse(source_copy.exists())
 
     def test_anthropic_denial_names_read_path_without_echoing_other_inputs(self) -> None:
         self.install("claude", FAKE_CLAUDE)

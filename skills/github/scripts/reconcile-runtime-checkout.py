@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 
-STATUS_READER = Path(__file__).with_name("git_status.py")
+STATUS_READER = Path(__file__).resolve().with_name("git_status.py")
 read_status = runpy.run_path(str(STATUS_READER))["read_status"]
 
 SCHEMA_VERSION = 1
@@ -327,7 +327,11 @@ def reconcile_checkout(
 
                 executing_helper = Path(__file__).read_bytes()
                 receipt["helper_sha256"] = hashlib.sha256(executing_helper).hexdigest()
+                reader_path = helper_relative_path.with_name("git_status.py")
+                executing_reader = canonical_script_bytes(STATUS_READER.read_bytes())
                 try:
+                    landing_reader = canonical_script_bytes(git_blob_bytes(source_root, landing_sha, reader_path))
+                    tip_reader = canonical_script_bytes(git_blob_bytes(source_root, fetched_sha, reader_path))
                     landing_helper = git_blob_bytes(
                         source_root,
                         landing_sha,
@@ -356,10 +360,10 @@ def reconcile_checkout(
                 receipt["helper_tip_blob_oid"] = tip_helper_oid
                 canonical_executing_helper = canonical_script_bytes(executing_helper)
                 receipt["helper_landing_verified"] = (
-                    canonical_executing_helper == canonical_script_bytes(landing_helper)
+                    canonical_executing_helper == canonical_script_bytes(landing_helper) and executing_reader == landing_reader
                 )
                 receipt["helper_tip_verified"] = (
-                    canonical_executing_helper == canonical_script_bytes(tip_helper)
+                    canonical_executing_helper == canonical_script_bytes(tip_helper) and executing_reader == tip_reader
                 )
                 if not (receipt["helper_landing_verified"] and receipt["helper_tip_verified"]):
                     receipt["after_sha"] = current_sha
@@ -370,13 +374,6 @@ def reconcile_checkout(
                     if not receipt["helper_landing_verified"]:
                         return finish(receipt, "failed", "helper_landing_source_mismatch")
                     return finish(receipt, "failed", "helper_tip_source_mismatch")
-                reader_path = STATUS_READER.relative_to(source_root)
-                executing_reader = canonical_script_bytes(STATUS_READER.read_bytes())
-                for revision in (landing_sha, fetched_sha):
-                    if executing_reader != canonical_script_bytes(git_blob_bytes(source_root, revision, reader_path)):
-                        receipt["after_sha"] = current_sha
-                        receipt["detail"] = f"Run the helper and its status reader from a worktree at {fetched_sha}."
-                        return finish(receipt, "failed", "helper_status_reader_source_mismatch")
                 receipt["helper_source_verified"] = True
             if not git_is_ancestor(runtime_root, current_sha, fetched_sha):
                 receipt["after_sha"] = current_sha

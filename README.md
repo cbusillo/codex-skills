@@ -531,9 +531,7 @@ has fallen behind, run its own copy:
 `uv run <runtime-checkout>/skills/github/scripts/reconcile-runtime-checkout.py --repo cbusillo/codex-skills`.
 
 Clean-tree callers share `skills/github/scripts/git_status.py` and Git's ignore
-rules. Catalog-generated paths belong in `.gitignore`. Review checks alone
-allow the helper's untracked root scratch; retirement also reads ignored files
-so a clean-source verdict never authorizes deleting them.
+rules. Catalog-generated paths belong in `.gitignore`.
 
 Running sessions follow the recovery notice in [catalog_runtime.py](scripts/catalog_runtime.py).
 An independently required native-client restart keeps the same session ID and brief.
