@@ -31,9 +31,6 @@ os.environ["CODEX_SKILLS_ENV_FILE"] = "/definitely/missing/codex-skills-test.env
 os.environ["CODEX_AUTOMATION_LOGIN"] = "fixture-automation"
 os.environ["CODEX_AUTOMATION_EMAIL"] = "fixture-automation@example.invalid"
 
-# ---------------------------------------------------------------------------
-# Load module under test
-# ---------------------------------------------------------------------------
 
 _MODULE_PATH = Path(__file__).with_name("github_api.py")
 
@@ -50,10 +47,6 @@ def _load_module() -> types.ModuleType:
 
 
 _api = _load_module()
-
-# ---------------------------------------------------------------------------
-# Fixture helpers
-# ---------------------------------------------------------------------------
 
 
 def _fake_proc(
@@ -121,11 +114,6 @@ def _call(
             failed_step=failed_step,
             is_write=is_write,
         )
-
-
-# ---------------------------------------------------------------------------
-# parse_gh_include_output
-# ---------------------------------------------------------------------------
 
 
 def test_parse_success_200_json_body() -> None:
@@ -214,35 +202,14 @@ def test_parse_uses_final_http_response_block() -> None:
     assert body == {"ok": True}
 
 
-def test_parse_final_text_body_can_contain_http_status_lines() -> None:
-    raw = (
-        "HTTP/2.0 200 OK\r\n"
-        "content-type: text/plain\r\n"
-        "x-github-request-id: log-request\r\n"
-        "\r\n"
-        "setup\n"
-        "HTTP/1.1 503 from application output\n"
-        "failure"
-    )
-    status, headers, body = _api.parse_gh_include_output(raw)
-    assert status == 200, status
-    assert headers["x-github-request-id"] == "log-request"
-    assert body == "setup\nHTTP/1.1 503 from application output\nfailure"
-
-
-def test_parse_final_text_body_can_start_with_http_status_line() -> None:
-    raw = (
-        "HTTP/2.0 200 OK\r\n"
-        "content-type: text/plain\r\n"
-        "x-github-request-id: log-request\r\n"
-        "\r\n"
-        "HTTP/1.1 503 from application output\n"
-        "failure"
-    )
-    status, headers, body = _api.parse_gh_include_output(raw)
-    assert status == 200, status
-    assert headers["x-github-request-id"] == "log-request"
-    assert body == "HTTP/1.1 503 from application output\nfailure"
+def test_parse_preserves_http_status_lines_inside_text_bodies() -> None:
+    for prefix in ("", "setup\n"):
+        expected = prefix + "HTTP/1.1 503 from application output\nfailure"
+        raw = "HTTP/2.0 200 OK\r\ncontent-type: text/plain\r\nx-github-request-id: log-request\r\n\r\n" + expected
+        status, headers, body = _api.parse_gh_include_output(raw)
+        assert status == 200
+        assert headers["x-github-request-id"] == "log-request"
+        assert body == expected
 
 
 def test_parse_redirect_retains_github_diagnostic_headers() -> None:
@@ -266,39 +233,23 @@ def test_parse_redirect_retains_github_diagnostic_headers() -> None:
     assert body == "job log"
 
 
-# ---------------------------------------------------------------------------
-# build_gh_command (body-safety)
-# ---------------------------------------------------------------------------
-
-
-def test_build_get_command_no_stdin_flag() -> None:
-    cmd = _api.build_gh_command("GET", "/repos/owner/repo")
-    assert "--input" not in cmd
-    assert "-" not in cmd
-    assert "--include" in cmd
-    assert "--method" in cmd
-    assert cmd[cmd.index("--method") + 1] == "GET"
-
-
-def test_build_post_command_uses_stdin() -> None:
-    cmd = _api.build_gh_command("POST", "/repos/owner/repo/issues")
-    idx = cmd.index("--input")
-    assert cmd[idx + 1] == "-", "body must come from stdin, not command line"
-
-
-def test_build_patch_command_uses_stdin() -> None:
-    cmd = _api.build_gh_command("PATCH", "/repos/owner/repo/pulls/1")
-    assert "--input" in cmd
-
-
-def test_build_delete_command_no_stdin_flag() -> None:
-    cmd = _api.build_gh_command("DELETE", "/repos/owner/repo/git/refs/heads/old")
-    assert "--input" not in cmd
-
-
-def test_build_delete_command_can_use_json_stdin() -> None:
-    cmd = _api.build_gh_command("DELETE", "/sub_issue", gh_cmd="gh", has_body=True)
-    assert cmd[-2:] == ["--input", "-"]
+def test_build_command_sends_bodies_only_through_stdin() -> None:
+    for method, has_body, uses_stdin in (
+        ("GET", None, False),
+        ("POST", None, True),
+        ("PATCH", None, True),
+        ("DELETE", None, False),
+        ("DELETE", True, True),
+    ):
+        options = {} if has_body is None else {"has_body": has_body}
+        cmd = _api.build_gh_command(method, "/repos/owner/repo/issues", **options)
+        assert "--include" in cmd
+        assert cmd[cmd.index("--method") + 1] == method
+        assert ("--input" in cmd) == uses_stdin, (method, has_body, cmd)
+        if uses_stdin:
+            assert cmd[cmd.index("--input") + 1] == "-"
+        else:
+            assert "-" not in cmd
 
 
 def test_build_command_prepends_slash_to_bare_path() -> None:
@@ -324,52 +275,27 @@ def test_build_command_includes_default_api_version() -> None:
     assert f"X-GitHub-Api-Version: {_api.DEFAULT_API_VERSION}" in cmd
 
 
-# ---------------------------------------------------------------------------
-# call_gh: success envelope
-# ---------------------------------------------------------------------------
-
-
-def test_call_gh_success_returns_ok_result() -> None:
-    stdout = _include_output(200, body={"number": 7})
-    result = _call("GET", "/repos/owner/repo/pulls/7", fake_stdout=stdout)
-    assert result.ok is True
-    assert result.status == 200
-    assert result.body == {"number": 7}
-    assert result.failure is None
-    assert result.schema_version == _api.SCHEMA_VERSION
-
-
-def test_call_gh_result_asdict_has_version() -> None:
-    stdout = _include_output(201, body={"id": 1})
-    result = _call("POST", "/repos/owner/repo/issues", body={"title": "bug"}, fake_stdout=stdout)
-    d = result.as_dict()
-    assert d["schema_version"] == _api.SCHEMA_VERSION
-    assert d["ok"] is True
-    assert d["status"] == 201
-    assert "failure" not in d
-
-
-def test_call_gh_success_extracts_request_id() -> None:
-    stdout = _include_output(200, headers={"x-github-request-id": "REQ:ID:12"}, body={})
-    result = _call("GET", "/rate_limit", fake_stdout=stdout)
-    assert result.request_id == "REQ:ID:12"
-
-
-def test_call_gh_success_extracts_rate_limit() -> None:
-    stdout = _include_output(
-        200,
-        headers={
-            "x-ratelimit-limit": "5000",
-            "x-ratelimit-remaining": "4321",
-            "x-ratelimit-reset": "1700000000",
-            "x-ratelimit-used": "679",
-        },
-        body={"resources": {}},
-    )
-    result = _call("GET", "/rate_limit", fake_stdout=stdout)
-    assert result.rate_limit is not None
-    assert result.rate_limit.remaining == 4321
-    assert result.rate_limit.limit == 5000
+def test_call_gh_success_preserves_response_and_context_in_the_envelope() -> None:
+    for method, status, body in (("GET", 200, {"number": 7}), ("POST", 201, {"id": 1})):
+        result = _call(
+            method,
+            "/repos/owner/repo/issues",
+            body={"title": "bug"} if method == "POST" else None,
+            fake_stdout=_include_output(
+                status, headers={"x-github-request-id": "REQ:ID:12", "x-ratelimit-remaining": "4321"}, body=body
+            ),
+            completed_steps=["resolve_repo"],
+        )
+        payload = result.as_dict()
+        assert result.ok and result.failure is None
+        assert result.status == payload["status"] == status
+        assert result.body == payload["body"] == body
+        assert result.schema_version == payload["schema_version"] == _api.SCHEMA_VERSION
+        assert payload["ok"] and "failure" not in payload
+        assert result.request_id == payload["request_id"] == "REQ:ID:12"
+        assert payload["completed_steps"] == ["resolve_repo"]
+        assert result.rate_limit.remaining == payload["rate_limit"]["remaining"] == 4321
+        assert result.rate_limit.limit == payload["rate_limit"]["limit"] == 5000
 
 
 def test_call_gh_surfaces_explicit_active_auth_actor() -> None:
@@ -586,11 +512,6 @@ def test_retry_fails_closed_on_provider_bucket_mismatch() -> None:
     assert result.retry_summary.last_bucket == "search", result.retry_summary
 
 
-# ---------------------------------------------------------------------------
-# Error classification
-# ---------------------------------------------------------------------------
-
-
 def test_classify_401_invalid_credentials() -> None:
     stdout = _include_output(
         401,
@@ -771,107 +692,61 @@ def test_classify_200_graphql_rate_limit() -> None:
     assert result.failure.disposition == "retry"
 
 
-def test_classify_404_not_found() -> None:
-    stdout = _include_output(404, body={"message": "Not Found"})
-    result = _call("GET", "/repos/owner/repo/pulls/9999", fake_stdout=stdout, returncode=1)
-    assert result.failure is not None
-    assert result.failure.cause == "not_found"
-    assert result.failure.retryable is False
-    assert result.failure.fallback_eligible is False
-    assert result.failure.disposition == "stop"
-
-
-def test_classify_405_expected_required_checks_as_rejected_readiness() -> None:
+def test_missing_resource_keeps_a_terminal_failure_in_the_envelope() -> None:
     result = _call(
-        "PUT",
-        "/repos/owner/repo/pulls/1/merge",
-        body={},
-        fake_stdout=_include_output(
-            405,
-            body={"message": "2 of 2 required status checks are expected."},
-        ),
-        returncode=1,
+        path="/repos/owner/repo/issues/999", fake_stdout=_include_output(404, body={"message": "Not Found"}), returncode=1
     )
-    assert result.failure == _api.FailureDetail(
-        cause="required_status_checks_expected",
-        message=(
-            "Merge readiness is blocked because required status checks have not reported: "
-            "2 of 2 required status checks are expected."
-        ),
-        retryable=False,
-        fallback_eligible=False,
-        disposition="stop",
-        write_outcome="rejected",
-        completed_steps=[],
-        failed_step="http_405",
-        request_id="AABB:1234:CCDD",
-        rate_limit={
-            "limit": 5000,
-            "remaining": 4999,
-            "reset": 1700000000,
-            "used": 1,
-            "resource": "core",
-        },
-    )
-    singular_result = _call(
-        "PUT",
-        "/repos/owner/repo/pulls/1/merge",
-        body={},
-        fake_stdout=_include_output(
-            405,
-            body={"message": 'Required status check "ci/build" is expected.'},
-        ),
-        returncode=1,
-    )
-    assert singular_result.failure is not None
-    assert singular_result.failure.cause == "required_status_checks_expected"
-    assert singular_result.failure.write_outcome == "rejected"
+    payload = result.as_dict()
+    assert not result.ok and not payload["ok"]
+    failure = result.failure
+    assert failure is not None
+    assert failure.cause == payload["failure"]["cause"] == "not_found"
+    assert failure.disposition == payload["failure"]["disposition"] == "stop"
+    assert not failure.retryable and not failure.fallback_eligible
+    assert "completed_steps" not in failure.as_dict()
 
-    wrapped_message = "Repository rule violations found\n\n2 of 2 required status checks are expected.\n"
-    wrapped_result = _call(
-        "PUT",
-        "/repos/owner/repo/pulls/1/merge",
-        body={},
-        fake_stdout=_include_output(405, body={"message": wrapped_message}),
-        returncode=1,
-    )
-    assert wrapped_result.failure is not None
-    assert wrapped_result.failure.cause == "required_status_checks_expected"
-    assert wrapped_result.failure.write_outcome == "rejected"
-    assert wrapped_result.failure.retryable is False
 
-    other_rule_result = _call(
-        "PUT",
-        "/repos/owner/repo/pulls/1/merge",
-        body={},
-        fake_stdout=_include_output(
+def test_merge_refusal_only_proves_rejection_for_the_exact_required_check_messages() -> None:
+    expected = "2 of 2 required status checks are expected."
+    for status, message, headers, cause, outcome in (
+        (405, expected, {}, "required_status_checks_expected", "rejected"),
+        (405, 'Required status check "ci/build" is expected.', {}, "required_status_checks_expected", "rejected"),
+        (405, f"Repository rule violations found\n\n{expected}\n", {}, "required_status_checks_expected", "rejected"),
+        (
             405,
-            body={
-                "message": (
-                    "Repository rule violations found\n\n"
-                    "Changes must be made through a pull request.\n\n"
-                    "2 of 2 required status checks are expected."
-                )
-            },
+            f"Repository rule violations found\n\nChanges must be made through a pull request.\n\n{expected}",
+            {},
+            "unknown_error",
+            "unknown",
         ),
-        returncode=1,
-    )
-    assert other_rule_result.failure is not None
-    assert other_rule_result.failure.cause == "unknown_error"
-    assert other_rule_result.failure.write_outcome == "unknown"
-
-    non_405_result = _call(
-        "PUT",
-        "/repos/owner/repo/pulls/1/merge",
-        body={},
-        fake_stdout=_include_output(
-            422,
-            body={"message": "2 of 2 required status checks are expected."},
+        (422, expected, {}, "validation_error", "rejected"),
+        (405, "Method Not Allowed", {}, "unknown_error", "unknown"),
+        (
+            405,
+            "<html><h1>Required status checks are expected</h1></html>",
+            {"content-type": "text/html"},
+            "unknown_error",
+            "unknown",
         ),
-        returncode=1,
-    )
-    assert non_405_result.failure is not None
-    assert non_405_result.failure.cause == "validation_error"
+        (405, "Required status checks are configured; the head commit is expected to change.", {}, "unknown_error", "unknown"),
+    ):
+        result = _call(
+            "PUT",
+            "/repos/owner/repo/pulls/1/merge",
+            body={},
+            fake_stdout=_include_output(status, headers=headers, body={"message": message} if not headers else message),
+            returncode=1,
+        )
+        failure = result.failure
+        assert failure is not None, (status, message)
+        assert (failure.cause, failure.write_outcome) == (cause, outcome), (status, message, failure)
+        assert not failure.retryable and not failure.fallback_eligible
+        assert failure.disposition == "stop"
+        assert failure.failed_step == f"http_{status}"
+        assert failure.request_id == "AABB:1234:CCDD"
+        assert failure.rate_limit == result.rate_limit.as_dict()
+        if cause == "required_status_checks_expected":
+            assert message in failure.message
 
 
 def test_comments_only_rejection_is_narrow() -> None:
@@ -890,66 +765,6 @@ def test_comments_only_rejection_is_narrow() -> None:
     assert mixed.failure is not None
     assert mixed.failure.cause == "unknown_error"
     assert mixed.failure.write_outcome == "unknown"
-
-
-def test_classify_405_unrelated_failure_as_unknown_write() -> None:
-    result = _call(
-        "PUT",
-        "/repos/owner/repo/pulls/1/merge",
-        body={},
-        fake_stdout=_include_output(405, body={"message": "Method Not Allowed"}),
-        returncode=1,
-    )
-    assert result.failure == _api.FailureDetail(
-        cause="unknown_error",
-        message="Unexpected error (status=405): Method Not Allowed",
-        retryable=False,
-        fallback_eligible=False,
-        disposition="stop",
-        write_outcome="unknown",
-        completed_steps=[],
-        failed_step="http_405",
-        request_id="AABB:1234:CCDD",
-        rate_limit={
-            "limit": 5000,
-            "remaining": 4999,
-            "reset": 1700000000,
-            "used": 1,
-            "resource": "core",
-        },
-    )
-    html_result = _call(
-        "PUT",
-        "/repos/owner/repo/pulls/1/merge",
-        body={},
-        fake_stdout=_include_output(
-            405,
-            headers={"content-type": "text/html"},
-            body="<html><h1>Required status checks are expected</h1></html>",
-        ),
-        returncode=1,
-    )
-    assert html_result.failure is not None
-    assert html_result.failure.cause == "unknown_error"
-    assert html_result.failure.write_outcome == "unknown"
-    near_miss_result = _call(
-        "PUT",
-        "/repos/owner/repo/pulls/1/merge",
-        body={},
-        fake_stdout=_include_output(
-            405,
-            body={
-                "message": (
-                    "Required status checks are configured; "
-                    "the head commit is expected to change."
-                )
-            },
-        ),
-        returncode=1,
-    )
-    assert near_miss_result.failure is not None
-    assert near_miss_result.failure.cause == "unknown_error"
-    assert near_miss_result.failure.write_outcome == "unknown"
 
 
 def test_classify_422_validation_error() -> None:
@@ -1041,11 +856,6 @@ def test_write_subprocess_oserror_after_launch_is_unknown() -> None:
     assert result.failure.failed_step == "subprocess_execution"
 
 
-# ---------------------------------------------------------------------------
-# Failure envelope fields (write_outcome, completed_steps, failed_step)
-# ---------------------------------------------------------------------------
-
-
 def test_failure_envelope_write_outcome_read_request() -> None:
     stdout = _include_output(403, body={"message": "Forbidden"})
     result = _call("GET", "/repos/owner/repo", fake_stdout=stdout, returncode=1, is_write=False)
@@ -1069,23 +879,11 @@ def test_failure_envelope_completed_steps_preserved() -> None:
     assert result.failure.failed_step == "add_label"
 
 
-def test_failure_envelope_asdict_omits_empty_completed_steps() -> None:
-    stdout = _include_output(404, body={"message": "Not Found"})
-    result = _call("GET", "/repos/owner/repo/pulls/1", fake_stdout=stdout, returncode=1)
-    d = result.failure.as_dict()  # type: ignore[union-attr]
-    assert "completed_steps" not in d
-
-
 def test_failure_envelope_asdict_includes_request_id() -> None:
     stdout = _include_output(401, headers={"x-github-request-id": "XY:ZZ:00"}, body={"message": "Bad credentials"})
     result = _call("GET", "/repos/owner/repo", fake_stdout=stdout, returncode=1)
     d = result.failure.as_dict()  # type: ignore[union-attr]
     assert d.get("request_id") == "XY:ZZ:00"
-
-
-# ---------------------------------------------------------------------------
-# Partial success: completed_steps on GraphQL rate-limit
-# ---------------------------------------------------------------------------
 
 
 def test_partial_success_graphql_rate_limit_carries_completed_steps() -> None:
@@ -1410,7 +1208,6 @@ def test_gh_api_short_flag_groups_are_classified_as_gh_reads_them() -> None:
     assert mutation.is_write is True
 
 
-
 def test_repository_flags_do_not_hide_command_group_mutations() -> None:
     for group, mutation, read in (
         ("run", "cancel", "view"),
@@ -1656,11 +1453,6 @@ def test_classify_legacy_rejects_malformed_payload_file() -> None:
     assert "JSON object" not in stderr.getvalue()
 
 
-# ---------------------------------------------------------------------------
-# Redaction
-# ---------------------------------------------------------------------------
-
-
 def test_redact_headers_removes_authorization() -> None:
     headers = {
         "authorization": "Bearer ghp_secret",
@@ -1703,28 +1495,17 @@ def test_redact_body_removes_sensitive_key_variants() -> None:
     assert redacted["monkey"] == "safe"
 
 
-def test_failure_message_is_redacted_before_consumer_access() -> None:
-    failure = _api.FailureDetail(
-        cause="network_provider_failure",
-        message="request failed with token=synthetic-secret",
-        retryable=False,
-        fallback_eligible=False,
-        disposition="stop",
-    )
-    assert "synthetic-secret" not in failure.message
-    assert "[REDACTED]" in failure.message
-
-
-def test_failure_message_redacts_credential_and_authorization_params() -> None:
-    failure = _api.FailureDetail(
-        cause="network_provider_failure",
-        message="credentials=synthetic-one authorization=synthetic-two",
-        retryable=False,
-        fallback_eligible=False,
-        disposition="stop",
-    )
-    assert "synthetic-one" not in failure.message
-    assert "synthetic-two" not in failure.message
+def test_failure_message_redacts_secrets_before_consumer_access() -> None:
+    for message in ("request failed with token=synthetic-secret", "credentials=synthetic-one authorization=synthetic-two"):
+        failure = _api.FailureDetail(
+            cause="network_provider_failure",
+            message=message,
+            retryable=False,
+            fallback_eligible=False,
+            disposition="stop",
+        )
+        assert "synthetic-" not in failure.message
+        assert "[REDACTED]" in failure.message
 
 
 def test_redact_body_handles_list() -> None:
@@ -1773,17 +1554,12 @@ def test_result_envelope_redacts_body_and_exposes_context() -> None:
         host="github.example",
     )
     payload = result.as_dict()
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == _api.SCHEMA_VERSION
     assert payload["body"]["token"] == "[REDACTED]"
     assert payload["body"]["name"] == "safe"
     assert payload["operation"] == "github.api.call"
     assert payload["actor"] == "automation-bot"
     assert payload["host"] == "github.example"
-
-
-# ---------------------------------------------------------------------------
-# Rate-limit probe (bounded, one call per process)
-# ---------------------------------------------------------------------------
 
 
 def test_rate_limit_probe_calls_get_rate_limit() -> None:
@@ -1872,51 +1648,6 @@ def test_rate_limit_probe_cache_ignores_remaining_timeout_budget() -> None:
 
     assert calls == [5.0], calls
     assert first is second
-
-
-# ---------------------------------------------------------------------------
-# Output envelope completeness
-# ---------------------------------------------------------------------------
-
-
-def test_success_asdict_no_failure_key() -> None:
-    stdout = _include_output(200, body={"id": 1})
-    result = _call("GET", "/repos/owner/repo/issues/1", fake_stdout=stdout)
-    d = result.as_dict()
-    assert "failure" not in d
-    assert d["ok"] is True
-    assert d["status"] == 200
-
-
-def test_success_asdict_includes_completed_steps() -> None:
-    stdout = _include_output(200, body={"id": 1})
-    result = _call(
-        "GET",
-        "/repos/owner/repo/issues/1",
-        fake_stdout=stdout,
-        completed_steps=["resolve_repo"],
-    )
-    assert result.as_dict()["completed_steps"] == ["resolve_repo"]
-
-
-def test_error_asdict_has_failure_key() -> None:
-    stdout = _include_output(404, body={"message": "Not Found"})
-    result = _call("GET", "/repos/owner/repo/issues/999", fake_stdout=stdout, returncode=1)
-    d = result.as_dict()
-    assert d["ok"] is False
-    assert "failure" in d
-    assert d["failure"]["cause"] == "not_found"
-    assert d["failure"]["disposition"] == "stop"
-
-
-def test_asdict_rate_limit_present_on_success() -> None:
-    stdout = _include_output(200, body={})
-    result = _call("GET", "/rate_limit", fake_stdout=stdout)
-    d = result.as_dict()
-    assert "rate_limit" in d
-    rl = d["rate_limit"]
-    assert rl["limit"] == 5000
-    assert rl["remaining"] == 4999
 
 
 def test_asdict_rate_limit_in_failure_when_exhausted() -> None:
@@ -3235,11 +2966,6 @@ def test_malformed_cooldown_state_is_removed() -> None:
         assert target is None
         assert coordinated is False
         assert state_path.exists() is False
-
-
-# ---------------------------------------------------------------------------
-# Runner
-# ---------------------------------------------------------------------------
 
 
 def main() -> None:
