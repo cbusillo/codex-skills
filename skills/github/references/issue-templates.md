@@ -1,62 +1,27 @@
 # GitHub Plan Issue Templates
 
-Read before creating or editing a planning issue, including adoption of a
-contributor request. Use the structure below for a concrete finish line and
+Read before creating or editing a planning issue. Use the structure below for a concrete finish line and
 enough recovery context for the next session.
 
 For a linked automation-authored plan, write the plan with a qualified source
 link, then preserve any exact human title/request or quoted source material in
 a `gh-comment --verbatim` comment. New plan bodies and section text are authored
-planning content and require qualified issue references. To adopt the human's
-existing issue, `update-section` preserves its original request automatically;
-do not rewrite that request to satisfy reference validation.
+planning content and require qualified issue references.
 
-For every human-authored issue, preserve the original title and request
-verbatim, regardless of the author's repository association. Repository owner,
-member, and collaborator roles grant permissions but never grant automation
-ownership of the author's words. Prefer a bot-authored comment or a linked
-automation-authored planning issue. When the plan must live in the human issue
-body, use this ownership boundary:
+The title and body of an issue the automation identity did not author are the
+author's words, whatever their repository association. Planning writers never
+edit that body: `update-section` posts the section as a bot-authored
+`## <Section>` comment, `claim` and `release` carry Current Status in their own
+comments, and a `related` note refuses, leaving native relationships or a
+comment. Readers take the newest trusted `## Current Status` comment over older
+body status.
 
-```markdown
-## Original request
-
-<!-- github-plan:original-request:start -->
-[Original body verbatim, or the original title when the body was empty]
-<!-- github-plan:original-request:end -->
-
----
-
-_The following implementation plan is maintained by project automation._
-
-<!-- github-plan:managed:start -->
-[Required planning headings]
-<!-- github-plan:managed:end -->
-```
-
-Subsequent automation updates may change only the managed block. The managed
-provenance marker by itself never transfers human-authored content to
-automation ownership. Duplicate,
-missing, or out-of-order markers must fail closed rather than rewriting the
-issue. Maintainer-owned and bot-authored planning issues may use the fully
-managed format below. An older contributor issue that already mixes unmarked
-planning headings with request text is ambiguous and must not be migrated by
-guessing; preserve its request in a linked maintainer-owned plan or perform an
-explicit, reviewed migration from issue history.
-
-`show` may read contributor-owned planning sections without granting write
-ownership. Inspect its provenance: `automation_managed`, `contributor_envelope`,
-or `contributor_unmanaged`. `section_updates_allowed: false` leaves the current
-body read-only. A plain request without unmarked planning headings or reserved
-markers may be adopted through `update-section`'s preservation envelope; do not
-rewrite the source request yourself.
-
-After adoption, section updates use only the managed block. Unmarked recognized
-planning headings are ambiguous and must fail closed. Section content must not
-contain reserved ownership markers. With malformed markers, `show --full`
-still returns the raw body with ownership `unknown`; section parsing and all
-body writes remain fail-closed. Native relationship updates do not rewrite the
-body and therefore do not require body ownership.
+`show` reports provenance: `automation_managed`, `contributor_envelope` (an
+`## Original request` envelope written by older helpers, still read but never
+written), `contributor_unmanaged`, or `unknown` for malformed markers. Only
+`automation_managed` has `section_updates_allowed: true`. Section content must
+not contain reserved ownership markers, and malformed markers fail closed.
+Native relationship updates do not touch the body.
 
 Fully managed plans created by `gh-plan` begin with:
 
@@ -64,14 +29,11 @@ Fully managed plans created by `gh-plan` begin with:
 <!-- github-plan:managed-provenance -->
 ```
 
-Full-body management requires authorship by the acting planning bot or an
-Director-controlled login in `CODEX_AUTOMATION_BOT_LOGINS`; unknown authors and
-authors outside that configured set stay in preservation mode. This marker
-records provenance but does not transfer ownership of a human-authored body.
-The generic
-`<!-- github-skill-operation:... -->` comment is only request reconciliation
-evidence and never grants body ownership. Existing contributor envelopes always
-remain contributor-owned.
+Full-body management requires authorship by the acting planning bot or a
+Director-controlled login in `CODEX_AUTOMATION_BOT_LOGINS`. The marker records
+provenance and never transfers ownership of a body someone else authored; the
+generic `<!-- github-skill-operation:... -->` comment is only request
+reconciliation evidence.
 
 ## Required Headings
 

@@ -1845,6 +1845,18 @@ class OwnReleaseTests(ReleaseHarness):
         self.assertEqual(self.f.events.count("post"), posts)
         self.assertEqual(self.f.emitted.call_args.args[0]["release_state"], "already_released")
 
+    def test_release_on_a_reporter_envelope_posts_status_without_editing_the_body(self) -> None:
+        self.f.issue["user"] = {"login": "outside-reporter"}
+        self.f.issue["body"] = PLAN.github_plan_body.wrap_contributor_plan(
+            {"body": "Original report"}, "## Current Status\n\nNext actor: agent\nNext action: Investigate.")
+        envelope = self.f.issue["body"]
+        with patch.object(PLAN, "next_status_body_time", return_value="2026-01-01T00:00:00+00:00"):
+            self.run_own_release()
+        self.assertTrue(self.f.emitted.call_args.args[0]["ok"])
+        self.assertEqual(self.f.issue["body"], envelope)
+        status = PLAN.section_map(self.f.comments[-1]["body"])["Current Status"]
+        self.assertEqual(PLAN.github_plan_next_actor.read(status), self.args.next_actor)
+
     def test_release_keeps_legacy_actor_narrative(self) -> None:
         self.f.issue["body"] += "\nNext actor: Supervisor routes the remaining source.\n"
         self.handoff.write_text("Next actor: Supervisor takes the next source step.")

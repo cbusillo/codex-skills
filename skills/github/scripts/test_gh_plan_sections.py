@@ -161,21 +161,27 @@ class SectionTests(unittest.TestCase):
                         edit.assert_called_once()
                         self.assertEqual(edit.call_args.kwargs["body"], self.issue["body"].replace("Old text.", content))
 
-    def test_contributor_request_survives_literal_section_updates(self) -> None:
+    def run_comment_update(self, *body_args: str, section: str = "Finish Line") -> tuple[int, dict, Mock, Mock, str]:
+        post = Mock(return_value={"comment": {"id": 7}})
+        with patch.object(PLAN.github_comment_core, "comment", post):
+            code, result, edit, errors = self.run_update(
+                *body_args, section=section, comment_current_status=Mock(return_value="State: Active"),
+                comment_route=Mock(return_value=("automation-gh", "bot-gh", "fixture-bot[bot]")))
+        return code, result, edit, post, errors
+
+    def test_reporter_body_gets_a_status_comment_and_stays_unchanged(self) -> None:
         self.issue["user"] = {"login": "outside-contributor"}
-        self.issue["body"] = "Original request with `\\u0027` and #12.\n"
+        original = "Original request with `\\u0027` and #12.\n"
+        self.issue["body"] = original
         for content in LITERAL_TEXTS:
             with self.subTest(content=content):
-                # First append the managed section, then replace it in the envelope.
-                for _ in range(2):
-                    code, _, edit, errors = self.run_update("--body", content)
-                    self.assertEqual(code, 0, errors)
-                    self.issue["body"] = edit.call_args.kwargs["body"]
-                    original = PLAN.marked_block(self.issue["body"], PLAN.PLAN_ORIGINAL_START, PLAN.PLAN_ORIGINAL_END)
-                    self.assertIsNotNone(original)
-                    self.assertEqual(original[2], "Original request with `\\u0027` and #12.\n")
-                    managed = PLAN.contributor_plan_body(self.issue)
-                    self.assertEqual(managed, f"## Finish Line\n\n{content}")
+                code, result, edit, post, errors = self.run_comment_update("--body", content)
+                self.assertEqual(code, 0, errors)
+                self.assertEqual(result["status_location"], "comment")
+                edit.assert_not_called()
+                self.assertEqual(post.call_args.args[:3], ("issue", 42, f"## Finish Line\n\n{content.strip()}"))
+                self.assertEqual(post.call_args.kwargs["expected_actor"], "fixture-bot[bot]")
+                self.assertEqual(self.issue["body"], original)
 
     def run_show(self, full: bool = False) -> tuple[int, dict]:
         output, errors = io.StringIO(), io.StringIO()
@@ -195,28 +201,23 @@ class SectionTests(unittest.TestCase):
                 code = exc.code
         return code, json.loads(output.getvalue())
 
-    def test_managed_author_envelope_preserves_original_on_public_updates(self) -> None:
-        original = "## Finish Line\n\nOriginal human requirement.\n"
-        self.issue["body"] = PLAN.wrap_contributor_plan(
-            {"body": original}, "## Finish Line\n\nManaged target.")
-        for content in ("New target.", "Next target."):
-            code, _, edit, errors = self.run_update("--body", content)
-            self.assertEqual(code, 0, errors)
-            self.issue["body"] = edit.call_args.kwargs["body"]
-            block = PLAN.marked_block(self.issue["body"], PLAN.PLAN_ORIGINAL_START, PLAN.PLAN_ORIGINAL_END)
-            self.assertIsNotNone(block)
-            self.assertEqual(block[2], original)
-            code, result = self.run_show()
-            self.assertEqual(code, 0)
-            self.assertEqual(result["issue"]["sections"]["Finish Line"], content)
-            self.assertEqual(result["issue"]["provenance"]["ownership"], "contributor_envelope")
-        code, result, edit, _ = self.run_update("--body", "Replacement", section="Original request")
-        self.assertNotEqual(code, 0)
-        self.assertFalse(result["ok"])
+    def test_existing_envelope_stays_readable_and_is_never_rewritten(self) -> None:
+        self.issue["body"] = PLAN.github_plan_body.wrap_contributor_plan(
+            {"body": "## Finish Line\n\nOriginal human requirement.\n"}, "## Finish Line\n\nManaged target.")
+        envelope = self.issue["body"]
+        code, _, edit, post, errors = self.run_comment_update("--body", "New target.")
+        self.assertEqual(code, 0, errors)
         edit.assert_not_called()
+        post.assert_called_once()
+        self.assertEqual(self.issue["body"], envelope)
+        code, result = self.run_show()
+        self.assertEqual(code, 0)
+        self.assertEqual(result["issue"]["sections"]["Finish Line"], "Managed target.")
+        self.assertEqual(result["issue"]["provenance"]["ownership"], "contributor_envelope")
+        self.assertFalse(result["issue"]["provenance"]["section_updates_allowed"])
 
     def test_managed_author_malformed_markers_fail_closed_on_read_and_update(self) -> None:
-        envelope = PLAN.wrap_contributor_plan({"body": "Original"}, "## Finish Line\n\nManaged")
+        envelope = PLAN.github_plan_body.wrap_contributor_plan({"body": "Original"}, "## Finish Line\n\nManaged")
         malformed = (
             envelope + PLAN.PLAN_MANAGED_START,
             envelope.replace(PLAN.PLAN_ORIGINAL_END, ""),
@@ -385,10 +386,6 @@ class SectionTests(unittest.TestCase):
         self.assertIn("owner/repo#42", result["error"])
         self.assertNotIn("owner/another-repo", result["error"])
         edit.assert_not_called()
-
-    def test_ambiguous_contributor_body_still_fails_before_mutation(self) -> None:
-        self.issue["user"] = {"login": "outside-contributor"}
-        self.assert_prewrite_failure(("--body", "New content"))
 
     def test_write_failures_keep_their_transport_classification(self) -> None:
         failure = PLAN.github_api_core.FailureDetail(cause="transport_error", message="Write outcome unknown",
