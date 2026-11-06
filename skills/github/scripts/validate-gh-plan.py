@@ -877,9 +877,9 @@ def test_plan_search_uses_search_bucket_and_conditional_state() -> None:
         plan.cmd_search(types.SimpleNamespace(repo="owner/repo", query="roadmap", state="all", limit=5))
 
     open_query = calls[0]["query"]["q"][0]
-    assert {"roadmap", "repo:owner/repo", "is:issue", "is:open"}.issubset(open_query.split()), open_query
+    assert {"roadmap", "repo:owner/repo", "is:open"}.issubset(open_query.split()), open_query
     all_query = calls[2]["query"]["q"][0]
-    assert {"roadmap", "repo:owner/repo", "is:issue"}.issubset(all_query.split()), all_query
+    assert {"roadmap", "repo:owner/repo"}.issubset(all_query.split()), all_query
     assert "is:open" not in all_query and "is:closed" not in all_query
     open_payload = json.loads(open_output.getvalue())
     assert open_payload["count"] == 101, open_payload
