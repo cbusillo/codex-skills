@@ -1113,8 +1113,7 @@ def _run_controller_response(response: object, *, mutate: bool = False, timeout:
         argv += ["--mutate", "--idempotency-key", "controller-pass-one"]
     if timeout is not None:
         argv = ["--timeout", str(timeout), *argv]
-    output = io.StringIO()
-    def fake_post(**kwargs: Any) -> dict[str, Any]:
+    def fake_post(kwargs: dict[str, Any]) -> dict[str, Any]:
         if isinstance(response, Exception):
             raise response
         # The observed controller pass needs 19 seconds, even without mutation.
@@ -1123,13 +1122,9 @@ def _run_controller_response(response: object, *, mutate: bool = False, timeout:
         else:
             assert kwargs["timeout"] == timeout
         return cast(dict[str, Any], response)
-    post = Mock(side_effect=fake_post)
-    with temporary_attribute(write_action, "prepare_operator_settings", lambda **_kwargs: {
-        "service_url": "https://launchplane.example.invalid", "token": "fixture-only",
-    }), temporary_attribute(write_action, "request_launchplane", post), redirect_stdout(output):
-        status = write_action.main(argv)
-    assert post.call_count == 1
-    return status, json.loads(output.getvalue())
+    status, payload, posts, _ = _run_main(argv, post=fake_post)
+    assert len(posts) == 1
+    return status, payload
 
 
 def test_controller_timeout_covers_slow_dry_run_and_mutation_and_keeps_override() -> None:
@@ -3398,25 +3393,11 @@ def _product_environment_response() -> dict[str, object]:
 
 
 def _run_product_read(
-    argv: list[str], response: object, *, transport: str = "request_launchplane_read"
+    argv: list[str], response: object
 ) -> tuple[int, dict[str, Any], list[dict[str, Any]]]:
-    calls: list[dict[str, Any]] = []
-
-    def fake_read(**kwargs: Any) -> Any:
-        calls.append(kwargs)
-        if isinstance(response, BaseException):
-            raise response
-        return response
-
-    settings = {"service_url": "https://launchplane.example.invalid", "token": "t"}
-    output = io.StringIO()
-    with (
-        temporary_attribute(write_action, "prepare_operator_settings", lambda **_kwargs: settings),
-        temporary_attribute(write_action, transport, fake_read),
-        redirect_stdout(output),
-    ):
-        status = write_action.main(argv)
-    return status, json.loads(output.getvalue()), calls
+    status, payload, posts, reads = _run_main(argv, read=response, post=AssertionError("unexpected POST"))
+    assert not posts
+    return status, payload, reads
 
 
 def _path_check_response(path: str = "testing") -> dict[str, Any]:
@@ -4427,9 +4408,12 @@ def test_protected_artifacts_read_empty_invalid_and_denied() -> None:
         assert status == 1 and payload["status"] == "invalid" and not payload["result"]
     status, payload, _ = _run_product_read(argv, urllib.error.HTTPError(
         "https://launchplane.example.invalid/v1/artifacts/protected", 403, "Forbidden", Message(),
-        io.BytesIO(json.dumps({"error": {"code": "authorization_denied", "message": "private-error"}}).encode()),
+        io.BytesIO(json.dumps({"trace_id": "launchplane_req_denied", "error": {"code": "authorization_denied", "message": "private-error"}}).encode()),
     ))
     assert status == 1 and "private-error" not in json.dumps(payload)
+    assert payload["status"] == "denied"
+    assert payload["summary"]["error_code"] == "authorization_denied"
+    assert payload["summary"]["trace_id"] == "launchplane_req_denied"
     status, payload, calls = _run_product_read([*argv, "--context", "bad?query=1"], response)
     assert status != 0 and not calls
 
@@ -5509,7 +5493,9 @@ def _target_replacement_plan_response() -> dict[str, Any]:
 def _run_plan_read(
     argv: list[str], response: object
 ) -> tuple[int, dict[str, Any], list[dict[str, Any]]]:
-    return _run_product_read(argv, response, transport="request_launchplane")
+    status, payload, posts, reads = _run_main(argv, post=response, read=AssertionError("unexpected GET"))
+    assert not reads
+    return status, payload, posts
 
 
 PLAN_READ_ARGV = [
@@ -5746,11 +5732,7 @@ def test_target_replacement_plan_read_refuses_a_partial_or_unsafe_candidate() ->
         assert payload["warnings"][0]["code"] == code, extra
 
 
-@pytest.mark.parametrize("reader,argv", [
-    (_run_product_read, ["product-activity-read", "--product", "example-product"]),
-    (_run_plan_read, PLAN_READ_ARGV),
-])
-def test_read_denial_preserves_status_code_and_trace(reader: Any, argv: list[str]) -> None:
+def test_target_replacement_plan_read_reports_denial_with_trace() -> None:
     denial = urllib.error.HTTPError(
         "https://launchplane.example.invalid/v1/drivers/odoo/target-replacement-plan",
         403,
@@ -5762,7 +5744,7 @@ def test_read_denial_preserves_status_code_and_trace(reader: Any, argv: list[str
             ).encode()
         ),
     )
-    status, payload, _calls = reader(argv, denial)
+    status, payload, _calls = _run_plan_read(PLAN_READ_ARGV, denial)
     assert status == 1
     assert payload["status"] == "denied"
     assert payload["summary"]["trace_id"] == "launchplane_req_denied"

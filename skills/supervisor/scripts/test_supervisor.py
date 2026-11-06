@@ -2875,7 +2875,7 @@ class ClaudeTrustTests(unittest.TestCase):
             self.configs[0].write_text(json.dumps(data))
             with self.subTest(save_before=save_before), patch.object(iterm_tab.claude_trust, "exchange", side_effect=concurrent_save):
                 self.launch(repository)
-            self.assert_both_saves_kept(repository)
+                self.assert_both_saves_kept(repository)
 
     def test_missing_directory_or_home_config_refuses_without_partial_writes(self):
         command = self.root / "command"
