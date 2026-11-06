@@ -129,22 +129,6 @@ def parse_variant(value: str) -> dict[str, str]:
     return {"name": name.strip(), "provider": provider, "model": model}
 
 
-def validate_private_provider_approval(
-    args: argparse.Namespace, variants: list[dict[str, str]], parser: argparse.ArgumentParser
-) -> None:
-    if args.dry_run:
-        return
-    providers = sorted({variant["provider"] for variant in variants})
-    if not args.allow_private_cloud:
-        parser.error("--allow-private-cloud is required for non-dry-run provider calls")
-    confirmed = set(args.confirm_private_provider or [])
-    missing = [provider for provider in providers if provider not in confirmed]
-    if missing:
-        parser.error(
-            "--confirm-private-provider must include each non-dry-run provider: " + ", ".join(missing)
-        )
-
-
 def run_or_plan(
     payload: dict[str, Any], prompt: str, prompt_summary: dict[str, Any], variant: dict[str, str], args: argparse.Namespace
 ) -> dict[str, Any]:

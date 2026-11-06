@@ -1461,7 +1461,6 @@ def unasked_director_waits(
         except (rollup.RollupError, github_read.GitHubReadError, github_read.GitHubReadShapeError, KeyError, TypeError, ValueError) as exc:
             errors.append({"repo": repo, "lane": f"director_waits/{number}", "error": rollup.trim(str(exc))})
             continue
-        unresolved = False
         try:
             record, recorded = github_plan_wait.resolve(issue, items, github_plan_wait.authors(repo))
             # A trusted record that asks for review is an unknown wait, not prose.

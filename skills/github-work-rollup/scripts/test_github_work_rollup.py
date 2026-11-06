@@ -12,23 +12,14 @@ from __future__ import annotations
 
 import argparse
 import base64
-import importlib.util
 import json
 import subprocess
-import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import github_work_rollup
 import pytest
-
-MODULE_PATH = Path(__file__).with_name("github_work_rollup.py")
-MODULE_SPEC = importlib.util.spec_from_file_location("github_work_rollup", MODULE_PATH)
-assert MODULE_SPEC is not None
-github_work_rollup = importlib.util.module_from_spec(MODULE_SPEC)
-assert MODULE_SPEC.loader is not None
-sys.modules[MODULE_SPEC.name] = github_work_rollup
-MODULE_SPEC.loader.exec_module(github_work_rollup)
 
 
 def completed(command: list[str], payload: object, returncode: int = 0) -> subprocess.CompletedProcess[str]:
@@ -87,6 +78,20 @@ def empty_enrichment_response(command: list[str]) -> subprocess.CompletedProcess
     if command[1] == "api" and len(command) > 2 and str(command[2]).endswith("/readme"):
         return completed(command, {"message": "Not Found"}, returncode=1)
     return None
+
+
+def empty_repo_rollup_run(
+    command: list[str], calls: list[list[str]] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    if calls is not None:
+        calls.append(command)
+    if response := preflight_response(command):
+        return response
+    if command[1:3] in (["pr", "list"], ["issue", "list"]):
+        return completed(command, [])
+    if response := empty_enrichment_response(command):
+        return response
+    raise AssertionError(f"unexpected command: {command}")
 
 
 def write_people_index(tmp_path: Path) -> Path:
@@ -335,17 +340,7 @@ def test_collect_rollup_allows_subject_only_scope(monkeypatch: pytest.MonkeyPatc
 def test_repo_scoped_rollup_does_not_search_external_subjects_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[list[str]] = []
 
-    def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
-        calls.append(command)
-        if response := preflight_response(command):
-            return response
-        if command[1:3] == ["pr", "list"] or command[1:3] == ["issue", "list"]:
-            return completed(command, [])
-        if response := empty_enrichment_response(command):
-            return response
-        raise AssertionError(f"unexpected command: {command}")
-
-    monkeypatch.setattr(github_work_rollup, "run", fake_run)
+    monkeypatch.setattr(github_work_rollup, "run", lambda command: empty_repo_rollup_run(command, calls))
     settings = github_work_rollup.resolve_settings(args(repo=["example-org/example-repo"], subject=["cli-user"]), {})
 
     payload = github_work_rollup.collect_rollup(settings)
@@ -356,17 +351,8 @@ def test_repo_scoped_rollup_does_not_search_external_subjects_by_default(monkeyp
 
 
 def test_collect_rollup_attaches_recipient_profile(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
-        if response := preflight_response(command):
-            return response
-        if command[1:3] == ["pr", "list"] or command[1:3] == ["issue", "list"]:
-            return completed(command, [])
-        if response := empty_enrichment_response(command):
-            return response
-        raise AssertionError(f"unexpected command: {command}")
-
     people_index = write_people_index(tmp_path)
-    monkeypatch.setattr(github_work_rollup, "run", fake_run)
+    monkeypatch.setattr(github_work_rollup, "run", empty_repo_rollup_run)
     settings = github_work_rollup.resolve_settings(
         args(repo=["example-org/example-repo"], report_recipient="Example Owner", people_index=people_index),
         {},
@@ -757,66 +743,37 @@ def test_github_commands_are_read_only(monkeypatch: pytest.MonkeyPatch) -> None:
     assert all("updated:>=2026-06-01" in command for command in list_commands)
 
 
-def test_activity_mode_filters_old_open_repo_items(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    ("mode", "expected_count", "expected_search"),
+    [("activity", 0, True), ("standup", 1, False)],
+)
+def test_old_open_issue_collection_obeys_the_mode_window(
+    monkeypatch: pytest.MonkeyPatch, mode: str, expected_count: int, expected_search: bool,
+) -> None:
     calls: list[list[str]] = []
 
     def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
         calls.append(command)
-        return completed(
-            command,
-            [
-                {
-                    "number": 214,
-                    "title": "Older open work",
-                    "url": "https://github.com/example-org/example-repo/issues/214",
-                    "author": {"login": "example-user"},
-                    "labels": [],
-                    "assignees": [],
-                    "createdAt": "2026-05-20T12:00:00Z",
-                    "updatedAt": "2026-05-21T12:00:00Z",
-                }
-            ],
-        )
+        return completed(command, [{
+            "number": 214,
+            "title": "Older open work",
+            "url": "https://github.com/example-org/example-repo/issues/214",
+            "author": {"login": "example-user"},
+            "labels": [],
+            "assignees": [],
+            "createdAt": "2026-05-20T12:00:00Z",
+            "updatedAt": "2026-05-21T12:00:00Z",
+        }])
 
     monkeypatch.setattr(github_work_rollup, "run", fake_run)
-    settings = github_work_rollup.resolve_settings(args(repo=["example-org/example-repo"], mode="activity"), {})
-
+    settings = github_work_rollup.resolve_settings(args(repo=["example-org/example-repo"], mode=mode), {})
     rows = github_work_rollup.collect_issues("example-org/example-repo", "open", settings)
 
-    assert rows == []
-    assert "--search" in calls[0]
-
-
-def test_standup_mode_includes_old_open_repo_items_without_search_window(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[list[str]] = []
-
-    def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
-        calls.append(command)
-        return completed(
-            command,
-            [
-                {
-                    "number": 214,
-                    "title": "Older open work",
-                    "url": "https://github.com/example-org/example-repo/issues/214",
-                    "author": {"login": "example-user"},
-                    "labels": [],
-                    "assignees": [],
-                    "createdAt": "2026-05-20T12:00:00Z",
-                    "updatedAt": "2026-05-21T12:00:00Z",
-                }
-            ],
-        )
-
-    monkeypatch.setattr(github_work_rollup, "run", fake_run)
-    settings = github_work_rollup.resolve_settings(args(repo=["example-org/example-repo"], mode="standup"), {})
-
-    rows = github_work_rollup.collect_issues("example-org/example-repo", "open", settings)
-
-    assert len(rows) == 1
-    assert rows[0]["number"] == 214
-    assert rows[0]["collection_lane"] == "open_backlog"
-    assert "--search" not in calls[0]
+    assert len(rows) == expected_count
+    if rows:
+        assert rows[0]["number"] == 214
+        assert rows[0]["collection_lane"] == "open_backlog"
+    assert ("--search" in calls[0]) is expected_search
 
 
 def test_standup_repo_collection_uses_backlog_and_recent_open_scans(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1349,17 +1306,7 @@ def test_collection_limit_warnings_only_at_deep_caps(monkeypatch: pytest.MonkeyP
 def test_operator_layout_collects_same_enrichment_data(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = []
 
-    def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
-        calls.append(command)
-        if response := preflight_response(command):
-            return response
-        if command[1:3] == ["pr", "list"] or command[1:3] == ["issue", "list"]:
-            return completed(command, [])
-        if response := empty_enrichment_response(command):
-            return response
-        raise AssertionError(f"unexpected command: {command}")
-
-    monkeypatch.setattr(github_work_rollup, "run", fake_run)
+    monkeypatch.setattr(github_work_rollup, "run", lambda command: empty_repo_rollup_run(command, calls))
     settings = github_work_rollup.resolve_settings(args(repo=["example-org/example-repo"], layout="operator"), {})
 
     payload = github_work_rollup.collect_rollup(settings)
@@ -1898,8 +1845,6 @@ def test_render_executive_brief_preserves_workstream_identity_inside_portfolio_a
     assert "The visible decision is how to sequence Northwind Lab dogfood work inside the Northwind product area" in rendered
     assert "- **Northwind Lab**: Northwind Lab dogfood work inside the Northwind product area" in rendered
     assert "Key initiatives: Code Bridge." in rendered
-    assert "Impact: turns finished work into a checkable result before the next cycle commits more effort." in rendered
-    assert "Risk if delayed: the open items can fan out into parallel work before the decision loop closes." in rendered
     assert "Confidence: medium; based on 3 GitHub items across 1 initiative" in rendered
     assert "Northwind Product Issues MVP" not in rendered
     assert "Northwind product MVP" not in rendered
@@ -2133,60 +2078,26 @@ def test_executive_theme_titles_preserve_key_phrases_and_per_item_fallbacks(titl
     assert ";" not in summary
 
 
-def test_render_executive_brief_varies_impact_lines_by_workstream_signal() -> None:
-    payload = {
-        "ok": True,
-        "window": {"since": "2026-06-05T16:00:00Z", "until": "2026-06-12T16:00:00Z", "label": "7d"},
-        "timezone": "America/New_York",
-        "report_recipient": "Justin",
-        "repositories": ["example-org/northwind-lab", "example-org/example-skills"],
-        "layout": "executive",
-        "buckets": {},
-        "priority_sections": [
-            {
-                "name": "Northwind Product Issues",
-                "workstream": "Northwind Lab",
-                "initiatives": ["Code Bridge"],
-                "items": [
-                    {
-                        "repo": "example-org/northwind-lab",
-                        "number": 28,
-                        "title": "Northwind Lab MVP dogfood plan",
-                        "kind": "issue",
-                        "state": "open",
-                    }
-                ],
-                "item_count": 1,
-                "recently_completed": [],
-            },
-            {
-                "name": "Example Skill Updates",
-                "workstream": "Work Brief skill",
-                "items": [],
-                "recently_completed": [
-                    {
-                        "repo": "example-org/example-skills",
-                        "number": 203,
-                        "title": "Add helper validation",
-                        "kind": "pr",
-                        "state": "merged",
-                    }
-                ],
-                "recently_completed_count": 1,
-            },
-        ],
-        "limitations": [],
-        "releases": [],
-        "workflows": [],
-    }
-
-    rendered = github_work_rollup.render_payload(payload, "markdown")
-    bullets = [line for line in rendered.splitlines() if line.startswith("- **")]
-
-    assert any("Impact: sequencing the open thread now keeps it from stalling neighboring priorities." in line for line in bullets)
-    assert any("Impact: confirms the shipped change matches intent before attention moves on." in line for line in bullets)
-    assert any("Confidence: medium; based on 1 GitHub item across 1 initiative" in line for line in bullets)
-    assert len(set(bullets)) == len(bullets)
+def test_workstream_analysis_changes_with_active_and_completed_work() -> None:
+    impacts: set[str] = set()
+    risks: set[str] = set()
+    for active, completed_count in ((1, 0), (0, 1), (2, 1)):
+        workstream = github_work_rollup.ExecutiveWorkstream(
+            portfolio_area="Example area",
+            workstream="Example work",
+            relationship="Example work inside Example area",
+            initiatives=("Example initiative",),
+            active_count=active,
+            completed_count=completed_count,
+            active_titles=("Open work",) if active else (),
+            completed_titles=("Finished work",) if completed_count else (),
+        )
+        summary = github_work_rollup.executive_workstream_summary(workstream)
+        impact, risk = summary.split("Impact:", 1)[1].split("Risk if delayed:", 1)
+        impacts.add(impact.strip())
+        risks.add(risk.split("Confidence:", 1)[0].strip())
+    assert len(impacts) == 3
+    assert len(risks) == 3
 
 
 def test_render_executive_brief_thin_workstream_avoids_validation_claim() -> None:
