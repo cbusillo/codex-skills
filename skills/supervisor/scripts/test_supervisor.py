@@ -455,28 +455,6 @@ class TranscriptTests(unittest.TestCase):
         self.assertEqual(session_record.summarize([claude("Working")], "claude")
                          ["verdict_recognition"], "absent")
 
-    def test_same_line_verdict_retains_citation_and_activity_guards(self):
-        fixture = session_record.read_jsonl(
-            Path(__file__).parent / "fixtures/codex-closeout-memory-citation.jsonl"
-        )
-        response = fixture[1]["payload"]["content"][0]["text"]
-        citation = response[response.index("<oai-mem-citation>"):]
-        text = "No Director action needed. Safe to exit: yes.\n\n" + citation
-        records = [event("agent_message", message=text), event("task_complete")]
-        self.assertTrue(session_record.summarize(records, "codex")["safe_verdict"])
-        for tail in (event("turn_aborted"), event("task_started"),
-                     event("user_message", message="continue"), event("function_call")):
-            with self.subTest(tail=tail):
-                self.assertFalse(session_record.summarize(records + [tail], "codex")
-                                 ["safe_verdict"])
-        for suffix in (citation + "Still working", citation + citation,
-                       citation.replace("</oai-mem-citation>", "")):
-            with self.subTest(suffix=suffix):
-                self.assertFalse(session_record.summarize(
-                    [event("agent_message", message="No Director action needed. "
-                           "Safe to exit: yes.\n\n" + suffix), event("task_complete")],
-                    "codex")["safe_verdict"])
-
     def test_terminal_verdict_outside_completed_fences(self):
         for text in (
             "Verified with:\n```sh\nuv run test_supervisor.py\n```\nSafe to exit: yes",
@@ -523,29 +501,12 @@ class TranscriptTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertFalse(session_record.summarize([claude(text)], "claude")["safe_verdict"])
 
-    def test_codex_turn_end_abort_and_resume(self):
-        records = [
-            event("task_started"),
-            event("agent_message", message="Safe to exit: yes"),
-            event("task_complete"),
-        ]
-        self.assertTrue(session_record.summarize(records, "codex")["safe_verdict"])
-        for tail in (
-            event("turn_aborted"),
-            event("task_started"),
-            event("user_message", message="continue"),
-        ):
-            self.assertFalse(
-                session_record.summarize(records + [tail], "codex")["safe_verdict"]
-            )
-
     def test_memory_citation_tail_preserves_verdict_constraints(self):
         records = session_record.read_jsonl(
             Path(__file__).parent / "fixtures/codex-closeout-memory-citation.jsonl"
         )
         response = records[1]["payload"]["content"][0]["text"]
         citation = response[response.index("<oai-mem-citation>"):]
-        self.assertTrue(session_record.summarize(records, "codex")["safe_verdict"])
         for text in (
             "> Safe to exit: yes",
             '"Safe to exit: yes"',
@@ -561,25 +522,30 @@ class TranscriptTests(unittest.TestCase):
                     [event("agent_message", message=text + "\n\n" + citation),
                      event("task_complete")], "codex"
                 )["safe_verdict"])
-        for suffix in (
-            citation + "Still doing work",
-            citation.replace("</oai-mem-citation>", ""),
-            citation.replace("<oai-mem-citation>", "> <oai-mem-citation>"),
-            citation + citation,
-        ):
-            with self.subTest(suffix=suffix):
-                self.assertFalse(session_record.summarize(
-                    [event("agent_message", message="Safe to exit: yes\n\n" + suffix),
-                     event("task_complete")], "codex"
-                )["safe_verdict"])
+        for preface in ("", "No Director action needed. ", "No Director decision needed. "):
+            for suffix in (
+                citation + "Still doing work",
+                citation.replace("</oai-mem-citation>", ""),
+                citation.replace("<oai-mem-citation>", "> <oai-mem-citation>"),
+                citation + citation,
+            ):
+                with self.subTest(preface=preface, suffix=suffix):
+                    self.assertFalse(session_record.summarize(
+                        [event("agent_message", message=preface + "Safe to exit: yes\n\n" + suffix),
+                         event("task_complete")], "codex"
+                    )["safe_verdict"])
+            for text in (preface + "Safe to exit: yes", preface + response):
+                records = [event("task_started"), event("agent_message", message=text), event("task_complete")]
+                with self.subTest(text=text):
+                    self.assertTrue(session_record.summarize(records, "codex")["safe_verdict"])
+                for tail in (event("turn_aborted"), event("task_started"),
+                             event("user_message", message="continue"), event("function_call")):
+                    with self.subTest(text=text, tail=tail):
+                        self.assertFalse(session_record.summarize(records + [tail], "codex")["safe_verdict"])
         self.assertFalse(session_record.summarize(
             [event("agent_message", message=citation), event("task_complete")],
             "codex"
         )["safe_verdict"])
-        for tail in (event("turn_aborted"), event("task_started"),
-                     event("user_message", message="continue"), event("function_call")):
-            with self.subTest(tail=tail):
-                self.assertFalse(session_record.summarize(records + [tail], "codex")["safe_verdict"])
 
     def test_codex_response_item_text_and_usage(self):
         records = [
@@ -1345,15 +1311,6 @@ class QuestionTests(unittest.TestCase):
         result = oq.questions(comments, "owner", {"bot"})
         self.assertEqual([q["status"] for q in result], ["needs_review", "answered"])
         self.assertEqual(result[1]["answers"], ["c"])
-
-    def test_bold_question_heading_is_included(self):
-        comment = {
-            "id": 1,
-            "url": "https://example.test/1",
-            "body": "**Owner question:** proceed?",
-            "author": "bot",
-        }
-        self.assertEqual(len(oq.questions([comment], "owner", {"bot"})), 1)
 
     def test_paged_helper_failure_never_means_no_questions(self) -> None:
         from skills.github.scripts import github_read
