@@ -17,11 +17,11 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-# Reuse the catalog's transcript decoding and message extraction.
+from session_events import events_from_record
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "rollout-friction" / "scripts"))
 # noinspection PyUnresolvedReferences
 from analyze_rollouts import parse_records, read_transcript, transcript_suffix  # noqa: E402
-from extract_rollout_memory import events_from_record  # noqa: E402
 
 SIGNALS = {
     "changed-decision": re.compile(r"\b(changed? my mind|instead|actually|reverse|no longer|previously|used to)\b", re.I),

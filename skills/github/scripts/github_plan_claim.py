@@ -97,13 +97,6 @@ def same_owner(record: dict[str, Any], claim: dict[str, Any]) -> bool:
                     for key in ("refresh_pr", "retained_handoff", "resume_from", "retained_source_head")))
 
 
-def legacy_release_worker(text: str) -> str | None:
-    """Only a bare legacy directive releases; handoffs use exact claim IDs."""
-    text = without_operation_marker("\n".join(text.splitlines()))
-    match = re.fullmatch(r"Released by (\S+)", text)
-    return match.group(1) if match else None
-
-
 def resumed_status(status: str, comments: list[dict[str, Any]], source_id: int | None) -> str:
     """Discard only an exact status marker superseded by its author's release."""
     from github_plan_release import effective_comments
@@ -526,13 +519,6 @@ def discussion_evidence(
     comments = effective_comments(comments)
     ended_claims = (ended_claims or set()) | set(takeover_sources(comments))
     conflicts: list[dict[str, Any]] = []
-    # A legacy source has no native identity. Reusing its worker would look
-    # like renewal and invalidate the release after posting the successor.
-    from github_plan_release import receipts
-    for release_comment, receipt in receipts(comments):
-        if "legacy_reason" in receipt["source"] and re.fullmatch(re.escape(receipt["source"]["worker"]), claim["worker"], re.IGNORECASE):
-            conflicts.append({"source": "legacy_worker_reuse", "id": release_comment["id"],
-                              "worker": claim["worker"], "next_action": "Use a fresh worker token"})
     owned = []
     status = resumed_status(status, comments, resume_from)
     status_records = records(status)
@@ -545,38 +531,8 @@ def discussion_evidence(
             owned.append(record)
         else:
             conflicts.append({"source": "current_status", "record": record})
-    released: dict[tuple[str, str], int] = {}
-    legacy_released: dict[tuple[str, str], int] = {}
     released_ids: dict[tuple[int, str], int] = {}
     for index, comment in enumerate(comments):
-        worker = legacy_release_worker(comment.get("body") or "")
-        if worker is not None:
-            author = (comment.get("user") or {}).get("login", "")
-            legacy_worker = ownership_text(worker, strip_quotes=False)
-            prior_sessions: set[str | int] = set()
-            for prior_index, prior in enumerate(comments[:index]):
-                if (prior.get("user") or {}).get("login", "") != author:
-                    continue
-                prior_text = prior.get("body") or ""
-                parsed_prior = records(prior_text)
-                prior_sessions.update(
-                    record["session"] for record in parsed_prior
-                    if ownership_text(record["worker"], strip_quotes=False) == legacy_worker
-                )
-                if not parsed_prior and legacy_claim_worker(prior_text) == legacy_worker:
-                    sessions = [
-                        session for field in session_fields(prior_text) for session in session_identifiers(field)
-                        if session.strip() and session.strip().casefold().strip("().,;<> \t")
-                        not in EMPTY_HOLDERS | {"unknown", "tbd", "session", "session-id", "not recorded",
-                                               "unavailable", "pending", "?", "—", "–"}
-                    ]
-                    # Missing identity cannot establish that two claims are
-                    # the same session; exact comment IDs remain recoverable.
-                    prior_sessions.update(sessions or [prior_index])
-            # A reused token cannot release a different native session.
-            if len(prior_sessions) <= 1:
-                released[worker, author] = index
-                legacy_released[legacy_worker, author] = index
         release_id = released_claim_id(comment.get("body") or "")
         if release_id is not None:
             author = (comment.get("user") or {}).get("login", "")
@@ -596,8 +552,6 @@ def discussion_evidence(
             if released_explanatory_note(text, index, comments) or attested_handoff_note(text, index, comments):
                 continue
             worker = legacy
-            if legacy_released.get((worker, author), -1) > index:
-                continue
             if (worker != claim["worker"] or any(claim[key] not in text for key in ("session", "branch"))
                     or has_ownership_assertion(text, own_claim=claim)):
                 conflicts.append({"source": "comment", "id": comment.get("id"), "text": text,
@@ -605,8 +559,6 @@ def discussion_evidence(
             else:
                 owned.append({**claim, "claimed_at": comment.get("created_at") or claim["claimed_at"], "_legacy": "yes"})
         for record in parsed:
-            if released.get((record["worker"], author), -1) > index:
-                continue
             if same_owner(record, claim):
                 owned.append(record)
             else:
@@ -790,8 +742,7 @@ def released_source(comments: list[dict[str, Any]], comment_id: int) -> dict[str
     for comment in comments[source_index + 1:]:
         if (comment.get("user") or {}).get("login") != author:
             continue
-        if (released_claim_id(comment.get("body") or "") == comment_id
-                or legacy_release_worker(comment.get("body") or "") == parsed[0]["worker"]):
+        if released_claim_id(comment.get("body") or "") == comment_id:
             return {"comment": original, "record": parsed[0], "author": author, "release": comment, "exact_release": exact_release}
     raise ClaimProofError("claim_resume_source_unreleased", "Resume source claim has not been released by its author")
 
