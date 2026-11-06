@@ -1043,6 +1043,10 @@ def main() -> int:
     if args.miss_issue and not re.fullmatch(rf"{re.escape(args.owner)}/[A-Za-z0-9_.-]+#[1-9][0-9]*", args.miss_issue, re.I):
         parser.error("--miss-issue must belong to the configured Director")
     identities = radar_module().people_identities({(args.director_login or args.owner).casefold()}, args.people_index)
+    launchplane_logins = {login.casefold() for login in args.launchplane_login}
+    args.own_login = list(dict.fromkeys([*args.own_login, *(
+        login for login in identities.get("own_automation", []) if login not in launchplane_logins
+    )]))
     args.director_names = identities["director_names"]
     args.recipient_identity_gap = (identities.get("error") or "Director aliases are ambiguous"
                                    if identities["status"] == "error" or identities["director_ambiguous"] else None)
