@@ -327,12 +327,12 @@ def agy_step_records(
         response = fields(step[20])
         row.update(type="assistant", message={"content": [{"type": "text", "text": response.get(8, response.get(1, b"")).decode()}],
                    "stop_reason": "end_turn" if 7 not in response else None})
-    elif kind in {17, 23}:
+    elif kind == 23:
         row["type"] = "system"
     elif kind == 101:
         if status != 3 or not agy_task_notification(step, session, ordinal, tasks):
             pending = pending or "native notification provenance is unavailable"
-    elif kind not in {14, 15}:
+    elif kind not in {14, 15, 17}:
         call = fields(metadata.get(4, b""))
         if not call:
             pending = pending or "native tool call is unavailable"
