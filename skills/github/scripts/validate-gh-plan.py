@@ -5583,203 +5583,90 @@ def test_pr_helper_supersede_warns_when_branch_delete_fails() -> None:
     ], payload
 
 
-def test_pr_helper_supersede_skips_branch_delete_when_winner_uses_same_branch() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp)
-        log_path = tmp_path / "calls.log"
-        gh_path = tmp_path / "gh"
-        pr_json = (
-            '{"number":12,"title":"Old","state":"open","draft":false,'
-            '"body":"Refs #144",'
-            '"mergeable":true,"mergeable_state":"clean",'
-            '"html_url":"https://github.com/owner/repo/pull/12",'
-            '"head":{"ref":"shared-topic","sha":"old-sha","repo":{"full_name":"owner/repo"}},'
-            '"base":{"ref":"main","repo":{"full_name":"owner/repo"}}}'
-        )
-        winner_json = (
-            '{"number":13,"title":"New","state":"open","draft":false,'
-            '"body":"Closes #144",'
-            '"mergeable":true,"mergeable_state":"clean",'
-            '"html_url":"https://github.com/owner/repo/pull/13",'
-            '"head":{"ref":"shared-topic","sha":"new-sha","repo":{"full_name":"owner/repo"}},'
-            '"base":{"ref":"main","repo":{"full_name":"owner/repo"}}}'
-        )
-        gh_path.write_text(
-            "#!/usr/bin/env bash\n"
-            "set -euo pipefail\n"
-            "printf '%s\\n' \"$*\" >>\"$GH_PR_TEST_LOG\"\n"
-            "if [[ \"$*\" == *'/repos/owner/repo/git/refs/heads/shared-topic'* ]]; then\n"
-            "  exit 2\n"
-            "elif [[ \"$*\" == *'/repos/owner/repo/pulls?state=open'* ]]; then\n"
-            "  printf '[{\"number\":12}]\\n'\n"
-            "elif [[ \"$*\" == *'/repos/owner/repo?per_page='* || \"$*\" == *'/repos/owner/repo' ]]; then\n"
-            "  printf '{\"default_branch\":\"main\"}\\n'\n"
-            "elif [[ \"$*\" == *'/user'* ]]; then\n"
-            "  printf '{\"login\":\"shiny-code-bot\"}\\n'\n"
-            "elif [[ \"$*\" == *'--method GET'* && \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
-            "  printf '[]\\n'\n"
-            "elif [[ \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
-            "  printf '{\"id\":1,\"html_url\":\"https://github.com/owner/repo/pull/12#issuecomment-1\",\"user\":{\"login\":\"shiny-code-bot\"}}\\n'\n"
-            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* && \"$*\" == *'--method PATCH'* ]]; then\n"
-            "  printf '{\"number\":12,\"title\":\"Old\",\"state\":\"closed\",\"draft\":false,\"mergeable\":true,\"mergeable_state\":\"clean\",\"html_url\":\"https://github.com/owner/repo/pull/12\",\"head\":{\"ref\":\"shared-topic\",\"sha\":\"old-sha\",\"repo\":{\"full_name\":\"owner/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"owner/repo\"}}}\\n'\n"
-            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* ]]; then\n"
-            "  printf '%s\\n' \"$PR_JSON\"\n"
-            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/13'* ]]; then\n"
-            "  printf '%s\\n' \"$WINNER_JSON\"\n"
-            "else\n"
-            "  printf '{}\\n'\n"
-            "fi\n"
-        )
-        gh_path.chmod(0o755)
-        env = dict(os.environ, GH_PR_GH=str(gh_path), GH_PR_TEST_LOG=str(log_path), PR_JSON=pr_json, WINNER_JSON=winner_json)
-        result = run_python_helper(
-            PR_SCRIPT, ["--repo", "owner/repo", "supersede", "12", "--by", "13", "--delete-branch"], env=env, check=True
-        )
-        calls = log_path.read_text()
+def test_pr_helper_supersede_preserves_shared_and_default_branches() -> None:
+    cases = (
+        ("shared-topic", "shared-topic", "main", [12], "remote_branch_delete_skipped_active_pr", None),
+        ("old-topic", "new-topic", "main", [12, 14], "remote_branch_delete_skipped_active_pr", "14"),
+        ("release", "new-topic", "release", [12], "remote_branch_delete_skipped_shared_ref", None),
+    )
+    for branch, winner_branch, default_branch, open_prs, warning_kind, protecting_pr in cases:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            log_path = tmp_path / "calls.log"
+            gh_path = tmp_path / "gh"
+            common = {
+                "state": "open",
+                "draft": False,
+                "mergeable": True,
+                "mergeable_state": "clean",
+                "base": {"ref": "main", "repo": {"full_name": "owner/repo"}},
+            }
+            old = {
+                **common,
+                "number": 12,
+                "title": "Old",
+                "body": "Refs #144",
+                "html_url": "https://github.com/owner/repo/pull/12",
+                "head": {"ref": branch, "sha": "old-sha", "repo": {"full_name": "owner/repo"}},
+            }
+            winner = {
+                **common,
+                "number": 13,
+                "title": "New",
+                "body": "Closes #144",
+                "html_url": "https://github.com/owner/repo/pull/13",
+                "head": {"ref": winner_branch, "sha": "new-sha", "repo": {"full_name": "owner/repo"}},
+            }
+            gh_path.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                'printf \'%s\\n\' "$*" >>"$GH_PR_TEST_LOG"\n'
+                "if [[ \"$*\" == *'/repos/owner/repo/git/refs/heads/'* ]]; then\n"
+                "  exit 2\n"
+                "elif [[ \"$*\" == *'/repos/owner/repo/pulls?state=open'* ]]; then\n"
+                "  printf '%s\\n' \"$OPEN_PRS_JSON\"\n"
+                "elif [[ \"$*\" == *'/repos/owner/repo?per_page='* || \"$*\" == *'/repos/owner/repo' ]]; then\n"
+                "  printf '%s\\n' \"$REPO_JSON\"\n"
+                "elif [[ \"$*\" == *'/user'* ]]; then\n"
+                '  printf \'{"login":"shiny-code-bot"}\\n\'\n'
+                "elif [[ \"$*\" == *'--method GET'* && \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
+                "  printf '[]\\n'\n"
+                "elif [[ \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
+                '  printf \'{"id":1,"html_url":"https://github.com/owner/repo/pull/12#issuecomment-1","user":{"login":"shiny-code-bot"}}\\n\'\n'
+                "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* && \"$*\" == *'--method PATCH'* ]]; then\n"
+                "  printf '%s\\n' \"$CLOSED_PR_JSON\"\n"
+                "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* ]]; then\n"
+                "  printf '%s\\n' \"$PR_JSON\"\n"
+                "elif [[ \"$*\" == *'/repos/owner/repo/pulls/13'* ]]; then\n"
+                "  printf '%s\\n' \"$WINNER_JSON\"\n"
+                "else\n"
+                "  printf '{}\\n'\n"
+                "fi\n"
+            )
+            gh_path.chmod(0o755)
+            env = dict(
+                os.environ,
+                GH_PR_GH=str(gh_path),
+                GH_PR_TEST_LOG=str(log_path),
+                PR_JSON=json.dumps(old),
+                WINNER_JSON=json.dumps(winner),
+                CLOSED_PR_JSON=json.dumps({**old, "state": "closed"}),
+                OPEN_PRS_JSON=json.dumps([{"number": number} for number in open_prs]),
+                REPO_JSON=json.dumps({"default_branch": default_branch}),
+            )
+            result = run_python_helper(
+                PR_SCRIPT, ["--repo", "owner/repo", "supersede", "12", "--by", "13", "--delete-branch"], env=env, check=True
+            )
+            calls = log_path.read_text()
 
-    payload = json.loads(result.stdout)
-    assert payload["deletedBranch"] is None, payload
-    assert payload["cleanupWarnings"] == [
-        {
-            "kind": "remote_branch_delete_skipped_active_pr",
-            "ref": "heads/shared-topic",
-            "reason": "Superseded and canonical PRs share the same head branch.",
-        }
-    ], payload
-    assert "/repos/owner/repo/git/refs/heads/shared-topic" not in calls, calls
-
-
-def test_pr_helper_supersede_skips_branch_delete_when_third_pr_uses_branch() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp)
-        log_path = tmp_path / "calls.log"
-        gh_path = tmp_path / "gh"
-        pr_json = (
-            '{"number":12,"title":"Old","state":"open","draft":false,'
-            '"body":"Refs #144",'
-            '"mergeable":true,"mergeable_state":"clean",'
-            '"html_url":"https://github.com/owner/repo/pull/12",'
-            '"head":{"ref":"old-topic","sha":"old-sha","repo":{"full_name":"owner/repo"}},'
-            '"base":{"ref":"main","repo":{"full_name":"owner/repo"}}}'
-        )
-        winner_json = (
-            '{"number":13,"title":"New","state":"open","draft":false,'
-            '"body":"Closes #144",'
-            '"mergeable":true,"mergeable_state":"clean",'
-            '"html_url":"https://github.com/owner/repo/pull/13",'
-            '"head":{"ref":"new-topic","sha":"new-sha","repo":{"full_name":"owner/repo"}},'
-            '"base":{"ref":"main","repo":{"full_name":"owner/repo"}}}'
-        )
-        gh_path.write_text(
-            "#!/usr/bin/env bash\n"
-            "set -euo pipefail\n"
-            "printf '%s\\n' \"$*\" >>\"$GH_PR_TEST_LOG\"\n"
-            "if [[ \"$*\" == *'/repos/owner/repo/git/refs/heads/old-topic'* ]]; then\n"
-            "  exit 2\n"
-            "elif [[ \"$*\" == *'/repos/owner/repo/pulls?state=open'* ]]; then\n"
-            "  printf '[{\"number\":12},{\"number\":14}]\\n'\n"
-            "elif [[ \"$*\" == *'/repos/owner/repo?per_page='* || \"$*\" == *'/repos/owner/repo' ]]; then\n"
-            "  printf '{\"default_branch\":\"main\"}\\n'\n"
-            "elif [[ \"$*\" == *'/user'* ]]; then\n"
-            "  printf '{\"login\":\"shiny-code-bot\"}\\n'\n"
-            "elif [[ \"$*\" == *'--method GET'* && \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
-            "  printf '[]\\n'\n"
-            "elif [[ \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
-            "  printf '{\"id\":1,\"html_url\":\"https://github.com/owner/repo/pull/12#issuecomment-1\",\"user\":{\"login\":\"shiny-code-bot\"}}\\n'\n"
-            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* && \"$*\" == *'--method PATCH'* ]]; then\n"
-            "  printf '{\"number\":12,\"title\":\"Old\",\"state\":\"closed\",\"draft\":false,\"mergeable\":true,\"mergeable_state\":\"clean\",\"html_url\":\"https://github.com/owner/repo/pull/12\",\"head\":{\"ref\":\"old-topic\",\"sha\":\"old-sha\",\"repo\":{\"full_name\":\"owner/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"owner/repo\"}}}\\n'\n"
-            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* ]]; then\n"
-            "  printf '%s\\n' \"$PR_JSON\"\n"
-            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/13'* ]]; then\n"
-            "  printf '%s\\n' \"$WINNER_JSON\"\n"
-            "else\n"
-            "  printf '{}\\n'\n"
-            "fi\n"
-        )
-        gh_path.chmod(0o755)
-        env = dict(os.environ, GH_PR_GH=str(gh_path), GH_PR_TEST_LOG=str(log_path), PR_JSON=pr_json, WINNER_JSON=winner_json)
-        result = run_python_helper(
-            PR_SCRIPT, ["--repo", "owner/repo", "supersede", "12", "--by", "13", "--delete-branch"], env=env, check=True
-        )
-        calls = log_path.read_text()
-
-    payload = json.loads(result.stdout)
-    assert payload["deletedBranch"] is None, payload
-    assert payload["cleanupWarnings"] == [
-        {
-            "kind": "remote_branch_delete_skipped_active_pr",
-            "ref": "heads/old-topic",
-            "reason": "Another open PR uses the superseded PR head branch.",
-            "pullRequests": "14",
-        }
-    ], payload
-    assert "/repos/owner/repo/git/refs/heads/old-topic" not in calls, calls
-
-
-def test_pr_helper_supersede_skips_branch_delete_for_default_branch() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp)
-        log_path = tmp_path / "calls.log"
-        gh_path = tmp_path / "gh"
-        pr_json = (
-            '{"number":12,"title":"Old","state":"open","draft":false,'
-            '"body":"Refs #144",'
-            '"mergeable":true,"mergeable_state":"clean",'
-            '"html_url":"https://github.com/owner/repo/pull/12",'
-            '"head":{"ref":"release","sha":"old-sha","repo":{"full_name":"owner/repo"}},'
-            '"base":{"ref":"main","repo":{"full_name":"owner/repo"}}}'
-        )
-        winner_json = (
-            '{"number":13,"title":"New","state":"open","draft":false,'
-            '"body":"Closes #144",'
-            '"mergeable":true,"mergeable_state":"clean",'
-            '"html_url":"https://github.com/owner/repo/pull/13",'
-            '"head":{"ref":"new-topic","sha":"new-sha","repo":{"full_name":"owner/repo"}},'
-            '"base":{"ref":"main","repo":{"full_name":"owner/repo"}}}'
-        )
-        gh_path.write_text(
-            "#!/usr/bin/env bash\n"
-            "set -euo pipefail\n"
-            "printf '%s\\n' \"$*\" >>\"$GH_PR_TEST_LOG\"\n"
-            "if [[ \"$*\" == *'/repos/owner/repo/git/refs/heads/release'* ]]; then\n"
-            "  exit 2\n"
-            "elif [[ \"$*\" == *'/repos/owner/repo/pulls?state=open'* ]]; then\n"
-            "  printf '[{\"number\":12}]\\n'\n"
-            "elif [[ \"$*\" == *'/repos/owner/repo?per_page='* || \"$*\" == *'/repos/owner/repo' ]]; then\n"
-            "  printf '{\"default_branch\":\"release\"}\\n'\n"
-            "elif [[ \"$*\" == *'/user'* ]]; then\n"
-            "  printf '{\"login\":\"shiny-code-bot\"}\\n'\n"
-            "elif [[ \"$*\" == *'--method GET'* && \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
-            "  printf '[]\\n'\n"
-            "elif [[ \"$*\" == *'/repos/owner/repo/issues/12/comments'* ]]; then\n"
-            "  printf '{\"id\":1,\"html_url\":\"https://github.com/owner/repo/pull/12#issuecomment-1\",\"user\":{\"login\":\"shiny-code-bot\"}}\\n'\n"
-            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* && \"$*\" == *'--method PATCH'* ]]; then\n"
-            "  printf '{\"number\":12,\"title\":\"Old\",\"state\":\"closed\",\"draft\":false,\"mergeable\":true,\"mergeable_state\":\"clean\",\"html_url\":\"https://github.com/owner/repo/pull/12\",\"head\":{\"ref\":\"release\",\"sha\":\"old-sha\",\"repo\":{\"full_name\":\"owner/repo\"}},\"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"owner/repo\"}}}\\n'\n"
-            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/12'* ]]; then\n"
-            "  printf '%s\\n' \"$PR_JSON\"\n"
-            "elif [[ \"$*\" == *'/repos/owner/repo/pulls/13'* ]]; then\n"
-            "  printf '%s\\n' \"$WINNER_JSON\"\n"
-            "else\n"
-            "  printf '{}\\n'\n"
-            "fi\n"
-        )
-        gh_path.chmod(0o755)
-        env = dict(os.environ, GH_PR_GH=str(gh_path), GH_PR_TEST_LOG=str(log_path), PR_JSON=pr_json, WINNER_JSON=winner_json)
-        result = run_python_helper(
-            PR_SCRIPT, ["--repo", "owner/repo", "supersede", "12", "--by", "13", "--delete-branch"], env=env, check=True
-        )
-        calls = log_path.read_text()
-
-    payload = json.loads(result.stdout)
-    assert payload["deletedBranch"] is None, payload
-    assert payload["cleanupWarnings"] == [
-        {
-            "kind": "remote_branch_delete_skipped_shared_ref",
-            "ref": "heads/release",
-            "reason": "Superseded PR head branch is the repository default branch.",
-        }
-    ], payload
-    assert "/repos/owner/repo/git/refs/heads/release" not in calls, calls
+        payload = json.loads(result.stdout)
+        assert payload["deletedBranch"] is None, (branch, payload)
+        warnings = payload["cleanupWarnings"]
+        assert len(warnings) == 1, (branch, payload)
+        assert warnings[0]["kind"] == warning_kind, (branch, payload)
+        assert warnings[0]["ref"] == f"heads/{branch}", (branch, payload)
+        assert warnings[0].get("pullRequests") == protecting_pr, (branch, payload)
+        assert "/repos/owner/repo/git/refs/heads/" not in calls, (branch, calls)
 
 
 def test_pr_helper_preserves_url_repo_and_paginates_checks() -> None:
