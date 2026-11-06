@@ -85,7 +85,7 @@ def run_helper(script: str, args: list[str], env: dict[str, str] | None = None) 
 def assert_rejects_url(value: str, code: str) -> None:
     with pytest.raises(safety.LaunchplaneSafetyError) as caught:
         safety.validate_service_url(value)
-    assert caught.value.code == code, caught.value.code
+    assert getattr(caught.value, "code") == code, getattr(caught.value, "code")
 
 
 def test_agent_operator_contract_routes_every_local_consumer() -> None:
@@ -273,7 +273,7 @@ def test_repository_inventory_projection_is_bounded_and_fail_closed() -> None:
             request={"mode": "apply", "payload_source": "private_file"},
             provider_payload=provider_payload,
         )
-    assert caught.value.code == "unsafe_response_shape"
+    assert getattr(caught.value, "code") == "unsafe_response_shape"
 
 
 def test_agent_operator_contract_cli_is_public_safe_and_hermetic() -> None:
@@ -470,7 +470,7 @@ def test_merge_train_policy_import_body_projection_and_redaction() -> None:
             expected_record_id=f"merge-train-policy-20260829T203000Z-{'c' * 12}",
             expected_policy_sha256="c" * 64,
         )
-    assert caught.value.code == "unsafe_response_shape"
+    assert getattr(caught.value, "code") == "unsafe_response_shape"
 
 
 def test_merge_train_policy_import_accepts_free_text_source_without_emitting_it() -> None:
@@ -496,7 +496,7 @@ def test_merge_train_policy_import_accepts_free_text_source_without_emitting_it(
     for invalid_source in ("   ", 7):
         with pytest.raises(safety.LaunchplaneSafetyError) as caught:
             summarize(invalid_source)
-        assert caught.value.code == "invalid_response"
+        assert getattr(caught.value, "code") == "invalid_response"
 
 
 def test_merge_train_policy_import_apply_requires_bound_evidence() -> None:
@@ -763,13 +763,13 @@ def test_build_url_and_redirect_policy() -> None:
     for bad_path in ("v1/agent/context", "https://other.example.invalid/v1", "//other.example.invalid/v1"):
         with pytest.raises(safety.LaunchplaneSafetyError) as caught:
             safety.build_launchplane_url("https://launchplane.example.invalid", bad_path)
-        assert caught.value.code == "invalid_request_path"
+        assert getattr(caught.value, "code") == "invalid_request_path"
     request = urllib.request.Request("https://launchplane.example.invalid/v1/example")
     handler = safety.SameOriginRedirectHandler()
     assert handler.redirect_request(request, None, 302, "Found", {}, "/v1/other").full_url == "https://launchplane.example.invalid/v1/other"
     with pytest.raises(safety.LaunchplaneSafetyError) as caught:
         handler.redirect_request(request, None, 302, "Found", {}, "https://evil.example.invalid/v1/steal")
-    assert caught.value.code == "unsafe_redirect"
+    assert getattr(caught.value, "code") == "unsafe_redirect"
 
 
 def test_write_helper_validates_cli_env_and_json_url_sources() -> None:
@@ -817,7 +817,7 @@ def test_context_helper_validates_env_and_json_url_sources() -> None:
             settings = context_helper.resolve_settings(argparse.Namespace(config="local.json", url=None))
     with pytest.raises(safety.LaunchplaneSafetyError) as caught:
         safety.validate_service_url(settings["service_url"])
-    assert caught.value.code == "invalid_service_url_http"
+    assert getattr(caught.value, "code") == "invalid_service_url_http"
 
 
 def test_success_projection_preserves_contracts() -> None:
@@ -1827,7 +1827,7 @@ def test_current_launchplane_service_response_shapes() -> None:
                     },
                 },
             )
-        assert caught.value.code == "invalid_response"
+        assert getattr(caught.value, "code") == "invalid_response"
 
     with pytest.raises(safety.LaunchplaneSafetyError) as caught:
         write_action.summarize_success(
@@ -1853,7 +1853,7 @@ def test_current_launchplane_service_response_shapes() -> None:
                 },
             },
         )
-    assert caught.value.code == "invalid_response"
+    assert getattr(caught.value, "code") == "invalid_response"
 
     preflight = write_action.summarize_success(
         operation="product-config-preflight",
@@ -2005,11 +2005,8 @@ def test_product_config_projection_keeps_adoption_names_and_refuses_values() -> 
         [{"key": "EXAMPLE_LABEL", "disposition": "private-value"}],
         [{"key": "private value", "disposition": "adopted"}],
     ):
-        try:
+        with pytest.raises(safety.LaunchplaneSafetyError):
             write_action._project_provider_key_adoption(unsafe)
-        except safety.LaunchplaneSafetyError:
-            continue
-        raise AssertionError(f"expected {unsafe!r} to be refused")
 
 
 def _calendar_payload(operation: str = "set") -> dict[str, Any]:
@@ -2708,15 +2705,12 @@ def test_product_config_secret_copy_projection_refuses_extra_source_fields() -> 
         response = _copy_reference_response("apply")
         result = cast(dict[str, Any], response["result"])
         result["secrets"][0]["copy_from"] = copy_from
-        try:
+        with pytest.raises(safety.LaunchplaneSafetyError):
             write_action.summarize_success(
                 operation="product-config-apply",
                 request={"mode": "apply", "payload_source": "private_file"},
                 provider_payload=response,
             )
-        except safety.LaunchplaneSafetyError:
-            continue
-        raise AssertionError(f"expected {copy_from!r} to be refused")
 
 
 def _secret_bindings_response() -> dict[str, object]:
@@ -2889,7 +2883,7 @@ def test_integration_allowances_projection_refuses_unknown_fields() -> None:
     allowance["value"] = "not-allowed"
     with pytest.raises(write_action.LaunchplaneSafetyError) as caught:
         write_action._project_integration_allowance(allowance)
-    assert caught.value.code == "unsafe_response_shape"
+    assert getattr(caught.value, "code") == "unsafe_response_shape"
 
 
 def test_integration_allowance_removal_with_credential_prose() -> None:
@@ -3067,11 +3061,8 @@ def test_integration_allowances_read_shows_why_a_lane_key_is_shared() -> None:
     )
     assert redacted["evidence"] == "Verified read-only scope of [redacted] on 2026-10-02."
     for unsafe in ({**sharing_reason, "value": "x"}, {**sharing_reason, "kind": "borrowed"}):
-        try:
+        with pytest.raises(write_action.LaunchplaneSafetyError):
             write_action._project_sharing_reason(unsafe)
-        except write_action.LaunchplaneSafetyError:
-            continue
-        raise AssertionError(f"expected {unsafe!r} to be refused")
 
 
 def test_integration_allowances_payload_rejects_unknown_fields_and_unreviewed_apply() -> None:
@@ -3712,7 +3703,7 @@ def test_path_check_refuses_bad_selector_and_surfaces_read_denial() -> None:
             _run_product_read(
                 ["path-check", "--product", "example-product", "--path", "rollback"], {}
             )
-        assert caught.value.code == 2
+        assert getattr(caught.value, "code") == 2
     denied = urllib.error.HTTPError(
         "https://launchplane.example.invalid", 404, "Not found", Message(),
         io.BytesIO(json.dumps({"status": "error", "trace_id": "launchplane_req_denied",
@@ -6402,7 +6393,7 @@ def test_optional_public_identifier_rejects_null_values() -> None:
     assert write_action._optional_public_identifier("") is None
     with pytest.raises(safety.LaunchplaneSafetyError) as caught:
         write_action._optional_public_identifier(None)
-    assert caught.value.code == "invalid_response"
+    assert getattr(caught.value, "code") == "invalid_response"
 
 
 def test_runtime_environment_projection_enforces_scope_identity() -> None:
@@ -6441,7 +6432,7 @@ def test_runtime_environment_projection_enforces_scope_identity() -> None:
                     "record": None,
                 }
             )
-        assert caught.value.code == "invalid_response"
+        assert getattr(caught.value, "code") == "invalid_response"
 
 
 def test_success_projection_fails_closed_on_secret_bearing_payloads() -> None:
@@ -6457,7 +6448,7 @@ def test_success_projection_fails_closed_on_secret_bearing_payloads() -> None:
                     "result": {"repository": "example/repo", "base_branch": "main", "controller_action": "build_candidate", key: "secret-value"},
                 },
             )
-        assert caught.value.code == "unsafe_response_shape"
+        assert getattr(caught.value, "code") == "unsafe_response_shape"
     with pytest.raises(safety.LaunchplaneSafetyError) as caught:
         write_action.summarize_success(
             operation="product-config-preflight",
@@ -6474,7 +6465,7 @@ def test_success_projection_fails_closed_on_secret_bearing_payloads() -> None:
                 },
             },
         )
-    assert caught.value.code == "unsafe_response_shape"
+    assert getattr(caught.value, "code") == "unsafe_response_shape"
 
 
 def test_trace_ids_refuse_secrets_and_response_prose_redacts_them() -> None:
@@ -6485,7 +6476,7 @@ def test_trace_ids_refuse_secrets_and_response_prose_redacts_them() -> None:
                 request={"repository": "example/repo", "base_branch": "main", "mutate": False},
                 provider_payload={"status": "accepted", "trace_id": trace_id, "records": {}, "result": {"repository": "example/repo", "base_branch": "main", "controller_action": "build_candidate"}},
             )
-        assert caught.value.code == "invalid_response"
+        assert getattr(caught.value, "code") == "invalid_response"
     output = write_action.summarize_success(
         operation="product-config-preflight",
         request={"product": "example-product", "context": "example-testing"},
@@ -6513,7 +6504,7 @@ def test_trace_ids_refuse_secrets_and_response_prose_redacts_them() -> None:
                 },
             },
         )
-    assert caught.value.code == "unsafe_response_shape"
+    assert getattr(caught.value, "code") == "unsafe_response_shape"
     output = write_action.summarize_success(
         operation="merge-train-controller-run-once",
         request={"repository": "example/repo", "base_branch": "main", "mutate": True},
@@ -6681,7 +6672,7 @@ def test_context_projection_contract_and_secret_shape() -> None:
     provider_payload = {"result": {"context": {"work_graph": {"status": "available", "items": [{"source_of_truth_url": "https://github.com/example/repo/issues/1", "state": "waiting", "safe_to_start": False, "next_action": "Wait for checks.", "api_key": "secret-value"}]}}}}
     with pytest.raises(safety.LaunchplaneSafetyError) as caught:
         context_helper.normalize_launchplane_payload(provider_payload, request={"repository": "example/repo"})
-    assert caught.value.code == "unsafe_response_shape"
+    assert getattr(caught.value, "code") == "unsafe_response_shape"
 
 
 @pytest.mark.parametrize("selector", ["--repo", "--branch"])
@@ -7285,7 +7276,7 @@ def test_generic_web_deploy_recovery_projection_fails_closed_on_extra_fields() -
                 },
             },
         )
-    assert caught.value.code == "unsafe_response_shape"
+    assert getattr(caught.value, "code") == "unsafe_response_shape"
 
 
 def test_generic_web_deploy_recovery_apply_unverified_on_projection_failure() -> None:
@@ -7480,11 +7471,8 @@ def test_expected_config_removal_items_are_plain_identities() -> None:
         assert write_action.product_expected_config_payload_body(args, mode="dry-run")["remove_managed_secret_bindings"] == [valid_binding]
         for kind, item in refused:
             payload_path.write_text(json.dumps({**base, kind: [item]}))
-            try:
+            with pytest.raises(ValueError):
                 write_action.product_expected_config_payload_body(args, mode="dry-run")
-            except ValueError:
-                continue
-            raise AssertionError(f"{kind} accepted {item!r}")
 
 
 def test_owner_review_reader_keeps_full_prose_and_uses_only_the_private_route() -> None:
