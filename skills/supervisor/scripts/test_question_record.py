@@ -404,8 +404,11 @@ class QuestionRecordTests(unittest.TestCase):
         self.storage.create.assert_not_called()
         self.storage.update.assert_called_once_with(self.source["url"], updated["body"], self.source["body"], self.source["updated_at"])
         self.storage.update.reset_mock()
-        for author, body in (("example", "Agree"), (AUTHOR, "Director decision Q5: approved")):
-            self.fetch.return_value = [self.source, {"id": 18, "url": self.source["url"] + "1", "author": author, "body": body}]
+        self.source["created_at"] = "2026-11-03T12:00:00Z"
+        for author, body in (("example", "Agree"), (AUTHOR, "Director decision Q5: approved"),
+                             (AUTHOR, "Q5 withdrawn by the Supervisor. Premise corrected.")):
+            self.fetch.return_value = [self.source, {"id": 18, "url": self.source["url"] + "1", "author": author, "body": body,
+                                                    "created_at": "2026-11-03T14:00:00Z"}]
             with self.assertRaises(ValueError):
                 record.update(revised, self.args, self.storage, self.fetch)
         self.fetch.return_value = [self.source]

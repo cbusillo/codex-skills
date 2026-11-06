@@ -34,31 +34,7 @@ UTC = dt.timezone.utc
 QUESTION = re.compile(r"\bQ[1-9][0-9]*\b")
 PREFIXES = oq.QUESTION_PREFIXES
 COMMENT_LINK = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/(?:issues|pull)/\d+#issuecomment-\d+(?!\d)")
-SUPERVISOR_SETTLEMENT = re.compile(
-    r"^(?:Supervisor answer to (Q[1-9][0-9]*)\b"
-    r"(?:[ \t]*\([^)\n]*\))?[ \t]*[.:][ \t]*"
-    r"(?i:(?:yes|no)(?=[,.:!?]|$)|this is already decided\b)"
-    r"|(Q[1-9][0-9]*) withdrawn by the Supervisor\b)"
-)
-
-
-def supervisor_settled_questions(comments: list[dict], trusted: set[str]) -> set[str]:
-    settlements: dict[str, list[dt.datetime]] = {}
-    for comment in comments:
-        if login(comment) not in trusted:
-            continue
-        heading = question_body(comment).partition("\n")[0].replace("*", "")
-        match = SUPERVISOR_SETTLEMENT.match(heading)
-        when = stamp(comment.get("created_at"))
-        if match and when:
-            settlements.setdefault(match[1] or match[2], []).append(when)
-    settled = set()
-    for comment in comments:
-        question = heading_id(question_body(comment))
-        asked = stamp(comment.get("created_at"))
-        if question and asked and any(when > asked for when in settlements.get(question, [])):
-            settled.add(comment.get("html_url") or comment["url"])
-    return settled
+supervisor_settled_questions = oq.question_records.supervisor_settled_questions
 
 
 def is_decision(body: str) -> bool:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 from collections.abc import Iterable
+from datetime import datetime
 from typing import Any
 
 QUESTION = re.compile(r"\bQ([1-9][0-9]*)\b")
@@ -82,3 +83,46 @@ def questions(comments: list[dict[str, Any]], owner: str, decision_authors: Iter
         )
     return results
 
+
+SUPERVISOR_SETTLEMENT = re.compile(
+    r"^(?:Supervisor answer to (Q[1-9][0-9]*)\b"
+    r"(?:[ \t]*\([^)\n]*\))?[ \t]*[.:][ \t]*"
+    r"(?i:(?:yes|no)(?=[,.:!?]|$)|this is already decided\b)"
+    r"|(Q[1-9][0-9]*) withdrawn by the Supervisor\b)"
+)
+
+
+def settlement_time(value: Any) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed.tzinfo else None
+
+
+def supervisor_settled_questions(comments: list[dict[str, Any]], trusted: set[str], *,
+                                withdrawals_only: bool = False) -> set[str]:
+    def author(source: dict[str, Any]) -> str:
+        return str((source.get("user") or {}).get("login") or source.get("author") or "").casefold()
+
+    settlements: dict[str, list[dict[str, Any]]] = {}
+    for comment in comments:
+        if author(comment) not in trusted:
+            continue
+        heading = str(comment.get("body") or "").strip().partition("\n")[0].replace("*", "")
+        match = SUPERVISOR_SETTLEMENT.match(heading)
+        when = settlement_time(comment.get("created_at"))
+        if match and when and (not withdrawals_only or match[2]):
+            settlements.setdefault(match[1] or match[2], []).append({"when": when, "author": author(comment)})
+    sources = {comment.get("html_url") or comment["url"]: comment for comment in comments}
+    numbers = Counter(heading_id(str(comment.get("body") or "").strip()) for comment in sources.values())
+    settled = set()
+    for comment in sources.values():
+        question = heading_id(str(comment.get("body") or "").strip())
+        asked = settlement_time(comment.get("created_at"))
+        if not question or not asked or (withdrawals_only and numbers[question] != 1):
+            continue
+        if any(entry["when"] > asked and (not withdrawals_only or entry["author"] == author(comment))
+               for entry in settlements.get(question, [])):
+            settled.add(comment.get("html_url") or comment["url"])
+    return settled

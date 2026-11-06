@@ -94,6 +94,10 @@ class DirectorQuestionGateTests(unittest.TestCase):
             with self.subTest(evidence=evidence):
                 self.assertIsNotNone(self.gap(wait("Chris approves the live install", evidence)))
 
+    def test_asker_withdrawal_does_not_authorize_a_director_hold(self) -> None:
+        with patch.dict(COMMENTS, {17: comment(17, BOT, "Q812 withdrawn by the Supervisor. Premise corrected.")}):
+            self.assertIsNotNone(self.gap(wait("Chris to resume after the weekend", link(17))))
+
     def test_hold_the_director_set_or_agreed_is_exempt(self) -> None:
         self.assertIsNone(self.gap(wait("Chris to dogfood 1.0.76 from TestFlight", link(13))))
         self.assertIsNone(self.gap(wait("Chris to dogfood 1.0.76 from TestFlight", link(14))))

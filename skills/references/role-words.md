@@ -45,5 +45,7 @@ GitHub comments to migrate them.
 Queue readers also accept recorded numbered headings such as
 `Director decision Q123:` and legacy `Director decision (Q123):`, including
 when their explanation mentions other Q IDs;
-an exact numbered heading identifies its question, while a status note such as
+an exact numbered heading settles only its own question, even with other links.
+To settle several questions, use the plain `Director decision:` heading and link
+each original question in that one record. A status note such as
 `Director decision Q123 pending` does not record a decision.
