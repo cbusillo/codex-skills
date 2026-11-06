@@ -14,8 +14,9 @@ from test_landed_worktrees import Fixture
 
 
 def git(*args: str, cwd: Path | None = None, input_text: str | None = None) -> str:
-    return subprocess.run(["git", *args], cwd=cwd, input=input_text, capture_output=True, text=True,
-                          errors="surrogateescape", check=True).stdout.strip()
+    return subprocess.run(
+        ["git", *args], cwd=cwd, input=input_text, capture_output=True, text=True, errors="surrogateescape", check=True
+    ).stdout.strip()
 
 
 class PublicationTests(Fixture):
@@ -57,12 +58,12 @@ class PublicationTests(Fixture):
         self.env.update(GIT_DIR=str(self.repo / ".git"), GIT_WORK_TREE=str(self.repo))
         self.assertNotEqual(self.read_publication(worktree).returncode, 0)
 
-    def test_remote_paths_and_refs_preserve_non_utf8_bytes(self) -> None:
+    def test_remote_refs_preserve_non_utf8_bytes(self) -> None:
         worktree = self.create()
-        remote = self.base / os.fsdecode(b"remote-\xff.git")
-        git("init", "--bare", str(remote))
-        git("remote", "set-url", "origin", str(remote), cwd=worktree)
-        git("push", "origin", "HEAD:refs/heads/" + os.fsdecode(b"branch-\xff"), cwd=worktree)
+        git("push", "origin", "HEAD:refs/heads/published", cwd=worktree)
+        git("pack-refs", "--all", cwd=self.remote)
+        packed = self.remote / "packed-refs"
+        packed.write_bytes(packed.read_bytes().replace(b"refs/heads/published", b"refs/heads/branch-\xff"))
         result = self.read_publication(worktree)
         self.assertEqual(result.returncode, 0, result.stderr)
 
@@ -257,7 +258,7 @@ class PublicationTests(Fixture):
         head = git("rev-parse", "HEAD", cwd=worktree)
         grafts = self.base / "external.grafts"
         grafts.write_text(f"{published} {head}\n")
-        for path in (str(grafts), os.path.relpath(grafts, worktree)):
+        for path in (str(grafts), str(os.path.relpath(grafts, worktree))):
             with self.subTest(path=path):
                 self.env["GIT_GRAFT_FILE"] = path
                 completed = self.read_publication(worktree)

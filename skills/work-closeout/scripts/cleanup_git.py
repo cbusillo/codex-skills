@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import importlib
 import os
 import re
 import subprocess
@@ -16,7 +17,7 @@ from typing import Any
 from cleanup_probe import ProbeError, command, signature, tag
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
-import published_history
+published_history = importlib.import_module("published_history")
 
 UNSAFE_ENV = {"GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
               "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",

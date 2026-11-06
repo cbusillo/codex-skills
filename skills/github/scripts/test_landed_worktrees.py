@@ -366,6 +366,7 @@ class RepositoryTests(Fixture):
 
     def test_portable_retirement_keeps_private_or_unpublished_work_and_live_use(self) -> None:
         run = subprocess.run
+        grafts = Path(self.git(self.repo, "rev-parse", "--path-format=absolute", "--git-path", "info/grafts"))
         eligible = ("eligible", "pull_only", "amended", "retained_reflog", "signed_config", "upstream_only", "fork_only",
                     "detached_published", "fetched_snapshot", "graft_recovery")
         for cause in (*eligible, "dirty", "ignored", "unpublished", "unique_reflog", "branch_reflog", "in_use", "proof_unavailable",
@@ -399,7 +400,6 @@ class RepositoryTests(Fixture):
                     self.git(path, "push", "origin", f"{alternate}:refs/pull/9/head")
                 self.git(path, "reset", "--hard", base)
             elif cause == "graft_recovery":
-                grafts = Path(self.git(path, "rev-parse", "--path-format=absolute", "--git-path", "info/grafts"))
                 grafts.write_text(self.git(path, "rev-parse", "HEAD") + "\n")
             elif cause in {"upstream_only", "fork_only"}:
                 remote = self.base / f"{cause}.git"
