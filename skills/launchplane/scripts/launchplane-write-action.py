@@ -10076,6 +10076,8 @@ def execute_compose_domain_apply(
                 "recommendation": "The tracked binding changed since review; run a new dry-run.",
             }
         before.update(private)
+        if reconcile:
+            body["target_id"] = private["live_target_id"]
         return None
 
     def finish(settings: dict[str, str], _provider: dict[str, Any], payload: dict[str, Any]) -> bool:
