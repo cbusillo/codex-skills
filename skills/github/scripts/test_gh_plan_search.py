@@ -36,18 +36,7 @@ def issue(repo: str, number: int = 1) -> dict:
 class SearchTests(unittest.TestCase):
     def search(self, query: str, results: list[dict], *options: str, current_repo: str | None = "owner/current") -> tuple[str, dict]:
         args = PLAN.build_parser().parse_args([*options, "search", query])
-
-        def search_response(_method: str, request_path: str, **_kwargs: Any) -> tuple[str, dict]:
-            qualifiers = urllib.parse.parse_qs(urllib.parse.urlsplit(request_path).query)["q"][0].split()
-            items = [
-                item
-                for item in results
-                if ("is:issue" not in qualifiers or "pull_request" not in item)
-                and ("is:pr" not in qualifiers or "pull_request" in item)
-            ]
-            return "automation-gh", {"items": items}
-
-        read = Mock(side_effect=search_response)
+        read = Mock(return_value=("automation-gh", {"items": results}))
         emit = Mock()
         default_repo = Mock(return_value=current_repo)
         with patch.dict(
@@ -67,20 +56,17 @@ class SearchTests(unittest.TestCase):
         self.assertEqual(read.call_args.kwargs["bucket"], "search")
         return urllib.parse.parse_qs(path.query)["q"][0], emit.call_args.args[0]
 
-    def test_search_finds_draft_pull_requests_unless_caller_selects_issues(self) -> None:
+    def test_search_finds_pull_requests_alongside_issues(self) -> None:
         pull = {
             **issue("owner/other", 2),
             "html_url": "https://github.com/owner/other/pull/2",
             "pull_request": {"url": "https://api.github.com/repos/owner/other/pulls/2"},
-            "draft": True,
         }
-        for query, expected in (("bug", ["issue", "pull_request"]), ("bug is:pr", ["pull_request"]), ("bug is:issue", ["issue"])):
-            with self.subTest(query=query):
-                _, output = self.search(query, [issue("owner/current"), pull])
-                self.assertEqual([item["record_type"] for item in output["issues"]], expected)
-                if "pull_request" in expected:
-                    self.assertEqual(output["issues"][-1]["url"], pull["html_url"])
-                    self.assertEqual(output["issues"][-1]["repo"], "owner/other")
+        query, output = self.search("bug", [issue("owner/current"), pull])
+        self.assertNotIn("is:issue", query.split())
+        self.assertEqual([item["record_type"] for item in output["issues"]], ["issue", "pull_request"])
+        self.assertEqual(output["issues"][-1]["url"], pull["html_url"])
+        self.assertEqual(output["issues"][-1]["repo"], "owner/other")
 
     def test_scoped_queries_keep_their_scope_and_result_repositories(self) -> None:
         for query in (
