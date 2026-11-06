@@ -294,7 +294,6 @@ def execute_apply(h: Any, args: argparse.Namespace) -> int:
     if body == profile:
         return finish_apply(h, args, settings, intent, request, None, applied=False)
     response = None
-    diagnostics: dict[str, object] = {}
     try:
         response = h.request_launchplane(
             service_url=settings["service_url"],

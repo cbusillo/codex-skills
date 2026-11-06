@@ -280,19 +280,6 @@ def test_submit_requires_reviewed_evidence_before_configuration_or_transport():
     read.assert_not_called()
 
 
-@pytest.mark.parametrize("field,value", [
-    ("--product", "other"), ("--artifact-id", "other-build"),
-    ("--source-git-ref", "b" * 40), ("--reason", "A different reason"),
-])
-def test_changed_intent_cannot_reuse_reviewed_evidence(field, value):
-    args = arguments()
-    args[args.index(field) + 1] = value
-    code, _, post, _, settings = invoke(receipt(), args=args)
-    assert code != 0
-    settings.assert_not_called()
-    post.assert_not_called()
-
-
 def test_dry_run_from_another_service_cannot_authorize_submit():
     code, _, post, read, settings = invoke(receipt(), service_url="https://other.example.invalid")
     assert code != 0
@@ -328,21 +315,14 @@ def test_a_dry_run_timeout_is_a_read_failure_without_an_unknown_write():
     assert "PRIVATE_SENTINEL" not in json.dumps(output)
 
 
-@pytest.mark.parametrize("reason", ["", " " * 4])
-def test_reason_is_validated_before_configuration_or_transport(reason):
-    args = arguments()
-    args[args.index("--reason") + 1] = reason
-    code, _, post, _, settings = invoke(receipt(), args=args)
-    assert code != 0
-    settings.assert_not_called()
-    post.assert_not_called()
-
-
 @pytest.mark.parametrize("field,value", [
+    ("--product", "other"), ("--artifact-id", "other-build"),
+    ("--source-git-ref", "b" * 40), ("--reason", "A different reason"),
+    ("--reason", ""), ("--reason", " " * 4),
     ("--product", "../prod"), ("--artifact-id", ""),
     ("--source-git-ref", "main"), ("--idempotency-key", ""),
 ])
-def test_invalid_intent_refuses_before_configuration_or_transport(field, value):
+def test_changed_or_invalid_intent_refuses_before_configuration_or_transport(field: str, value: str) -> None:
     args = arguments()
     args[args.index(field) + 1] = value
     code, _, post, read, settings = invoke(receipt(), args=args)
