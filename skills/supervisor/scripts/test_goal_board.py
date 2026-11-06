@@ -221,21 +221,26 @@ class GoalBoardTests(unittest.TestCase):
         self.assertEqual([item["number"] for item in board["tracks"][0]["groups"]["available"]], [12])
 
     def test_recorded_queue_answers_resolve_child_questions(self) -> None:
-        question = comment("Director question: Q1: Choose the result?", ident=51)
-        answer = comment(f"Director decision: Q1: Yes. {question['url']}", ident=52)
-        root_question = comment("Director question: Q2: Choose the result?", ident=53)
-        root_answer = comment(f"Director decision: Q2: Yes. {root_question['url']}", ident=54)
-        queue = {"number": 98, "updatedAt": "2026-10-16T12:00:00Z", "repository": {"nameWithOwner": "owner/direction"},
-                 "comments": {"nodes": [answer, root_answer], "totalCount": 2, "pageInfo": {"hasNextPage": False, "endCursor": None}}}
-        self.reader.graphql_json.side_effect = [ApiResult(ok=True, status=200, body=body) for body in (
-            listing([{"number": 1, "title": "Track: One"}]), details(t1=track(1, comments=[root_question], children=[child(10, comments=[question])])),
-            {"data": {"repository": {"issue": queue}}})]
-        with patch.object(goal_board.question_id, "configured_queue", return_value="owner/direction#98"):
-            board = goal_board.goal_board(self.reader, "owner", trusted=TRUSTED, wait_trusted=TRUSTED)
-        self.assertTrue(board["coverage"]["complete"], board)
-        self.assertFalse(board["tracks"][0]["open_questions"])
-        self.assertFalse(board["tracks"][0]["children"][0]["open_questions"])
-        self.assertEqual(board["tracks"][0]["children"][0]["group"], "available")
+        for withdrawn in (False, True):
+            question = comment("Director question: Q51. Choose the result?", ident=51)
+            answer = comment(f"Director decision: Q51. Yes. {question['url']}", ident=52)
+            if withdrawn:
+                answer = comment("Q51 withdrawn by the Supervisor. Premise corrected.", at="2026-10-16T11:00:00Z", ident=52)
+            root_question = comment("Director question: Q53. Choose the result?", ident=53)
+            root_answer = comment(f"Director decision: Q53. Yes. {root_question['url']}", ident=54)
+            if withdrawn:
+                root_answer = comment("Q53 withdrawn by the Supervisor. Premise corrected.", at="2026-10-16T11:00:00Z", ident=54)
+            queue = {"number": 98, "updatedAt": "2026-10-16T12:00:00Z", "repository": {"nameWithOwner": "owner/direction"},
+                     "comments": {"nodes": [answer, root_answer], "totalCount": 2, "pageInfo": {"hasNextPage": False, "endCursor": None}}}
+            self.reader.graphql_json.side_effect = [ApiResult(ok=True, status=200, body=body) for body in (
+                listing([{"number": 1, "title": "Track: One"}]), details(t1=track(1, comments=[root_question], children=[child(10, comments=[question])])),
+                {"data": {"repository": {"issue": queue}}})]
+            with patch.object(goal_board.question_id, "configured_queue", return_value="owner/direction#98"):
+                board = goal_board.goal_board(self.reader, "owner", trusted=TRUSTED, wait_trusted=TRUSTED)
+            self.assertTrue(board["coverage"]["complete"], board)
+            self.assertFalse(board["tracks"][0]["open_questions"])
+            self.assertFalse(board["tracks"][0]["children"][0]["open_questions"])
+            self.assertEqual(board["tracks"][0]["children"][0]["group"], "available")
 
     def test_mixed_case_trusted_people_and_bots_keep_decisions_and_handoffs(self):
         for typename, name in (("User", "MixedCaseOwner"), ("Bot", "MixedCaseApp")):

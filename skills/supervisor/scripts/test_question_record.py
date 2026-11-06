@@ -333,18 +333,6 @@ class QuestionRecordTests(unittest.TestCase):
         with patch.dict(os.environ, {"CODEX_SKILLS_ENV_FILE": "/missing/fixture.env"}):
             with_call_stub(api, run)
 
-    def test_withdrawn_question_cannot_be_revised_into_hidden_work(self) -> None:
-        self.source["id"] = 17
-        self.source["created_at"] = "2026-11-03T12:00:00Z"
-        self.args.url = self.source["url"]
-        self.args.expected_updated_at = self.source["updated_at"]
-        withdrawal = {"body": "Q5 withdrawn by the Supervisor. The premise was wrong.", "author": AUTHOR,
-                      "created_at": "2026-11-03T14:00:00Z", "url": "withdrawal"}
-        self.fetch.return_value = [self.source, withdrawal]
-        with self.assertRaises(ValueError):
-            record.update(question(), self.args, self.storage, self.fetch)
-        self.storage.update.assert_not_called()
-
     def test_source_reads_need_no_local_counter_or_lock(self) -> None:
         storage = record.GitHubComments(lambda _item: [self.source])
         view = record.read_record(storage.read(self.source["url"]))
@@ -416,8 +404,11 @@ class QuestionRecordTests(unittest.TestCase):
         self.storage.create.assert_not_called()
         self.storage.update.assert_called_once_with(self.source["url"], updated["body"], self.source["body"], self.source["updated_at"])
         self.storage.update.reset_mock()
-        for author, body in (("example", "Agree"), (AUTHOR, "Director decision Q5: approved")):
-            self.fetch.return_value = [self.source, {"id": 18, "url": self.source["url"] + "1", "author": author, "body": body}]
+        self.source["created_at"] = "2026-11-03T12:00:00Z"
+        for author, body in (("example", "Agree"), (AUTHOR, "Director decision Q5: approved"),
+                             (AUTHOR, "Q5 withdrawn by the Supervisor. Premise corrected.")):
+            self.fetch.return_value = [self.source, {"id": 18, "url": self.source["url"] + "1", "author": author, "body": body,
+                                                    "created_at": "2026-11-03T14:00:00Z"}]
             with self.assertRaises(ValueError):
                 record.update(revised, self.args, self.storage, self.fetch)
         self.fetch.return_value = [self.source]

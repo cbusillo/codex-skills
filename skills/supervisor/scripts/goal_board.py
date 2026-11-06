@@ -218,8 +218,10 @@ def child_activity(node: dict[str, Any], trusted: set[str], unread: list[str], *
     normalized = [{"id": comment["id"], "url": comment["html_url"], "body": comment["body"],
                    "author": comment["user"]["login"], "created_at": comment["created_at"]} for comment in comments]
     owner = node.get("_director") or node["repository"]["nameWithOwner"].split("/", 1)[0]
+    related = node.get("_question_answers", ())
+    withdrawn = oq.question_records.supervisor_settled_questions([*normalized, *related], trusted, withdrawals_only=True)
     questions = [question for question in oq.questions(normalized, owner, trusted,
-                 node.get("_question_answers", ()), recorded_decisions_only=True) if question["status"] != "answered"]
+                 related, recorded_decisions_only=True) if question["status"] != "answered" and question["url"] not in withdrawn]
     return {"claims": claims, "open_questions": questions}
 
 

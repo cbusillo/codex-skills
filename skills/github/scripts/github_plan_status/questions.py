@@ -84,7 +84,6 @@ def questions(comments: list[dict[str, Any]], owner: str, decision_authors: Iter
     return results
 
 
-
 SUPERVISOR_SETTLEMENT = re.compile(
     r"^(?:Supervisor answer to (Q[1-9][0-9]*)\b"
     r"(?:[ \t]*\([^)\n]*\))?[ \t]*[.:][ \t]*"
@@ -121,8 +120,9 @@ def supervisor_settled_questions(comments: list[dict[str, Any]], trusted: set[st
     for comment in sources.values():
         question = heading_id(str(comment.get("body") or "").strip())
         asked = settlement_time(comment.get("created_at"))
-        if question and asked and (not withdrawals_only or numbers[question] == 1) and any(entry["when"] > asked and
-                                     (not withdrawals_only or entry["author"] == author(comment))
-                                     for entry in settlements.get(question, [])):
+        if not question or not asked or (withdrawals_only and numbers[question] != 1):
+            continue
+        if any(entry["when"] > asked and (not withdrawals_only or entry["author"] == author(comment))
+               for entry in settlements.get(question, [])):
             settled.add(comment.get("html_url") or comment["url"])
     return settled
