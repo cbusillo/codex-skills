@@ -17,11 +17,11 @@ from typing import Any, Callable
 try:
     from github_plan_status import next_actor
     from github_plan_status.discussion import MARKER, live_lines, records, without_operation_marker, released_claim_id, exact_released_sources, unquoted_text
-    from github_plan_status.references import linked_issues, pr_issue_reference as pr_issue_reference
+    from github_plan_status.references import ISSUE_REFERENCE, pr_issue_reference as pr_issue_reference
 except ModuleNotFoundError:
     from skills.github.scripts.github_plan_status import next_actor
     from skills.github.scripts.github_plan_status.discussion import MARKER, live_lines, records, without_operation_marker, released_claim_id, exact_released_sources, unquoted_text
-    from skills.github.scripts.github_plan_status.references import linked_issues, pr_issue_reference as pr_issue_reference
+    from skills.github.scripts.github_plan_status.references import ISSUE_REFERENCE, pr_issue_reference as pr_issue_reference
 
 
 LEASE_TAKEOVER_PREFIX = "Lease takeover: claim "
@@ -222,7 +222,7 @@ def ownership_text(text: str, *, strip_quotes: bool = True, keep_link_targets: b
     return re.sub(r"\x00(\d+)\x00", lambda match: code[int(match.group(1))], text)
 
 
-def session_field_records(text: str, *, include_quotes: bool = True, current_only: bool = False) -> list[tuple[str, str]]:
+def session_fields(text: str, *, include_quotes: bool = True, current_only: bool = False) -> list[str]:
     prose = ownership_text(text, strip_quotes=False)
     fence = ""
     previous = ""
@@ -255,12 +255,8 @@ def session_field_records(text: str, *, include_quotes: bool = True, current_onl
             end = matches[index + 1].start() if index + 1 < len(matches) else len(line)
             value = line[field.end():end].split("|", 1)[0].strip()
             if value:
-                values.append((line[:field.start()], value))
+                values.append(value)
     return values
-
-
-def session_fields(text: str, *, include_quotes: bool = True, current_only: bool = False) -> list[str]:
-    return [value for _, value in session_field_records(text, include_quotes=include_quotes, current_only=current_only)]
 
 
 def session_identifiers(value: str) -> set[str]:
@@ -317,13 +313,15 @@ def ownership_assertions(text: str, *, own_claim: dict[str, str] | None = None) 
         r"\s+(?:is|are|was|were|has been|have been)|no (?:implementation |execution )?ownership)\s*"
     )
     assertions = []
-    for match in re.finditer(r"owned by|claimed by|\b(?:worker|owner|session)\s*:", text, re.IGNORECASE):
+    matches = list(re.finditer(r"owned by|claimed by|\b(?:worker|session)\s*:", text, re.IGNORECASE))
+    for index, match in enumerate(matches):
         if human_session_reference(text, match.start()):
             continue
         raw_prefix = re.split(boundary, text[:match.start()])[-1]
         raw_prefix = raw_prefix.lstrip(" -*+").rstrip()
         prefix = re.sub(r"^[^:]+:\s*", "", raw_prefix)
-        ending = re.split(rf"({boundary})", text[match.end():], maxsplit=1)
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        ending = re.split(rf"({boundary})", text[match.end():end], maxsplit=1)
         suffix = ending[0].strip()
         # Conditional or contrastive denials are not proof that nobody holds it.
         uncertain = (
@@ -366,22 +364,39 @@ def belongs_to_session(body: str, session: str, *, record: tuple[str, int]) -> b
     identity = re.compile(rf"(?<![\w-]){re.escape(session)}(?![\w-])")
     prose = ownership_text(body, keep_link_targets=True)
 
-    def foreign_record(prefix: str) -> bool:
-        targets = linked_issues(record[0], {"title": prefix})
-        return bool(targets) and all((repo.casefold(), number) != (record[0].casefold(), record[1]) for repo, number in targets)
+    def foreign_assertion(prefix: str) -> bool:
+        if re.search(r"\b(?:this|current)\s+(?:issue|task|record)\b", prefix, re.IGNORECASE):
+            return False
+        for target in ISSUE_REFERENCE.finditer(prefix):
+            repo = target[1] or target[2]
+            if not repo or (repo.casefold(), int(target[3])) == (record[0].casefold(), record[1]):
+                continue
+            if re.fullmatch(
+                r"[ \t,()<>]*(?:which\s+)?(?:is|remains)\s+(?:independently\s+)?(?:owned|claimed) by",
+                prefix[target.end():], re.IGNORECASE,
+            ):
+                return True
+        return False
 
-    if any(identity.search(actor.removeprefix("agent:")) for _, actor in next_actor.fields(prose)):
+    actors = next_actor.fields(prose)
+    if any(identity.search(actor.removeprefix("agent:")) for _, actor in actors):
         return True
-    fields = session_field_records(prose, include_quotes=False, current_only=True)
+    fields = session_fields(prose, include_quotes=False, current_only=True)
+    if any(identity.search(value.split(";", 1)[0]) for value in fields):
+        return True
     assertions = [(prefix, holder) for prefix, holder in ownership_assertions(prose)
                   if not session_fields(prefix + " " + holder)]
-    if any(not foreign_record(prefix) and identity.search(holder.split(";", 1)[0])
-           for prefix, holder in [*fields, *assertions]):
+    if any(not foreign_assertion(prefix) and identity.search(holder) for prefix, holder in assertions):
         return True
-    if fields or next_actor.fields(prose) or records(body) or not re.match(r"(?i)Claimed by:?\s+\S+", prose):
+    if fields or actors or records(body) or not re.search(r"(?im)^Claimed by:?\s+\S+", prose):
         return False
-    local = "\n\n".join(paragraph for paragraph in re.split(r"\n[ \t]*\n", prose) if not foreign_record(paragraph))
-    return bool(identity.search(local)) and has_ownership_assertion(local)
+    local = []
+    for paragraph in re.split(r"\n[ \t]*\n", prose):
+        owners = ownership_assertions(paragraph)
+        if not owners or not all(foreign_assertion(prefix) for prefix, _ in owners):
+            local.append(paragraph)
+    local_text = "\n\n".join(local)
+    return bool(identity.search(local_text)) and has_ownership_assertion(local_text)
 
 
 def released_successor_route(

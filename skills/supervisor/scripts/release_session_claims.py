@@ -469,13 +469,13 @@ def discover(
             if not any(s in body for s in sessions):
                 continue
             match = re.fullmatch(rf"https://api\.github\.com/repos/{re.escape(repo)}/issues/([1-9]\d*)", c.get("issue_url") or "")
+            if not match:
+                raise ValueError(f"claim comment has an unexpected canonical issue URL at {c.get('html_url')}")
             try:
-                matching = any(claim.belongs_to_session(body, s, record=(repo, int(match[1]) if match else 0)) for s in sessions)
+                matching = any(claim.belongs_to_session(body, s, record=(repo, int(match[1]))) for s in sessions)
             except ValueError as error:
                 raise ValueError(f"unreadable claim at {c.get('html_url')}: {error}") from error
             if matching:
-                if not match:
-                    raise ValueError("claim comment has an unexpected canonical issue URL")
                 issues.add((repo, int(match[1])))
         repo_statuses = statuses[repo]
         if isinstance(repo_statuses, Exception):
@@ -483,8 +483,14 @@ def discover(
             repo_statuses = reader.paged_json(f"/repos/{repo}/issues", step_prefix="session_status_inventory",
                                             params={"state": "all", "since": since}, required_query_params={"since": since})
         for issue in repo_statuses:
-            if "pull_request" not in issue and any(claim.belongs_to_session(issue.get("body") or "", s, record=(repo, issue.get("number", 0))) for s in sessions):
-                issues.add((repo, issue["number"]))
+            body = issue.get("body") or ""
+            if "pull_request" in issue or not any(session in body for session in sessions):
+                continue
+            number = issue.get("number")
+            if type(number) is not int or number < 1:
+                raise ValueError("status record has no canonical issue number")
+            if any(claim.belongs_to_session(body, session, record=(repo, number)) for session in sessions):
+                issues.add((repo, number))
     return sorted(issues), repos
 
 
