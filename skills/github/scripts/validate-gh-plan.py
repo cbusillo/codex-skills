@@ -1320,21 +1320,9 @@ def test_create_uses_rest_dedupe_and_shared_issue_create() -> None:
     output = StringIO()
     with patched_issue_core(plan, create_issue=fake_create_issue):
         with redirect_stdout(output):
-            plan.cmd_create(types.SimpleNamespace(
-                repo="owner/repo",
-                title="Durable plan",
-                title_flag=None,
-                body="## Finish Line\n\nShip it.\n",
-                body_file=None,
-                label=[],
-                milestone="M1",
-                project=None,
-                force=False,
-                plan_status="active",
-                focus=None,
-                manager=None,
-                finish_line=None,
-            ))
+            plan.cmd_create(plan.build_parser().parse_args([
+                "--repo", "owner/repo", "create", "Durable plan", "--body", "## Finish Line\n\nShip it.\n", "--milestone", "M1",
+            ]))
 
     payload = json.loads(output.getvalue())
     assert create_call["title"] == "Durable plan", create_call
@@ -1509,21 +1497,9 @@ def test_create_dedupes_exact_rest_search_without_writes() -> None:
         create_issue=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("deduped create must not write")),
     ):
         with redirect_stdout(output):
-            plan.cmd_create(types.SimpleNamespace(
-                repo="owner/repo",
-                title="Durable plan",
-                title_flag=None,
-                body=None,
-                body_file=None,
-                label=None,
-                milestone=None,
-                project=None,
-                force=False,
-                plan_status="active",
-                focus=None,
-                manager=None,
-                finish_line=None,
-            ))
+            plan.cmd_create(plan.build_parser().parse_args([
+                "--repo", "owner/repo", "create", "Durable plan",
+            ]))
 
     payload = json.loads(output.getvalue())
     assert payload["deduped"] is True, payload
@@ -1585,21 +1561,9 @@ def test_create_issue_failure_preserves_compound_recovery_evidence() -> None:
 
     with patched_issue_core(plan, create_issue=fake_create_issue):
         try:
-            plan.cmd_create(types.SimpleNamespace(
-                repo="owner/repo",
-                title="Durable plan",
-                title_flag=None,
-                body="## Finish Line\n\nShip it.\n",
-                body_file=None,
-                label=None,
-                milestone=None,
-                project=None,
-                force=False,
-                plan_status="active",
-                focus=None,
-                manager=None,
-                finish_line=None,
-            ))
+            plan.cmd_create(plan.build_parser().parse_args([
+                "--repo", "owner/repo", "create", "Durable plan", "--body", "## Finish Line\n\nShip it.\n",
+            ]))
         except plan.PlanError as exc:
             assert exc.failure is failure
             assert exc.failure.completed_steps == [
@@ -1645,21 +1609,9 @@ def test_create_surfaces_reconciled_shared_issue_evidence() -> None:
     output = StringIO()
     with patched_issue_core(plan, create_issue=lambda *_args, **_kwargs: reconciled_issue):
         with redirect_stdout(output):
-            plan.cmd_create(types.SimpleNamespace(
-                repo="owner/repo",
-                title="Durable plan",
-                title_flag=None,
-                body="## Finish Line\n\nShip it.\n",
-                body_file=None,
-                label=None,
-                milestone=None,
-                project=None,
-                force=False,
-                plan_status="active",
-                focus=None,
-                manager=None,
-                finish_line=None,
-            ))
+            plan.cmd_create(plan.build_parser().parse_args([
+                "--repo", "owner/repo", "create", "Durable plan", "--body", "## Finish Line\n\nShip it.\n",
+            ]))
 
     payload = json.loads(output.getvalue())
     assert payload["reconciled"] is True, payload
@@ -2378,16 +2330,7 @@ def test_close_already_complete_reuses_completion_comment() -> None:
 def test_close_delegates_comment_to_shared_rest_helper() -> None:
     plan = load_plan_module()
     allow_close_relationships(plan)
-    issue = {
-        "repo": "owner/repo",
-        "number": 10,
-        "id": 1010,
-        "title": "Durable plan",
-        "body": "## Finish Line\n\nShip it.\n",
-        "html_url": "https://github.com/owner/repo/issues/10",
-        "labels": [{"name": "plan"}, {"name": "plan:active"}],
-        "state": "open",
-    }
+    issue = close_plan_issue()
     calls: list[dict[str, Any]] = []
     comment_call: dict[str, Any] = {}
 
@@ -2426,15 +2369,7 @@ def test_close_delegates_comment_to_shared_rest_helper() -> None:
         output = StringIO()
         with patched_issue_core(plan, edit_issue=fake_edit_issue, set_issue_state=fake_set_issue_state):
             with redirect_stdout(output):
-                plan.cmd_close(types.SimpleNamespace(
-                    repo="owner/repo",
-                    issue="10",
-                    reason="completed",
-                    body="Completed with evidence.\n",
-                    body_file=None,
-                    owner=None,
-                    project=None,
-                    reconcile_dependents=False))
+                plan.cmd_close(close_args(body='Completed with evidence.\n'))
     finally:
         plan.github_comment_core.comment = original_comment
 
@@ -2456,7 +2391,6 @@ def test_close_delegates_comment_to_shared_rest_helper() -> None:
     assert close_call["state"] == "closed", close_call
     assert close_call["state_reason"] == "completed", close_call
     assert close_call["gh_cmd"] == "fake-gh", close_call
-    assert any(call["action"] == "close" for call in calls), calls
 
 
 def test_comment_route_matches_explicit_auth_policy() -> None:
@@ -2483,16 +2417,7 @@ def test_comment_route_matches_explicit_auth_policy() -> None:
 def test_close_preserves_comment_reconciliation_after_partial_failure() -> None:
     plan = load_plan_module()
     allow_close_relationships(plan)
-    issue = {
-        "repo": "owner/repo",
-        "number": 10,
-        "id": 1010,
-        "title": "Durable plan",
-        "body": "## Finish Line\n\nShip it.\n",
-        "html_url": "https://github.com/owner/repo/issues/10",
-        "labels": [{"name": "plan"}, {"name": "plan:active"}],
-        "state": "open",
-    }
+    issue = close_plan_issue()
     calls: list[dict[str, Any]] = []
     plan.load_config = lambda repo, **_: {
         "labels": {"active": "plan:active", "done": "plan:done"},
@@ -2543,15 +2468,7 @@ def test_close_preserves_comment_reconciliation_after_partial_failure() -> None:
     try:
         with patched_issue_core(plan, edit_issue=fake_edit_issue, set_issue_state=fake_set_issue_state):
             try:
-                plan.cmd_close(types.SimpleNamespace(
-                    repo="owner/repo",
-                    issue="10",
-                    reason="completed",
-                    body="Completed with evidence.\n",
-                    body_file=None,
-                    owner=None,
-                    project=None,
-                    reconcile_dependents=False))
+                plan.cmd_close(close_args(body='Completed with evidence.\n'))
             except plan.PlanError as exc:
                 assert exc.payload["comment_action"] == "create", exc.payload
                 assert exc.payload["reconciliation"]["strategy"] == "list_actor_comments_and_compare_body", exc.payload
@@ -2569,16 +2486,7 @@ def test_close_preserves_comment_reconciliation_after_partial_failure() -> None:
 def test_close_state_failure_preserves_compound_steps() -> None:
     plan = load_plan_module()
     allow_close_relationships(plan)
-    issue = {
-        "repo": "owner/repo",
-        "number": 10,
-        "id": 1010,
-        "title": "Durable plan",
-        "body": "## Finish Line\n\nShip it.\n",
-        "html_url": "https://github.com/owner/repo/issues/10",
-        "labels": [{"name": "plan"}, {"name": "plan:active"}],
-        "state": "open",
-    }
+    issue = close_plan_issue()
     failure = plan.github_api_core.FailureDetail(
         cause="network_provider_failure",
         message="Close write outcome is unknown",
@@ -2622,15 +2530,7 @@ def test_close_state_failure_preserves_compound_steps() -> None:
 
     with patched_issue_core(plan, edit_issue=fake_edit_issue, set_issue_state=fake_set_issue_state):
         try:
-            plan.cmd_close(types.SimpleNamespace(
-                repo="owner/repo",
-                issue="10",
-                reason="completed",
-                body=None,
-                body_file=None,
-                owner=None,
-                project=None,
-                reconcile_dependents=False))
+            plan.cmd_close(close_args())
         except plan.PlanError as exc:
             assert exc.failure is failure
             assert exc.failure.completed_steps == ["resolve_actor"], exc.failure.completed_steps
@@ -2650,15 +2550,7 @@ def test_close_rejects_invalid_reason_before_remote_reads_or_writes() -> None:
     plan.get_issue = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("invalid reason must fail before issue read"))
 
     try:
-        plan.cmd_close(types.SimpleNamespace(
-            repo="owner/repo",
-            issue="10",
-            reason="invalid",
-            body=None,
-            body_file=None,
-            owner=None,
-            project=None,
-            reconcile_dependents=False))
+        plan.cmd_close(close_args(reason='invalid'))
     except plan.PlanError as exc:
         assert "completed or not planned" in str(exc), exc
     else:
@@ -2668,16 +2560,7 @@ def test_close_rejects_invalid_reason_before_remote_reads_or_writes() -> None:
 def test_close_syncs_project_before_closing_issue() -> None:
     plan = load_plan_module()
     allow_close_relationships(plan)
-    issue = {
-        "repo": "owner/repo",
-        "number": 10,
-        "id": 1010,
-        "title": "Durable plan",
-        "body": "## Finish Line\n\nShip it.\n",
-        "html_url": "https://github.com/owner/repo/issues/10",
-        "labels": [{"name": "plan"}, {"name": "plan:active"}],
-        "state": "open",
-    }
+    issue = close_plan_issue()
     calls: list[tuple[str, Any]] = []
 
     plan.load_config = lambda repo, **_: {
@@ -2722,15 +2605,7 @@ def test_close_syncs_project_before_closing_issue() -> None:
     output = StringIO()
     with patched_issue_core(plan, edit_issue=fake_edit_issue, set_issue_state=fake_set_issue_state):
         with redirect_stdout(output):
-            plan.cmd_close(types.SimpleNamespace(
-                repo="owner/repo",
-                issue="10",
-                reason="completed",
-                body=None,
-                body_file=None,
-                owner=None,
-                project=None,
-                reconcile_dependents=False))
+            plan.cmd_close(close_args())
 
     payload = json.loads(output.getvalue())
     assert payload["ok"] is True, payload
@@ -2849,21 +2724,10 @@ def test_create_refuses_to_mint_undocumented_extra_labels() -> None:
     plan.run_raw = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("label writes must use REST"))
 
     try:
-        plan.cmd_create(types.SimpleNamespace(
-            repo="owner/repo",
-            title="Undocumented label",
-            title_flag=None,
-            body="## Current Status\n\nActionable.\n",
-            body_file=None,
-            label=["waiting"],
-            milestone=None,
-            project=None,
-            force=False,
-            plan_status="active",
-            focus=None,
-            manager=None,
-            finish_line=None,
-        ))
+        plan.cmd_create(plan.build_parser().parse_args([
+            "--repo", "owner/repo", "create", "Undocumented label", "--body", "## Current Status\n\nActionable.\n", "--label",
+            "waiting",
+        ]))
     except plan.PlanError as exc:
         assert "Refusing to create undocumented label(s): waiting" in str(exc), str(exc)
     else:
@@ -2921,21 +2785,10 @@ def test_create_allows_existing_extra_labels_without_creating_them() -> None:
     output = StringIO()
     with patched_issue_core(plan, create_issue=fake_create_issue):
         with redirect_stdout(output):
-            plan.cmd_create(types.SimpleNamespace(
-                repo="owner/repo",
-                title="Existing label",
-                title_flag=None,
-                body="## Current Status\n\nActionable.\n",
-                body_file=None,
-                label=["customer"],
-                milestone=None,
-                project=None,
-                force=False,
-                plan_status="active",
-                focus=None,
-                manager=None,
-                finish_line=None,
-            ))
+            plan.cmd_create(plan.build_parser().parse_args([
+                "--repo", "owner/repo", "create", "Existing label", "--body", "## Current Status\n\nActionable.\n", "--label",
+                "customer",
+            ]))
 
     payload = json.loads(output.getvalue())
     assert payload["ok"] is True, payload
@@ -4177,14 +4030,9 @@ def test_merge_reconciles_accepted_unknown_outcome_to_final_sha() -> None:
             state_dir=Path(temp_dir),
         )
         try:
-            payload = pr.cmd_merge(types.SimpleNamespace(
-                repo="owner/repo",
-                pr="12",
-                method="merge",
-                commit_title=None,
-                commit_message=None,
-                delete_branch=False,
-            ))
+            payload = pr.cmd_merge(pr.build_parser().parse_args([
+                "--repo", "owner/repo", "merge", "12", "--method", "merge",
+            ]))
         finally:
             pr.github_api_core.call_gh = original_call
             pr.github_api_core.default_retry_policy = original_policy
@@ -4270,14 +4118,9 @@ def test_merge_reconciliation_rejects_head_drift() -> None:
         )
         try:
             try:
-                pr.cmd_merge(types.SimpleNamespace(
-                    repo="owner/repo",
-                    pr="12",
-                    method="merge",
-                    commit_title=None,
-                    commit_message=None,
-                    delete_branch=False,
-                ))
+                pr.cmd_merge(pr.build_parser().parse_args([
+                    "--repo", "owner/repo", "merge", "12", "--method", "merge",
+                ]))
             except pr.PrHelperError as exc:
                 api_result = exc.payload["api_result"]
                 assert api_result["reconciliation"]["result"] == "ambiguous", api_result
@@ -4412,14 +4255,9 @@ def test_merge_refuses_head_behind_strict_base() -> None:
     pr.github_api_core.call_gh = fake_call
     try:
         try:
-            pr.cmd_merge(types.SimpleNamespace(
-                repo="owner/repo",
-                pr="12",
-                method="merge",
-                commit_title=None,
-                commit_message=None,
-                delete_branch=False,
-            ))
+            pr.cmd_merge(pr.build_parser().parse_args([
+                "--repo", "owner/repo", "merge", "12", "--method", "merge",
+            ]))
         except pr.PrHelperError as exc:
             assert exc.failure is not None
             assert exc.failure.cause == "update_behind_branch", exc.failure
@@ -4478,14 +4316,9 @@ def test_merge_identity_reread_rejects_head_drift() -> None:
     pr.github_api_core.call_gh = fake_call
     try:
         try:
-            pr.cmd_merge(types.SimpleNamespace(
-                repo="owner/repo",
-                pr="12",
-                method="merge",
-                commit_title=None,
-                commit_message=None,
-                delete_branch=False,
-            ))
+            pr.cmd_merge(pr.build_parser().parse_args([
+                "--repo", "owner/repo", "merge", "12", "--method", "merge",
+            ]))
         except pr.PrHelperError as exc:
             assert exc.failure is not None
             assert exc.failure.cause == "merge_identity_unavailable", exc.failure

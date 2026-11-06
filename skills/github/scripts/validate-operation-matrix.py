@@ -27,7 +27,6 @@ REQUIRED_FIELDS = {
     "entrypoint",
     "intent",
     "current_transport",
-    "selected_transport",
     "endpoint_or_command",
     "quota_bucket",
     "actor_policy",
@@ -41,25 +40,9 @@ REQUIRED_FIELDS = {
     "permission_note",
     "request_priority",
 }
-OPTIONAL_FIELDS = {
-    "current_endpoint_or_command",
-    "current_quota_bucket",
-    "migration_status",
-}
-
 ENUMS = {
     "request_priority": {"essential", "bulk"},
     "current_transport": {
-        "composite",
-        "delegated_python",
-        "gh_cli",
-        "gh_cli_graphql",
-        "gh_cli_wrapper",
-        "git_remote",
-        "local_git",
-        "rest_api",
-    },
-    "selected_transport": {
         "composite",
         "delegated_python",
         "gh_cli",
@@ -78,16 +61,6 @@ ENUMS = {
         "rest_core",
         "search",
     },
-    "current_quota_bucket": {
-        "delegated",
-        "git_remote",
-        "graphql",
-        "local",
-        "mixed",
-        "rest_core",
-        "search",
-    },
-    "migration_status": {"planned"},
     "actor_policy": {
         "active_human_required",
         "automation_required",
@@ -215,7 +188,7 @@ def validate_schema(raw: dict[str, Any], errors: list[str]) -> list[dict[str, An
         missing = sorted(REQUIRED_FIELDS - operation.keys())
         if missing:
             errors.append(f"{label} missing required field(s): {', '.join(missing)}")
-        unknown = sorted(set(operation) - REQUIRED_FIELDS - OPTIONAL_FIELDS)
+        unknown = sorted(set(operation) - REQUIRED_FIELDS)
         if unknown:
             errors.append(f"{label} has unsupported field(s): {', '.join(unknown)}")
 
@@ -261,44 +234,15 @@ def validate_schema(raw: dict[str, Any], errors: list[str]) -> list[dict[str, An
                 "for conditionally retried non-idempotent writes"
             )
 
-        current_transport = operation.get("current_transport")
-        selected_transport = operation.get("selected_transport")
-        transport_changed = (
-            isinstance(current_transport, str)
-            and isinstance(selected_transport, str)
-            and current_transport != selected_transport
-        )
-        migration_planned = operation.get("migration_status") == "planned"
-        if transport_changed and not migration_planned:
-            errors.append(f"{label}.migration_status must be 'planned' while transports differ")
-        if transport_changed or migration_planned:
-            for field in ("migration_status", "current_endpoint_or_command", "current_quota_bucket"):
-                value = operation.get(field)
-                if not isinstance(value, str) or not value.strip():
-                    errors.append(f"{label}.{field} is required for a planned migration")
-        if migration_planned:
-            current_endpoint = operation.get("current_endpoint_or_command")
-            selected_endpoint = operation.get("endpoint_or_command")
-            current_quota = operation.get("current_quota_bucket")
-            selected_quota = operation.get("quota_bucket")
-            if (
-                not transport_changed
-                and current_endpoint == selected_endpoint
-                and current_quota == selected_quota
-            ):
-                errors.append(
-                    f"{label}.migration_status is planned but transport, endpoint, and quota evidence are unchanged"
-                )
-
         rationale = operation.get("retained_graphql_rationale")
         if isinstance(rationale, str):
             if "graphql" not in rationale.lower():
                 errors.append(f"{label}.retained_graphql_rationale must explicitly mention GraphQL")
             if (
-                operation.get("selected_transport") == "gh_cli_graphql"
+                operation.get("current_transport") == "gh_cli_graphql"
                 or operation.get("quota_bucket") == "graphql"
             ) and "no retained graphql" in rationale.lower():
-                errors.append(f"{label}.retained_graphql_rationale contradicts GraphQL-selected transport")
+                errors.append(f"{label}.retained_graphql_rationale contradicts current GraphQL transport")
 
     return valid_operations
 
@@ -524,41 +468,6 @@ def test_graphql_rationale_is_required() -> None:
     assert any("retained_graphql_rationale" in error and "GraphQL" in error for error in errors), errors
 
 
-def test_planned_migration_requires_current_transport_evidence() -> None:
-    errors: list[str] = []
-    operation = minimal_operation(current_transport="gh_cli_wrapper", selected_transport="rest_api")
-    validate_schema({"schema_version": SCHEMA_VERSION, "operations": [operation]}, errors)
-    assert any("migration_status" in error and "required" in error for error in errors), errors
-    assert any("current_endpoint_or_command" in error and "required" in error for error in errors), errors
-    assert any("current_quota_bucket" in error and "required" in error for error in errors), errors
-
-
-def test_same_transport_component_migration_is_allowed() -> None:
-    errors: list[str] = []
-    operation = minimal_operation(
-        current_transport="composite",
-        selected_transport="composite",
-        endpoint_or_command="REST issue reads plus retained Project GraphQL",
-        quota_bucket="mixed",
-        migration_status="planned",
-        current_endpoint_or_command="gh issue list plus retained Project GraphQL",
-        current_quota_bucket="mixed",
-    )
-    validate_schema({"schema_version": SCHEMA_VERSION, "operations": [operation]}, errors)
-    assert errors == [], errors
-
-
-def test_planned_migration_requires_changed_evidence() -> None:
-    errors: list[str] = []
-    operation = minimal_operation(
-        migration_status="planned",
-        current_endpoint_or_command="GET /fixture",
-        current_quota_bucket="rest_core",
-    )
-    validate_schema({"schema_version": SCHEMA_VERSION, "operations": [operation]}, errors)
-    assert any("transport, endpoint, and quota evidence are unchanged" in error for error in errors), errors
-
-
 def test_argparse_argument_choice_extractor() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "helper.py"
@@ -594,7 +503,6 @@ def minimal_operation(**overrides: Any) -> dict[str, Any]:
         "entrypoint": "github/scripts/gh-pr.py view",
         "intent": "Fixture operation.",
         "current_transport": "rest_api",
-        "selected_transport": "rest_api",
         "endpoint_or_command": "GET /fixture",
         "quota_bucket": "rest_core",
         "actor_policy": "automation_required",

@@ -354,7 +354,6 @@ def retire_task(target: Path, *, dry_run: bool, offline_only: bool = False) -> i
         return outcome.returncode
     args = ["retire", *(["--dry-run"] if dry_run else []), *(["--offline-only"] if offline_only else []), str(target)]
     os.execve(str(helper), [str(helper), *args], host_environment(args))
-    return 0
 
 
 if __name__ == "__main__":

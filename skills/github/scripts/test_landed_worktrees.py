@@ -744,8 +744,8 @@ class MainTests(Fixture):
                 target = self.worktree(f"abandoned-{len(self.git(self.repo, 'worktree', 'list').splitlines())}", lock=lock)
                 head = self.commit(target, "Abandoned work")
                 self.git(target, "push", str(self.remote), "HEAD")
-                code, result, host = self.run_main(None, target=target, entrypoint=True)
-                self.assertEqual((code, result), (0, {}))
+                _code, result, host = self.run_main(None, target=target, entrypoint=True)
+                self.assertEqual(result, {})
                 self.assertEqual(host.call_args.args[1][-1], str(target))
                 self.assertEqual(host.call_args.args[2]["DEV_WORKTREE_EVIDENCE_ROOT"], str(dev_worktree.artifact_roots()[0]))
                 self.assertEqual(self.git(target, "rev-parse", "HEAD"), head)
@@ -764,9 +764,9 @@ class MainTests(Fixture):
         target = self.worktree("flags")
         for dry_run, offline_only in ((False, False), (True, False), (False, True), (True, True)):
             with self.subTest(dry_run=dry_run, offline_only=offline_only):
-                code, result, host = self.run_main(None, target=target, entrypoint=True,
-                                                   dry_run=dry_run, offline_only=offline_only)
-                self.assertEqual((code, result), (0, {}))
+                _code, result, host = self.run_main(None, target=target, entrypoint=True,
+                                                    dry_run=dry_run, offline_only=offline_only)
+                self.assertEqual(result, {})
                 arguments = host.call_args.args[1][1:]
                 self.assertEqual(arguments, ["retire", *(["--dry-run"] if dry_run else []),
                                              *(["--offline-only"] if offline_only else []), str(target)])
@@ -960,7 +960,7 @@ class MainTests(Fixture):
             with self.subTest(released=released, entrypoint=entrypoint):
                 ownership = self.claimed_source(released=released)
                 code, result, run = self.run_main(None, target=target, claim_issues=[3], entrypoint=entrypoint, **ownership)
-                self.assertEqual(code == 0, released)
+                self.assertEqual(run.called if entrypoint and released else code == 0, released)
                 if entrypoint and released:
                     self.assertEqual(result, {})
                     self.assertEqual(run.call_args.args[1][-1], str(target))
