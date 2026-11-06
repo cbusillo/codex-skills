@@ -185,7 +185,7 @@ def snapshot(repo: str, key: bytes, remote_probe: bool = True,
                     covered, method = ref, "ancestor_of_live_tip"
                     break
         coverage[name] = {"state": "covered" if covered else "unknown", "method": method, "remote_ref": covered}
-    stash_code, stash_data = git(root, "reflog", "show", "--format=%H", "refs/stash", check=False)
+    stash_code, stash_data = git(root, "rev-list", "--walk-reflogs", "--no-commit-header", "--format=%H", "refs/stash", check=False)
     if stash_code and "refs/stash" in refs:
         raise ProbeError("stash_evidence_unavailable")
     if start_registrations != registrations(root) or raw_refs != git(root, "for-each-ref",
