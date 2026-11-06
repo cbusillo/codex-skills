@@ -505,6 +505,21 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.assertFalse({f"/repos/{REPO}/issues", f"/repos/{REPO}/issues/comments"}.intersection(paths))
         self.assertEqual(report["coverage"]["repositories"], [REPO])
 
+    def test_authored_signoff_on_an_unclaimed_record_needs_a_verified_session_release(self) -> None:
+        entry = self.receipt_entry(records=((REPO, 1), (REPO, 2)))
+        for released in (False, True):
+            for author in (ACTOR, "foreign[bot]"):
+                with self.subTest(released=released, author=author):
+                    self.comments = [self.source, self.release] if released else [self.source]
+                    signoff = {"body": f"## Current Status\nNext actor: agent:supervisor\nSession: {SESSION}",
+                               "user": {"login": author}}
+                    self.reader.get_json.side_effect = lambda path, **_kw: signoff if path.endswith("/2") else self.issue
+                    self.reader.paged_json.side_effect = lambda path, **_kw: self.comments if path.endswith("/1/comments") else []
+                    report = helper.check([entry])
+                    self.assertEqual(report["claims_clear"], released and author == ACTOR, report)
+                    self.assertEqual(report["coverage"]["complete"], report["claims_clear"])
+        self.reader.post_json.assert_not_called()
+
     def test_input_and_prose_receipt_fixtures_are_not_recorded_claims(self) -> None:
         receipt = {"claim": SOURCE, "issue": {"repo": "fixture/data", "number": 8}}
         command = "cat <<'EOF'\n" + json.dumps(receipt) + "\nEOF"

@@ -2192,6 +2192,10 @@ uv run skills/supervisor/scripts/release_session_claims.py finish --ledger <priv
 
 `--apply` records closure and reports existing releases; finish posts no new
 attestation/release and changes no wait, blocker, status or retained artifact.
+A session-only sign-off on a record authored by the configured automation is
+accounted for once that session has a verified exact claim release. Explicit
+ownership, session routing, conflicting identities and unmatched structured
+claims still require reconciliation; the native claim check uses the same rule.
 A confirmed release readback in the source's verified native transcript proves
 an unchanged canonical release was observed before the source ended, even when
 the provider's read timestamps disagree with the host clock. Missing native

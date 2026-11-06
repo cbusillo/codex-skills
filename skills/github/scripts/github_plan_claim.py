@@ -373,6 +373,18 @@ def belongs_to_session(body: str, session: str) -> bool:
     return any(identity.search(value.split(";", 1)[0]) for value in fields)
 
 
+def authored_session_signoff(record: dict[str, Any], session: str, actor: str) -> bool:
+    body = ownership_text(unquoted_text(record.get("body") or ""), strip_quotes=False)
+    if (record.get("user") or {}).get("login") != actor or records(body):
+        return False
+    fields = session_fields(body, include_quotes=False, current_only=True)
+    if {identifier for field in fields for identifier in session_identifiers(field)} != {session}:
+        return False
+    if any(value == f"agent:{session}" for _, value in next_actor.fields(body)):
+        return False
+    return not has_ownership_assertion(body, own_claim={"worker": "", "session": session})
+
+
 def released_successor_route(
     conflicts: list[dict[str, Any]], comments: list[dict[str, Any]], *, issue_repo: str,
 ) -> int | None:

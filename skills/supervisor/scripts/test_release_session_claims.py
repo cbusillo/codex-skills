@@ -1162,6 +1162,30 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertTrue(report["needs_reconciliation"])
 
+    def test_finish_accounts_for_authored_signoffs_only_with_verified_releases(self) -> None:
+        signoff = "## Current Status\nNext actor: agent:supervisor\nSession: source-session"
+        entry = {**self.entry, "_finish_scope": "owner-wide scope"}
+        for same_record, is_pr in itertools.product((False, True), (False, True)):
+            for variant in ("signoff", "held", "foreign", "claimed", "routed", "ambiguous"):
+                with self.subTest(same_record=same_record, is_pr=is_pr, variant=variant):
+                    body = signoff
+                    if variant == "claimed":
+                        body += "\nClaimed by trial"
+                    if variant == "routed":
+                        body = body.replace("agent:supervisor", "agent:source-session")
+                    if variant == "ambiguous":
+                        body += "\nSession: other-session"
+                    record = {"body": body, "user": {"login": "foreign[bot]" if variant == "foreign" else ACTOR}}
+                    if is_pr:
+                        record["pull_request"] = {}
+                    comments = [self.source] if variant == "held" else [self.source, self.own_release()]
+                    self.reader.get_json.side_effect = lambda path, **_kw: record if same_record or path.endswith("/2") else {"body": ""}
+                    self.reader.paged_json.side_effect = lambda path, **_kw: comments if path.endswith("/1/comments") else []
+                    issues = [("test/a", 1)] if same_record else [("test/a", 2), ("test/a", 1)]
+                    report = helper.finished_claims(self.reader, entry, ACTOR, issues, False)
+                    self.assertEqual(bool(report["issue_refusals"]), variant != "signoff", report)
+                    self.assertEqual(bool(report["retained_status_claims"]), variant != "signoff", report)
+
     def test_finish_noop_paths_keep_the_unqualified_verdict_gate(self):
         for comments in ([], [self.source, self.own_release()]):
             for verdict in ("Safe to exit: yes, if checks pass", "Safe to exit: yes.\nOne more line"):

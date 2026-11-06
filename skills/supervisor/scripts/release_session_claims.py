@@ -651,6 +651,7 @@ def release_session(reader, entry, actor, supervisor_session, issues, checkout_r
 def finished_claims(reader, entry, actor, issues, apply):
     """Consume one canonical release proof per source; never manufacture a release."""
     released, refused, retained_status = [], [], []
+    signoffs = []
     ended = release.stamp(entry["ended_at"])
     posted = None
     for repo, number in issues:
@@ -668,8 +669,10 @@ def finished_claims(reader, entry, actor, issues, apply):
                 body_records = [r for r in claim.records(issue["body"]) if r["session"] == entry["session_id"]]
                 source_records = [r for c in sources for r in claim.records(c.get("body") or "")]
                 if not body_records or any(r not in source_records for r in body_records):
-                    retained_status.append({**identity, "next_action": "reconcile the authored Current Status ownership"})
-                    refused.append({**identity, "error": "status-only ownership has no matching canonical structured source"})
+                    if not body_records and claim.authored_session_signoff(issue, entry["session_id"], actor):
+                        signoffs.append(identity)
+                    else:
+                        retained_status.append(identity)
             for source in sources:
                 source_identity = {**identity, "claim_comment": source["id"]}
                 parsed = claim.records(source.get("body") or "")
@@ -742,6 +745,11 @@ def finished_claims(reader, entry, actor, issues, apply):
         except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError,
                 GitHubReadError, GitHubReadShapeError) as error:
             refused.append({**identity, "error": str(error)})
+    if not released:
+        retained_status.extend(signoffs)
+    for identity in retained_status:
+        identity["next_action"] = "reconcile the authored Current Status ownership"
+        refused.append({**identity, "error": "status-only ownership has no matching canonical structured source"})
     scope = entry["_finish_scope"]
     result_status = "needs reconciliation" if refused else "already released" if released else "nothing to release"
     if scope == "explicit scope":
