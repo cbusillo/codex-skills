@@ -301,48 +301,14 @@ memory/profile/local-config candidates.
    natural names, handles, and emails from candidate text and prompts.
    Source-file metadata is masked in full regardless of its path root;
    `--trusted-originals` preserves the original source path.
-   Mounted-volume paths in text and context are redacted, including quoted paths
-   with spaces. Repository-relative `media`, `mnt`, `tmp` and `var` paths such as
-   `backend/media/uploads/avatar.png` remain readable.
-   Use an explicit `./` prefix when the first directory has non-ASCII characters
-   or a trailing period, or when the path sits under a
-   prefix resembling a dev-server link. An ASCII word glued directly to an
-   absolute path can look repository-relative; quote absolute paths in prose.
-   Later path fragments on a line with an ambiguous absolute path or redacted URL
-   remain masked conservatively; double-quote the absolute filesystem argument
-   or use a closed backtick code span to preserve a separate relative one at an
-   argument boundary. Single-quote ambiguity remains conservative.
-   Prefixes resembling known private roots stay conservative; approved trusted-local
-   extraction can use `--trusted-originals` to retain the original signal.
-   Path redaction preserves public HTTP(S) URL paths except local file/editor and
-   dev-server/tunnel file links; literal and percent-encoded query/fragment paths and person data are
-   still redacted. Known local path roots are masked conservatively inside other
-   URI schemes and query/fragment values; arbitrary URI paths can remain readable.
-   Unquoted `/Volumes/` spans include spaces in the volume and descendant names,
-   ending at a line, quote, comma, punctuation followed by whitespace, recognized
-   workflow clauses such as `and builds go to` or `so`, closing Markdown/parenthesis
-   delimiters, shell separators/options or a following HTTP(S) URL.
-   The [extractor](scripts/extract_rollout_memory.py) owns the recognized prose
-   words and continuation rules.
-   Periods, colons, semicolons and conjunctions inside path components remain masked when a path
-   continuation is recognizable.
-   That continuation is one whitespace-free word immediately followed by a slash;
-   quote multiword descendants after a prose word or closing delimiter, such as
-   `"/Volumes/Backup/Notes for Tax Year/2024.pdf"`.
-   Quote or shell-escape mounted names containing those boundaries. Other prose
-   following an unquoted mounted path is masked up to the next boundary; quote
-   the path to retain it. Unquoted whitespace under other roots remains ambiguous.
-   In shell assignments, `cd` arguments and CLI options, unescaped whitespace
-   separates arguments, so quote or escape space-bearing paths there.
-   Query/fragment values are decoded for inspection, including nested percent
-   encoding and plus-encoded spaces. A value containing a recognized private path
-   is masked in full; unrelated URL fields keep their original encoding. Public
-   URL paths remain readable, while a comma or pipe glued to a private absolute
-   path separates it from the public URL. Encoded paths in known local/dev-server
-   links are masked too. This is bounded extraction, not universal natural-language
-   path detection: names such as `/Volumes/Photos and go to town/private.txt` or
-   `/Volumes/Backup/Documents (old) tax archive/tax.pdf` need quoting or shell
-   escaping to distinguish their components from workflow prose.
+   The [extractor](scripts/extract_rollout_memory.py) owns path and URL
+   recognition. Quote absolute paths in prose and quote or shell-escape paths
+   with spaces, such as `"/Volumes/Backup/Notes for Tax Year/2024.pdf"`.
+   Use double quotes or a closed backtick span to separate an ambiguous
+   absolute path from a later repository-relative argument; use an explicit
+   `./` prefix for unusual relative names that resemble links.
+   Redaction conservatively masks ambiguous continuations and does not detect
+   every natural-language path. Public HTTP(S) URL paths may remain readable.
    Under `--redact`, diagnostic
    artifact references are filenames relative to the output bundle, so its local
    directory is not exposed. Trusted mode retains the original artifact paths.
@@ -405,14 +371,6 @@ matrix result files remain readable as historical data.
 Use explicit `NAME=claude:MODEL` variants for approved model comparisons;
 additional variants change provider cost and runtime. Keep prompt content,
 budgets, validation, and output artifacts on this controlled one-shot path.
-Do not use `agent.create` `context_files` to pass rollout prompt payloads to
-agents for matrix/model evaluation.
-
-`context_files` snapshots file contents directly into a spawned agent prompt.
-Use it only for deliberate agent-context snapshots, and require an explicit
-large `context_budget_tokens` when a large file is truly intended.
-Preserve fake `gpt-5.1-codex` harness models as historical deterministic protocol
-fixtures rather than production recommendations.
 
 The trusted-local batch review path is different: `review_rollout_memory_batches.py`
 may send approved prompt content directly in the local OpenAI-compatible request

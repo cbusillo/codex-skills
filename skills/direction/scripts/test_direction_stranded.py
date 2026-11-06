@@ -487,7 +487,6 @@ class OverdueTriggerTests(unittest.TestCase):
 
     def test_waits_on_the_director_without_an_open_question_are_listed_oldest_first(self):
         # https://github.com/cbusillo/codex-skills/issues/2579
-        reviewed = sweep.github_plan_wait.reviewed
         def comment(number, cid, days_ago, body):
             return {"id": cid, "created_at": (self.now - dt.timedelta(days=days_ago)).isoformat(),
                     "user": {"login": "shiny-code-app[bot]"}, "body": body,

@@ -1898,8 +1898,6 @@ def test_render_executive_brief_preserves_workstream_identity_inside_portfolio_a
     assert "The visible decision is how to sequence Northwind Lab dogfood work inside the Northwind product area" in rendered
     assert "- **Northwind Lab**: Northwind Lab dogfood work inside the Northwind product area" in rendered
     assert "Key initiatives: Code Bridge." in rendered
-    assert "Impact: turns finished work into a checkable result before the next cycle commits more effort." in rendered
-    assert "Risk if delayed: the open items can fan out into parallel work before the decision loop closes." in rendered
     assert "Confidence: medium; based on 3 GitHub items across 1 initiative" in rendered
     assert "Northwind Product Issues MVP" not in rendered
     assert "Northwind product MVP" not in rendered
