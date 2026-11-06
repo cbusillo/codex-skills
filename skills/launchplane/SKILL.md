@@ -831,8 +831,8 @@ directory/project overrides retain the block. Consumers without
 repository-exception support keep the original block; do not bypass it through
 an alternate entry point. The local gates support chained checks and output
 redirection. A leading `UV_PROJECT_ENVIRONMENT=` may place the project's
-environment outside the checkout when uv syncs it; `--no-sync` and an inherited
-`UV_NO_SYNC` retain the block with that selector.
+environment outside the checkout when uv syncs it; `--no-sync` and `UV_NO_SYNC`
+in the hook's inherited environment retain the block with that selector.
 
 For the Director-approved testing local-consumer path (Q921), read the
 [custody contract](https://github.com/cbusillo/launchplane/blob/main/docs/testing-local-consumer.md)

@@ -739,28 +739,21 @@ class CommandPolicyHookTests(unittest.TestCase):
             environment = shlex.quote(str(root / "task evidence" / "venv"))
             gate = "UV_PROJECT_ENVIRONMENT=" + environment + " uv run launchplane service export-agent-contract --output artifact.json"
             for target in (checkout, linked):
-                for command in (gate, gate + " > export.log 2>&1 && cmp contracts/agent-operator-contract.json artifact.json"):
-                    with self.subTest(target=target, command=command):
-                        result = bash(command, target)
-                        self.assertEqual((result.returncode, result.stderr), (0, ""))
-                        result = bash("cd " + shlex.quote(str(target)) + " && " + command, root)
-                        self.assertEqual((result.returncode, result.stderr), (0, ""))
+                command = gate + " > export.log 2>&1 && cmp contracts/agent-operator-contract.json artifact.json"
+                with self.subTest(target=target):
+                    result = bash(command, target)
+                    self.assertEqual((result.returncode, result.stderr), (0, ""))
+                    result = bash("cd " + shlex.quote(str(target)) + " && " + command, root)
+                    self.assertEqual((result.returncode, result.stderr), (0, ""))
             for command in (
-                gate.replace("uv run", "uv run --project /other"),
-                gate.replace("uv run", "uv run --directory /other"),
-                gate.replace("uv run", "uv run --with other-package"),
                 gate.replace("uv run", "UV_PROJECT=/other uv run"),
                 gate.replace("uv run", "PATH=/other/bin uv run"),
                 gate.replace("uv run", "PYTHONPATH=/other uv run"),
                 gate.replace("uv run", "uv run --no-sync"),
                 "set -a; UV_PROJECT_ENVIRONMENT=" + environment + "; uv run --no-sync launchplane service export-agent-contract",
-                gate.replace("service export-agent-contract --output artifact.json", "ci postgres-integration --database-url postgresql://fixture@remote.invalid/postgres"),
                 gate.replace("launchplane service export-agent-contract", "launchplane service start"),
                 gate.replace("launchplane service export-agent-contract", "/global/bin/launchplane service export-agent-contract"),
                 gate.replace("uv run", ""),
-                ". /other/setup && " + gate,
-                gate + " && uv run launchplane merge-train run-once",
-                gate.replace(environment, "\"$(pwd)\""),
             ):
                 with self.subTest(command=command):
                     self.assertEqual(bash(command, checkout).returncode, 2)

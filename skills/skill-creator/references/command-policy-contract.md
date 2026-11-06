@@ -125,10 +125,6 @@ shell wrapper uses the same checks on its enclosed command. The simulator
 receives already normalized argv and the consumer's verified command directory;
 `--cwd` describes that directory, not a shell `cd` instruction.
 
-A leading `UV_PROJECT_ENVIRONMENT=` on a repository command selects its dependency
-environment without changing the project. It requires uv synchronization:
-`--no-sync` or an inherited `UV_NO_SYNC` retains the block with that selector.
-
 The reviewed Launchplane testing local-consumer commands also accept their own
 `--directory` destination argument after the subcommand. A `uv --directory`
 switch before the executable still retains the block; a destination never changes
