@@ -4412,7 +4412,7 @@ class ClaimTests(unittest.TestCase):
                             self.inventory, self.blockers, self.issue = old
                             observed.update(complete=True, inventory=self.inventory, coverage={})
                     source = CLAIM.records(self.comments[0]["body"])[0]
-                    self.comments.insert(2, {"id": 44, "body": f"Released by {source['worker']}",
+                    self.comments.insert(2, {"id": 44, "body": f"Released claim {self.comments[0]['id']}",
                         "user": {"login": TEST_BOT}, "created_at": "2026-10-01T12:00:00Z"})
                     commands, _ = iterm_tab.prepare_launches(launch)
                     self.assertTrue(self.emitted.call_args.args[0]["issue"]["launch_check"]["allowed"])
@@ -5165,158 +5165,6 @@ class ClaimTests(unittest.TestCase):
                 self.issue["body"] += f"\nNot claimed by {holder}.\n\n{definition}: https://example.com/status"
                 self.run_claim()
                 self.assertTrue(self.emitted.call_args.args[0]["ok"])
-
-    def test_legacy_holder_formatting_preserves_authored_release(self):
-        for holder in (f"`{OTHER['worker']}`", f"**{OTHER['worker']}**", f"_{OTHER['worker']}_"):
-            with self.subTest(holder=holder):
-                self.setUp()
-                self.comments = [
-                    {"id": 1, "body": f"Claimed by {holder}", "user": {"login": TEST_BOT}},
-                    {"id": 2, "body": f"Released by {holder}", "user": {"login": TEST_BOT}},
-                ]
-                self.run_claim()
-                self.assertTrue(self.emitted.call_args.args[0]["ok"])
-                self.setUp()
-                self.compete()
-                self.comments.append({"id": 2, "body": f"Released by {holder}"})
-                with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
-                self.assert_no_writes()
-
-    def test_legacy_alias_preserves_distinct_sessions_and_exact_id_recovery(self):
-        for holder in ("old-worker", "`old-worker`", "**old-worker**"):
-            for structured_first in (False, True):
-                with self.subTest(holder=holder, structured_first=structured_first):
-                    self.setUp()
-                    first = f"Claimed by {holder}\n\nSession: old-session-a\nBranch: work/old-a"
-                    if structured_first:
-                        first += "\n" + CLAIM.marker({**OTHER, "worker": "old-worker", "session": "old-session-a"})
-                    self.comments = [
-                        {"id": 1, "body": first, "user": {"login": TEST_BOT}},
-                        {"id": 2, "body": f"Claimed by {holder}\n\nSession: old-session-b\nBranch: work/old-b",
-                         "user": {"login": TEST_BOT}},
-                        {"id": 3, "body": f"Released by {holder}", "user": {"login": TEST_BOT}},
-                    ]
-                    with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
-                        self.run_claim()
-                    self.assertEqual({1, 2}, {e.get("id") for e in caught.exception.payload["competing_evidence"]})
-                    self.assert_no_writes()
-                    self.comments.append({"id": 4, "body": "Released claim 1", "user": {"login": TEST_BOT}})
-                    with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
-                        self.run_claim()
-                    self.assertEqual({2}, {e.get("id") for e in caught.exception.payload["competing_evidence"]})
-                    self.assert_no_writes()
-                    self.comments.append({"id": 5, "body": "Released claim 2", "user": {"login": TEST_BOT}})
-                    self.run_claim()
-                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
-
-    def test_legacy_alias_preserves_list_inline_and_missing_session_identity(self):
-        for template in (
-            "Claimed by old-worker\n- Session: {session}\n- Branch: work/old",
-            "Claimed by old-worker Session: {session}\nBranch: work/old",
-            "Claimed by old-worker\nSession: Codex desktop {session}\nBranch: work/old",
-            "Claimed by old-worker\nBranch: work/old",
-            *(f"Claimed by old-worker\nSession: {value}\nBranch: work/old"
-              for value in ("", "\t", "unknown", "n/a", "-", "TBD", "<session>", "none", "unassigned",
-                            "not recorded", "unavailable", "pending", "?", "(none)", "—", "<session-id>")),
-        ):
-            with self.subTest(template=template):
-                self.setUp()
-                self.comments = [
-                    {"id": 1, "body": template.format(session="old-session-a"), "user": {"login": TEST_BOT}},
-                    {"id": 2, "body": template.format(session="old-session-b"), "user": {"login": TEST_BOT}},
-                    {"id": 3, "body": "Released by old-worker", "user": {"login": TEST_BOT}},
-                ]
-                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
-                    self.run_claim()
-                self.assertEqual({1, 2}, {e.get("id") for e in caught.exception.payload["competing_evidence"]})
-                self.assert_no_writes()
-                self.comments.extend([
-                    {"id": 4, "body": "Released claim 1", "user": {"login": TEST_BOT}},
-                    {"id": 5, "body": "Released claim 2", "user": {"login": TEST_BOT}},
-                ])
-                self.run_claim()
-                self.assertTrue(self.emitted.call_args.args[0]["ok"])
-
-    def test_legacy_alias_still_releases_repeated_same_session(self):
-        for session in ("old-session", "Codex desktop A"):
-            with self.subTest(session=session):
-                self.setUp()
-                self.comments = [
-                    {"id": 1, "body": f"Claimed by old-worker Session: {session}\nBranch: work/old",
-                     "user": {"login": TEST_BOT}},
-                    {"id": 2, "body": f"Claimed by **old-worker**\n**Session:** `{session}`\nBranch: work/old",
-                     "user": {"login": TEST_BOT}},
-                    {"id": 3, "body": "Released by old-worker", "user": {"login": TEST_BOT}},
-                ]
-                self.run_claim()
-                self.assertTrue(self.emitted.call_args.args[0]["ok"])
-
-        session = "81687039-a90a-4107-a144-29bd815ce6ba"
-        self.setUp()
-        self.comments = [
-            {"id": 1, "body": f"Claimed by old-worker\n- Session: Claude Code CLI `{session}`", "user": {"login": TEST_BOT}},
-            {"id": 2, "body": f"Claimed by old-worker\nSession: {session}", "user": {"login": TEST_BOT}},
-            {"id": 3, "body": "Released by old-worker", "user": {"login": TEST_BOT}},
-        ]
-        self.run_claim()
-        self.assertTrue(self.emitted.call_args.args[0]["ok"])
-
-    def test_legacy_alias_keeps_author_chronology_and_unknown_identity_guards(self):
-        self.setUp()
-        session = "81687039-a90a-4107-a144-29bd815ce6ba"
-        self.comments = [
-            {"id": 1, "body": f"Claimed by old-worker\nSession: {session}\nPrevious session: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-             "user": {"login": TEST_BOT}},
-            {"id": 2, "body": f"Claimed by old-worker\nSession: {session}", "user": {"login": TEST_BOT}},
-            {"id": 3, "body": "Released by old-worker", "user": {"login": TEST_BOT}},
-        ]
-        with self.assertRaises(PLAN.ClassifiedPlanError):
-            self.run_claim()
-        self.assert_no_writes()
-        for extra, succeeds in (
-            ({"id": 2, "body": "Claimed by old-worker\nSession: other-session", "user": {"login": "another-author"}}, False),
-            ({"id": 2, "body": "Claimed by old-worker", "user": {"login": TEST_BOT}}, False),
-            ({"id": 2, "body": "> Claimed by old-worker\n> Session: quoted-session", "user": {"login": TEST_BOT}}, True),
-        ):
-            with self.subTest(extra=extra):
-                self.setUp()
-                self.comments = [
-                    {"id": 1, "body": "Claimed by old-worker\nSession: old-session", "user": {"login": TEST_BOT}},
-                    extra,
-                    {"id": 3, "body": "Released by old-worker", "user": {"login": TEST_BOT}},
-                ]
-                if succeeds:
-                    self.run_claim()
-                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
-                else:
-                    with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
-                        self.run_claim()
-                    expected = {2} if extra["user"]["login"] != TEST_BOT else {1, 2}
-                    self.assertEqual(expected, {e.get("id") for e in caught.exception.payload["competing_evidence"]})
-                    self.assert_no_writes()
-        self.setUp()
-        self.comments = [
-            {"id": 1, "body": "Released by old-worker", "user": {"login": TEST_BOT}},
-            {"id": 2, "body": "Claimed by old-worker\nSession: old-session", "user": {"login": TEST_BOT}},
-        ]
-        with self.assertRaises(PLAN.ClassifiedPlanError):
-            self.run_claim()
-        self.assert_no_writes()
-
-    def test_formatted_legacy_release_cannot_bypass_reused_worker_guard(self):
-        for holder in (OTHER["worker"], f"`{OTHER['worker']}`", f"**{OTHER['worker']}**"):
-            with self.subTest(holder=holder):
-                self.setUp()
-                self.comments = [
-                    {"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}},
-                    {"id": 2, "body": CLAIM.marker({**OTHER, "session": "second-session"}), "user": {"login": TEST_BOT}},
-                    {"id": 3, "body": "Released claim 1", "user": {"login": TEST_BOT}},
-                    {"id": 4, "body": "Released claim 2", "user": {"login": TEST_BOT}},
-                    {"id": 5, "body": f"Claimed by {OTHER['worker']}", "user": {"login": TEST_BOT}},
-                    {"id": 6, "body": f"Released by {holder}", "user": {"login": TEST_BOT}},
-                ]
-                with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
-                self.assert_no_writes()
 
     def test_linked_denial_preserves_valid_destinations_and_titles(self):
         for destination in (
@@ -6200,7 +6048,7 @@ class ClaimTests(unittest.TestCase):
 
     def test_released_claim_does_not_hold_issue(self):
         self.compete()
-        self.comments.append({"body": "Released by trial-b"})
+        self.comments.append({"body": "Released claim 1"})
         self.run_claim()
 
     def test_foreign_author_cannot_release_claim(self):
@@ -6210,8 +6058,10 @@ class ClaimTests(unittest.TestCase):
             self.run_claim()
         self.assert_no_writes()
 
-    def test_conditional_legacy_releases_preserve_real_claims(self):
+    def test_worker_name_releases_preserve_claims_until_exact_id_release(self):
         releases = (
+            "Released by trial-b",
+            "Released by trial-b\n\n<!-- github-skill-operation:abc123 -->",
             "Released by trial-b if CI passes",
             "Released by trial-b once PR #99 merges",
             "Released by trial-b pending owner approval",
@@ -6241,67 +6091,6 @@ class ClaimTests(unittest.TestCase):
                     # without deleting history or broadening the worker alias.
                     self.comments.append({"id": 3, "body": "Released claim 1\n\n"
                                           "Source session finished; the retained PR still follows its own gates.",
-                                          "user": {"login": TEST_BOT}})
-                    self.run_claim()
-                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
-
-    def test_standalone_legacy_release_allows_authorized_successor(self):
-        for release in (
-            "Released by trial-b",
-            "Released by trial-b \t\r\n",
-            "Released by trial-b\n\n<!-- github-skill-operation:abc123 -->\n",
-        ):
-            with self.subTest(release=release):
-                self.setUp()
-                self.comments = [
-                    {"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}},
-                    {"id": 2, "body": release, "user": {"login": TEST_BOT}},
-                ]
-                self.run_claim()
-                self.assertIn("metadata_readback", self.emitted.call_args.args[0]["completed_steps"])
-
-    def test_legacy_release_does_not_clear_later_claim_or_independent_artifacts(self):
-        for evidence in ("later_claim", "branch", "worktree", "pr"):
-            with self.subTest(evidence=evidence):
-                self.setUp()
-                self.comments = [
-                    {"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}},
-                    {"id": 2, "body": "Released by trial-b", "user": {"login": TEST_BOT}},
-                ]
-                if evidence == "later_claim":
-                    self.comments.append({"id": 3, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}})
-                elif evidence == "branch":
-                    self.inventory["remote_branches"] = ["work/issue-42-prior"]
-                elif evidence == "worktree":
-                    self.inventory["worktrees"] = [{"path": "/retained/issue-42", "branch": OTHER["branch"]}]
-                else:
-                    self.pulls = [{"number": 99, "body": "Refs #42", "head": {"ref": OTHER["branch"]}}]
-                with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
-                self.assert_no_writes()
-
-    def test_legacy_retained_branch_requires_unambiguous_release(self):
-        for release, allowed in (
-            ("Released by trial-b\n\n<!-- github-skill-operation:abc123 -->", True),
-            ("Released by trial-b\nif CI passes", False),
-            ("Released by trial-b once PR #99 merges", False),
-            ("Released by trial-b\n\nSource session finished. Retain work/other-42 for the successor.", False),
-        ):
-            with self.subTest(release=release):
-                self.setUp()
-                self.args.resume_from = 1
-                self.comments = [
-                    {"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}},
-                    {"id": 2, "body": release, "user": {"login": TEST_BOT}},
-                ]
-                self.inventory["local_branches"] = [OTHER["branch"]]
-                self.inventory["worktrees"] = [{"path": "/retained/issue-42", "branch": OTHER["branch"]}]
-                if allowed:
-                    self.run_claim()
-                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
-                else:
-                    with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
-                    self.assert_no_writes()
-                    self.comments.append({"id": 3, "body": "Released claim 1\n\nSource session finished.",
                                           "user": {"login": TEST_BOT}})
                     self.run_claim()
                     self.assertTrue(self.emitted.call_args.args[0]["ok"])
@@ -6637,7 +6426,7 @@ class ClaimTests(unittest.TestCase):
                          {"id": 4, "body": "Released by trial-b"}]
         with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
             self.run_claim()
-        self.assertEqual([e["id"] for e in caught.exception.payload["competing_evidence"]], [3])
+        self.assertEqual([e["id"] for e in caught.exception.payload["competing_evidence"]], [1, 3])
 
     def test_origin_case_does_not_change_repository_identity(self):
         replies = ["git@github.com:OWNER/Repo.git\n", "worktree /fixture/repo\nbranch refs/heads/main\n", "main\n", ""]

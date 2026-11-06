@@ -79,14 +79,14 @@ class ReleaseTests(unittest.TestCase):
                                                                  until=ended + timedelta(days=1), comment_url=github_plan_release.COMMENT_URL)
             self.assertEqual((empty["status"], empty["rows"]), ("complete", []))
 
-    def test_inventory_backfill_refuses_unresolved_resume_after_the_original_exit(self) -> None:
+    def test_inventory_backfill_refuses_unresolved_native_resume(self) -> None:
         source = {"session_id": "01a0fcce-ef3c-74e3-af74-6721809e4990", "harness": "codex", "_inventory": True, "_backfill": True}
         cutoff = helper.release.stamp("2026-01-01T00:02:00Z")
-        for command in ("codex resume --last", "codex resume"):
+        for command in ("codex resume --last", "codex resume", "claude --continue --fork-session", "claude -r"):
             with (self.subTest(command=command), patch.object(helper, "inventory", return_value=[(543, "ttys002", command)]),
                   patch.object(helper.closure, "process_started_at", return_value=cutoff + timedelta(minutes=1)),
                   patch.object(helper.closure, "guarded_launch_endpoint", return_value=None), self.assertRaises(ValueError)):
-                helper.verify_process_exit(source, ended_at=cutoff)
+                helper.verify_process_exit({**source, "harness": command.split()[0]}, ended_at=cutoff)
 
     def test_optional_admission_proof_is_not_a_dependency_of_release_retry(self):
         log = self.root / "closed.json"
@@ -1583,11 +1583,10 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn("error", result["reports"][0])
         self.assertEqual(result["reports"][1]["session_id"], "source-session")
 
-    def test_exact_authored_release_and_legacy_release_are_respected(self):
-        for body in ("Released claim 1", "Released by trial"):
-            self.reader.paged_json.return_value = [self.source, comment(2, body)]
-            self.assertEqual(helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR), [])
-        for body, author in (("Released claim 1 if done", ACTOR), ("Released claim 1", "other")):
+    def test_only_exact_authored_release_is_respected(self):
+        self.reader.paged_json.return_value = [self.source, comment(2, "Released claim 1")]
+        self.assertEqual(helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR), [])
+        for body, author in (("Released by trial", ACTOR), ("Released claim 1 if done", ACTOR), ("Released claim 1", "other")):
             self.reader.paged_json.return_value = [self.source, comment(2, body, author)]
             self.assertEqual(len(helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR)), 1)
 

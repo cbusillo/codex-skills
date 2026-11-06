@@ -1188,8 +1188,8 @@ the machine-readable `github-plan:wait` record. Current
 Status and ordinary comment prose are recovery evidence, never wait or executing-worker
 authority. Structured claim/release records and independent branch, PR,
 worktree and live-session checks still refuse competing work. Historical
-`Claimed by` directives remain legacy claim records under the existing guarded
-release path; arbitrary status prose does not become a legacy claim.
+`Claimed by` directives still preserve ownership until their author posts an
+exact-ID release; arbitrary status prose does not become a claim.
 
 A `claim_wait_unresolved` refusal identifies the actual blocked issue or retained
 PR in `waiting_record`: its repository, number, record kind, URL, plan status
@@ -1418,7 +1418,7 @@ changing the worker, tool, or identity; ask the Director about ambiguous ownersh
 and continue independent work.
 
 Legacy `Claimed by` comment directives remain fail-closed until an authored
-exact-ID release or the supported legacy release path accounts for them.
+exact-ID release accounts for them.
 A formatted holder token retains its identity. Reused worker tokens across
 sessions require exact-ID release; a worker alias cannot release structured
 claims. An earlier same-worker explanatory claim note is accounted for only
@@ -1560,7 +1560,7 @@ for the private original-session record, read-only attestation generator, and
 to Supervisor and direction sessions, on the recorded source host only. Fresh
 PID/TTY, native transcript and tmux checks refuse live or uncertain identity
 and recent activity. Releases name the preserved worktrees/branches and leave
-them intact. Finished sessions and bare legacy claims keep the routes below.
+them intact. Finished native sessions use the route below.
 
 A direction or Supervisor session may release a finished native session's
 claim through `release-claim`. Keep the same configured automation identity;
@@ -1575,8 +1575,7 @@ canonical original structured claim matching that verified native session as
 original ownership context. Label it truthfully as ownership context, never as
 a worker handoff. Independently verify the original transcript, actual closure
 and original end time in either case; the ownership link replaces none of them.
-This alternative does not replace unstructured-source or legacy reconciliation,
-including their existing handoff and branch-evidence requirements below.
+An unstructured source still requires an exact-ID release by its author.
 Do not substitute the attestation's posting time for the closure time.
 
 ```bash
@@ -1620,110 +1619,6 @@ issue; it cannot release another structured claim. Partial writes preserve the
 posted records and completed steps: read them before any recovery, never switch
 identity or replay an unknown write.
 
-For a legacy issue source containing only `Claimed by WORKER` (plus an optional
-operation marker), use `--legacy --legacy-branch <verified-original-branch>
---legacy-reason "<why no native session ID exists>"`. A source with structured
-identity, session fields, or additional ownership prose cannot use this route.
-The caller verifies which branch the source worker used from the handoff.
-The helper corroborates the supplied branch by requiring an
-automation-authored PR on that branch (including a merged PR when its source
-branch was deleted) that either links the canonical issue itself, or that an
-automation-authored comment on the canonical issue names, with the source
-worker, before the attested end. Never invent a native session ID; the PR link
-alone does not tie a branch to a worker.
-PR-scoped claims keep the structured release path and cannot use `--legacy`.
-Post a separate exact-ID attestation for each legacy claim:
-
-```text
-Closed legacy claim <original-comment-id>
-Worker: <exact-source-worker>
-Source branch: <verified-original-branch>
-Native session unavailable: <exact-legacy-reason>
-Ended at: <verified-timezone-qualified-closure-timestamp>
-Safe to exit: yes
-<closure verification and handoff evidence>
-```
-
-The closure timestamp must be verified, not inferred from age, merge time,
-posting time or an absent process. An older attestation with `Ended at: unknown`
-is insufficient; replace it with verified closure evidence. The same automation
-identity, direction/Supervisor role, confirmation, fresh source/activity checks,
-source-branch commit checks, retained-PR checks and live-worktree peer checks
-apply. Missing peer coverage remains explicit and the caller verifies closure
-on hosts the helper cannot inspect. Each release affects only its exact source
-comment; other legacy claims require separate attestations and calls. Related
-follow-up release, `--retained-pr`, and structured retained-handoff resume are
-unavailable for legacy sources; existing open work retains its independent
-ownership conflict. Successors must use a fresh worker token: reusing a legacy
-worker cannot distinguish the successor from renewed source activity. The
-claim preflight refuses reuse before writing. Normal successor claims still check waits and retained artifacts.
-Edited or unavailable evidence and renewed source ownership invalidate the
-legacy receipt just as they do a structured release. Inspect `--dry-run` before
-applying. These flags cannot release or reinterpret a structured source.
-
-#### Historical original exit evidence
-
-Use the existing `--termination-record` procedure when the original native exit
-completed without a safe-exit verdict. Do not add a closure-log row or rewrite
-the original verdict. The private record keeps the native UUID, harness,
-source host, transcript, transcript roots, cause and retained artifacts. The
-source must resolve under a configured account root; declared roots add copies
-to scan and cannot establish the original. The observer rollout must remain
-under a configured Codex home's resolved sessions or archived_sessions directory.
-A historical Claude record may name an original Codex harness completion event:
-
-```json
-"exit_record": {
-  "kind": "codex_command",
-  "session_id": "<observing Codex UUID>",
-  "transcript": "/absolute/original/observer.jsonl",
-  "execution_id": "<original native execution ID>"
-}
-```
-
-This replaces PID, TTY and tmux fields only for this historical path. The native
-`item_completed` event must record a successful command with an explicit source
-UUID: `claude --session-id UUID` or `claude --resume UUID`. The supported argv may
-also contain `--settings VALUE`, `--mcp-config VALUE` and `--strict-mcp-config`.
-Only one literal foreground command, directly or through `/bin/sh`, `/bin/bash`
-or `/bin/zsh` with `-c` or `-lc`, qualifies. Wrappers, shell control syntax,
-background jobs, redirections, failed commands, typed `/exit` and history alone
-supply no exit proof. Other harness/evidence forms refuse. The original launch
-and completion times must enclose the source claim's creation. This proves the
-source was attached during that execution, rather than merely attempting a
-resume that never opened it. The generator derives `ended_at` and pins the
-original completion event's digest. It refuses a conflicting supplied end time.
-
-Every historical record also supplies `claim` (the exact original claim),
-`claim_url` and `claim_created_at` from GitHub. For an alias, supply `claim_session`
-(the original recorded Session field). The source root must contain its direct
-creation receipt inside the original creation interval. Quoted output, copied
-history, forks and spawned children cannot establish that identity. Bare legacy
-claims retain `--legacy`, branch and reason and their independent PR proof.
-No recovered identity changes the source claim.
-
-The generator and release preflight check configured account roots, every source
-copy, pending actions, canonical resume records and live or uncertain process
-identities. A canonical closure row, if present, is a resume veto only. Missing
-closure rows supply no exit proof and require no shared-log write. A historical
-source refuses while any recognized Claude executable is live, including
-Claude Desktop, editor extensions, another UUID, noninteractive launches or
-uncertain argv. The refusal identifies the blocking PID and executable. The native session inventory is an
-additional refusal-only check on every configured account. No registry row or
-launch operand grants independence. Run this historical procedure from a Codex
-Supervisor after those processes finish normally. Otherwise keep the claims
-and let the live work finish. This uses the maintained native-process classifier;
-it does not establish coverage of renamed binaries or SDK hosts.
-Unresolved resume targets also refuse on the existing inventory backfill route;
-unrelated plain processes keep that route's existing behavior. The crash route
-keeps its PID, TTY and nonce-bearing tmux checks.
-The release repeats verification after its pending write, pins the original
-exit, preserves artifacts, and keeps branch, PR, wait and blocker checks.
-Generate the attestation with `github_plan_termination.py --record FILE`, inspect
-it, post it through `gh-comment`, then inspect the ordinary release dry run with
-`--termination-record FILE`. Never invent an attestation URL or release a claim
-when the generator refuses.
-
 For retained PRs, pass each verified same-repository PR URL with repeatable
 `--retained-pr`. Each PR must independently link the canonical issue and belong
 to the source automation identity. The release comment is the new handoff for
@@ -1763,15 +1658,8 @@ status ownership still needs its supported reconciliation. Closing a landed
 prerequisite and proving its finish line is separate from release: `next` and
 `claim` accept a closed native blocker without deleting dependency history.
 
-Use a unique worker token per native session. Legacy `Released by <worker>`
-comments must contain only that exact directive, optionally followed by the
-helper's operation marker; trailing whitespace is allowed. Conditional suffixes,
-continuations and other paragraphs never release ownership through this legacy
-form. Use `Released claim <claim-comment-id>` followed by a blank line and the
-handoff prose for a release with context. The session-identity rules in
-[Planning: Claim](#planning-claim) govern bare legacy releases.
-To recover an older ambiguous legacy release, the source author posts a new
-`Released claim <claim-comment-id>` comment for each original claim. For a
+Use a unique worker token per native session. Use `Released claim
+<claim-comment-id>` followed by a blank line and the handoff prose. For a
 closed automation session with a structured source claim, use the evidence-backed
 `release-claim` route above, including its verified related hand-written
 follow-ups. Explicit Session/Session ID or Thread ID fields on a related follow-up must
@@ -1780,7 +1668,6 @@ dash separators and vertical field/value tables are supported; free prose or
 horizontal tables do not establish a session identity. Use the canonical
 Session field or authored exact-ID recovery for those older formats. A distinct structured claim needs its own closure
 evidence; an unstructured claim needs an exact-ID release by its author.
-A hand-written source claim requires its author to post the exact-ID release.
 
 A claim without `--resume-from` never retries itself as a successor. When the
 refused evidence identifies one released structured source, `successor_route`

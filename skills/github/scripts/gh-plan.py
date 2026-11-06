@@ -2305,9 +2305,6 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
         if override and override.casefold() != selected_actor.casefold():
             raise PlanError(f"Release would run as '{selected_actor}', expected '{override}'")
         expected_actor = selected_actor
-    legacy_options = {"legacy": getattr(args, "legacy", False),
-                      "legacy_branch": getattr(args, "legacy_branch", None),
-                      "legacy_reason": getattr(args, "legacy_reason", None)}
     evidence_match = github_plan_release.COMMENT_URL.fullmatch(args.evidence_comment)
     if not evidence_match:
         raise PlanError("Evidence must be an exact GitHub issue or PR timeline-comment URL")
@@ -2343,8 +2340,6 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
         source = next((c for c in source_comments if c.get("id") == args.claim_comment), None)
         if source is None:
             raise PlanError("Source claim is missing from the canonical issue")
-        if legacy_options["legacy"] and "pull_request" in source_issue:
-            raise PlanError("Legacy release supports bare issue claims only; PR claims use structured release")
         source_inventory = github_plan_claim.local_inventory(source_issue["repo"], source_issue["number"])
         _, fresh_evidence = api_json("GET", f"/repos/{evidence_repo}/issues/comments/{evidence_id}", bucket="rest_core", failed_step="release_evidence_readback")
         if fresh_evidence != evidence:
@@ -2358,37 +2353,23 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
         if expected_actor is None:
             raise PlanError("Release requires the configured source automation identity")
         facts = github_plan_release.parse_release(source, evidence, actor=expected_actor,
-            role=args.role, releaser_session=args.session, **legacy_options)
+            role=args.role, releaser_session=args.session)
         source_branch = facts.record["branch"]
         github_plan_release.termination.verify_attestation(
             getattr(args, "termination_record", None), evidence.get("body") or "",
-            facts.record["session"], source=source,
-            source_url=source.get("html_url"))
+            facts.record["session"])
         # Check source identity, closure and native peers before a retained-PR
         # refusal can be classified as independent issue work.
         checked_paths = github_plan_release.validate_source_release(facts, source_comments, source_inventory,
-            retained_prs=args.retained_pr, related=related_comments)
+            related=related_comments)
         issue_refusal = None
-        branch_query = ({"state": "all", "head": f"{source_issue['repo'].split('/')[0]}:{source_branch}"}
-                        if legacy_options["legacy"] else {"state": "open"})
-        _, open_pulls = collect_paged_rest_items(f"/repos/{source_issue['repo']}/pulls", query=branch_query,
+        _, open_pulls = collect_paged_rest_items(f"/repos/{source_issue['repo']}/pulls", query={"state": "open"},
             bucket="rest_core", step_prefix="release_source_branch_prs")
-        worker_named_prs = {p["number"] for p in open_pulls if legacy_options["legacy"]
-                            and github_plan_release.worker_named_pull(facts, source_comments, p["number"], repo=source_issue["repo"])}
-        if legacy_options["legacy"] and not any(
-                (p.get("head") or {}).get("ref") == source_branch
-                and (p.get("user") or {}).get("login") == expected_actor
-                and (p["number"] in worker_named_prs
-                     or github_plan_claim.pr_issue_reference(p, source_issue["number"], repo=source_issue["repo"],
-                        attestation=True, record_kind="pr" if "pull_request" in source_issue else "issue"))
-                for p in open_pulls):
-            raise PlanError("Legacy source branch requires an automation-authored PR that links this canonical record, "
-                            "or that the source worker named here before the session ended")
         branch_prs = [f"https://github.com/{source_issue['repo']}/pull/{p['number']}" for p in open_pulls
             if (p.get("head") or {}).get("ref") == source_branch]
         subject_pr = "pull_request" in source_issue
         subject_url = f"https://github.com/{source_issue['repo']}/pull/{source_issue['number']}"
-        if subject_pr or legacy_options["legacy"]:
+        if subject_pr:
             # The claim's branch identifies source-session activity. A separate
             # Dependabot work-record branch may advance after that session ends.
             source_ref = None
@@ -2418,8 +2399,7 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
             try:
                 github_plan_release.check_retained_pr(pull, head_commit, repo=source_issue["repo"],
                     number=source_issue["number"], actor=expected_actor, ended=facts.cutoff.isoformat(),
-                    subject_pr=source_issue["number"] if subject_pr else None, source_branch=source_branch,
-                    allow_closed_unmerged=legacy_options["legacy"], worker_named=pull["number"] in worker_named_prs)
+                    subject_pr=source_issue["number"] if subject_pr else None, source_branch=source_branch)
             except github_plan_release.IssueReleaseRefusal as retained_error:
                 issue_refusal = retained_error
         github_plan_release.validate_retained_release(facts, source_inventory,
@@ -7777,10 +7757,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--role", choices=["supervisor", "direction"], required=True)
     p.add_argument("--session", required=True, help="Releasing session's actual native ID")
     p.add_argument("--confirm-session-ended", action="store_true", help="Attest verified closure, including unavailable peer inventory")
-    p.add_argument("--termination-record", type=pathlib.Path, help="Private original-exit record; freshly verifies source-host process, native transcript and terminal evidence")
-    p.add_argument("--legacy", action="store_true", help="Release a bare legacy claim with no native session identity")
-    p.add_argument("--legacy-branch", help="Verified original source branch; requires --legacy")
-    p.add_argument("--legacy-reason", help="Why no native session ID exists; must match the legacy attestation")
+    p.add_argument("--termination-record", type=pathlib.Path, help="Private crash record; freshly verifies source-host process, native transcript and terminal evidence")
     p.add_argument("--related-claim-comment", action="append", type=int, default=[])
     p.add_argument("--retained-pr", action="append", default=[])
     p.add_argument("--dry-run", action="store_true")
