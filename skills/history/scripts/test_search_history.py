@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 import zstandard
 
 from search_history import bound, discover_roots, eastern, scan
-from extract_rollout_memory import events_from_record
+from session_events import events_from_record
 
 
 def eastern_instant(text):

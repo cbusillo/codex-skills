@@ -16,30 +16,12 @@ resources:
   - path: scripts/cluster_rollout_episodes.py
     kind: script
     description: Cluster friction episodes and emit compact trajectory skeletons for human or model review.
-  - path: scripts/extract_rollout_memory.py
-    kind: script
-    description: Legacy broad extraction of destination-aware durable-memory candidates from local rollout/session traces.
-  - path: scripts/review_rollout_memory_batches.py
-    kind: script
-    description: Run trusted-local LLM review over extractor prompt batches with local-llm API lifecycle support and validate coverage.
-  - path: scripts/reduce_rollout_memory_reviews.py
-    kind: script
-    description: Reduce strict-valid local LLM review outputs into a draft apply plan.
-  - path: scripts/prepare_rollout_memory_long_context_review.py
-    kind: script
-    description: Prepare selected-note long-context review prompts and normalize duplicated structured-output captures.
-  - path: scripts/run_rollout_memory_long_context_matrix.py
-    kind: script
-    description: Run stdout-only selected-note review checks across model, budget, and provider variants.
   - path: scripts/lm_studio_scout.py
     kind: script
     description: Run a bounded trusted-local LM Studio scout pass over redacted rollout analysis.
   - path: scripts/benchmark_lm_studio.py
     kind: script
     description: Benchmark local LM Studio models for machine-local rollout review diagnostics.
-  - path: scripts/validate_rollout_memory_llm_results.py
-    kind: script
-    description: Validate strict JSON and candidate coverage for local LLM memory-review results.
 commands:
   - name: analyze-rollouts
     source: skill
@@ -95,85 +77,6 @@ commands:
         "--json",
       ]
     purpose: Run one bounded direct local LLM scout over redacted rollout-friction output using shared local-llm lifecycle mechanics.
-  - name: extract-rollout-memory
-    source: skill
-    resource_path: scripts/extract_rollout_memory.py
-    example_argv:
-      [
-        "uv",
-        "run",
-        "rollout-friction/scripts/extract_rollout_memory.py",
-        "--root",
-        "<sessions-dir>",
-        "--trusted-originals",
-        "--output-dir",
-        ".local/rollout-memory/<run-id>",
-      ]
-    purpose: Legacy broad candidate extraction for explicit durable-memory review, not the default friction-audit path.
-  - name: review-rollout-memory-batches
-    source: skill
-    resource_path: scripts/review_rollout_memory_batches.py
-    example_argv:
-      [
-        "uv",
-        "run",
-        "rollout-friction/scripts/review_rollout_memory_batches.py",
-        ".local/rollout-memory/<run-id>/llm-prompts.jsonl",
-        "--role",
-        "rollout_memory_review",
-        "--load-policy",
-        "api_explicit",
-        "--unload-after",
-        "--warmup",
-        "--output-dir",
-        ".local/rollout-memory/<run-id>/reviews",
-      ]
-    purpose: Review extractor prompts with a trusted local model and validate per-batch coverage.
-  - name: reduce-rollout-memory-reviews
-    source: skill
-    resource_path: scripts/reduce_rollout_memory_reviews.py
-    example_argv:
-      [
-        "uv",
-        "run",
-        "rollout-friction/scripts/reduce_rollout_memory_reviews.py",
-        ".local/rollout-memory/<run-id>/reviews",
-        "--output",
-        ".local/rollout-memory/<run-id>/apply-plan.json",
-      ]
-    purpose: Build a local draft apply plan, including a curated shortlist, from strict-valid review batches.
-  - name: prepare-rollout-memory-long-context-review
-    source: skill
-    resource_path: scripts/prepare_rollout_memory_long_context_review.py
-    example_argv:
-      [
-        "uv",
-        "run",
-        "rollout-friction/scripts/prepare_rollout_memory_long_context_review.py",
-        "prepare",
-        ".local/rollout-memory/<run-id>/llm-prompts.jsonl",
-        "--budget",
-        "quarter",
-      ]
-    purpose: Build selected-note prompt payloads for approved long-context comparison runs.
-  - name: run-rollout-memory-long-context-matrix
-    source: skill
-    resource_path: scripts/run_rollout_memory_long_context_matrix.py
-    example_argv:
-      [
-        "uv",
-        "run",
-        "rollout-friction/scripts/run_rollout_memory_long_context_matrix.py",
-        ".local/rollout-memory/<run-id>/llm-prompts.jsonl",
-        "--dry-run",
-        "--budget",
-        "quarter",
-        "--variant",
-        "sonnet-1m=claude:claude-sonnet-4-6[1m]",
-        "--output-jsonl",
-        ".local/rollout-memory/<run-id>/matrix-results.jsonl",
-      ]
-    purpose: Produce JSONL status rows for approved model/budget comparison runs, including blocked access, timeout, budget, and validation outcomes.
 ---
 
 # Rollout Friction
@@ -283,100 +186,6 @@ rollout files, session traces, runout files, or agent workflow friction.
 8. Present a concise proposal with the cluster, evidence summary, likely cause,
    recommended destination, and exact changes that would need approval.
 9. Ask for explicit human approval before making any changes.
-
-## Memory Extraction Workflow
-
-Use this only after explicit approval to inspect rollout/session traces for
-durable memory candidates. This legacy broad-extraction workflow prepares review
-artifacts; it does not apply memory updates by itself. Prefer the episode and
-cluster workflow above for ordinary rollout-friction audits; use broad memory
-extraction only when the user explicitly asks to mine rollout traces for durable
-memory/profile/local-config candidates.
-
-1. Run `extract_rollout_memory.py` with explicit time/file bounds and an ignored
-   `.local/rollout-memory/<run-id>/` output directory. Use `--trusted-originals`
-   only for localhost or trusted-LAN models approved for private local inputs;
-   use `--redact` for cloud, unknown, disabled, or untrusted endpoints. Redacted
-   extraction strips obvious secrets, local paths, and person identifiers such as
-   natural names, handles, and emails from candidate text and prompts.
-   Source-file metadata is masked in full regardless of its path root;
-   `--trusted-originals` preserves the original source path.
-   The [extractor](scripts/extract_rollout_memory.py) owns path and URL
-   recognition. Quote absolute paths in prose and quote or shell-escape paths
-   with spaces, such as `"/Volumes/Backup/Notes for Tax Year/2024.pdf"`.
-   Use double quotes or a closed backtick span to separate an ambiguous
-   absolute path from a later repository-relative argument; use an explicit
-   `./` prefix for unusual relative names that resemble links.
-   Redaction conservatively masks ambiguous continuations and does not detect
-   every natural-language path. URI paths may remain readable outside local or
-   dev-server links, regardless of scheme.
-   Under `--redact`, diagnostic
-   artifact references are filenames relative to the output bundle, so its local
-   directory is not exposed. Trusted mode retains the original artifact paths.
-2. Prefer destination-filtered passes when applying memory. Review `people`,
-   `profile`, and `local-llm` separately from `repo-specific` and
-   `rollout-friction` candidates so repo details do not pollute central memory.
-3. Tune `--batch-chars` and `--max-record-chars` from a small calibration run.
-   Oversharded prompts lose synthesis value, while overlarge prompts are more
-   likely to truncate or omit candidate IDs. Validate with
-   `validate_rollout_memory_llm_results.py` before scaling.
-4. Use `review_rollout_memory_batches.py` only against trusted local/private
-   endpoints. Resolve endpoint, role, model, TTL, and context through the
-   `local-llm` skill's API-first lifecycle. For broad extraction batches,
-   prefer `--role rollout_memory_review --load-policy api_explicit --warmup
-   --unload-after` so the context/load parameters are explicit and the warm-up
-   sends only harmless text before private rollout prompts. Use JIT+TTL for
-   smaller scout passes, not broad memory-review batches. Use
-   `--split-on-failure` when malformed or incomplete batches need deterministic
-   child-batch retries.
-5. Apply nothing from a batch that fails strict JSON or candidate coverage until
-   it is rerun, split, or manually reviewed.
-6. Run `reduce_rollout_memory_reviews.py` only after strict validation. Treat the
-   reducer output as an apply-plan draft. Start manual review from
-   `curated_shortlist`, then inspect full destination buckets only when the
-   shortlist reveals a useful theme. The shortlist is advisory, not an auto-apply
-   list; inspect suggested updates before editing `.local/profile.md`,
-   `.local/people.yaml`, `.local/local-llm.yaml`, skills, or repo files.
-   When the apply plan or temporary artifacts include `people_updates`,
-   `people_resolver_smoke_checks`, visible person names, handles, aliases,
-   reviewer/assignee/manager fields, or contact/routing notes, invoke the
-   `people` skill's artifact review workflow before closeout: search the local
-   artifacts for every known alias/handle form, inspect smoke checks, and verify
-   natural names resolve before considering people-memory work complete.
-7. For explicitly approved cloud or long-context comparison tests, use
-   `prepare_rollout_memory_long_context_review.py` to build selected-note prompts
-   with a `candidate_id_manifest`. Validate outputs with
-   `validate_rollout_memory_llm_results.py --allow-implicit-discards`; this mode
-   still requires every candidate in `reviewed_candidate_ids` and treats omitted
-   reviewed candidates as implicit discards.
-8. Use `run_rollout_memory_long_context_matrix.py --dry-run` before full matrix
-   tests. For real approved cloud tests, pass both `--allow-private-cloud` and
-   `--confirm-private-provider <provider>` for each provider that may receive
-   private prompt content in that run. Capture stdout JSONL under `.local/`; use
-   `--output-dir` for normalized per-row cloud artifacts that need later
-   qualitative comparison. Pass `--output-jsonl` with `--skip-existing` for
-   resumable runs. By default, resumable runs skip only existing `passed` rows;
-   use `--skip-status` only when intentionally preserving another status, and
-   `--retry-status` when rerunning a previously skipped status after an access
-   window or harness fix. Treat statuses such as
-   `prompt_too_large`, `blocked_access`, `blocked_transport`, `budget_exceeded`,
-   `timeout`, and `failed_validation` as first-class results to retry or fix, not
-   as successful reviews.
-
-## Long-Context Prompt Path
-
-For rollout/model matrix evaluation, use the matrix runner's bounded Claude
-transport, which sends the selected-note prompt on stdin and requests strict
-JSON output. Other transports are rejected, including in dry runs. Existing
-matrix result files remain readable as historical data.
-Use explicit `NAME=claude:MODEL` variants for approved model comparisons;
-additional variants change provider cost and runtime. Keep prompt content,
-budgets, validation, and output artifacts on this controlled one-shot path.
-
-The trusted-local batch review path is different: `review_rollout_memory_batches.py`
-may send approved prompt content directly in the local OpenAI-compatible request
-body to a trusted localhost or trusted-LAN model. Keep that local-review path
-bounded with `--max-input-chars` and do not substitute remote agents for it.
 
 ## Friction Signals
 
