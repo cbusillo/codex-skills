@@ -7147,6 +7147,22 @@ class ClaimTests(unittest.TestCase):
         self.milestone_edges["/repos/owner/direction/issues/9/dependencies/blocked_by"] = []
         return "https://github.com/owner/direction/issues/9#issuecomment-123"
 
+    def test_pr_only_milestone_claim_uses_the_same_track_and_preserves_the_pr(self) -> None:
+        for author in ("dependabot[bot]", TEST_BOT):
+            with self.subTest(author=author):
+                self.setUp()
+                link = self.milestone_fixture()
+                self.pr_fixture(author)
+                original = copy.deepcopy(self.issue)
+                self.args.admission, self.args.admission_link = "milestone", [link]
+                self.run_claim()
+                result = self.emitted.call_args.args[0]
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["record_kind"], "pr")
+                self.assertEqual(self.issue, original)
+                self.assertIn(link, self.comments[-1]["body"])
+                self.assertNotIn("milestone_link", self.events)
+
     def test_admission_does_not_extend_met_milestones_or_write_track_state(self) -> None:
         for state, later_work in (
             ("The site is live and the accepted indexing/analytics release is complete.", 25),
@@ -7239,16 +7255,18 @@ class ClaimTests(unittest.TestCase):
         self.assertNotIn("milestone_link", self.events)
 
     def test_milestone_claim_refuses_unlinked_or_invalid_track_without_publication(self) -> None:
-        for invalid in ("missing", "closed_issue", "closed_milestone", "unlisted", "not_track", "pr", "foreign"):
-            with self.subTest(invalid=invalid):
+        invalid_tracks = ("missing", "closed_issue", "closed_milestone", "unlisted", "not_track", "pr", "foreign")
+        for pr_only, invalid in product((False, True), invalid_tracks):
+            with self.subTest(pr_only=pr_only, invalid=invalid):
                 self.setUp()
                 link = self.milestone_fixture()
+                if pr_only: self.pr_fixture()
                 track = self.targets["9"]
                 if invalid == "closed_issue": track["state"] = "closed"
                 if invalid == "closed_milestone": track["milestone"]["state"] = "closed"
                 if invalid == "unlisted": track["milestone"]["title"] = "An unapproved milestone"
                 if invalid == "not_track": track["title"] = "A decision"
-                if invalid == "pr": self.pr_fixture()
+                if invalid == "pr": track["pull_request"] = {}
                 if invalid == "foreign": link = link.replace("owner/direction", "other/direction")
                 self.args.admission, self.args.admission_link = "milestone", [] if invalid == "missing" else [link]
                 self.args.admission_unlinked = "An explanation cannot replace the link"
