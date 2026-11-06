@@ -1052,23 +1052,7 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                 ]
                 f.rpc_results = {method: {"data": []} for method, _, _ in methods}
                 f.rpc_results["thread/realtime/listVoices"] = {"voices": []}
-                if frozen:
-                    with closure.ownership(f.session):
-                        closure.admit_sources({f.session})
-                before = next(r for r in closure.log_rows() if r.get("session_id") == f.session)
-                task, request, response, _ = await self.start_client(f)
-                try:
-                    for method, target, params in methods:
-                        with self.subTest(method=method):
-                            result = await self.send(task, request, response, method, target, **params)
-                            self.assertIn("result", result)
-                            self.assertEqual(next(r for r in closure.log_rows() if r.get("session_id") == f.session), before)
-                            closed = await asyncio.to_thread(f.release.record_closure, f.log, f.entry, "supervisor")
-                            self.assertEqual(closed["ended_at"], before["ended_at"])
-                    self.assertFalse(f.mutations)
-                finally:
-                    (f.root / "stop").touch()
-                    await asyncio.wait_for(task, 8)
+                await self.check_closure_preserved(f, methods, frozen)
 
     async def test_nonpersisting_housekeeping_preserves_closure_and_finish_retry(self):
         for frozen in (False, True):
@@ -1081,23 +1065,28 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                     ("thread/unsubscribe", {}),
                 ]
                 f.rpc_results = {method: {} for method, _ in methods}
-                if frozen:
-                    with closure.ownership(f.session):
-                        closure.admit_sources({f.session})
-                before = next(r for r in closure.log_rows() if r.get("session_id") == f.session)
-                task, request, response, _ = await self.start_client(f)
-                try:
-                    for method, params in methods:
-                        with self.subTest(method=method):
-                            result = await self.send(task, request, response, method, f.session, **params)
-                            self.assertIn("result", result)
-                            self.assertEqual(next(r for r in closure.log_rows() if r.get("session_id") == f.session), before)
-                            closed = await asyncio.to_thread(f.release.record_closure, f.log, f.entry, "supervisor")
-                            self.assertEqual(closed["ended_at"], before["ended_at"])
-                    self.assertFalse(f.mutations)
-                finally:
-                    (f.root / "stop").touch()
-                    await asyncio.wait_for(task, 8)
+                await self.check_closure_preserved(f, [(method, f.session, params) for method, params in methods], frozen)
+
+    async def check_closure_preserved(
+        self, f: ReceiptFixture, methods: list[tuple[str, str | None, dict]], frozen: bool
+    ) -> None:
+        if frozen:
+            with closure.ownership(f.session):
+                closure.admit_sources({f.session})
+        before = next(r for r in closure.log_rows() if r.get("session_id") == f.session)
+        task, request, response, _ = await self.start_client(f)
+        try:
+            for method, target, params in methods:
+                with self.subTest(method=method):
+                    result = await self.send(task, request, response, method, target, **params)
+                    self.assertIn("result", result)
+                    self.assertEqual(next(r for r in closure.log_rows() if r.get("session_id") == f.session), before)
+                    closed = await asyncio.to_thread(f.release.record_closure, f.log, f.entry, "supervisor")
+                    self.assertEqual(closed["ended_at"], before["ended_at"])
+            self.assertFalse(f.mutations)
+        finally:
+            (f.root / "stop").touch()
+            await asyncio.wait_for(task, 8)
 
     async def test_mtime_change_allows_ordinary_finish_retry(self):
         with ReceiptFixture() as f:
