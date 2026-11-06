@@ -82,7 +82,7 @@ def request_seen(entry: dict, text: str, after: int) -> bool:
     return False
 
 
-def reconcile_runtime(config: dict, operation: Operation) -> tuple[Path, str]:
+def reconcile_runtime(config: dict, operation: Operation, *, bind_landing: bool = True) -> tuple[Path, str]:
     repo, landing = config["repo"], config["landing_sha"]
     require(len(landing) == 40 and all(char in "0123456789abcdef" for char in landing), "landing", "requires a full landing SHA")
     reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 120)
@@ -98,8 +98,7 @@ def reconcile_runtime(config: dict, operation: Operation) -> tuple[Path, str]:
             repo,
             "--merged-worktree",
             str(source),
-            "--landing-sha",
-            landing,
+            *(["--landing-sha", landing] if bind_landing else []),
         ],
         timeout=660, retry_read=True,
     )
@@ -126,8 +125,11 @@ def reconcile_runtime(config: dict, operation: Operation) -> tuple[Path, str]:
         ["git", "-C", str(runtime), "rev-parse", "HEAD"], capture_output=True, text=True, check=True, timeout=10
     ).stdout.strip()
     require(head == runtime_receipt.get("after_sha"), "runtime", "configured runtime differs from the reconciliation receipt")
-    ancestry = subprocess.run(["git", "-C", str(runtime), "merge-base", "--is-ancestor", landing, "HEAD"], timeout=10)
-    require(ancestry.returncode == 0, "runtime", "runtime does not contain the landing")
+    try:
+        contains_landing = reconciler.git_is_first_parent(runtime, landing, head)
+    except reconciler.GitCommandError as error:
+        raise GateFailed("runtime", "first-parent history could not be verified") from error
+    require(contains_landing, "runtime", "runtime does not contain the landing on its first-parent history")
     return runtime, head
 
 
@@ -568,7 +570,7 @@ def poll(config: dict, evidence: Path, *, supersede_failed: bool = False) -> dic
                 if saved:
                     post_result(current, operation, saved)
                 skip_smoke = documentation_only(source, landings)
-                bound, head = reconcile_runtime(current, operation)
+                bound, head = reconcile_runtime(current, operation, bind_landing=False)
                 try:
                     result = verify(current, operation, bound, head, skip_smoke=skip_smoke)
                 except (OSError, ValueError, KeyError, TypeError, AttributeError, SubprocessError,

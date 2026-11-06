@@ -102,7 +102,8 @@ class Operation:
             if once and isinstance(payload, dict) and payload.get("mutation_started") is False:
                 self.state["steps"].pop(gate, None)
                 save_state(self.path, self.state)
-            raise GateFailed(gate, f"helper exited {result.returncode}; inspect {gate}.json")
+            reason = f"{payload['reason_code']}; " if isinstance(payload, dict) and payload.get("reason_code") else ""
+            raise GateFailed(gate, f"{reason}helper exited {result.returncode}; inspect {gate}.json")
         if not isinstance(payload, (dict, list)):
             raise GateFailed(gate, "helper result must be an object or array")
         if once:

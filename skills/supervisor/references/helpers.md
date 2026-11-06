@@ -1044,7 +1044,9 @@ cursor and verify the latest runtime once for that batch. They reconcile through
 the runtime helper, run both fresh harnesses, close smoke sessions normally,
 and post verification on the configured owning issue, listing every covered
 SHA. The comment records HEAD before and after smoke; neither observation
-measures a session's loaded SHA. A newer runtime proves containment, not an
+measures a session's loaded SHA. Polling verifies the current tip's helper source
+and proves that the runtime contains the pending landing on its first-parent history; bounded verification
+also binds helper source to its requested landing. A newer runtime proves containment, not an
 earlier runtime's behavior. Only a nonempty diff confined to `README.md` and Markdown under `docs/` may
 skip live sessions; skill instructions still need smoke checks. Cursor advancement
 requires verification, cleanup and the posted comment. Success needs no Supervisor action.
@@ -1061,7 +1063,8 @@ run or a helper that cannot start, then keeps the service stopped.
 Retryable runtime discovery and reconciliation reads leave a bounded
 receipt and retry on the next poll without advancing the cursor or reporting a
 failed verification. A retry requires explicit proof that the runtime was not
-mutated; pending uncertain mutations still stop the service. Read private evidence and reconcile any
+mutated; [source-update retries](../../github/references/cli-reference.md#runtime-checkout-reconciliation)
+use this same path. Pending uncertain mutations still stop the service. Read private evidence and reconcile any
 uncertain launch, request or comment before recovery. An uncertain
 report is checked once the posting process exits, using a comments read bounded
 by `since` the posting attempt started and matching its body and author. The
