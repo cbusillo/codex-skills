@@ -319,7 +319,7 @@ def api_list(endpoint: str) -> list[dict[str, Any]]:
     return [item for page in pages for item in page if isinstance(item, dict)]
 
 
-def repository_comment_pages(path: str, since: datetime) -> Iterator[dict[str, Any]]:
+def repository_comment_pages(path: str, since: datetime, ties: list[datetime] | None = None) -> Iterator[dict[str, Any]]:
     cursor, page, seen = since, 1, set()
     while True:
         query = urlencode({"since": format_api_timestamp(cursor), "sort": "updated", "direction": "asc",
@@ -335,6 +335,8 @@ def repository_comment_pages(path: str, since: datetime) -> Iterator[dict[str, A
         if len(payload) < REPOSITORY_COMMENT_PAGE_SIZE:
             return
         cursor, page = next_comment_page(payload, cursor, page)
+        if page > 1 and ties is not None:
+            ties.append(cursor)
 
 
 def next_comment_page(payload: list[dict[str, Any]], cursor: datetime, page: int) -> tuple[datetime, int]:
@@ -748,8 +750,9 @@ def repository_activity(
     )
     for lane, path, normalizer in lanes:
         read_from, through, rows = resume_lane((scans or {}).get(lane), since)
+        ties: list[datetime] = []
         try:
-            for item in repository_comment_pages(path, read_from):
+            for item in repository_comment_pages(path, read_from, ties):
                 comment = normalizer(repo, item)
                 if comment is None:
                     continue
@@ -765,6 +768,7 @@ def repository_activity(
             errors.append({"repo": repo, "lane": lane, "error": rollup.trim(str(exc))})
         else:
             if scans is not None:
+                through = min([through, *ties])
                 scans[lane] = {"from": format_api_timestamp(since), "through": format_api_timestamp(through),
                                "rows": list(rows.values())}
         for number, kind, comment_id, created, updated, external, waits in rows.values():

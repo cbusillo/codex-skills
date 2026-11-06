@@ -1292,6 +1292,26 @@ def test_comment_edited_during_the_scan_does_not_hide_a_later_page(monkeypatch: 
     assert candidates[("example/repo", 42)] == {("issue_comment", row["id"]) for row in comments}
 
 
+def test_timestamp_tie_read_by_page_number_keeps_the_watermark_before_the_tie(monkeypatch: pytest.MonkeyPatch) -> None:
+    page_size = github_unanswered_comments.REPOSITORY_COMMENT_PAGE_SIZE
+    tied = [scan_comment(number, "outside-user", "2026-07-10T00:00:00Z") for number in range(1, page_size + 50)]
+    later = scan_comment(500, "outside-user", "2026-07-20T00:00:00Z")
+
+    def read(command: list[str]) -> object:
+        if "/issues/comments" not in command[2]:
+            return []
+        page = int(parse_qs(urlsplit(command[2]).query)["page"][0])
+        return [*tied, later][(page - 1) * page_size:page * page_size]
+
+    patch_radar(monkeypatch, "run_json", read)
+    scans: dict[str, Any] = {}
+    github_unanswered_comments.repository_activity(
+        "example/repo", datetime(2026, 7, 1, tzinfo=UTC), datetime(2026, 7, 27, tzinfo=UTC),
+        {"cbusillo"}, {"fixture-automation"}, scans=scans,
+    )
+    assert scans["issue_comments"]["through"] <= "2026-07-10T00:00:00Z"
+
+
 def test_failed_lane_read_keeps_its_previous_watermark(monkeypatch: pytest.MonkeyPatch) -> None:
     previous = {"from": "2026-07-01T00:00:00Z", "through": "2026-07-26T00:00:00Z",
                 "rows": [[42, "issue_comment", 2, "2026-07-20T00:00:00Z", "2026-07-20T00:00:00Z", True, False]]}
