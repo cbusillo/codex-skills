@@ -51,7 +51,8 @@ class Fixture(unittest.TestCase):
         config.write_text(json.dumps({"root": str(self.root), "hostHelper": str(self.base / "host-helper")}))
         os.environ["DEV_WORKTREE_CONFIG"] = str(config)
 
-    def git(self, where: Path, *args: str, input_text: str | None = None) -> str:
+    @staticmethod
+    def git(where: Path, *args: str, input_text: str | None = None) -> str:
         return subprocess.run(["git", "-C", str(where), *args], input=input_text, capture_output=True, text=True, check=True).stdout.strip()
 
     def commit(self, where, message):
