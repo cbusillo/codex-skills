@@ -38,6 +38,84 @@ def protobuf(values: dict[int, int | bytes]) -> bytes:
 
 
 class GoogleWorkerTests(unittest.TestCase):
+    def test_completed_native_error_and_subagent_observation_allow_a_later_final(self) -> None:
+        fields = iterm_tab.claim_history.protobuf_fields
+        final = {"type": "assistant", "message": {"content": "Safe to exit: yes", "stop_reason": "end_turn"}}
+        for kind, action in ((17, None), (132, "list"), (132, "unverified")):
+            for status, children in ((3, False), (2, False), (3, True)):
+                with self.subTest(kind=kind, action=action, status=status, children=children):
+                    metadata = {1: protobuf({1: 1})}
+                    payload = {24: protobuf({3: protobuf({2: b"API unavailable"})})}
+                    if action:
+                        metadata[4] = protobuf({1: b"call", 2: b"manage_subagents", 3: json.dumps({"Action": action}).encode()})
+                        payload = {140: protobuf({2: protobuf({1: b"You have 0 active subagent(s):\n[]"})})}
+                    step = fields(protobuf({1: kind, 4: status, 5: protobuf(metadata), **payload}))
+                    rows = iterm_tab.claim_history.agy_step_records("session", 0, kind, status, children, step, {})
+                    summary = session_record.summarize([*rows, final], "agy")
+                    self.assertEqual(summary["safe_verdict"], status == 3 and not children and action != "unverified")
+
+    def test_cancelled_native_task_requires_its_matching_terminal_notification(self) -> None:
+        fields = iterm_tab.claim_history.protobuf_fields
+        fixture = json.loads((Path(__file__).parent / "fixtures/agy-command-cancelled.json").read_text())
+        with tempfile.TemporaryDirectory() as folder:
+            transcript = Path(folder) / f"{fixture['session']}.db"
+            entry = {"session_id": fixture["session"], "harness": "agy", "transcript": str(transcript)}
+            with sqlite3.connect(transcript) as database:
+                database.execute("CREATE TABLE trajectory_meta (cascade_id TEXT)")
+                database.execute("INSERT INTO trajectory_meta VALUES (?)", (fixture["session"],))
+                database.execute(
+                    "CREATE TABLE steps (idx INTEGER, step_type INTEGER, status INTEGER, has_subtrajectory INTEGER, step_payload BLOB)"
+                )
+                for change in (
+                    "captured",
+                    "running",
+                    "missing_notice",
+                    "foreign_session",
+                    "foreign_call",
+                    "foreign_task",
+                    "non_error",
+                    "foreign_kill",
+                ):
+                    steps = [fields(bytes.fromhex(row["step_payload_hex"])) for row in fixture["steps"]]
+                    if change == "running":
+                        steps[0][4] = 2
+                    elif change.startswith("foreign_") and change != "foreign_kill":
+                        note = fields(steps[2][114])
+                        envelope = fields(note[4])
+                        if change == "foreign_call":
+                            origin = fields(fields(envelope[12])[1])
+                            call = fields(origin[3])
+                            call[1] = b"unrelated-call"
+                            origin[3] = protobuf(call)
+                            envelope[12] = protobuf({1: protobuf(origin)})
+                        else:
+                            envelope[2 if change == "foreign_session" else 3] = b"unrelated"
+                        note[4] = protobuf(envelope)
+                        steps[2][114] = protobuf(note)
+                    elif change == "non_error":
+                        note = fields(steps[2][114])
+                        result = fields(note[2])
+                        result.pop(4)
+                        note[2] = protobuf(result)
+                        steps[2][114] = protobuf(note)
+                    elif change == "foreign_kill":
+                        metadata = fields(steps[1][5])
+                        call = fields(metadata[4])
+                        call[3] = b'{"Action":"kill","TaskId":"unrelated"}'
+                        metadata[4] = protobuf(call)
+                        steps[1][5] = protobuf(metadata)
+                    if change == "missing_notice":
+                        steps.pop()
+                    steps.append({1: 15, 4: 3, 5: protobuf({1: protobuf({1: 1})}), 20: protobuf({1: b"Safe to exit: yes"})})
+                    database.execute("DELETE FROM steps")
+                    for index, step in enumerate(steps):
+                        database.execute("INSERT INTO steps VALUES (?,?,?,0,?)", (index, step[1], step[4], protobuf(step)))
+                    database.commit()
+                    with self.subTest(change=change):
+                        status = session_record.session_status(entry)
+                        self.assertEqual(status["safe_verdict"], change == "captured")
+                        self.assertEqual(bool(status["background_tasks"]), change != "captured")
+
     def test_idle_wal_conversation_passes_its_first_read(self) -> None:
         for reader in (session_record.session_status, session_record.posted_comments):
             with self.subTest(reader=reader.__name__), tempfile.TemporaryDirectory() as folder:
