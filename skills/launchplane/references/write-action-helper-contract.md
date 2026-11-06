@@ -794,12 +794,48 @@ installed local helper bindings.
   `POST /v1/products/{product}/testing-rebuild` for generic-web. It fixes the instance to
   `testing`, strategy to `replace-and-cutover` and health verification on.
   `--copy-source` is `empty`, `production` (sanitized production copy) or
-  `upstream` (the lane's configured upstream). The build/source pair must use
+  `upstream` (the lane's configured upstream), or `migrated` for an offline Odoo
+  result. Migrated intent also requires `--migrated-source-file`, a private
+  manifest binding the product/context, backup/run, target image and complete
+  dump/filestore lengths, SHA256 digests and expanded inventory. Its contents
+  enter the reviewed request digest; public output omits the private manifest.
+  The build/source pair must use
   an immutable 40- or 64-character lowercase hexadecimal source commit. A concrete
   reason is required and retained by the service; public helper output carries
   only its request digest. Empty allows
   initialization of independent empty storage. No target, host, credential,
   arbitrary payload or health-bypass argument is accepted.
+
+  After the normal worker has recorded the original private candidate, use
+  `testing-rebuild-migrated-upload --product PRODUCT --operation-id ID
+  --private-address PRIVATE_IP --migrated-source-file MANIFEST --database DUMP
+  --filestore ARCHIVE`. The gzip tar contains every full-filestore file relative
+  to its database directory, including checklist entries. This uses the same
+  configured token and original TLS hostname over an authenticated
+  WebSocket, connecting only to the
+  supplied private ingress IP with normal certificate verification. It never
+  changes DNS, proxy settings, credentials or runtime records to make that path.
+  No redirect or alternate identity is followed. Find the current private
+  ingress address in the user's operational docs; never commit that address.
+  The address must be RFC1918 IPv4 or IPv6 ULA; mapped IPv4 is checked as IPv4.
+
+  The helper hashes both original files before contacting the upload route.
+  It reads the exact original upload state and sends the original prefix digest.
+  The service checks that retained prefix before accepting binary frames of at
+  most 1 MiB. This avoids HTTP request-body buffering at the existing proxy. A lost receipt
+  reply replays zero bytes to the original completed part so the service can
+  reconcile its saved receipt. On transport uncertainty, retain the pair and
+  read the original operation before repeating this same command; it inspects
+  the original prefix and never submits a new rebuild. Refusals, binding errors
+  and invalid connection settings stop without retry advice. TCP, handshake and
+  state reads use the normal timeout; prefix verification and the final receipt
+  allow time for the complete declared files.
+  `--restart-part database|filestore` explicitly replaces one corrupt incomplete
+  prefix from the fully verified original at offset zero. It refuses completed
+  artifacts. Omit that flag when resuming a later interruption. Parts upload one
+  at a time under the original pair lock.
+  A recorded upload receipt is still not a successful testing restore. Continue
+  reading the same normal rebuild operation until its actual result is known.
 
   Use the saved receipt's `result.plan_sha256` as `--expected-plan-digest`.
   The existing reviewed-evidence loader checks the exact intent, reason and
