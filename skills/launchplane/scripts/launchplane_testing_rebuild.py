@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import http.client
+from pathlib import Path
 import re
 import urllib.error
 from typing import Any
@@ -15,11 +16,14 @@ from typing import Any
 COMMAND = "testing-rebuild-submit"
 PLAN_COMMAND = "testing-rebuild-dry-run"
 READ_COMMAND = "testing-rebuild-operation-read"
-COMMANDS = frozenset({COMMAND, PLAN_COMMAND, READ_COMMAND})
+from launchplane_migrated_upload import COMMAND as UPLOAD_COMMAND
+
+COMMANDS = frozenset({COMMAND, PLAN_COMMAND, READ_COMMAND, UPLOAD_COMMAND})
 COPY_SOURCES = {
     "empty": "empty",
     "production": "production_restore",
     "upstream": "upstream_restore",
+    "migrated": "migrated_restore",
 }
 IMAGE_COMPONENT = r"[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*"
 IMMUTABLE_IMAGE_RE = re.compile(
@@ -36,6 +40,8 @@ def generic_body(body: dict[str, object]) -> dict[str, object] | None:
 
 
 def add_parser(subparsers: Any) -> None:
+    from launchplane_migrated_upload import add_parser as add_upload_parser
+    add_upload_parser(subparsers)
     parser = subparsers.add_parser(READ_COMMAND, help="Read one native testing rebuild operation.")
     parser.add_argument("--product", required=True)
     parser.add_argument("--operation-id", required=True)
@@ -43,6 +49,7 @@ def add_parser(subparsers: Any) -> None:
         parser = subparsers.add_parser(command, help="Inspect or queue the native testing rebuild at its existing address.")
         parser.add_argument("--product", required=True)
         parser.add_argument("--copy-source", choices=tuple(COPY_SOURCES), required=True)
+        parser.add_argument("--migrated-source-file", type=Path, help="Private completed migrated pair manifest; required only for migrated source.")
         parser.add_argument("--artifact-id", required=True)
         parser.add_argument("--source-git-ref", required=True, help="Immutable artifact source commit.")
         parser.add_argument("--reason", required=True)
@@ -81,9 +88,17 @@ def intent(h: Any, args: argparse.Namespace) -> tuple[dict[str, object], dict[st
         "verify_health": True,
         "reason": reason,
     }
+    migrated = getattr(args, "migrated_source_file", None)
+    if (args.copy_source == "migrated") != (migrated is not None):
+        raise ValueError("migrated_source_manifest_required")
+    if migrated is not None:
+        from launchplane_migrated_upload import load_manifest
+        replacement["migrated_source"] = load_manifest(migrated, product=product)
+        if generic_body({"replacement": replacement}) is not None:
+            raise ValueError("migrated_restore_requires_odoo_artifact")
     body: dict[str, object] = {"schema_version": 1, "product": product, "replacement": replacement}
     request: dict[str, object] = {
-        **{key: value for key, value in replacement.items() if key != "reason"},
+        **{key: value for key, value in replacement.items() if key not in {"reason", "migrated_source"}},
         "payload_source": "operator_argument",
         "payload_digest": h.metadata_review_digest(body),
     }
@@ -259,6 +274,9 @@ def rejection(h: Any, request: dict[str, object], error: urllib.error.HTTPError)
 
 
 def execute(h: Any, args: argparse.Namespace) -> int:
+    from launchplane_migrated_upload import COMMAND as upload_command, execute as upload
+    if args.command == upload_command:
+        return upload(h, args)
     if args.command == READ_COMMAND:
         return execute_read(h, args)
     request, body = intent(h, args)

@@ -460,6 +460,10 @@ LOCAL_EXTENSION_ROUTES = {
 }
 
 INTERNAL_HELPER_ROUTES = {
+    "testing-rebuild-migrated-state": {"method": "GET", "path": "/v1/products/{product}/testing-rebuild/{operation_id}/migrated-source", "mode": "read"},
+    "testing-rebuild-migrated-upload": {"method": "WEBSOCKET", "path": "/v1/products/{product}/testing-rebuild/{operation_id}/migrated-source/{part}", "mode": "upload"},
+
+
     "testing-state-profile-write": {
         "method": "POST", "path": "/v1/product-profiles",
     },
