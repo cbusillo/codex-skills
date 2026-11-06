@@ -6,6 +6,9 @@ understand and has one source of truth is easier to maintain and change, for
 people and for agents. Names carry the meaning, functions are small, and
 nothing is said twice.
 
+For extending existing paths and proving a regression, follow the
+[executing loop](executing-loop.md).
+
 Prefer a rule a tool enforces: Ruff, PyCharm inspections, Odoo's own lint, or
 a test. Where this style departs from a standard tool or convention, the rule
 says "House rule" and why, in one line; everywhere else the convention wins.
@@ -215,6 +218,9 @@ unclear code stand by explaining it.
 
 ## Tooling
 
+- Check your diff against this style before handoff. Review whether a docstring
+  is rendered by a tool; `uv run scripts/check_new_comments.py --base origin/main`
+  runs the catalog's comment CI check locally.
 - Run `uv run ruff format` and `uv run ruff check --fix`. Where a repository
   sets no Ruff configuration, use line length 133, select `ANN`, `UP`, `B`,
   `I`, `G`, `BLE`, and `S608`, and ignore `D`, `UP037`, which would strip the
