@@ -838,28 +838,28 @@ def test_poll_keeps_its_pending_identity_after_the_runtime_helper_changes(tmp_pa
     with mock.patch.object(sys, "path", [str(SCRIPT.parents[3]), str(SCRIPT.parents[2] / "supervisor/scripts"), *sys.path]):
         from skills.supervisor.scripts import catalog_landing
 
-    evidence = tmp_path / "poll"
-    evidence.mkdir()
-    attempt = fixture.landing_sha
-    state = {"repo": fixture.repo, "last_sha": fixture.initial_sha, "pending": [fixture.landing_sha], "attempt": attempt}
-    catalog_landing.save_state(evidence / "cursor.json", state)
-    config = {"repo": fixture.repo, "issue": 1, "source_worktree": str(fixture.runtime),
-              "runtime_worktree": str(fixture.runtime), "supervisor_session": "fixture"}
-    env = {**host_environment(fixture), "UV_NO_CONFIG": "1", "UV_PYTHON": sys.executable}
-    with (mock.patch.dict(os.environ, env), mock.patch.object(catalog_landing, "landing_pull"),
-          mock.patch.object(catalog_landing, "verify", return_value={"ok": True}) as verify,
-          mock.patch.object(catalog_landing, "post_result", return_value="fixture-report")):
-        with pytest.raises(catalog_landing.GateFailed):
-            catalog_landing.reconcile_runtime(config | {"landing_sha": fixture.landing_sha},
-                                              catalog_landing.Operation(tmp_path / "bounded", [fixture.repo]))
-        with pytest.raises(catalog_landing.GateFailed):
-            catalog_landing.reconcile_runtime(config | {"landing_sha": fixture.head_sha},
-                                              catalog_landing.Operation(tmp_path / "side-parent", [fixture.repo]), bind_landing=False)
-        assert catalog_landing.poll(config, evidence)["landings"] == [fixture.landing_sha]
-    assert verify.call_args.args[0]["landing_sha"] == fixture.landing_sha
-    assert verify.call_args.args[3] == tip
-    assert json.loads((evidence / "cursor.json").read_text())["last_sha"] == fixture.landing_sha
-    assert (evidence / attempt / "result.json").is_file()
+        evidence = tmp_path / "poll"
+        evidence.mkdir()
+        attempt = fixture.landing_sha
+        state = {"repo": fixture.repo, "last_sha": fixture.initial_sha, "pending": [fixture.landing_sha], "attempt": attempt}
+        catalog_landing.save_state(evidence / "cursor.json", state)
+        config = {"repo": fixture.repo, "issue": 1, "source_worktree": str(fixture.runtime),
+                  "runtime_worktree": str(fixture.runtime), "supervisor_session": "fixture"}
+        env = {**host_environment(fixture), "UV_NO_CONFIG": "1", "UV_PYTHON": sys.executable}
+        with (mock.patch.dict(os.environ, env), mock.patch.object(catalog_landing, "landing_pull"),
+              mock.patch.object(catalog_landing, "verify", return_value={"ok": True}) as verify,
+              mock.patch.object(catalog_landing, "post_result", return_value="fixture-report")):
+            with pytest.raises(catalog_landing.GateFailed):
+                catalog_landing.reconcile_runtime(config | {"landing_sha": fixture.landing_sha},
+                                                  catalog_landing.Operation(tmp_path / "bounded", [fixture.repo]))
+            with pytest.raises(catalog_landing.GateFailed):
+                catalog_landing.reconcile_runtime(config | {"landing_sha": fixture.head_sha},
+                                                  catalog_landing.Operation(tmp_path / "side-parent", [fixture.repo]), bind_landing=False)
+            assert catalog_landing.poll(config, evidence)["landings"] == [fixture.landing_sha]
+        assert verify.call_args.args[0]["landing_sha"] == fixture.landing_sha
+        assert verify.call_args.args[3] == tip
+        assert json.loads((evidence / "cursor.json").read_text())["last_sha"] == fixture.landing_sha
+        assert (evidence / attempt / "result.json").is_file()
 
 
 def test_blob_read_failure_does_not_retry_when_the_source_path_exists(tmp_path: Path) -> None:
