@@ -87,7 +87,7 @@ Ordinary argv normalization lives in the hook's `executable_arguments`;
 `policy_context` reuses it to look through known execution wrappers solely for
 the extra regex view. Ordinary argv rules and repository exceptions keep their
 original view. The implementation and flag sets in
-[`command_policy_hook.py`](../../../hooks/command_policy_hook.py) are the source
+[`command_policy_hook.py`](https://github.com/cbusillo/codex-skills/blob/main/hooks/command_policy_hook.py) are the source
 for both views; the simulator evaluates them in one sorted policy pass.
 
 When multiple policies match, the primary policy is selected deterministically:
