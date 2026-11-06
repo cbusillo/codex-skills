@@ -82,6 +82,26 @@ def format_ownership(text: str) -> tuple[str, ...]:
 
 
 class ClaimMarkerTests(unittest.TestCase):
+    def test_session_ownership_uses_direct_fields_without_borrowing_dependency_mentions(self) -> None:
+        session = OWNER["session"]
+        dependency = f"Ingress on https://github.com/owner/other/issues/1 is independently owned by edge-worker, native {session}."
+        for body in (dependency, f"Claimed by another-worker\n\n{dependency}",
+                     f"Next actor: agent:another-session\n\n{dependency}",
+                     CLAIM.marker(OTHER) + "\n\n" + dependency):
+            with self.subTest(body=body):
+                self.assertFalse(CLAIM.belongs_to_session(body, session))
+        for field in (f"Session: {session}", f"Native session ID: {session}", f"Thread ID: {session}",
+                      f"Claimed by {session}", f"Worker: {session} or another-worker",
+                      f"Next actor: agent:{session}", f"This issue is owned by {session}",
+                      f"Session: another-session\nSession: {session}", CLAIM.marker(OWNER)):
+            with self.subTest(field=field):
+                self.assertTrue(CLAIM.belongs_to_session(field + "\n\n" + dependency, session))
+        for field in (f"Not claimed by {session}", f"Previous session: {session}",
+                      f"Session: prefix-{session}", f"Session: {session}-suffix",
+                      f"> Session: {session}", f"```\nSession: {session}\n```"):
+            with self.subTest(field=field):
+                self.assertFalse(CLAIM.belongs_to_session(field + "\n\n" + dependency, session))
+
     def test_only_a_complete_unquoted_launch_request_distinguishes_the_coordinator(self) -> None:
         actor = "agent:01970242-7941-7f0c-b461-16aa5723fb52"
         request = f"Next actor: {actor}\nBrief:\n````text\nTask.\n```sh\necho example\n```\n````\n"

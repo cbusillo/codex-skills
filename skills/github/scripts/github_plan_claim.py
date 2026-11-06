@@ -345,6 +345,28 @@ def has_ownership_assertion(text: str, *, own_claim: dict[str, str] | None = Non
     return False
 
 
+def belongs_to_session(body: str, session: str) -> bool:
+    body = unquoted_text(body)
+    if session not in body:
+        return False
+    if any(record["session"] == session for record in records(body)):
+        return True
+    identity = re.compile(rf"(?<![\w-]){re.escape(session)}(?![\w-])")
+    for line in ownership_text(body).splitlines():
+        if not identity.search(line):
+            continue
+        if any(identity.search(actor.removeprefix("agent:")) for _, actor in next_actor.fields(line)):
+            return True
+        field = re.sub(r"^\s*(?:[-*+]\s+|\d+[.)]\s+)?", "", line)
+        if re.match(
+            r"(?i)(?:(?:state|ownership|claim):|(?:this|the) (?:issue|task|work)\b|"
+            r"(?:owned|claimed) by\b|worker\s*:|(?:native[ \t_-]*)?(?:session|thread)\b|\|\s*(?:session|thread)\b)",
+            field,
+        ) and (session_fields(line, include_quotes=False, current_only=True) or has_ownership_assertion(line)):
+            return True
+    return False
+
+
 def released_successor_route(
     conflicts: list[dict[str, Any]], comments: list[dict[str, Any]], *, issue_repo: str,
 ) -> int | None:

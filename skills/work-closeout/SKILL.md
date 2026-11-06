@@ -283,6 +283,9 @@ preserved, or intentionally left in place.
 Before reporting `Safe to exit: yes`, account for every claim this session took,
 including earlier turns, other repositories and PR-only work. Ownership lives
 on GitHub: the claim comment, and its exact release.
+Status ownership comes from that record's claim or direct owner, session or
+Next actor fields. A dependency-owner mention does not claim the coordinating
+issue; ambiguous owning fields still require reconciliation.
 
 For a held claim, first finish or durably hand off its work and update Current
 Status with the next actor, action and retained artifacts. Then release it with
