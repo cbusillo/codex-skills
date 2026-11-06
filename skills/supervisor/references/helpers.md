@@ -1061,7 +1061,9 @@ run or a helper that cannot start, then keeps the service stopped.
 Retryable runtime discovery and reconciliation reads leave a bounded
 receipt and retry on the next poll without advancing the cursor or reporting a
 failed verification. A retry requires explicit proof that the runtime was not
-mutated; pending uncertain mutations still stop the service. Read private evidence and reconcile any
+mutated. A helper-source mismatch during self-reconciliation also retries until
+the existing landing or scheduled updater advances the runtime; it needs no clear/restart.
+Pending uncertain mutations still stop the service. Read private evidence and reconcile any
 uncertain launch, request or comment before recovery. An uncertain
 report is checked once the posting process exits, using a comments read bounded
 by `since` the posting attempt started and matching its body and author. The

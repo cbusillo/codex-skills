@@ -371,9 +371,14 @@ def reconcile_checkout(
                         "This copy of the helper differs from the landed one. Run the copy in a worktree "
                         f"checked out at {fetched_sha}."
                     )
+                    waits_for_source_update = (
+                        source_root == runtime_root and current_sha != fetched_sha
+                        and git_is_ancestor(runtime_root, current_sha, fetched_sha)
+                    )
+                    status = "retryable" if waits_for_source_update else "failed"
                     if not receipt["helper_landing_verified"]:
-                        return finish(receipt, "failed", "helper_landing_source_mismatch")
-                    return finish(receipt, "failed", "helper_tip_source_mismatch")
+                        return finish(receipt, status, "helper_landing_source_mismatch")
+                    return finish(receipt, status, "helper_tip_source_mismatch")
                 receipt["helper_source_verified"] = True
             if not git_is_ancestor(runtime_root, current_sha, fetched_sha):
                 receipt["after_sha"] = current_sha

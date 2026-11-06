@@ -886,9 +886,10 @@ uv run <runtime-checkout>/skills/github/scripts/reconcile-runtime-checkout.py --
 
 `--merged-worktree` defaults to the checkout the executing copy lives in; a
 copy outside the given worktree fails `invalid_merged_worktree`. When the
-helper itself changed upstream, the install's copy fails
-`helper_landing_source_mismatch`; run the copy from a worktree at the fetched
-tip instead. The receipt's `detail` says which.
+helper or status reader changed upstream, the install's copy returns
+`retryable` without moving the runtime. The existing landing or scheduled updater
+must advance it; manual catch-up uses the copy from a worktree at the reported tip.
+A mismatched separate source worktree still fails.
 
 The JSON receipt reports `synchronized`, `already_current`, `not_applicable`,
 `blocked`, `retryable`, or `failed`, plus stable reason codes and before/fetched/

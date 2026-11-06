@@ -744,10 +744,11 @@ def test_a_behind_install_catches_up_by_running_its_own_copy(tmp_path: Path) -> 
     assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.landing_sha
 
 
-def test_an_install_whose_helper_changed_upstream_names_the_copy_to_run(tmp_path: Path) -> None:
+@pytest.mark.parametrize("changed_name", [SCRIPT.name, "git_status.py"])
+def test_an_install_waits_for_the_landed_source_then_recovers(tmp_path: Path, changed_name: str) -> None:
     fixture = build_runtime_fixture(tmp_path)
-    changed = fixture.landing / "github" / "scripts" / SCRIPT.name
-    changed.write_text(changed.read_text() + "\n# changed upstream\n")
+    changed = fixture.landing / "github" / "scripts" / changed_name
+    changed.write_text(changed.read_text() + "\n")
     git(fixture.landing, "commit", "-am", "change helper")
     tip = git(fixture.landing, "rev-parse", "HEAD")
     git(fixture.landing, "push", "origin", "main")
@@ -755,10 +756,24 @@ def test_an_install_whose_helper_changed_upstream_names_the_copy_to_run(tmp_path
     proc, receipt = run_helper(fixture, fixture.runtime / "github" / "scripts" / SCRIPT.name)
 
     assert proc.returncode == 1
+    assert receipt["status"] == "retryable"
     assert receipt["reason_code"] == "helper_landing_source_mismatch"
-    detail = receipt["detail"]
-    assert isinstance(detail, str) and tip in detail
+    assert receipt["runtime_mutated"] is False
     assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
+
+    git(fixture.merged, "checkout", "--detach", tip)
+    proc, receipt = run_helper(fixture, fixture.script, "--landing-sha", tip)
+    assert proc.returncode == 0
+    assert receipt["status"] == "synchronized"
+    proc, receipt = run_helper(fixture, fixture.runtime / fixture.helper_relative_path)
+    assert proc.returncode == 0
+    assert receipt["status"] == "already_current"
+    assert git(fixture.runtime, "rev-parse", "HEAD") == tip
+
+    proc, receipt = run_helper(fixture, fixture.runtime / fixture.helper_relative_path, "--landing-sha", fixture.landing_sha)
+    assert proc.returncode == 1
+    assert receipt["status"] == "failed"
+    assert receipt["runtime_mutated"] is False
 
 
 def test_a_helper_outside_the_merged_worktree_says_which_copy_to_run(tmp_path: Path) -> None:
@@ -942,11 +957,9 @@ def test_session_start_reports_changed_helper_without_moving_runtime(tmp_path: P
     helper = fixture.landing / fixture.helper_relative_path
     helper.write_text(helper.read_text() + "\n# changed upstream\n")
     git(fixture.landing, "commit", "-am", "change reconciler")
-    tip = git(fixture.landing, "rev-parse", "HEAD")
     git(fixture.landing, "push", "origin", "main")
     result = start_session(fixture)
     assert result.returncode == 0
-    assert "Catalog catch-up failed" in result.stdout and tip in result.stdout
     assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
 
 
