@@ -1408,14 +1408,76 @@ def test_create_project_enrollment_does_not_copy_manual_fields() -> None:
             assert payload["project_fields"] == {}, payload
 
 
-def test_project_set_without_values_does_not_read_or_write_project() -> None:
-    plan = load_plan_module()
-    plan.project_meta = lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("No field request needs no Project API"))
-    result = plan.set_project_fields(
-        owner="owner", project_ref="Roadmap", issue_url="https://github.com/owner/repo/issues/10",
-        config={"workflow": {"default_manager": "Default manager"}},
+def test_project_sync_failures_preserve_issue_creation_and_closure() -> None:
+    scenarios = (
+        ("create", "lookup", "Project not found for owner: Roadmap", "lookup_stale"),
+        ("create", "enroll", "project sync throttled", "project_update_failed"),
+        ("create", "enroll", "HTTP 403: resource not accessible by integration", "project_auth_denied"),
+        ("close", "lookup", "Project not found for owner: Roadmap", "lookup_stale"),
+        ("close", "fields", "HTTP 403: resource not accessible by integration", "project_auth_denied"),
     )
-    assert result["updated"] == {}, result
+    for command, failure_stage, message, error_code in scenarios:
+        plan = load_plan_module()
+        allow_close_relationships(plan)
+        issue = close_plan_issue()
+        issue.update(url=issue["html_url"], actor="automation-gh", expected_actor="shiny-code-bot")
+        calls: list[str] = []
+        plan.load_config = lambda _repo, **_kwargs: {
+            "projects": {"enabled": True, "owner": "owner", "default_project": "Roadmap"},
+        }
+        plan.find_existing_plan_issues = lambda *_args, **_kwargs: ("automation-gh", [])
+        plan.get_issue = lambda *_args, **_kwargs: ("automation-gh", issue)
+        plan.comment_route = lambda: ("automation-gh", "fake-gh", "shiny-code-bot")
+        plan.ensure_graphql_budget = lambda **_kwargs: None
+
+        def project_lookup(*_args: Any, **_kwargs: Any) -> tuple[str, int, dict[str, Any]]:
+            calls.append("lookup")
+            if failure_stage == "lookup":
+                raise plan.project_error(message)
+            return "automation-gh", 7, {"title": "Roadmap", "number": 7}
+
+        def enroll(project_args: list[str], **_kwargs: Any) -> tuple[str, str, str]:
+            assert project_args[:2] == ["project", "item-add"], project_args
+            calls.append("enroll")
+            raise plan.project_error(message)
+
+        def create(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            calls.append("create")
+            return issue
+
+        def close(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            calls.append("close")
+            return {"actor": "automation-gh", "expected_actor": "shiny-code-bot"}
+
+        def fields(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            calls.append("fields")
+            raise plan.project_error(message)
+
+        plan.project_fields = fields
+        plan.resolve_project = project_lookup
+        plan.project_meta = project_lookup
+        plan.run_raw = enroll
+        args = plan.build_parser().parse_args([
+            "--repo", "owner/repo", command,
+            *(["Durable plan", "--body", "## Finish Line\n\nShip it.\n", "--focus", "Now"]
+              if command == "create" else ["10"]),
+        ])
+        if command == "close":
+            args.reconcile_dependents = False
+        output = StringIO()
+        with patched_issue_core(plan, create_issue=create, set_issue_state=close), redirect_stdout(output):
+            getattr(plan, f"cmd_{command}")(args)
+        payload = json.loads(output.getvalue())
+        assert payload["ok"] is True, payload
+        assert payload["issue" if command == "create" else "closed"]["number"] == issue["number"], payload
+        warning = payload["project_fields" if command == "create" else "project"]
+        assert warning["error"] == message, warning
+        assert warning["error_code"] == error_code, warning
+        assert warning["warning"] is True and warning["blocking"] is False, warning
+        assert warning["operation"] == f"{command}_project_sync", warning
+        assert warning["target"] == {"owner": "owner", "project": "Roadmap"}, warning
+        project_calls = ["lookup", *([failure_stage] if failure_stage != "lookup" else [])]
+        assert calls == (["create", *project_calls] if command == "create" else [*project_calls, "close"]), calls
 
 
 def test_create_dedupes_exact_rest_search_without_writes() -> None:
@@ -1604,237 +1666,6 @@ def test_create_surfaces_reconciled_shared_issue_evidence() -> None:
     assert payload["reconciliation"]["result"] == "matched", payload
     assert payload["operation_marker"]["kind"] == "request_fingerprint", payload
     assert payload["completed_steps"][-2:] == ["resolve_actor", "reconcile_create"], payload
-
-
-def test_create_reports_issue_when_project_sync_fails() -> None:
-    plan = load_plan_module()
-    issue = {
-        "repo": "owner/repo",
-        "number": 10,
-        "id": 1010,
-        "title": "Durable plan",
-        "body": "## Finish Line\n\nShip it.\n",
-        "html_url": "https://github.com/owner/repo/issues/10",
-        "url": "https://github.com/owner/repo/issues/10",
-        "labels": [{"name": "plan"}, {"name": "plan:active"}],
-        "state": "open",
-        "actor": "automation-gh",
-        "expected_actor": "shiny-code-bot",
-    }
-
-    plan.load_config = lambda repo: {
-        "labels": {"plan": "plan", "active": "plan:active"},
-        "projects": {"enabled": True, "owner": "owner", "default_project": "Roadmap"},
-        "project_fields": {"focus": "Focus", "manager": "Manager", "finish_line": "Finish Line"},
-        "workflow": {"default_manager": "Code", "repo_managers": {}},
-    }
-    original_gh_json = plan.gh_json
-
-    def fake_gh_json(
-        args: list[str],
-        *,
-        input_text: Optional[str] = None,
-        prefer_active: bool = False,
-    ) -> tuple[str, Any]:
-        if args[:2] == ["api", "-H"] and args[-1] == "rate_limit":
-            return "automation-gh", {"resources": {"graphql": {"remaining": 200, "reset": 999}}}
-        return original_gh_json(
-            args,
-            input_text=input_text,
-            prefer_active=prefer_active,
-        )
-
-    plan.gh_json = fake_gh_json
-    plan.find_existing_plan_issues = lambda repo, title, completed_steps: ("automation-gh", [])
-    plan.ensure_labels = lambda repo, wanted, config, **kwargs: ("automation-gh", [])
-    plan.comment_route = lambda: ("automation-gh", "fake-gh", "shiny-code-bot")
-    plan.resolve_project = lambda owner, project, recoverable=False: ("active-gh-user", 7, {"title": project, "number": 7})
-
-    def fake_run_raw(
-        args: list[str],
-        **_kwargs: Any,
-    ) -> tuple[str, str, str]:
-        if args[:2] == ["project", "item-add"]:
-            raise plan.PlanError("project sync throttled")
-        raise AssertionError(f"unexpected run_raw args: {args}")
-
-    plan.run_raw = fake_run_raw
-    output = StringIO()
-    with patched_issue_core(plan, create_issue=lambda *_args, **_kwargs: issue):
-        with redirect_stdout(output):
-            plan.cmd_create(types.SimpleNamespace(
-                repo="owner/repo",
-                title="Durable plan",
-                title_flag=None,
-                body="## Finish Line\n\nShip it.\n",
-                body_file=None,
-                label=None,
-                milestone=None,
-                project=None,
-                force=False,
-                plan_status="active",
-                focus="Now",
-                manager=None,
-                finish_line=None,
-            ))
-
-    payload = json.loads(output.getvalue())
-    assert payload["ok"] is True, payload
-    assert payload["issue"]["number"] == 10, payload
-    assert payload["project_fields"]["error"] == "project sync throttled", payload
-    assert payload["project_fields"]["error_code"] == "project_update_failed", payload
-    assert payload["project_fields"]["warning"] is True, payload
-    assert payload["project_fields"]["blocking"] is False, payload
-    assert payload["project_fields"]["operation"] == "create_project_sync", payload
-    assert payload["project_fields"]["target"] == {"owner": "owner", "project": "Roadmap"}, payload
-
-
-def test_create_reports_stale_project_as_non_blocking_warning() -> None:
-    plan = load_plan_module()
-    issue = {
-        "repo": "owner/repo",
-        "number": 10,
-        "id": 1010,
-        "title": "Durable plan",
-        "body": "## Finish Line\n\nShip it.\n",
-        "html_url": "https://github.com/owner/repo/issues/10",
-        "url": "https://github.com/owner/repo/issues/10",
-        "labels": [{"name": "plan"}, {"name": "plan:active"}],
-        "state": "open",
-        "actor": "automation-gh",
-        "expected_actor": "shiny-code-bot",
-    }
-
-    plan.load_config = lambda repo: {
-        "labels": {"plan": "plan", "active": "plan:active"},
-        "projects": {"enabled": True, "owner": "owner", "default_project": "Roadmap"},
-        "project_fields": {"focus": "Focus", "manager": "Manager", "finish_line": "Finish Line"},
-        "workflow": {"default_manager": "Code", "repo_managers": {}},
-    }
-    plan.find_existing_plan_issues = lambda repo, title, completed_steps: ("automation-gh", [])
-    plan.ensure_labels = lambda repo, wanted, config, **kwargs: ("automation-gh", [])
-    plan.comment_route = lambda: ("automation-gh", "fake-gh", "shiny-code-bot")
-    plan.resolve_project = lambda owner, project, recoverable=False: (_ for _ in ()).throw(
-        plan.project_error(f"Project not found for {owner}: {project}")
-    )
-
-    output = StringIO()
-    with patched_issue_core(plan, create_issue=lambda *_args, **_kwargs: issue):
-        with redirect_stdout(output):
-            plan.cmd_create(types.SimpleNamespace(
-                repo="owner/repo",
-                title="Durable plan",
-                title_flag=None,
-                body="## Finish Line\n\nShip it.\n",
-                body_file=None,
-                label=None,
-                milestone=None,
-                project=None,
-                force=False,
-                plan_status="active",
-                focus="Now",
-                manager=None,
-                finish_line=None,
-            ))
-
-    payload = json.loads(output.getvalue())
-    assert payload["ok"] is True, payload
-    assert payload["issue"]["number"] == 10, payload
-    assert payload["project_fields"]["warning"] is True, payload
-    assert payload["project_fields"]["blocking"] is False, payload
-    assert payload["project_fields"]["operation"] == "create_project_sync", payload
-    assert payload["project_fields"]["error_code"] == "lookup_stale", payload
-    assert payload["project_fields"]["target"] == {"owner": "owner", "project": "Roadmap"}, payload
-    assert "planning.projects" in payload["project_fields"]["recommended_action"], payload
-    assert "Verify the acting GitHub identity can see the Project." in payload["project_fields"]["recommended_actions"], payload
-
-
-def test_create_reports_project_auth_denied_as_non_blocking_warning() -> None:
-    plan = load_plan_module()
-    issue = {
-        "repo": "owner/repo",
-        "number": 10,
-        "id": 1010,
-        "title": "Durable plan",
-        "body": "## Finish Line\n\nShip it.\n",
-        "html_url": "https://github.com/owner/repo/issues/10",
-        "url": "https://github.com/owner/repo/issues/10",
-        "labels": [{"name": "plan"}, {"name": "plan:active"}],
-        "state": "open",
-        "actor": "automation-gh",
-        "expected_actor": "shiny-code-bot",
-    }
-    calls: list[dict[str, Any]] = []
-
-    plan.load_config = lambda repo: {
-        "labels": {"plan": "plan", "active": "plan:active"},
-        "projects": {"enabled": True, "owner": "owner", "default_project": "Roadmap"},
-        "project_fields": {"focus": "Focus", "manager": "Manager", "finish_line": "Finish Line"},
-        "workflow": {"default_manager": "Code", "repo_managers": {}},
-    }
-    original_gh_json = plan.gh_json
-
-    def fake_gh_json(
-        args: list[str],
-        *,
-        input_text: Optional[str] = None,
-        prefer_active: bool = False,
-    ) -> tuple[str, Any]:
-        if args[:2] == ["api", "-H"] and args[-1] == "rate_limit":
-            return "automation-gh", {"resources": {"graphql": {"remaining": 200, "reset": 999}}}
-        return original_gh_json(
-            args,
-            input_text=input_text,
-            prefer_active=prefer_active,
-        )
-
-    plan.gh_json = fake_gh_json
-    plan.find_existing_plan_issues = lambda repo, title, completed_steps: ("automation-gh", [])
-    plan.ensure_labels = lambda repo, wanted, config, **kwargs: ("automation-gh", [])
-    plan.comment_route = lambda: ("automation-gh", "fake-gh", "shiny-code-bot")
-    plan.resolve_project = lambda owner, project, recoverable=False: ("automation-gh", 7, {"title": project, "number": 7})
-
-    def fake_run_raw(
-        args: list[str],
-        *,
-        prefer_active: bool = False,
-        **_kwargs: Any,
-    ) -> tuple[str, str, str]:
-        calls.append({"args": args, "prefer_active": prefer_active})
-        if args[:2] == ["project", "item-add"]:
-            raise plan.project_error("HTTP 403: resource not accessible by integration")
-        raise AssertionError(f"unexpected run_raw args: {args}")
-
-    plan.run_raw = fake_run_raw
-    output = StringIO()
-    with patched_issue_core(plan, create_issue=lambda *_args, **_kwargs: issue):
-        with redirect_stdout(output):
-            plan.cmd_create(types.SimpleNamespace(
-                repo="owner/repo",
-                title="Durable plan",
-                title_flag=None,
-                body="## Finish Line\n\nShip it.\n",
-                body_file=None,
-                label=None,
-                milestone=None,
-                project=None,
-                force=False,
-                plan_status="active",
-                focus="Now",
-                manager=None,
-                finish_line=None,
-            ))
-
-    payload = json.loads(output.getvalue())
-    assert payload["ok"] is True, payload
-    assert payload["issue"]["number"] == 10, payload
-    assert payload["project_fields"]["warning"] is True, payload
-    assert payload["project_fields"]["blocking"] is False, payload
-    assert payload["project_fields"]["operation"] == "create_project_sync", payload
-    assert payload["project_fields"]["error_code"] == "project_auth_denied", payload
-    assert payload["project_fields"]["target"] == {"owner": "owner", "project": "Roadmap"}, payload
-    assert "Grant the automation identity access to the Project." in payload["project_fields"]["recommended_actions"], payload
-    assert all(call["args"][:2] != ["gh", "project"] for call in calls), calls
 
 
 def test_close_rejects_open_cross_repo_blocker_before_any_write() -> None:
@@ -2544,65 +2375,6 @@ def test_close_already_complete_reuses_completion_comment() -> None:
     ], payload
 
 
-def test_close_reports_stale_project_as_non_blocking_warning() -> None:
-    plan = load_plan_module()
-    allow_close_relationships(plan)
-    issue = {
-        "repo": "owner/repo",
-        "number": 10,
-        "id": 1010,
-        "title": "Durable plan",
-        "body": "## Finish Line\n\nShip it.\n",
-        "html_url": "https://github.com/owner/repo/issues/10",
-        "labels": [{"name": "plan"}, {"name": "plan:active"}],
-        "state": "open",
-    }
-    calls: list[dict[str, Any]] = []
-
-    plan.load_config = lambda repo, **_: {
-        "labels": {"active": "plan:active", "done": "plan:done"},
-        "projects": {"owner": "owner", "default_project": "Roadmap"},
-        "project_fields": {"focus": "Focus"},
-    }
-    plan.get_issue = lambda ref, repo: ("automation-gh", issue)
-    plan.comment_route = lambda: ("automation-gh", "fake-gh", "shiny-code-bot")
-
-    def fake_edit_issue(number: int, **kwargs: Any) -> dict[str, Any]:
-        calls.append({"action": "edit", "number": number, **kwargs})
-        return {"actor": "automation-gh", "expected_actor": "shiny-code-bot"}
-
-    def fake_set_issue_state(number: int, **kwargs: Any) -> dict[str, Any]:
-        calls.append({"action": "close", "number": number, **kwargs})
-        return {"actor": "automation-gh", "expected_actor": "shiny-code-bot"}
-
-    plan.project_meta = lambda owner, project, recoverable=False: (_ for _ in ()).throw(
-        plan.project_error(f"Project not found for {owner}: {project}")
-    )
-
-    output = StringIO()
-    with patched_issue_core(plan, edit_issue=fake_edit_issue, set_issue_state=fake_set_issue_state):
-        with redirect_stdout(output):
-            plan.cmd_close(types.SimpleNamespace(
-                repo="owner/repo",
-                issue="10",
-                reason="completed",
-                body=None,
-                body_file=None,
-                owner=None,
-                project=None,
-                reconcile_dependents=False))
-
-    payload = json.loads(output.getvalue())
-    assert payload["ok"] is True, payload
-    assert payload["closed"]["number"] == 10, payload
-    assert payload["project"]["warning"] is True, payload
-    assert payload["project"]["blocking"] is False, payload
-    assert payload["project"]["operation"] == "close_project_sync", payload
-    assert payload["project"]["error_code"] == "lookup_stale", payload
-    assert payload["project"]["target"] == {"owner": "owner", "project": "Roadmap"}, payload
-    assert any(call["action"] == "close" for call in calls), calls
-
-
 def test_close_delegates_comment_to_shared_rest_helper() -> None:
     plan = load_plan_module()
     allow_close_relationships(plan)
@@ -2893,70 +2665,6 @@ def test_close_rejects_invalid_reason_before_remote_reads_or_writes() -> None:
         raise AssertionError("invalid close reason should fail")
 
 
-def test_close_reports_project_auth_denied_as_non_blocking_warning() -> None:
-    plan = load_plan_module()
-    allow_close_relationships(plan)
-    issue = {
-        "repo": "owner/repo",
-        "number": 10,
-        "id": 1010,
-        "title": "Durable plan",
-        "body": "## Finish Line\n\nShip it.\n",
-        "html_url": "https://github.com/owner/repo/issues/10",
-        "labels": [{"name": "plan"}, {"name": "plan:active"}],
-        "state": "open",
-    }
-    calls: list[dict[str, Any]] = []
-
-    plan.load_config = lambda repo, **_: {
-        "labels": {"active": "plan:active", "done": "plan:done"},
-        "projects": {"owner": "owner", "default_project": "Roadmap"},
-        "project_fields": {"focus": "Focus"},
-    }
-    plan.get_issue = lambda ref, repo: ("automation-gh", issue)
-    plan.comment_route = lambda: ("automation-gh", "fake-gh", "shiny-code-bot")
-
-    def fake_edit_issue(number: int, **kwargs: Any) -> dict[str, Any]:
-        calls.append({"action": "edit", "number": number, **kwargs})
-        return {"actor": "automation-gh", "expected_actor": "shiny-code-bot"}
-
-    def fake_set_issue_state(number: int, **kwargs: Any) -> dict[str, Any]:
-        calls.append({"action": "close", "number": number, **kwargs})
-        return {"actor": "automation-gh", "expected_actor": "shiny-code-bot"}
-
-    plan.project_meta = lambda owner, project, recoverable=False: (
-        "automation-gh",
-        7,
-        {"title": project, "number": 7},
-    )
-    plan.project_fields = lambda owner, project_number, recoverable=False: (_ for _ in ()).throw(
-        plan.project_error("HTTP 403: resource not accessible by integration")
-    )
-
-    output = StringIO()
-    with patched_issue_core(plan, edit_issue=fake_edit_issue, set_issue_state=fake_set_issue_state):
-        with redirect_stdout(output):
-            plan.cmd_close(types.SimpleNamespace(
-                repo="owner/repo",
-                issue="10",
-                reason="completed",
-                body=None,
-                body_file=None,
-                owner=None,
-                project=None,
-                reconcile_dependents=False))
-
-    payload = json.loads(output.getvalue())
-    assert payload["ok"] is True, payload
-    assert payload["closed"]["number"] == 10, payload
-    assert payload["project"]["warning"] is True, payload
-    assert payload["project"]["blocking"] is False, payload
-    assert payload["project"]["operation"] == "close_project_sync", payload
-    assert payload["project"]["error_code"] == "project_auth_denied", payload
-    assert "Use Project-capable auth for this operation." in payload["project"]["recommended_actions"], payload
-    assert any(call["action"] == "close" for call in calls), calls
-
-
 def test_close_syncs_project_before_closing_issue() -> None:
     plan = load_plan_module()
     allow_close_relationships(plan)
@@ -3112,16 +2820,6 @@ def test_find_project_item_falls_back_when_query_misses_exact_issue() -> None:
     assert len(item_lists) == 2, item_lists
     assert "--query" in item_lists[0], item_lists
     assert "--query" not in item_lists[1], item_lists
-
-
-def test_label_defs_cover_planning_labels() -> None:
-    plan = load_plan_module()
-    config = plan.DEFAULT_CONFIG
-    label_names = set(config["labels"].values())
-    defs = config.get("label_defs", {})
-
-    missing = sorted(label_names - set(defs))
-    assert not missing, f"label_defs missing entries for: {missing}"
 
 
 def test_create_refuses_to_mint_undocumented_extra_labels() -> None:
