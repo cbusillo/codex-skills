@@ -744,11 +744,16 @@ def test_a_behind_install_catches_up_by_running_its_own_copy(tmp_path: Path) -> 
     assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.landing_sha
 
 
-@pytest.mark.parametrize("changed_name", [SCRIPT.name, "git_status.py"])
+@pytest.mark.parametrize("changed_name", [SCRIPT.name, "git_status.py", "moved_reader"])
 def test_an_install_waits_for_the_landed_source_then_recovers(tmp_path: Path, changed_name: str) -> None:
     fixture = build_runtime_fixture(tmp_path)
-    changed = fixture.landing / "github" / "scripts" / changed_name
-    changed.write_text(changed.read_text() + "\n")
+    if changed_name == "moved_reader":
+        changed = fixture.landing / fixture.helper_relative_path
+        changed.write_text(changed.read_text().replace('with_name("git_status.py")', 'with_name("status_reader.py")'))
+        git(fixture.landing, "mv", "github/scripts/git_status.py", "github/scripts/status_reader.py")
+    else:
+        changed = fixture.landing / "github" / "scripts" / changed_name
+        changed.write_text(changed.read_text() + "\n")
     git(fixture.landing, "commit", "-am", "change helper")
     tip = git(fixture.landing, "rev-parse", "HEAD")
     git(fixture.landing, "push", "origin", "main")
@@ -757,7 +762,8 @@ def test_an_install_waits_for_the_landed_source_then_recovers(tmp_path: Path, ch
 
     assert proc.returncode == 1
     assert receipt["status"] == "retryable"
-    assert receipt["reason_code"] == "helper_landing_source_mismatch"
+    mismatch_reason = "landed_helper_missing" if changed_name == "moved_reader" else "helper_landing_source_mismatch"
+    assert receipt["reason_code"] == mismatch_reason
     assert receipt["runtime_mutated"] is False
     assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
 
@@ -773,6 +779,7 @@ def test_an_install_waits_for_the_landed_source_then_recovers(tmp_path: Path, ch
     proc, receipt = run_helper(fixture, fixture.runtime / fixture.helper_relative_path, "--landing-sha", fixture.landing_sha)
     assert proc.returncode == 1
     assert receipt["status"] == "failed"
+    assert receipt["reason_code"] == mismatch_reason
     assert receipt["runtime_mutated"] is False
 
 
@@ -957,9 +964,11 @@ def test_session_start_reports_changed_helper_without_moving_runtime(tmp_path: P
     helper = fixture.landing / fixture.helper_relative_path
     helper.write_text(helper.read_text() + "\n# changed upstream\n")
     git(fixture.landing, "commit", "-am", "change reconciler")
+    tip = git(fixture.landing, "rev-parse", "HEAD")
     git(fixture.landing, "push", "origin", "main")
     result = start_session(fixture)
     assert result.returncode == 0
+    assert tip in result.stdout
     assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
 
 

@@ -557,9 +557,9 @@ and the same read deadline. Git output is captured in temporary files so a
 transport child holding an output handle cannot extend Windows timeout cleanup
 by keeping a pipe reader blocked. This is fixture-qualified; native Windows
 Git/PuTTY execution has not been verified.
-If the helper or status reader changed upstream, a behind install returns
-`retryable` without mutation until the existing landing or scheduled updater advances it.
-Manual catch-up uses the copy from a worktree at the reported tip. Refresh an existing
+For source-update retries and manual catch-up, use the
+[runtime reconciliation reference](skills/github/references/cli-reference.md#runtime-checkout-reconciliation).
+Refresh an existing
 Codex session hook from the reconciled runtime checkout by previewing
 `uv run <runtime-checkout>/scripts/sync-global-instructions.py --codex-hook --hooks-only --upgrade-session-start`, then
 adding `--write` to pick up the updated hook timeout; Claude reads it from

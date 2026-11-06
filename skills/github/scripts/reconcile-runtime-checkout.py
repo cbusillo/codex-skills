@@ -306,6 +306,7 @@ def reconcile_checkout(
             fetched_sha = git_text(runtime_root, "rev-parse", remote_ref)
             current_sha = git_text(runtime_root, "rev-parse", "HEAD")
             receipt["fetched_sha"] = fetched_sha
+            can_fast_forward = git_is_ancestor(runtime_root, current_sha, fetched_sha)
             if runtime_path is not None:
                 if landing_sha is None:
                     landing_sha = receipt["landing_sha"] = fetched_sha
@@ -329,6 +330,9 @@ def reconcile_checkout(
                 receipt["helper_sha256"] = hashlib.sha256(executing_helper).hexdigest()
                 reader_path = helper_relative_path.with_name("git_status.py")
                 executing_reader = canonical_script_bytes(STATUS_READER.read_bytes())
+                source_mismatch_status = (
+                    "retryable" if source_root == runtime_root and current_sha != fetched_sha and can_fast_forward else "failed"
+                )
                 try:
                     landing_reader = canonical_script_bytes(git_blob_bytes(source_root, landing_sha, reader_path))
                     tip_reader = canonical_script_bytes(git_blob_bytes(source_root, fetched_sha, reader_path))
@@ -354,7 +358,7 @@ def reconcile_checkout(
                     )
                 except GitCommandError:
                     receipt["after_sha"] = current_sha
-                    return finish(receipt, "failed", "landed_helper_missing")
+                    return finish(receipt, source_mismatch_status, "landed_helper_missing")
 
                 receipt["helper_blob_oid"] = landing_helper_oid
                 receipt["helper_tip_blob_oid"] = tip_helper_oid
@@ -371,16 +375,11 @@ def reconcile_checkout(
                         "This copy of the helper differs from the landed one. Run the copy in a worktree "
                         f"checked out at {fetched_sha}."
                     )
-                    waits_for_source_update = (
-                        source_root == runtime_root and current_sha != fetched_sha
-                        and git_is_ancestor(runtime_root, current_sha, fetched_sha)
-                    )
-                    status = "retryable" if waits_for_source_update else "failed"
                     if not receipt["helper_landing_verified"]:
-                        return finish(receipt, status, "helper_landing_source_mismatch")
-                    return finish(receipt, status, "helper_tip_source_mismatch")
+                        return finish(receipt, source_mismatch_status, "helper_landing_source_mismatch")
+                    return finish(receipt, source_mismatch_status, "helper_tip_source_mismatch")
                 receipt["helper_source_verified"] = True
-            if not git_is_ancestor(runtime_root, current_sha, fetched_sha):
+            if not can_fast_forward:
                 receipt["after_sha"] = current_sha
                 if git_is_ancestor(runtime_root, fetched_sha, current_sha):
                     return finish(receipt, "blocked", "runtime_ahead")
