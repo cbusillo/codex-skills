@@ -598,6 +598,49 @@ class RoutineCheckTests(unittest.TestCase):
                             retired=False,
                         )
 
+    def test_verified_claim_release_disambiguates_session_progress_comments(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            entry = {"repository": "owner/repo", "issue": 7, "session_id": "native"}
+            ledger = root / "ledger.json"
+            ledger.write_text(json.dumps([entry]))
+            args = argparse.Namespace(ledger=ledger, session_id="native")
+            url = "https://github.com/owner/repo/issues/7#issuecomment-8"
+            handoff = {"id": 8, "html_url": url, "body": "Released claim 2\nSession: native",
+                       "issue_url": "https://api.github.com/repos/owner/repo/issues/7", "user": {"login": "agent[bot]"}}
+            progress = {**handoff, "id": 9, "html_url": url.replace("-8", "-9"), "body": "Session: native\nReview started"}
+            checked = {"ok": True, "claims_clear": True, "coverage": {"complete": True}, "session_ids": ["native"],
+                       "blocked": [], "unresolved_invocations": [],
+                       "released_claims": [{"repository": "owner/repo", "record": 7, "source_session": "native", "release_url": url}]}
+            for variant in ("verified", "failed", "incomplete", "other_session", "other_anchor", "ambiguous", "wrong_actor", "conflicting_session"):
+                with self.subTest(variant=variant):
+                    current = json.loads(json.dumps(checked))
+                    release_comment = dict(handoff)
+                    if variant == "incomplete":
+                        current["coverage"]["complete"] = False
+                    elif variant == "other_session":
+                        current["released_claims"][0]["source_session"] = "another"
+                    elif variant == "other_anchor":
+                        current["released_claims"][0]["record"] = 6
+                    elif variant == "ambiguous":
+                        current["released_claims"].append({**current["released_claims"][0], "release_url": progress["html_url"]})
+                    elif variant == "wrong_actor":
+                        release_comment["user"] = {"login": "foreign"}
+                    elif variant == "conflicting_session":
+                        release_comment["body"] = "Released claim 2\nSession: another"
+                    operation = Operation(root / variant, ["native"])
+                    (operation.evidence / "claims.json").write_text(json.dumps({
+                        "exit_code": int(variant == "failed"), "stdout": json.dumps(current)}))
+                    reader = SimpleNamespace(paged_json=Mock(return_value=[release_comment, progress]), get_json=Mock(return_value=release_comment))
+                    with (patch.object(session_closeout, "GitHubReader", return_value=reader),
+                          patch.object(session_closeout.github_identity, "automation_login", return_value="agent[bot]")):
+                        if variant == "verified":
+                            session_closeout.verify_handoff(dict(entry), args, operation, retired=False)
+                            self.assertEqual(operation.state["handoff"]["url"], url)
+                        else:
+                            with self.assertRaises(GateFailed):
+                                session_closeout.verify_handoff(dict(entry), args, operation, retired=False)
+
     def test_explicit_handoff_supports_another_work_issue_and_partial_legacy_pointer(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

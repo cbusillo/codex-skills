@@ -87,9 +87,11 @@ decisions, statuses, board contents or narrative; open linked records for action
    uv run skills/supervisor/scripts/session_closeout.py --ledger <ledger.json> --session-id <next-native-id> --supervisor-session <supervisor-id> --owner OWNER --evidence <next-private-session-evidence>
    ```
 
-   The helper finds the automation-authored handoff naming the exact native
-   session on the ledger's issue, journals it and stops on ambiguity. When no
-   such handoff exists, its fresh complete claim check can provide a
+   The helper selects the session's verified claim-release comment on the ledger's
+   issue, journals it and keeps the existing handoff validators. Multiple releases
+   need explicit selection. Without a verified release there, it finds a unique
+   automation-authored handoff naming the exact native session, or uses the fresh
+   complete claim check's
    [source-bound comment projection](../../work-closeout/SKILL.md#claim-disposition)
    for an unchanged original comment when the source's last recognized confirmed `gh-comment`
    write is on the ledger issue. This supported literal command route needs no
