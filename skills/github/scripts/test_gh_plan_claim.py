@@ -85,9 +85,15 @@ class ClaimMarkerTests(unittest.TestCase):
     def test_session_ownership_uses_direct_fields_without_borrowing_dependency_mentions(self) -> None:
         session = OWNER["session"]
         dependency = f"Ingress on https://github.com/owner/other/issues/1 is independently owned by edge-worker, native {session}."
+        status = f"## Current Status\nNext actor: agent:{OTHER['session']}\n{CLAIM.marker(OTHER)}\n"
+        routing = (f"## Lead handoff routing\nNext actor: agent:{session}\nProvider setup is separately owned engineering "
+                   f"on https://github.com/owner/other/issues/872 by infra-worker native {session}. "
+                   "Scope for that separate worker: reuse the existing driver.")
         for body in (dependency, f"Claimed by another-worker\n\n{dependency}",
                      f"Next actor: agent:another-session\n\n{dependency}",
                      CLAIM.marker(OTHER) + "\n\n" + dependency,
+                     status + routing,
+                     status + f"## Lead routing\nProvider setup on https://github.com/owner/other/issues/872 is separately owned by infra-worker native {session}.",
                      f"The issue is blocked on ingress owner/other#2, which is owned by edge-worker (native {session}).",
                      f"Claim: none; ingress owner/other#2 is owned by edge-worker, native {session}.",
                      f"Session: another-session; ingress dependency held by {session}",
@@ -109,6 +115,11 @@ class ClaimMarkerTests(unittest.TestCase):
                       f"- Claimed by worker-a\n- Working in session {session}",
                       f"Owned by {session} Session ID: other-session",
                       CLAIM.marker(OTHER) + f"\nThe repair is owned by {session}.",
+                      CLAIM.marker(OTHER) + f"\nClaimed by {OTHER['worker']}\n\nWorking from session {session}",
+                      status + f"Claimed by {OTHER['worker']}\n\nWorking from session {session}",
+                      status + f"## Evidence\nClaimed by worker-a\nSession: {session}",
+                      status + f"## Evidence\nThe repair is owned by {session}.",
+                      f"Assigned worker: {session}",
                       f"This issue owner/repo#42 is owned by {session}.",
                       f"This issue owner/old-name#42 is owned by {session}.",
                       f"Split from #3550. Session: {session}",
