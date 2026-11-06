@@ -6,6 +6,7 @@
 import asyncio
 import io
 from contextlib import ExitStack, redirect_stdout
+from collections.abc import Iterable
 from argparse import Namespace
 import json
 import os
@@ -18,6 +19,7 @@ from datetime import datetime, timezone
 import threading
 import uuid
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
@@ -1068,7 +1070,7 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                 await self.check_closure_preserved(f, [(method, f.session, params) for method, params in methods], frozen)
 
     async def check_closure_preserved(
-        self, f: ReceiptFixture, methods: list[tuple[str, str | None, dict]], frozen: bool
+        self, f: Any, methods: Iterable[tuple[str, str | None, dict[str, Any]]], frozen: bool
     ) -> None:
         if frozen:
             with closure.ownership(f.session):
