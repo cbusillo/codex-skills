@@ -8,7 +8,6 @@ import asyncio
 from contextlib import contextmanager
 import fcntl
 import hashlib
-import json
 import os
 from pathlib import Path
 import plistlib

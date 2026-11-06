@@ -389,7 +389,7 @@ class PaneParserTests(unittest.TestCase):
             ledger = Path(folder) / "ledger.json"
             ledger.write_text(json.dumps([entry]))
             with patch.object(self.terminal, "run", return_value=SimpleNamespace(
-                    returncode=0, stdout=self.dead + self.live)) as calls, \
+                    returncode=0, stdout=self.dead + self.live)), \
                     patch.object(session_liveness, "inventory", return_value=[]):
                 self.assertTrue(self.terminal.close(self.identity, ledger)["close_requested"])
             fields = dict(zip(tmux_terminal.PANE_FIELDS, self.dead.rstrip("\n").split("\t")))
