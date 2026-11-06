@@ -201,8 +201,10 @@ class CloseAttentionTests(unittest.TestCase):
             "the Director's comment on another issue": ({**director, "issue_url": on_issue[:-1] + "8"}, None),
         }
         for case, (comment, reactions) in refused.items():
-            with self.subTest(case), self.assertRaises(gate.CloseAttentionError):
+            with self.subTest(case), self.assertRaises(gate.CloseAttentionError) as failure:
                 self.decide(comment, reactions)
+            if comment is record:
+                self.assertIn(f"--unanswered-decision {ISSUE_URL}#issuecomment-55", str(failure.exception))
         with self.assertRaises(gate.CloseAttentionError):
             self.decide(director, url=f"https://github.com/{REPO}/issues/8#issuecomment-55")
 
