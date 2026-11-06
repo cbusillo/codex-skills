@@ -18,6 +18,7 @@ import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -1646,7 +1647,7 @@ def test_json_payload_does_not_publish_private_profile_fields() -> None:
 
 
 def test_render_executive_brief_markdown() -> None:
-    payload = {
+    payload: dict[str, Any] = {
         "ok": True,
         "schema_version": 1,
         "script_version": 1,
@@ -2223,7 +2224,7 @@ def test_render_executive_brief_thin_workstream_avoids_validation_claim() -> Non
 @pytest.mark.parametrize("has_product_signal", [False, True])
 def test_render_executive_brief_surfaces_configured_repo_coverage_gap(has_product_signal: bool) -> None:
     limitation = "Could not collect issues for example-org/missing: API unavailable"
-    payload = {
+    payload: dict[str, Any] = {
         "ok": True,
         "window": {"since": "2026-06-01T16:00:00Z", "until": "2026-06-02T16:00:00Z", "label": "24h"},
         "timezone": "America/New_York",
@@ -2261,7 +2262,7 @@ def test_render_executive_brief_uses_reporting_window_language(
     window: str,
     heading: str,
 ) -> None:
-    payload = {
+    payload: dict[str, Any] = {
         "ok": True,
         "window": {"since": f"{since}T16:00:00Z", "until": "2026-06-02T16:00:00Z", "label": window},
         "timezone": "America/New_York",
