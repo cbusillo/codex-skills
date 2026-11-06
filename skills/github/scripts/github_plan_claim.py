@@ -17,11 +17,11 @@ from typing import Any, Callable
 try:
     from github_plan_status import next_actor
     from github_plan_status.discussion import MARKER, live_lines, records, without_operation_marker, released_claim_id, exact_released_sources, unquoted_text
-    from github_plan_status.references import pr_issue_reference as pr_issue_reference
+    from github_plan_status.references import linked_issues, pr_issue_reference as pr_issue_reference
 except ModuleNotFoundError:
     from skills.github.scripts.github_plan_status import next_actor
     from skills.github.scripts.github_plan_status.discussion import MARKER, live_lines, records, without_operation_marker, released_claim_id, exact_released_sources, unquoted_text
-    from skills.github.scripts.github_plan_status.references import pr_issue_reference as pr_issue_reference
+    from skills.github.scripts.github_plan_status.references import linked_issues, pr_issue_reference as pr_issue_reference
 
 
 LEASE_TAKEOVER_PREFIX = "Lease takeover: claim "
@@ -142,7 +142,7 @@ def references_issue(text: str, number: int) -> bool:
                 or re.search(rf"(?:^|/){number}[-_]", text))
 
 
-def ownership_text(text: str, *, strip_quotes: bool = True) -> str:
+def ownership_text(text: str, *, strip_quotes: bool = True, keep_link_targets: bool = False) -> str:
     """Unwrap human-readable Markdown without changing machine directives."""
     text = "\n".join(text.splitlines())
     # Code content is literal Markdown: protect it while unwrapping other spans.
@@ -190,24 +190,27 @@ def ownership_text(text: str, *, strip_quotes: bool = True) -> str:
 
     reference_destination = r"(?:<[^>\n]*>|[^()\s]+(?:\([^()\s]*\)[^()\s]*)*)"
     definition = re.compile(rf" {{0,3}}\[([^]\n]+)]:[ \t]*{reference_destination}{title}[ \t]*")
-    references: set[str] = set()
+    references: dict[str, str] = {}
     lines = []
     block_start = True
     for line in text.splitlines():
         definition_match = definition.fullmatch(line) if block_start else None
         if definition_match:
-            references.add(reference_key(definition_match.group(1)))
+            references[reference_key(definition_match.group(1))] = line.partition(":")[2].strip()
             lines.append("")
         else:
             lines.append(line)
             block_start = not line.strip()
     text = "\n".join(lines)
-    text = re.sub(rf"\[([^][]*)]\([ \t]*{destination}{title}[ \t]*\)", r"\1", text)
+    text = re.sub(rf"\[([^][]*)]\(([ \t]*{destination}{title})[ \t]*\)",
+                  (r"\1 \2" if keep_link_targets else r"\1"), text)
     text = re.sub(r"\[([^][]+)]\[([^]\n]*)]",
-                  lambda match: match.group(1) if reference_key(match.group(2) or match.group(1)) in references
-                  else match.group(), text)
+                  lambda match: (match.group(1) + (" " + references[reference_key(match.group(2) or match.group(1))]
+                                                if keep_link_targets else ""))
+                  if reference_key(match.group(2) or match.group(1)) in references else match.group(), text)
     text = re.sub(r"\[([^][]+)]",
-                  lambda match: match.group(1) if reference_key(match.group(1)) in references else match.group(), text)
+                  lambda match: (match.group(1) + (" " + references[reference_key(match.group(1))] if keep_link_targets else ""))
+                  if reference_key(match.group(1)) in references else match.group(), text)
     # Paired delimiters only: underscores inside identity tokens are literal.
     # Repetition handles nested emphasis and links inside emphasized spans.
     emphasis = r"(?<!\w)(\*{1,3}|_{1,3})(?=\S)(.+?)(?<=\S)\1(?!\w)"
@@ -219,7 +222,7 @@ def ownership_text(text: str, *, strip_quotes: bool = True) -> str:
     return re.sub(r"\x00(\d+)\x00", lambda match: code[int(match.group(1))], text)
 
 
-def session_fields(text: str, *, include_quotes: bool = True, current_only: bool = False) -> list[str]:
+def session_field_records(text: str, *, include_quotes: bool = True, current_only: bool = False) -> list[tuple[str, str]]:
     prose = ownership_text(text, strip_quotes=False)
     fence = ""
     previous = ""
@@ -252,8 +255,12 @@ def session_fields(text: str, *, include_quotes: bool = True, current_only: bool
             end = matches[index + 1].start() if index + 1 < len(matches) else len(line)
             value = line[field.end():end].split("|", 1)[0].strip()
             if value:
-                values.append(value)
+                values.append((line[:field.start()], value))
     return values
+
+
+def session_fields(text: str, *, include_quotes: bool = True, current_only: bool = False) -> list[str]:
+    return [value for _, value in session_field_records(text, include_quotes=include_quotes, current_only=current_only)]
 
 
 def session_identifiers(value: str) -> set[str]:
@@ -273,7 +280,7 @@ def human_session_reference(text: str, position: int) -> bool:
     ))
 
 
-def has_ownership_assertion(text: str, *, own_claim: dict[str, str] | None = None) -> bool:
+def ownership_assertions(text: str, *, own_claim: dict[str, str] | None = None) -> list[tuple[str, str]]:
     """Ignore explicit absence only at the assertion, never a whole status."""
     text = "\n".join(text.splitlines())
     if own_claim:
@@ -309,7 +316,8 @@ def has_ownership_assertion(text: str, *, own_claim: dict[str, str] | None = Non
         rf"(?:no {subject}(?:\s*(?:,\s*(?:(?:and|or)\s+)?|(?:and|or)\s+){subject})*"
         r"\s+(?:is|are|was|were|has been|have been)|no (?:implementation |execution )?ownership)\s*"
     )
-    for match in re.finditer(r"owned by|claimed by|\bworker\s*:|\bsession\s*:", text, re.IGNORECASE):
+    assertions = []
+    for match in re.finditer(r"owned by|claimed by|\b(?:worker|owner|session)\s*:", text, re.IGNORECASE):
         if human_session_reference(text, match.start()):
             continue
         raw_prefix = re.split(boundary, text[:match.start()])[-1]
@@ -341,30 +349,39 @@ def has_ownership_assertion(text: str, *, own_claim: dict[str, str] | None = Non
                 if negated and re.fullmatch(r"(?:(?:this|the|a|an|any|another|current)\s+)?"
                                             r"[\w.-]+(?:\s+(?:worker|session|agent|sweep|pass|run|audit))?", suffix, re.IGNORECASE):
                     continue
-        return True
-    return False
+        assertions.append((raw_prefix + " " + match.group(), suffix))
+    return assertions
 
 
-def belongs_to_session(body: str, session: str) -> bool:
+def has_ownership_assertion(text: str, *, own_claim: dict[str, str] | None = None) -> bool:
+    return bool(ownership_assertions(text, own_claim=own_claim))
+
+
+def belongs_to_session(body: str, session: str, *, record: tuple[str, int]) -> bool:
     body = unquoted_text(body)
     if session not in body:
         return False
-    if any(record["session"] == session for record in records(body)):
+    if any(owner["session"] == session for owner in records(body)):
         return True
     identity = re.compile(rf"(?<![\w-]){re.escape(session)}(?![\w-])")
-    for line in ownership_text(body).splitlines():
-        if not identity.search(line):
-            continue
-        if any(identity.search(actor.removeprefix("agent:")) for _, actor in next_actor.fields(line)):
-            return True
-        field = re.sub(r"^\s*(?:[-*+]\s+|\d+[.)]\s+)?", "", line)
-        if re.match(
-            r"(?i)(?:(?:state|ownership|claim):|(?:this|the) (?:issue|task|work)\b|"
-            r"(?:owned|claimed) by\b|worker\s*:|(?:native[ \t_-]*)?(?:session|thread)\b|\|\s*(?:session|thread)\b)",
-            field,
-        ) and (session_fields(line, include_quotes=False, current_only=True) or has_ownership_assertion(line)):
-            return True
-    return False
+    prose = ownership_text(body, keep_link_targets=True)
+
+    def foreign_record(prefix: str) -> bool:
+        targets = linked_issues(record[0], {"title": prefix})
+        return bool(targets) and all((repo.casefold(), number) != (record[0].casefold(), record[1]) for repo, number in targets)
+
+    if any(identity.search(actor.removeprefix("agent:")) for _, actor in next_actor.fields(prose)):
+        return True
+    fields = session_field_records(prose, include_quotes=False, current_only=True)
+    assertions = [(prefix, holder) for prefix, holder in ownership_assertions(prose)
+                  if not session_fields(prefix + " " + holder)]
+    if any(not foreign_record(prefix) and identity.search(holder.split(";", 1)[0])
+           for prefix, holder in [*fields, *assertions]):
+        return True
+    if fields or next_actor.fields(prose) or records(body) or not re.match(r"(?i)Claimed by:?\s+\S+", prose):
+        return False
+    local = "\n\n".join(paragraph for paragraph in re.split(r"\n[ \t]*\n", prose) if not foreign_record(paragraph))
+    return bool(identity.search(local)) and has_ownership_assertion(local)
 
 
 def released_successor_route(

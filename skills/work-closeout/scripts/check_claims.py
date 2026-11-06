@@ -102,7 +102,7 @@ def check_record(reader, repo, number, session, actor, *, pulls_cache=None, data
     body_records = [r for r in claim.records(issue.get("body") or "") if r["session"] == session]
     if any(r not in [r for c in sources for r in claim.records(c.get("body") or "")] for r in body_records):
         raise ValueError(f"{repo}#{number}: status ownership has no matching source claim")
-    if not sources and claim.belongs_to_session(issue.get("body") or "", session):
+    if not sources and claim.belongs_to_session(issue.get("body") or "", session, record=(repo, number)):
         raise ValueError(f"{repo}#{number}: status-only ownership needs reconciliation")
     result = []
     for source in sources:

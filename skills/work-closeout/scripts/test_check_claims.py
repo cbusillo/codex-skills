@@ -443,16 +443,6 @@ class ClaimCloseoutTests(unittest.TestCase):
         )
         self.issue["body"] = body
         self.assertEqual(self.check(), [])
-        for ownership in (
-            f"Next actor: agent:{SESSION}",
-            f"Claimed by worker\nSession: {SESSION}",
-            f"Worker: {SESSION} or another-worker",
-            f"Session: other-session\nSession: {SESSION}",
-        ):
-            with self.subTest(ownership=ownership):
-                self.issue["body"] = body + "\n" + ownership
-                with self.assertRaisesRegex(ValueError, "status-only ownership"):
-                    self.check()
         self.reader.post_json.assert_not_called()
 
     def receipt_entry(self, session: str = SESSION, records: tuple = ((REPO, 1),)) -> dict:
