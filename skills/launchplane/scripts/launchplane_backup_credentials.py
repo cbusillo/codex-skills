@@ -298,7 +298,6 @@ def execute(h: Any, args: argparse.Namespace) -> int:
         return 2
     request["service_url_sha256"] = h.metadata_review_digest({"service_url": settings["service_url"]})
     payload = h.base_payload(status="ok", operation=operation, request=request)
-    response = None
     attempted = accepted = readback_started = False
     receipt: dict[str, object] = {}
     read_path = h.helper_command_path(BINDINGS + "-read").format(product=urllib.parse.quote(scope["product"], safe=""))
