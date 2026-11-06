@@ -265,9 +265,9 @@ def read_agy_records(path: Path) -> list[dict]:
                 call = protobuf_fields(protobuf_fields(step.get(5, b"")).get(4, b""))
                 identity = f"{path.stem}/task-{index}"
                 if task.get(1) == identity.encode() and call.get(2) == b"run_command":
-                    tasks[identity] = {"index": index, "call": call, "terminal": agy_command_terminal(step)}
+                    tasks[identity] = {"index": index, "call": call, "status": rows[index][2], "terminal": agy_command_terminal(step)}
         notified = {protobuf_fields(protobuf_fields(step[114])[4])[3].decode()
-                    for row, step in zip(rows, steps) if row[1:4] == (101, 3, 0)
+                    for row, step in zip(rows, steps, strict=True) if row[1:4] == (101, 3, 0)
                     and agy_task_notification(step, path.stem, row[0], tasks)}
         for identity, task in tasks.items():
             task["notified"] = identity in notified
@@ -303,18 +303,22 @@ def agy_task_notification(step: dict, session: str, ordinal: int, tasks: dict[st
                 and envelope.get(2) == session.encode() == origin.get(1)
                 and (call.get(1), call.get(2)) == (task["call"].get(1), task["call"].get(2))
                 and json.loads(call.get(3, b"{}")) == json.loads(task["call"][3])
-                and terminal.get(1) == task["terminal"].get(1) and terminal.get(3) == task["terminal"].get(3)
-                and type(terminal.get(3)) is int)
+                and terminal.get(1) == task["terminal"].get(1) == json.loads(task["call"][3])["CommandLine"].encode()
+                and terminal.get(2) == task["terminal"].get(2) and terminal.get(3) == task["terminal"].get(3)
+                and (type(terminal.get(3)) is int or
+                     task["status"] == 6 and fields(note.get(2, b"")).get(4) == 1))
 
 
-def agy_step_records(session: str, ordinal: int, kind: int, status: int, children: bool, step: dict, tasks: dict[str, dict]) -> list[dict]:
+def agy_step_records(
+    session: str, ordinal: int, kind: int, status: int, children: bool, step: dict, tasks: dict[str, dict]
+) -> list[dict]:
     fields = protobuf_fields
     metadata = fields(step.get(5, b""))
     clock = fields(metadata.get(8) or metadata.get(1, b""))
     timestamp = datetime.fromtimestamp(clock[1] + clock.get(2, 0) / 1e9, timezone.utc).isoformat()
     row: dict[str, Any] = {"sessionId": session, "timestamp": timestamp, "type": "user", "message": {"content": ""}}
     pending = ("native child history is unavailable" if children else
-               "native step kind is unknown" if kind not in {14, 15, 23, 101, 132} else
+               "native step kind is unknown" if kind not in {14, 15, 17, 23, 101, 132} else
                "native step is pending" if status not in {3, 6, 7} else None)
     records = []
     if kind == 14 and status == 3:
@@ -328,7 +332,7 @@ def agy_step_records(session: str, ordinal: int, kind: int, status: int, childre
     elif kind == 101:
         if status != 3 or not agy_task_notification(step, session, ordinal, tasks):
             pending = pending or "native notification provenance is unavailable"
-    elif kind not in {14, 15}:
+    elif kind not in {14, 15, 17}:
         call = fields(metadata.get(4, b""))
         if not call:
             pending = pending or "native tool call is unavailable"
@@ -338,8 +342,10 @@ def agy_step_records(session: str, ordinal: int, kind: int, status: int, childre
             content = {"type": "tool_use", "id": identifier, "name": "Bash" if command else name,
                        "input": {"command": arguments["CommandLine"]} if command else arguments}
             records.append({"sessionId": session, "timestamp": timestamp, "type": "assistant", "message": {"content": [content]}})
-            task_status = name == "manage_task" and (arguments.get("Action") == "list" or
-                                                   arguments.get("Action") == "status" and arguments.get("TaskId") in tasks)
+            task = tasks.get(arguments.get("TaskId"), {})
+            task_status = (name in {"manage_task", "manage_subagents"} and arguments.get("Action") == "list" or
+                           name == "manage_task" and bool(task) and (arguments.get("Action") == "status" or
+                           arguments.get("Action") == "kill" and task["status"] == 6 and task["notified"]))
             if name not in {"read_file", "write_file", "edit_file", "list_dir", "grep_search", "find_by_name", "run_command"} and not task_status:
                 pending = pending or f"native tool coverage is unavailable for {name}"
             if status in {3, 6, 7} and kind == 132:

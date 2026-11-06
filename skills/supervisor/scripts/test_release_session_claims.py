@@ -897,6 +897,31 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual([r["claim_comment"] for r in report["reports"][0]["released_claims"]], [self.source["id"]])
         self.assertFalse(report["needs_reconciliation"])
 
+    def test_finish_does_not_borrow_a_structured_claim_from_its_narrative_operator(self) -> None:
+        fixture = json.loads((Path(__file__).parent / "fixtures/cross-session-claim-reference.json").read_text())
+        source, released = fixture["comments"]
+        owner = github_plan_claim.records(source["body"])[0]
+        self.reader.get_json.side_effect = None
+        self.reader.get_json.return_value = {"body": ""}
+        self.reader.paged_json.side_effect = None
+        for change in (None, "conflicting_field", "conflicting_marker"):
+            with self.subTest(change=change):
+                original = {**source}
+                if change == "conflicting_field":
+                    original["body"] += f"\nSession: {fixture['operator_session']}"
+                elif change == "conflicting_marker":
+                    original["body"] += "\n" + github_plan_claim.marker({**owner, "session": fixture["operator_session"]})
+                self.reader.paged_json.return_value = [original, released]
+                entry = {"session_id": fixture["operator_session"], "ended_at": fixture["ended_at"],
+                         "_finish_scope": "accessible repositories under the requested owner"}
+                with patch_attribute(helper, "comment") as write, patch_attribute(helper, "run_release") as run:
+                    report = helper.finished_claims(self.reader, entry, released["user"]["login"],
+                                                    [(fixture["repository"], fixture["issue"])], False)
+                self.assertEqual(bool(report["issue_refusals"]), change is not None, report)
+                self.assertFalse(report["released_claims"], report)
+                write.assert_not_called()
+                run.assert_not_called()
+
     def test_real_releases_are_proven_by_native_readback_before_exit_despite_provider_clock(self) -> None:
         incidents = json.loads((Path(__file__).parent / "fixtures/closeout-native-posts.json").read_text())
         for incident in (row for row in incidents if row.get("ended_at")):
