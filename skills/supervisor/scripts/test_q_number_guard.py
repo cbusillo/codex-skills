@@ -11,7 +11,6 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 
 import q_number_guard as guard
 import question_record as record
