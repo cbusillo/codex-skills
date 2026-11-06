@@ -355,17 +355,24 @@ def has_ownership_assertion(text: str, *, own_claim: dict[str, str] | None = Non
     return bool(ownership_assertions(text, own_claim=own_claim))
 
 
+def legacy_claim_worker(text: str) -> str | None:
+    header = re.match(r"Claimed by:?\s+(\S+)", ownership_text(text, strip_quotes=False), re.IGNORECASE)
+    return header[1] if header and has_ownership_assertion(text) else None
+
+
 def belongs_to_session(body: str, session: str) -> bool:
     body = unquoted_text(body)
     if any(owner["session"] == session for owner in records(body)):
+        return True
+    identity = re.compile(rf"(?<![\w-]){re.escape(session)}(?![\w-])")
+    if legacy_claim_worker(body) and identity.search(body):
         return True
     contexts = [body[span] for name, span in section_ranges(body) if name == "Current Status"]
     status = "\n\n".join(contexts or [body])
     if any(actor == f"agent:{session}" for _, actor in next_actor.fields(status)):
         return True
-    identity = re.compile(rf"(?<![\w-]){re.escape(session)}(?![\w-])")
     return any(identity.search(value.split(";", 1)[0])
-               for value in session_fields(status, include_quotes=False, current_only=True))
+               for value in session_fields(body, include_quotes=False, current_only=True))
 
 
 def released_successor_route(
@@ -552,9 +559,7 @@ def discussion_evidence(
                     if ownership_text(record["worker"], strip_quotes=False) == legacy_worker
                 )
                 if not parsed_prior:
-                    prior_prose = ownership_text(prior_text, strip_quotes=False)
-                    header = re.match(r"Claimed by:?\s+(\S+)", prior_prose, re.IGNORECASE)
-                    if header and header.group(1) == legacy_worker and has_ownership_assertion(prior_text):
+                    if legacy_claim_worker(prior_text) == legacy_worker:
                         sessions = [
                             session for field in session_fields(prior_text) for session in session_identifiers(field)
                             if session.strip() and session.strip().casefold().strip("().,;<> \t")
@@ -582,12 +587,11 @@ def discussion_evidence(
         if comment_id is not None and released_ids.get((comment_id, author), -1) > index:
             continue
         # A quoted historical header is not a claim by the quoting author.
-        prose = ownership_text(text, strip_quotes=False)
-        legacy = re.match(r"Claimed by:?\s+(\S+)", prose, re.IGNORECASE)
-        if legacy and not parsed and has_ownership_assertion(text):
+        legacy = legacy_claim_worker(text)
+        if legacy and not parsed:
             if released_explanatory_note(text, index, comments) or attested_handoff_note(text, index, comments):
                 continue
-            worker = legacy.group(1)
+            worker = legacy
             if legacy_released.get((worker, author), -1) > index:
                 continue
             if (worker != claim["worker"] or any(claim[key] not in text for key in ("session", "branch"))

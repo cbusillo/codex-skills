@@ -420,8 +420,9 @@ class ClaimCloseoutTests(unittest.TestCase):
 
     def test_status_only_ownership_is_not_nothing_to_release(self):
         self.comments = []
-        for status in (helper.claim.marker(SOURCE), f"Session: {SESSION}", f"Next actor: agent:{SESSION}",
-                       f"Session: other-session\nSession: {SESSION}"):
+        for status in (claim_logic.marker(SOURCE), f"Session: {SESSION}", f"Next actor: agent:{SESSION}",
+                       f"Session: other-session\nSession: {SESSION}",
+                       f"## Current Status\nNext actor: agent:other-session\n## Claim\nSession: {SESSION}"):
             with self.subTest(status=status):
                 self.issue["body"] = status
                 with self.assertRaises(ValueError):
@@ -430,6 +431,18 @@ class ClaimCloseoutTests(unittest.TestCase):
                       f"<blockquote>\nSession: {SESSION}\n</blockquote>"):
             self.issue["body"] = "## Current Status\nNext actor: agent\n## Diagnosis\n" + quote
             self.assertEqual(self.check(), [])
+
+    def test_handwritten_claims_still_need_an_exact_authored_release(self) -> None:
+        for body in (f"Claimed by worker-a in native session {SESSION}",
+                     f"Claimed by worker-a\nOwner: worker-a / {SESSION}",
+                     f"Claimed by worker-a\n| Worker | Session |\n|---|---|\n| worker-a | {SESSION} |"):
+            with self.subTest(body=body):
+                self.comments = [comment(20, body)]
+                with self.assertRaises(ValueError):
+                    self.check()
+                self.comments.append(comment(21, "Released claim 20", at="2026-01-01T00:02:00Z"))
+                self.assertEqual(self.check(), [])
+        self.reader.post_json.assert_not_called()
 
     def test_other_session_claims_remain_untouched(self):
         self.comments = [comment(20, helper.claim.marker({**SOURCE, "session": "other-session"}))]
