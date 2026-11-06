@@ -1659,9 +1659,7 @@ prerequisite and proving its finish line is separate from release: `next` and
 `claim` accept a closed native blocker without deleting dependency history.
 
 Use a unique worker token per native session. Use `Released claim
-<claim-comment-id>` followed by a blank line and the handoff prose. A
-hand-written source claim requires its author to post an exact-ID release.
-For a
+<claim-comment-id>` followed by a blank line and the handoff prose. For a
 closed automation session with a structured source claim, use the evidence-backed
 `release-claim` route above, including its verified related hand-written
 follow-ups. Explicit Session/Session ID or Thread ID fields on a related follow-up must
@@ -1670,7 +1668,6 @@ dash separators and vertical field/value tables are supported; free prose or
 horizontal tables do not establish a session identity. Use the canonical
 Session field or authored exact-ID recovery for those older formats. A distinct structured claim needs its own closure
 evidence; an unstructured claim needs an exact-ID release by its author.
-A hand-written source claim requires its author to post the exact-ID release.
 
 A claim without `--resume-from` never retries itself as a successor. When the
 refused evidence identifies one released structured source, `successor_route`

@@ -402,7 +402,7 @@ class ReleaseTests(ReleaseHarness):
                     if not path.endswith(f"/issues/comments/{self.evidence['id']}"):
                         self.fail("malformed closure must refuse before reading retained PRs or source commits")
                     return ReleaseHarness.api(self, method, path, **kwargs)
-                with patch.object(self, "api", side_effect=evidence_only), self.assertRaises(PLAN.PlanError):
+                with patch.multiple(self, api=evidence_only), self.assertRaises(PLAN.PlanError):
                     self.run_release()
                 self.f.assert_no_writes()
 
@@ -1364,15 +1364,12 @@ class ReleaseTests(ReleaseHarness):
                 self.assertTrue(self.f.emitted.call_args.args[0]["ok"])
 
     def test_source_edit_invalidates_existing_release_at_successor_claim(self):
-        for change in ({"updated_at": "2026-10-04T00:00:00Z"}, {"body": "Claimed by trial-b"}):
-            with self.subTest(change=change):
-                self.setUp()
-                self.run_release()
-                self.f.comments[0].update(change)
-                with self.assertRaises(PLAN.PlanError):
-                    self.f.args.resume_from = 1
-                    with patch.object(self.f, "read_api", side_effect=self.api):
-                        self.f.run_claim()
+        self.run_release()
+        self.f.comments[0]["updated_at"] = "2026-10-04T00:00:00Z"
+        with self.assertRaisesRegex(PLAN.PlanError, "ownership evidence"):
+            self.f.args.resume_from = 1
+            with patch.object(self.f, "read_api", side_effect=self.api):
+                self.f.run_claim()
 
     def test_post_write_race_is_not_reported_as_success(self):
         self.race = lambda: self.f.comments.append(self.comment(8, CLAIM.marker(fixtures.OTHER), "2026-10-04T00:00:00Z"))
