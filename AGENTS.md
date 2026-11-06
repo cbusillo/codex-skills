@@ -27,7 +27,6 @@ Evidence: [DIRECTION.md](DIRECTION.md).
   behavior, and command-policy validators. Do not add tests that merely duplicate
   wording or run unrelated runtime suites without an affected behavior.
 - For test changes, read the [shared test rules](instructions/global.md#tests).
-- Follow the full [shared Python and Odoo style](skills/references/python-odoo-style.md).
 
 ## Runtime Checkout Discipline
 
