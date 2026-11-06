@@ -142,6 +142,60 @@ class WatchTests(unittest.TestCase):
             self.assertEqual(elapsed, foreign_watch.NOTICE_SETTLE_SECONDS + args.interval)
             self.assertEqual([notice["url"] for notice in logged], [linkback["html_url"]])
 
+    def test_people_owned_app_does_not_wake_persistent_watch(self) -> None:
+        for actor_type, service in (("User", False), ("Bot", False), ("User", True), ("Bot", True)):
+            with self.subTest(actor_type=actor_type, service=service), tempfile.TemporaryDirectory() as directory:
+                index = Path(directory) / "people.yaml"
+                index.write_text(
+                    "people:\n- id: director\n  display_name: Director\n  github: director\n  contacts:\n    github:\n      bot_usernames: ['delivery-app']\n"
+                )
+                app = {**comment("delivery-app"), "user": {"login": "delivery-app", "type": actor_type}}
+                reader = Mock()
+                opening = opened("delivery-app", actor_type)
+                reader.paged_json.side_effect = feeds([app], [], opened_items=[opening])
+                clock, output = WatchClock(), io.StringIO()
+                interval = 10
+                window = foreign_watch.NOTICE_SETTLE_SECONDS + interval
+                argv = [
+                    "foreign_watch.py",
+                    "--owner",
+                    "director",
+                    "--repo",
+                    REPO,
+                    "--own-login",
+                    "director",
+                    "--state",
+                    str(Path(directory) / "state.json"),
+                    "--people-index",
+                    str(index),
+                    "--since",
+                    SINCE,
+                    "--deadline-seconds",
+                    str(window),
+                    "--interval",
+                    str(interval),
+                    "--persistent",
+                ]
+                if service:
+                    argv += ["--launchplane-login", "delivery-app"]
+                with (
+                    patch_attr(foreign_watch, "GitHubReader", return_value=reader),
+                    patch.object(foreign_watch.sys, "argv", argv),
+                    patch.object(foreign_watch, "utc_now", return_value=STARTED),
+                    patch.object(
+                        foreign_watch,
+                        "scan_mentions",
+                        side_effect=lambda _args, _repos, watermarks, seen, *_: ([], [], [], watermarks, seen),
+                    ),
+                    patch.object(foreign_watch.time, "monotonic", side_effect=clock.monotonic),
+                    patch.object(foreign_watch.time, "sleep", side_effect=clock.sleep),
+                    redirect_stdout(output),
+                ):
+                    self.assertEqual(foreign_watch.main(), 0)
+                self.assertEqual(clock.now, foreign_watch.NOTICE_SETTLE_SECONDS if service else window)
+                urls = {notice["url"] for line in output.getvalue().splitlines() for notice in json.loads(line)["notices"]}
+                self.assertEqual(urls, {str(app["html_url"]), str(opening["html_url"])} if service else set())
+
     def test_own_body_edit_is_logged_without_ending_persistent_watch(self) -> None:
         for login, actor_type, opener in (("AGENT", "Bot", "client"), ("DIRECTOR", "User", "client"),
                                           ("DIRECTOR", "User", "director")):

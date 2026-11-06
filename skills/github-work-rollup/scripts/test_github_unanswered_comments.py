@@ -36,9 +36,10 @@ assert MODULE_SPEC.loader is not None
 sys.modules[MODULE_SPEC.name] = github_unanswered_comments
 MODULE_SPEC.loader.exec_module(github_unanswered_comments)
 if TYPE_CHECKING:
-    from skills.github.scripts import github_read
+    from skills.github.scripts import github_close_attention, github_read
 else:
     github_read = github_unanswered_comments.github_read
+    github_close_attention = importlib.import_module("github_close_attention")
 REAL_READ_DISCUSSION = github_read.read_discussion
 REAL_DISCUSSION_QUERY = github_read.discussion_query
 
@@ -1332,14 +1333,15 @@ def test_failed_lane_read_keeps_its_previous_watermark(monkeypatch: pytest.Monke
     assert errors[0]["lane"] == "issue_comments"
 
 
-def test_scan_state_from_other_identities_is_not_reused(tmp_path: Path) -> None:
+@pytest.mark.parametrize("bot_logins,own_automation", [({"bot", "new-bot"}, set()), ({"bot"}, {"delivery-bot"})])
+def test_scan_state_from_other_identities_is_not_reused(tmp_path: Path, bot_logins: set[str], own_automation: set[str]) -> None:
     path = tmp_path / "scan.json"
     lanes = {"example/repo": {"issue_comments": {"from": "2026-07-01T00:00:00Z"}}}
     identity = github_unanswered_comments.scan_identity({"cbusillo"}, {"bot"}, {})
     github_unanswered_comments.save_scan_state(path, identity, lanes)
 
     assert github_unanswered_comments.load_scan_state(path, identity) == lanes
-    other = github_unanswered_comments.scan_identity({"cbusillo"}, {"bot", "new-bot"}, {})
+    other = github_unanswered_comments.scan_identity({"cbusillo"}, bot_logins, {}, own_automation)
     assert github_unanswered_comments.load_scan_state(path, other) == {}
 
 
@@ -1521,27 +1523,50 @@ def test_people_index_classifies_automation_accounts(tmp_path: Path) -> None:
     assert identities["director_names"] == ["Pat Director", "Pat"]
     automation = identities["automation"]
     assert github_unanswered_comments.author_class("Client-Code-Bot", automation) == ("automation", "Casey")
-    assert github_unanswered_comments.author_class("director-code-bot", automation) == ("automation", "Pat")
     assert github_unanswered_comments.author_class("unknown-code-bot", automation) == ("possible_automation", None)
     assert github_unanswered_comments.author_class("casey-client", automation) == ("person", None)
 
 
 @pytest.mark.parametrize("author_type", ["User", "Bot"])
-def test_people_index_automation_is_labeled_never_excluded(monkeypatch, tmp_path: Path, author_type: str) -> None:
+@pytest.mark.parametrize("notice", ["Preview is ready.", "@casey-client preview is ready."])
+def test_own_automation_is_excluded_without_answering_people(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    author_type: str,
+    notice: str,
+) -> None:
     by_director_bot = opening(number=1, author="director-code-bot", author_type=author_type)
     by_client_bot = opening(number=2, author="client-code-bot", author_type=author_type)
-    fake = FakeGitHub({
-        "repos/example/repo/issues": [by_director_bot, by_client_bot],
-        "repos/example/repo/issues/1": by_director_bot,
-        "repos/example/repo/issues/2": by_client_bot,
-    })
+    human = api_comment(
+        10, "casey-client", "2026-07-25T10:00:00Z", "Still broken.", issue_url="https://api.github.com/repos/example/repo/issues/1"
+    )
+    app_notice = api_comment(
+        11,
+        "director-code-bot",
+        "2026-07-25T11:00:00Z",
+        notice,
+        issue_url=human["issue_url"],
+        user={"login": "director-code-bot", "type": author_type},
+    )
+    fake = FakeGitHub(
+        {
+            "repos/example/repo/issues": [by_director_bot, by_client_bot],
+            "repos/example/repo/issues/comments": [human, app_notice],
+            "repos/example/repo/issues/1": by_director_bot,
+            "repos/example/repo/issues/1/comments": [human, app_notice],
+            "repos/example/repo/issues/2": by_client_bot,
+        }
+    )
     monkeypatch.setattr(github_unanswered_comments, "run_json", fake)
 
     payload = github_unanswered_comments.collect_payload(portfolio_settings(people_index=people_index(tmp_path)))
 
-    labels = {item["number"]: (item["author_class"], item["automation_for"]) for item in payload["attention"]}
-    assert labels == {1: ("automation", "Pat"), 2: ("automation", "Casey")}
-    assert "(automation for Casey)" in github_unanswered_comments.render_markdown(payload)
+    attention = {item["author"]: item for item in payload["attention"]}
+    assert set(attention) == {"casey-client", "client-code-bot"}
+    assert attention["casey-client"]["later_reply_url"] is None
+    assert not attention["casey-client"]["publicly_addressed"]
+    assert {item["author"] for item in github_close_attention.unanswered_rows(payload)} == set(attention)
+    assert attention["client-code-bot"]["automation_for"] == "Casey"
 
 
 def test_invalid_people_index_degrades_coverage(monkeypatch, tmp_path: Path) -> None:

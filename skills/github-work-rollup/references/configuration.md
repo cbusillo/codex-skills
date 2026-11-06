@@ -18,7 +18,7 @@ Supported config fields:
 - `timezone`
 - `default_window`
 - `report_recipient`
-- `people_index`: optional private people index path for recipient tailoring and for the comment radar's Director names and automation accounts; the radar otherwise reads the people skill's default indexes
+- `people_index`: optional private people index path for recipient tailoring and for the comment radar's Director names and automation accounts; the radar otherwise reads the people skill's default indexes. Bots uniquely assigned to the Director are excluded from outside comments without counting their notices as replies; other people's agents remain eligible.
 - `subjects`
 - `repo_owners`
 - `repositories`
