@@ -346,7 +346,7 @@ def agy_step_records(
             task_status = (name in {"manage_task", "manage_subagents"} and arguments.get("Action") == "list" or
                            name == "manage_task" and bool(task) and (arguments.get("Action") == "status" or
                            arguments.get("Action") == "kill" and task["status"] == 6 and task["notified"]))
-            if name not in {"read_file", "write_file", "edit_file", "list_dir", "grep_search", "find_by_name", "run_command"} and not task_status:
+            if name not in {"read_file", "write_file", "edit_file", "list_dir", "grep_search", "find_by_name", "search_web", "run_command"} and not task_status:
                 pending = pending or f"native tool coverage is unavailable for {name}"
             if status in {3, 6, 7} and kind == 132:
                 result = fields(fields(step.get(140, b"")).get(2, b""))
@@ -358,7 +358,7 @@ def agy_step_records(
                         pending = pending or "native command completion is unavailable"
                     else:
                         failed = failed or terminal[3] != 0
-                if command and 148 in step and not tasks.get(f"{session}/task-{ordinal}", {}).get("notified"):
+                if 148 in step and not tasks.get(f"{session}/task-{ordinal}", {}).get("notified"):
                     pending = pending or "native background task completion is unavailable"
                 row["message"] = {"content": [{"type": "tool_result", "tool_use_id": identifier, "content": output, "is_error": failed}]}
     if pending:
