@@ -52,7 +52,7 @@ def runtime_script():
         result = subprocess.run(["git", "-C", str(catalog), *args], capture_output=True, text=True, timeout=5)
         if result.returncode:
             raise ValueError("runtime must have a known default branch and clean checkout")
-        return result.stdout.rstrip("\n")
+        return result.stdout.rstrip()
     branch = git("symbolic-ref", "--short", "HEAD")
     default = git("symbolic-ref", "--short", "refs/remotes/origin/HEAD").removeprefix("origin/")
     if branch != default or read_status(git):

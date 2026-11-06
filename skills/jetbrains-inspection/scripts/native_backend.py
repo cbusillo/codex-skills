@@ -1833,7 +1833,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
         receipt["framework_revisions"] = [host.git_head_sha(root) for root in framework]
         if odoo:
             receipt["odoo_context"] = framework_context(repo, selected, framework)
-        if any(read_status(lambda *args: common.checked(["git", "-C", str(root), *args])) for root in framework):
+        if any(read_status(lambda *git_args: common.checked(["git", "-C", str(root), *git_args])) for root in framework):
             raise Blocked("native_framework_inputs_unproven")
         if not selected:
             raise Blocked("native_scope_empty")
@@ -2043,7 +2043,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
             raise Blocked("native_framework_inputs_changed")
         if odoo and framework_context(repo, selected, framework) != receipt["odoo_context"]:
             raise Blocked("native_odoo_context_changed")
-        if any(read_status(lambda *args: common.checked(["git", "-C", str(root), *args])) for root in framework):
+        if any(read_status(lambda *git_args: common.checked(["git", "-C", str(root), *git_args])) for root in framework):
             raise Blocked("native_framework_inputs_changed")
         if args.severity != "all":
             findings = [finding for finding in findings if finding["severity"].lower() == args.severity.lower()]

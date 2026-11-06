@@ -62,7 +62,7 @@ class GitStatusTests(unittest.TestCase):
         self.assertEqual(read_status(lambda *args: b"?? name-\xff\0")[0].paths, (os.fsdecode(b"name-\xff"),))
         for raw in (b"?? missing terminator", b"R  destination\0", b"R  destination\0original", b"garbled\0"):
             with self.subTest(raw=raw), self.assertRaises(ValueError):
-                read_status(lambda *args, raw=raw: raw)
+                read_status(lambda *args, output=raw: output)
 
 
 if __name__ == "__main__":

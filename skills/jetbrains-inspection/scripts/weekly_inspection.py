@@ -121,7 +121,7 @@ def report(repo: str, *, path: Path | None = None, now: dt.datetime | None = Non
 def git(repo: Path, *arguments: str) -> str:
     return subprocess.run(
         ["git", "-C", str(repo), *arguments], check=True, capture_output=True, text=True, timeout=120
-    ).stdout.rstrip("\n")
+    ).stdout.rstrip()
 
 
 def inspection_worktree(repo: str, root: Path, state: dict[str, Any]) -> Path:

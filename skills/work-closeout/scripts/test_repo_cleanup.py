@@ -185,12 +185,12 @@ class CleanupContracts(unittest.TestCase):
         for committed in (False, True):
             marker = self.base / f"mutated-{committed}"
 
-            def mutate(*args, marker=marker, committed=committed):
+            def mutate(*args, change_marker=marker, should_commit=committed):
                 result = original(*args)
-                if not marker.exists():
-                    marker.touch()
-                    (self.repo / "README.md").write_text(f"concurrent source update {committed}\n")
-                    if committed:
+                if not change_marker.exists():
+                    change_marker.touch()
+                    (self.repo / "README.md").write_text(f"concurrent source update {should_commit}\n")
+                    if should_commit:
                         run_git(self.repo, "commit", "-am", "Concurrent synthetic update")
                 return result
 
