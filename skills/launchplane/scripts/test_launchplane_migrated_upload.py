@@ -263,7 +263,12 @@ def test_bad_manifest_never_exposes_private_parse_details(tmp_path: Path, conten
 def test_missing_private_files_become_fixed_input_errors(tmp_path: Path) -> None:
     args, _, _ = fixture(tmp_path)
     args.database.unlink()
-    with pytest.raises(ValueError, match="^original_migrated_input_changed$"):
+    with (
+        patch_attr(
+            helper, "prepare_operator_settings", return_value={"service_url": "https://plane.example.invalid", "token": "fixture"}
+        ),
+        pytest.raises(ValueError, match="^original_migrated_input_changed$"),
+    ):
         upload.execute(helper, args)
     args.migrated_source_file.unlink()
     with pytest.raises(ValueError, match="^invalid_migrated_manifest$"):
@@ -297,6 +302,28 @@ def test_transport_loss_retains_original_operation_and_allows_exact_resume(tmp_p
     assert output["warnings"][0]["code"] == "migrated_upload_incomplete"
     assert transport.call_count == 1
     assert "PRIVATE_SENTINEL" not in json.dumps(output)
+
+
+def test_certificate_mismatch_is_a_refusal_without_resume_advice(tmp_path: Path) -> None:
+    args, _, _ = fixture(tmp_path)
+    code, output = invoke(args, Mock(side_effect=upload.ssl.SSLCertVerificationError("PRIVATE_SENTINEL")))
+    assert code == 2
+    assert output["warnings"][0]["code"] == "private_operator_certificate_invalid"
+    assert "repeat" not in json.dumps(output)
+    assert "PRIVATE_SENTINEL" not in json.dumps(output)
+
+
+@pytest.mark.parametrize("address,url", [("8.8.8.8", "https://plane.example.invalid"), ("10.0.0.2", "http://plane.example.invalid")])
+def test_invalid_connection_settings_fail_before_large_input_hashes(tmp_path: Path, address: str, url: str) -> None:
+    args, _, _ = fixture(tmp_path)
+    args.private_address = address
+    with (
+        patch_attr(helper, "prepare_operator_settings", return_value={"service_url": url, "token": "fixture"}),
+        patch_attr(upload.hashlib, "file_digest") as digest,
+        pytest.raises(ValueError),
+    ):
+        upload.execute(helper, args)
+    digest.assert_not_called()
 
 
 if __name__ == "__main__":

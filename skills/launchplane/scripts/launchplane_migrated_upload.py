@@ -15,7 +15,7 @@ import socket
 import ssl
 from pathlib import Path
 from typing import Any, BinaryIO
-from urllib.parse import urlsplit
+from urllib.parse import SplitResult, urlsplit
 
 COMMAND = "testing-rebuild-migrated-upload"
 PARTS = ("database", "filestore")
@@ -112,6 +112,14 @@ class PrivateHTTPSConnection(http.client.HTTPSConnection):
             raise
 
 
+def private_origin(h: Any, settings: dict[str, str], path: str) -> tuple[SplitResult, str]:
+    origin = urlsplit(str(h.build_url(settings["service_url"], path)))
+    hostname = origin.hostname
+    if origin.scheme != "https" or not hostname:
+        raise UploadRefused("private_operator_https_required")
+    return origin, hostname
+
+
 def private_request(
     h: Any,
     settings: dict[str, str],
@@ -120,10 +128,8 @@ def private_request(
     *,
     timeout: float,
 ) -> dict[str, Any]:
-    origin = urlsplit(str(h.build_url(settings["service_url"], path)))
-    if origin.scheme != "https" or not origin.hostname:
-        raise ValueError("private_operator_https_required")
-    connection = PrivateHTTPSConnection(origin.hostname, origin.port or 443, address, timeout=timeout)
+    origin, hostname = private_origin(h, settings, path)
+    connection = PrivateHTTPSConnection(hostname, origin.port or 443, address, timeout=timeout)
     try:
         connection.request(
             "GET",
@@ -140,7 +146,7 @@ def private_request(
             raise UploadRefused("invalid_migrated_upload_response")
         try:
             result = json.loads(content)
-        except (ValueError, UnicodeError) as error:
+        except ValueError as error:
             raise UploadRefused("invalid_migrated_upload_response") from error
         if not isinstance(result, dict):
             raise UploadRefused("invalid_migrated_upload_response")
@@ -162,22 +168,21 @@ def private_send(
     prefix: str,
     remaining: int,
 ) -> dict[str, Any]:
-    from websockets.exceptions import ConnectionClosed, InvalidStatus, WebSocketException
+    from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidStatus, WebSocketException
     from websockets.sync.client import connect
 
-    origin = urlsplit(str(h.build_url(settings["service_url"], path)))
-    if origin.scheme != "https" or not origin.hostname:
-        raise ValueError("private_operator_https_required")
-    connection = PrivateHTTPSConnection(origin.hostname, origin.port or 443, address, timeout=timeout)
+    origin, hostname = private_origin(h, settings, path)
+    target_address = validated_private_address(address)
+    tls_context = ssl.create_default_context()
     logger = logging.Logger("migrated-upload")
     logger.disabled = True
-    with socket.create_connection((connection.private_address, connection.port), connect_timeout) as raw:
+    with socket.create_connection((target_address, origin.port or 443), connect_timeout) as raw:
         try:
             with connect(
                 origin._replace(scheme="wss").geturl(),
                 sock=raw,
-                ssl=connection.tls_context,
-                server_hostname=origin.hostname,
+                ssl=tls_context,
+                server_hostname=hostname,
                 additional_headers={"Authorization": "Bearer " + settings["token"]},
                 proxy=None,
                 compression=None,
@@ -185,13 +190,14 @@ def private_send(
                 open_timeout=connect_timeout,
                 legacy=True,
             ) as websocket:
+                websocket.socket.settimeout(max(connect_timeout, 60))
                 websocket.send(json.dumps({"offset": offset, "prefix_sha256": prefix, "size": remaining}))
                 if json.loads(websocket.recv(timeout=timeout)) != {"ready": True, "offset": offset}:
                     raise UploadRefused("migrated_prefix_unconfirmed")
                 while remaining:
                     data = handle.read(min(remaining, 1024 * 1024))
                     if not data:
-                        raise ValueError("original_migrated_input_truncated")
+                        raise UploadRefused("original_migrated_input_truncated")
                     websocket.send(data)
                     remaining -= len(data)
                 websocket.send('{"complete": true}')
@@ -207,6 +213,8 @@ def private_send(
             if error.rcvd is not None and error.rcvd.code == 1008:
                 raise UploadRefused("migrated_upload_refused") from error
             raise OSError("migrated_upload_incomplete") from error
+        except InvalidHandshake as error:
+            raise OSError("migrated_upload_incomplete") from error
         except WebSocketException as error:
             raise UploadRefused("migrated_websocket_refused") from error
 
@@ -217,7 +225,7 @@ def prefix_digest(handle: BinaryIO, size: int) -> str:
     while remaining:
         data = handle.read(min(remaining, 1024 * 1024))
         if not data:
-            raise ValueError("original_migrated_input_truncated")
+            raise UploadRefused("original_migrated_input_truncated")
         digest.update(data)
         remaining -= len(data)
     return digest.hexdigest()
@@ -259,6 +267,12 @@ def execute(h: Any, args: argparse.Namespace) -> int:
         "operation_id": h.public_identifier(operation),
         "source_binding_sha256": binding,
     }
+    settings = h.prepare_operator_settings(args=args, operation=COMMAND, request=request)
+    if settings is None:
+        return 2
+    route = h.internal_helper_path("testing-rebuild-migrated-state").format(product=product, operation_id=operation)
+    validated_private_address(args.private_address)
+    private_origin(h, settings, route)
     try:
         paths = {part: getattr(args, part).resolve(strict=True) for part in PARTS}
         for part, path in paths.items():
@@ -269,11 +283,7 @@ def execute(h: Any, args: argparse.Namespace) -> int:
                     raise ValueError("original_migrated_input_changed")
     except OSError as error:
         raise ValueError("original_migrated_input_changed") from error
-    settings = h.prepare_operator_settings(args=args, operation=COMMAND, request=request)
-    if settings is None:
-        return 2
     timeout = max(args.timeout, sum(source[part]["size"] for part in PARTS) / (4 * 1024 * 1024))
-    route = h.internal_helper_path("testing-rebuild-migrated-state").format(product=product, operation_id=operation)
     try:
         state = private_request(h, settings, args.private_address, route, timeout=args.timeout)
         check_state(state, product=product, operation=operation, binding=binding, source=source)
@@ -301,7 +311,7 @@ def execute(h: Any, args: argparse.Namespace) -> int:
                 )
             check_state(state, product=product, operation=operation, binding=binding, source=source)
         if not state["receipt_recorded"]:
-            raise ValueError("migrated_receipt_unconfirmed")
+            raise UploadRefused("migrated_receipt_unconfirmed")
         output = h.base_payload(status="accepted", operation=COMMAND, request=request)
         output["result"] = {
             "receipt_recorded": True,
@@ -313,7 +323,18 @@ def execute(h: Any, args: argparse.Namespace) -> int:
         h.assert_public_safe_shape(output["result"])
         h.emit(output)
         return 0
-    except (ValueError, UnicodeError) as error:
+    except ssl.SSLCertVerificationError:
+        output = h.unavailable_payload(
+            operation=COMMAND,
+            request=request,
+            status="refused",
+            code="private_operator_certificate_invalid",
+            message="Retain the original operation and verify the documented ingress address and TLS hostname before another upload.",
+        )
+        output["summary"] = {"recommendation": "Inspect the private ingress certificate and original TLS hostname."}
+        h.emit(output)
+        return 2
+    except ValueError as error:
         output = h.unavailable_payload(
             operation=COMMAND,
             request=request,
@@ -324,7 +345,7 @@ def execute(h: Any, args: argparse.Namespace) -> int:
         output["summary"] = {"recommendation": "Inspect the original intent and private connection settings."}
         h.emit(output)
         return 2
-    except (OSError, TimeoutError, http.client.HTTPException):
+    except (OSError, http.client.HTTPException):
         output = h.unavailable_payload(
             operation=COMMAND,
             request=request,
