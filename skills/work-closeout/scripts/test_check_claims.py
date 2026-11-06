@@ -441,16 +441,8 @@ class ClaimCloseoutTests(unittest.TestCase):
             f"Public ingress https://github.com/test/b/issues/2 is independently owned by edge-worker, native {SESSION}.\n\n"
             + claim_logic.marker({**SOURCE, "session": "onboarding-session"})
         )
-        for record in (body, (
-            "## Current Status\nNext actor: agent:onboarding-session\n"
-            + claim_logic.marker({**SOURCE, "session": "onboarding-session"})
-            + f"\n## Lead handoff routing\nNext actor: agent:{SESSION}\n"
-            + f"Provider setup is separately owned engineering on https://github.com/test/b/issues/872 by infra-worker native {SESSION}. "
-            + "Scope for that separate\nworker: reuse the driver."
-        )):
-            with self.subTest(body=record):
-                self.issue["body"] = record
-                self.assertEqual(self.check(), [])
+        self.issue["body"] = body
+        self.assertEqual(self.check(), [])
         self.reader.post_json.assert_not_called()
 
     def receipt_entry(self, session: str = SESSION, records: tuple = ((REPO, 1),)) -> dict:

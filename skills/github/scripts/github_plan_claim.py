@@ -376,7 +376,7 @@ def belongs_to_session(body: str, session: str, *, record: tuple[str, int]) -> b
             if not repo or (repo.casefold(), int(target[3])) == (record[0].casefold(), record[1]):
                 continue
             if re.fullmatch(
-                r"[ \t,()<>]*(?:which\s+)?(?:is|remains)\s+(?:now\s+)?(?:independently\s+)?(?:owned|claimed) by",
+                r"[ \t,()<>]*(?:which\s+)?(?:is|remains)\s+(?:now\s+)?(?:(?:independently|separately)\s+)?(?:owned|claimed) by",
                 prefix[target.end():], re.IGNORECASE,
             ):
                 return True

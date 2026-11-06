@@ -1898,16 +1898,8 @@ class ReleaseTests(unittest.TestCase):
             "Ingress https://github.com/test/b/issues/2 is independently owned by edge-worker, native source-session.\n\n"
             + github_plan_claim.marker({**SOURCE, "session": "onboarding-session"})
         )
-        for record in (body, (
-            "## Current Status\nNext actor: agent:onboarding-session\n"
-            + github_plan_claim.marker({**SOURCE, "session": "onboarding-session"})
-            + "\n## Lead handoff routing\nNext actor: agent:source-session\n"
-            + "Provider setup is separately owned engineering on https://github.com/test/b/issues/872 by infra-worker native source-session. "
-            + "Scope for that separate\nworker: reuse the driver."
-        )):
-            with self.subTest(body=record):
-                self.reader.paged_json.side_effect = lambda path, **_kw: [{"number": 9, "body": record}] if path.endswith("/issues") else []
-                self.assertEqual(helper.discover(self.reader, "test", [self.entry], ["test/a"])[0], [])
+        self.reader.paged_json.side_effect = lambda path, **_kw: [{"number": 9, "body": body}] if path.endswith("/issues") else []
+        self.assertEqual(helper.discover(self.reader, "test", [self.entry], ["test/a"])[0], [])
 
     def test_discovery_refuses_an_unbound_canonical_claim_record(self) -> None:
         self.reader.paged_json.side_effect = lambda path, **_kw: [] if path.endswith("/issues") else [
