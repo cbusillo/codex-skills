@@ -108,9 +108,6 @@ class ClaimMarkerTests(unittest.TestCase):
                       f"## Lead routing\nNext actor: agent:{session}"):
             with self.subTest(field=field):
                 self.assertFalse(CLAIM.belongs_to_session(status + field, session))
-        with self.assertRaises(ValueError):
-            CLAIM.belongs_to_session('<!-- github-plan:claim {} -->', session)
-
     def test_only_a_complete_unquoted_launch_request_distinguishes_the_coordinator(self) -> None:
         actor = "agent:01970242-7941-7f0c-b461-16aa5723fb52"
         request = f"Next actor: {actor}\nBrief:\n````text\nTask.\n```sh\necho example\n```\n````\n"

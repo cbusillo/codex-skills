@@ -1615,6 +1615,9 @@ class ReleaseTests(unittest.TestCase):
                 self.reader.paged_json.return_value = [source, comment(2, header + "\n" + field)]
                 found = helper.active_claims(self.reader, "test/a", 1, session, ACTOR)
                 self.assertEqual(found[0][1], [2])
+                github_plan_release.check_related(github_plan_claim.records(source["body"])[0],
+                                                 self.reader.paged_json.return_value[1], ACTOR,
+                                                 github_plan_release.stamp(self.entry["ended_at"]))
 
     def test_related_alias_without_exact_session_is_not_released(self):
         for body in ("Claimed by trial", "Claimed by trial\nSession: another-session",
