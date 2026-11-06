@@ -17,11 +17,11 @@ from typing import Any, Callable
 try:
     from github_plan_status import next_actor
     from github_plan_status.discussion import MARKER, live_lines, records, without_operation_marker, released_claim_id, exact_released_sources, unquoted_text, section_ranges
-    from github_plan_status.references import pr_issue_reference as pr_issue_reference
+    from github_plan_status.references import ISSUE_REFERENCE, pr_issue_reference as pr_issue_reference
 except ModuleNotFoundError:
     from skills.github.scripts.github_plan_status import next_actor
     from skills.github.scripts.github_plan_status.discussion import MARKER, live_lines, records, without_operation_marker, released_claim_id, exact_released_sources, unquoted_text, section_ranges
-    from skills.github.scripts.github_plan_status.references import pr_issue_reference as pr_issue_reference
+    from skills.github.scripts.github_plan_status.references import ISSUE_REFERENCE, pr_issue_reference as pr_issue_reference
 
 
 LEASE_TAKEOVER_PREFIX = "Lease takeover: claim "
@@ -371,6 +371,44 @@ def belongs_to_session(body: str, session: str) -> bool:
     fields = session_fields(ownership_text(body, strip_quotes=False, keep_link_targets=True),
                             include_quotes=False, current_only=True)
     return any(identity.search(value.split(";", 1)[0]) for value in fields)
+
+
+def released_session_signoff(
+    record: dict[str, Any], session: str, actor: str, *, repo: str, number: int, releases: list[dict[str, Any]],
+) -> bool:
+    body = ownership_text(unquoted_text(record.get("body") or ""), strip_quotes=False)
+    fields = session_fields(body, include_quotes=False, current_only=True)
+    if {identifier for field in fields for identifier in session_identifiers(field)} != {session}:
+        return False
+    contexts = [body[span].partition("\n")[2] for name, span in section_ranges(body) if name == "Current Status"]
+    status = "\n\n".join(contexts or [body])
+    if any(not re.search(r"\bsession\s*:$", label, re.IGNORECASE) for label, _ in ownership_assertions(status)):
+        return False
+    try:
+        recipient = next_actor.read(status)
+    except ValueError:
+        return False
+    if recipient is None and record.get("state") != "closed":
+        return False
+    for proof in releases:
+        source = proof["source"]
+        parsed = records(source.get("body") or "")
+        if (len(parsed) != 1 or parsed[0]["session"] != session
+                or (source.get("user") or {}).get("login") != actor
+                or recipient in {f"agent:{session}", f"agent:{parsed[0]['worker']}"}):
+            continue
+        if (proof["repo"].casefold(), proof["number"]) == (repo.casefold(), number):
+            return True
+        if (record.get("user") or {}).get("login") != actor:
+            continue
+        handoff = unquoted_text(proof["release"].get("body") or "")
+        if "pull_request" in record:
+            if number in handoff_pr_numbers(handoff, issue_repo=proof["repo"], target_repo=repo):
+                return True
+        elif any((match[1] or match[2] or proof["repo"]).casefold() == repo.casefold() and int(match[3]) == number
+                 for match in ISSUE_REFERENCE.finditer(handoff)):
+            return True
+    return False
 
 
 def released_successor_route(

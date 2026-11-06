@@ -505,6 +505,35 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.assertFalse({f"/repos/{REPO}/issues", f"/repos/{REPO}/issues/comments"}.intersection(paths))
         self.assertEqual(report["coverage"]["repositories"], [REPO])
 
+    def test_authored_signoff_on_an_unclaimed_record_needs_a_verified_session_release(self) -> None:
+        entry = self.receipt_entry(records=((REPO, 1), (REPO, 2)))
+        for released in (False, True):
+            for author in (ACTOR, "foreign[bot]"):
+                with self.subTest(released=released, author=author):
+                    release = {**self.release, "body": self.release["body"] + f"\nRefs {REPO}#2."}
+                    self.comments = [self.source, release] if released else [self.source]
+                    signoff = {"body": f"## Current Status\nNext actor: agent:supervisor\nSession: {SESSION}",
+                               "user": {"login": author}}
+                    self.reader.get_json.side_effect = lambda path, **_kw: signoff if path.endswith("/2") else self.issue
+                    self.reader.paged_json.side_effect = lambda path, **_kw: self.comments if path.endswith("/1/comments") else []
+                    report = helper.check([entry])
+                    self.assertEqual(report["claims_clear"], released and author == ACTOR, report)
+                    self.assertEqual(report["coverage"]["complete"], report["claims_clear"])
+        self.reader.post_json.assert_not_called()
+
+    def test_another_natives_release_does_not_account_for_a_signoff(self) -> None:
+        other = "22222222-2222-4222-8222-222222222222"
+        entries = [self.receipt_entry(records=((REPO, 2),)), self.receipt_entry(other)]
+        self.comments = [{**self.source, "body": claim_logic.marker({**SOURCE, "session": other})},
+                         {**self.release, "body": f"Released claim 10\n\nSession: {other}\nRefs {REPO}#2."}]
+        signoff = {"body": f"## Current Status\nNext actor: agent:supervisor\nSession: {SESSION}", "user": {"login": ACTOR}}
+        self.reader.get_json.side_effect = lambda path, **_kw: signoff if path.endswith("/2") else self.issue
+        self.reader.paged_json.side_effect = lambda path, **_kw: self.comments if path.endswith("/1/comments") else []
+        report = helper.check(entries)
+        self.assertFalse(report["claims_clear"], report)
+        self.assertEqual([row["source_session"] for row in report["released_claims"]], [other])
+        self.assertTrue(any(f"{REPO}#2:" in row for row in report["blocked"]), report)
+
     def test_input_and_prose_receipt_fixtures_are_not_recorded_claims(self) -> None:
         receipt = {"claim": SOURCE, "issue": {"repo": "fixture/data", "number": 8}}
         command = "cat <<'EOF'\n" + json.dumps(receipt) + "\nEOF"
