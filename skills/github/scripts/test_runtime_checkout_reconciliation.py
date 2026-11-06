@@ -836,7 +836,7 @@ def test_poll_keeps_its_pending_identity_after_the_runtime_helper_changes(tmp_pa
     git(fixture.runtime, "fetch", "origin", "main")
     git(fixture.runtime, "merge", "--ff-only", tip)
     with mock.patch.object(sys, "path", [str(SCRIPT.parents[2] / "supervisor/scripts"), *sys.path]):
-        import catalog_landing
+        from skills.supervisor.scripts import catalog_landing
 
     evidence = tmp_path / "poll"
     evidence.mkdir()
