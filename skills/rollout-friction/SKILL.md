@@ -308,7 +308,8 @@ memory/profile/local-config candidates.
    absolute path from a later repository-relative argument; use an explicit
    `./` prefix for unusual relative names that resemble links.
    Redaction conservatively masks ambiguous continuations and does not detect
-   every natural-language path. Public HTTP(S) URL paths may remain readable.
+   every natural-language path. URI paths may remain readable outside local or
+   dev-server links, regardless of scheme.
    Under `--redact`, diagnostic
    artifact references are filenames relative to the output bundle, so its local
    directory is not exposed. Trusted mode retains the original artifact paths.
@@ -375,8 +376,7 @@ budgets, validation, and output artifacts on this controlled one-shot path.
 The trusted-local batch review path is different: `review_rollout_memory_batches.py`
 may send approved prompt content directly in the local OpenAI-compatible request
 body to a trusted localhost or trusted-LAN model. Keep that local-review path
-bounded with `--max-input-chars` and do not substitute remote agents or
-`context_files` for it.
+bounded with `--max-input-chars` and do not substitute remote agents for it.
 
 ## Friction Signals
 
