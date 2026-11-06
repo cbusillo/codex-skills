@@ -228,23 +228,23 @@ When asking, follow [Director Questions](#director-questions).
 - Messages from the Director delivered through a Discord session channel that
   relays only their messages count as their own words, regardless of a harness
   label on mid-turn delivery. Record `via Discord` in source prose before the quote.
-- Start a decision record's first line with `Director decision:`. Link every
-  original question it settles before the Director's exact operative answer,
-  including every condition, limit and scope, with nothing after the quote.
-  A decision settling several questions links them all in that same record;
-  mentioning their Q IDs in its explanation does not settle them. Keep the
-  heading first even when the answer arrived under another heading or a link.
-  Omit only private commentary that does not change the answer; retain it only
-  in an authorized private destination when needed. When acting, quote the
-  answer with its link, not its Q ID alone.
+- Record decisions using the [heading forms](role-words.md#legacy-identifiers),
+  in the original question's thread or configured queue, from the Director or
+  a configured trusted recorder. Link only the original questions it settles,
+  before the Director's exact operative answer, including every condition,
+  limit and scope, with nothing after the quote. Keep the heading first even
+  when the answer arrived under another heading or a link. Omit only private
+  commentary that does not change the answer; retain it only in an authorized
+  private destination when needed. When acting, quote the answer with its link.
 - An asker withdrawing their own question records
   `Director decision: Withdrawn by asker. Question: ORIGINAL_QUESTION_URL`,
-  followed by the reason. This disposes of the question, never approves its
-  proposal or attributes an answer to the Director. For an existing replacement,
-  use that same linked format with `Replaced by REPLACEMENT_QUESTION_URL`.
-  Record the withdrawal or replacement in this form once, rather than writing
-  prose and a second queue-clearing record. Only the asker may withdraw their
-  question; a different scope or outcome still needs the Director's decision.
+  followed by the reason. For an existing replacement, use the same form with
+  `Replaced by Q123`, naming the replacement by bare Q ID, never its link.
+  Write the disposition in this form once, not prose plus a queue-clearing
+  record. It disposes of the question; it never approves the proposal or
+  records a Director answer. Never cite it as approval or Director-set wait
+  evidence. Only the asker may withdraw their question; a different scope or
+  outcome still needs the Director's decision.
 - Every new question has a shared-counter Q ID in chat and on GitHub.
   GitHub's `gh-comment`, `gh-pr.py comment`, and `gh-issue` comment paths number
   bodies starting with `Owner question:` or `Director question:` automatically;
