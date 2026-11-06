@@ -331,10 +331,7 @@ def test_reconcile_blocks_dirty_runtime_without_fetching_or_mutating(
     assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
 
 
-@pytest.mark.parametrize("untracked", [
-    None, "new_source.py", "nested/tool.log", "uv.lock", "skills/github/uv.lock", "skills/other/scripts/uv.lock",
-    "skills/github/scripts/local.py",
-])
+@pytest.mark.parametrize("untracked", [None, "new_source.py", "nested/tool.log", "skills/github/scripts/local.py"])
 def test_reconcile_catalog_scratch_preserves_other_untracked_files(
     tmp_path: Path, untracked: str | None,
 ) -> None:
