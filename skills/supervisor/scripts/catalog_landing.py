@@ -125,7 +125,11 @@ def reconcile_runtime(config: dict, operation: Operation, *, bind_landing: bool 
         ["git", "-C", str(runtime), "rev-parse", "HEAD"], capture_output=True, text=True, check=True, timeout=10
     ).stdout.strip()
     require(head == runtime_receipt.get("after_sha"), "runtime", "configured runtime differs from the reconciliation receipt")
-    require(reconciler.git_is_first_parent(runtime, landing, head), "runtime", "runtime does not contain the landing on its first-parent history")
+    try:
+        contains_landing = reconciler.git_is_first_parent(runtime, landing, head)
+    except reconciler.GitCommandError as error:
+        raise GateFailed("runtime", "first-parent history could not be verified") from error
+    require(contains_landing, "runtime", "runtime does not contain the landing on its first-parent history")
     return runtime, head
 
 

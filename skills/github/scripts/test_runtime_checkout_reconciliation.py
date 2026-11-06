@@ -828,6 +828,8 @@ def test_poll_keeps_its_pending_identity_after_the_runtime_helper_changes(tmp_pa
     fixture = session_fixture(tmp_path)
     helper = fixture.landing / fixture.helper_relative_path
     helper.write_text(helper.read_text() + "\n")
+    ignored = fixture.landing / ".gitignore"
+    ignored.write_text(ignored.read_text() + "__pycache__/\n")
     git(fixture.landing, "commit", "-am", "update helper after pending landing")
     tip = git(fixture.landing, "rev-parse", "HEAD")
     git(fixture.landing, "push", "origin", "main")

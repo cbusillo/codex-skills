@@ -1045,7 +1045,7 @@ the runtime helper, run both fresh harnesses, close smoke sessions normally,
 and post verification on the configured owning issue, listing every covered
 SHA. The comment records HEAD before and after smoke; neither observation
 measures a session's loaded SHA. Polling verifies the current tip's helper source
-and proves that the runtime contains the pending landing; bounded verification
+and proves that the runtime contains the pending landing on its first-parent history; bounded verification
 also binds helper source to its requested landing. A newer runtime proves containment, not an
 earlier runtime's behavior. Only a nonempty diff confined to `README.md` and Markdown under `docs/` may
 skip live sessions; skill instructions still need smoke checks. Cursor advancement
