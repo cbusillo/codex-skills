@@ -960,7 +960,7 @@ class MainTests(Fixture):
             with self.subTest(released=released, entrypoint=entrypoint):
                 ownership = self.claimed_source(released=released)
                 code, result, run = self.run_main(None, target=target, claim_issues=[3], entrypoint=entrypoint, **ownership)
-                self.assertEqual(run.called if entrypoint else code == 0, released)
+                self.assertEqual(run.called if entrypoint and released else code == 0, released)
                 if entrypoint and released:
                     self.assertEqual(result, {})
                     self.assertEqual(run.call_args.args[1][-1], str(target))
