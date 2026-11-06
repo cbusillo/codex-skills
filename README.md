@@ -147,7 +147,8 @@ between checks cannot be inferred. Inspect and preserve the reported local work,
 blocker, then rerun `uv run scripts/catalog_runtime.py --update`.
 Session catch-up is described under [runtime binding lookup](#runtime-binding-lookup). State
 and logs live in the checkout's ignored `.local/` directory.
-Root-level tool logs (`*.log`, including `error.log`) are also ignored;
+Root-level tool logs (`*.log`, including `error.log`) and the generated
+`skills/github/scripts/uv.lock` are also ignored;
 other untracked files still block updates and are preserved.
 
 For a manual guarded update on macOS or Linux, run:
