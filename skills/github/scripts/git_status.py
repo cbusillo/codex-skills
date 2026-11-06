@@ -23,7 +23,12 @@ def read_status(
     allow_review_scratch: bool = False,
 ) -> list[Change]:
     raw = git(
-        "status", "--porcelain=v1", "-z", f"--untracked-files={'all' if untracked else 'no'}", *(["--ignored"] if ignored else [])
+        "--no-optional-locks",
+        "status",
+        "--porcelain=v1",
+        "-z",
+        f"--untracked-files={'all' if untracked else 'no'}",
+        *(["--ignored"] if ignored else []),
     )
     if isinstance(raw, bytes):
         raw = os.fsdecode(raw)

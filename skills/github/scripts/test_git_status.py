@@ -20,7 +20,11 @@ class GitStatusTests(unittest.TestCase):
             root = Path(folder)
 
             def git(*args: str) -> bytes:
-                return subprocess.check_output(["git", "-C", str(root), *args], stderr=subprocess.DEVNULL)
+                return subprocess.check_output(
+                    ["git", "-C", str(root), *args],
+                    stderr=subprocess.DEVNULL,
+                    env={**os.environ, "GIT_OPTIONAL_LOCKS": "1"},
+                )
 
             git("init", "-q")
             (root / ".gitignore").write_text("generated/\n")
@@ -31,7 +35,13 @@ class GitStatusTests(unittest.TestCase):
             git("add", "-f", "generated/tracked")
             git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-qm", "initial")
             (generated / "cache").write_text("generated")
+            tracked = generated / "tracked"
+            stamp = tracked.stat()
+            os.utime(tracked, ns=(stamp.st_atime_ns, stamp.st_mtime_ns + 2_000_000_000))
+            index = root / ".git/index"
+            index_before = index.read_bytes()
             self.assertFalse(read_status(git))
+            self.assertEqual(index.read_bytes(), index_before)
             self.assertTrue(read_status(git, ignored=True))
             unusual = " leading space\nrésumé"
             git("mv", "generated/tracked", unusual)

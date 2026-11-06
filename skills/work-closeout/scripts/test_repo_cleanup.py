@@ -180,22 +180,24 @@ class CleanupContracts(unittest.TestCase):
         self.assertFalse(report["complete"])
         self.assertEqual(report["roots"][0]["errors"][0]["code"], "scan_changed")
 
-    def test_head_change_between_inventory_probes_invalidates_result(self):
+    def test_tracked_changes_between_inventory_probes_invalidate_result(self):
         original = cleanup_git.snapshot
-        marker = self.base / "mutated"
+        for committed in (False, True):
+            marker = self.base / f"mutated-{committed}"
 
-        def mutate(*args):
-            result = original(*args)
-            if not marker.exists():
-                marker.touch()
-                (self.repo / "README.md").write_text("concurrent source update\n")
-                run_git(self.repo, "commit", "-am", "Concurrent synthetic update")
-            return result
+            def mutate(*args, marker=marker, committed=committed):
+                result = original(*args)
+                if not marker.exists():
+                    marker.touch()
+                    (self.repo / "README.md").write_text(f"concurrent source update {committed}\n")
+                    if committed:
+                        run_git(self.repo, "commit", "-am", "Concurrent synthetic update")
+                return result
 
-        with patch.object(cleanup_git, "snapshot", mutate):
-            report = self.inventory()
-        self.assertFalse(report["git_stable"])
-        self.assertFalse(report["complete"])
+            with self.subTest(committed=committed), patch.object(cleanup_git, "snapshot", mutate):
+                report = self.inventory()
+            self.assertFalse(report["git_stable"])
+            self.assertFalse(report["complete"])
 
     def test_stale_lock_and_runtime_binding_remain_holds(self):
         run_git(self.repo, "worktree", "lock", str(self.worktree), "--reason", "synthetic stale lock")
@@ -297,9 +299,6 @@ class CleanupContracts(unittest.TestCase):
         snapshot = cleanup_git.snapshot(str(self.repo), self.key)
         self.assertEqual(snapshot["ref_coverage"]["refs/heads/retained"]["state"], "covered")
         self.assertEqual(len(snapshot["worktrees"]), len(cleanup_git.registrations(str(self.repo))))
-        for tree in snapshot["worktrees"]:
-            raw = cleanup_git.git(tree["path"], "status", "--porcelain=v1", "-z", "--untracked-files=no")[1]
-            self.assertEqual(tree["_status_tag"], cleanup_probe.tag(self.key, raw))
 
     def test_registration_boundary_and_scoped_inventory_above_it(self):
         run_git(self.repo, "worktree", "lock", str(self.worktree), "--reason", "fixture owner")

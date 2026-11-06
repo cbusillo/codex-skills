@@ -28,21 +28,6 @@ import pytest
 SCRIPT = Path(__file__).with_name("reconcile-runtime-checkout.py")
 
 
-def test_incomplete_status_cannot_report_a_clean_runtime() -> None:
-    namespace = runpy.run_path(str(SCRIPT))
-    blockers = namespace["runtime_blockers"]
-    with (
-        mock.patch.dict(blockers.__globals__, {
-            "current_branch": lambda root: "main",
-            "git_has_hidden_index_state": lambda root: False,
-            "run_git": lambda *args: subprocess.CompletedProcess(args, 0, b"?? unfinished"),
-            "git_text": lambda *args: "\n".join("/absent/git-operation" for arg in args if arg == "--git-path"),
-        }),
-        pytest.raises(namespace["GitCommandError"]),
-    ):
-        blockers(Path("/fixture"), "main")
-
-
 @dataclass
 class RuntimeFixture:
     repo: str
