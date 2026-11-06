@@ -1893,16 +1893,20 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn("status-only", report["issue_refusals"][0]["error"])
 
     def test_discovery_attributes_sessions_to_owning_records(self) -> None:
-        for coordination in (
-            "Ingress https://github.com/test/b/issues/2 is independently owned by edge-worker, native source-session.",
-            "Provider setup is separately owned engineering on https://github.com/test/b/issues/872 by infra-worker native source-session. Scope for that separate worker: reuse the driver.",
-        ):
-            with self.subTest(coordination=coordination):
-                body = (
-                    f"## Current Status\nNext actor: agent:onboarding-session\nState: Active; owned by {SOURCE['worker']}.\n\n"
-                    + coordination + "\n\n" + github_plan_claim.marker({**SOURCE, "session": "onboarding-session"})
-                )
-                self.reader.paged_json.side_effect = lambda path, **_kw: [{"number": 9, "body": body}] if path.endswith("/issues") else []
+        body = (
+            "## Current Status\nNext actor: agent:onboarding-session\n\n"
+            "Ingress https://github.com/test/b/issues/2 is independently owned by edge-worker, native source-session.\n\n"
+            + github_plan_claim.marker({**SOURCE, "session": "onboarding-session"})
+        )
+        for record in (body, (
+            "## Current Status\nNext actor: agent:onboarding-session\n"
+            + github_plan_claim.marker({**SOURCE, "session": "onboarding-session"})
+            + "\n## Lead handoff routing\nNext actor: agent:source-session\n"
+            + "Provider setup is separately owned engineering on https://github.com/test/b/issues/872 by infra-worker native source-session. "
+            + "Scope for that separate\nworker: reuse the driver."
+        )):
+            with self.subTest(body=record):
+                self.reader.paged_json.side_effect = lambda path, **_kw: [{"number": 9, "body": record}] if path.endswith("/issues") else []
                 self.assertEqual(helper.discover(self.reader, "test", [self.entry], ["test/a"])[0], [])
 
     def test_discovery_refuses_an_unbound_canonical_claim_record(self) -> None:

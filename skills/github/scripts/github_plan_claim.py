@@ -323,8 +323,6 @@ def ownership_assertions(
             continue
         raw_prefix = re.split(boundary, text[:match.start()])[-1]
         raw_prefix = raw_prefix.lstrip(" -*+").rstrip()
-        if match.group().casefold().rstrip(" :") == "worker" and raw_prefix:
-            continue
         prefix = re.sub(r"^[^:]+:\s*", "", raw_prefix)
         end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
         ending = re.split(rf"({boundary})", text[match.end():end], maxsplit=1)
@@ -365,8 +363,7 @@ def belongs_to_session(body: str, session: str, *, record: tuple[str, int]) -> b
     body = unquoted_text(body)
     if session not in body:
         return False
-    markers = records(body)
-    if any(owner["session"] == session for owner in markers):
+    if any(owner["session"] == session for owner in records(body)):
         return True
     identity = re.compile(rf"(?<![\w-]){re.escape(session)}(?![\w-])")
     prose = ownership_text(body, keep_link_targets=True)
@@ -385,24 +382,25 @@ def belongs_to_session(body: str, session: str, *, record: tuple[str, int]) -> b
                 return True
         return False
 
+    def current_context(text: str) -> str:
+        contexts = [text[span] for name, span in section_ranges(text) if name == "Current Status"]
+        return "\n\n".join(contexts or [text])
+
     actors = next_actor.fields(prose)
-    actor_contexts = [prose[span] for name, span in section_ranges(prose) if name == "Current Status"] or [prose]
-    if any(actor == f"agent:{session}" for context in actor_contexts for _, actor in next_actor.fields(context)):
+    if any(actor == f"agent:{session}" for _, actor in next_actor.fields(current_context(prose))):
         return True
     actor_lines = {index for index, _ in actors}
     prose = "\n".join(line for index, line in enumerate(prose.splitlines()) if index not in actor_lines)
     fields = session_fields(prose, include_quotes=False, current_only=True)
     if any(identity.search(value.split(";", 1)[0]) for value in fields):
         return True
-    assertions = [(prefix, holder) for prefix, holder in ownership_assertions(prose, include_sessions=False)
-                  if not foreign_assertion(prefix)]
-    if any(identity.search(holder) for _, holder in assertions):
+    assertions = ownership_assertions(prose, include_sessions=False)
+    if any(not foreign_assertion(prefix) and identity.search(holder) for prefix, holder in assertions):
         return True
-    owners = {owner[key].casefold() for owner in markers for key in ("worker", "session")}
-    if fields or markers and all(holder.casefold() in owners for _, holder in assertions):
+    if fields:
         return False
     local = []
-    for paragraph in re.split(r"\n[ \t]*\n", prose):
+    for paragraph in re.split(r"\n[ \t]*\n", current_context(prose)):
         owners = ownership_assertions(paragraph, include_sessions=False)
         if not owners or not all(foreign_assertion(prefix) for prefix, _ in owners):
             local.append(paragraph)

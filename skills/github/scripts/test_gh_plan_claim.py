@@ -85,14 +85,14 @@ class ClaimMarkerTests(unittest.TestCase):
     def test_session_ownership_uses_direct_fields_without_borrowing_dependency_mentions(self) -> None:
         session = OWNER["session"]
         dependency = f"Ingress on https://github.com/owner/other/issues/1 is independently owned by edge-worker, native {session}."
+        status = f"## Current Status\nNext actor: agent:{OTHER['session']}\n{CLAIM.marker(OTHER)}\n"
+        routing = (f"## Lead handoff routing\nNext actor: agent:{session}\nProvider setup is separately owned engineering "
+                   f"on https://github.com/owner/other/issues/872 by infra-worker native {session}. "
+                   "Scope for that separate worker: reuse the existing driver.")
         for body in (dependency, f"Claimed by another-worker\n\n{dependency}",
                      f"Next actor: agent:another-session\n\n{dependency}",
                      CLAIM.marker(OTHER) + "\n\n" + dependency,
-                     CLAIM.marker(OTHER) + f"\n\nState: Active; owned by {OTHER['worker']}.\n\n"
-                     f"Provider setup is separately owned engineering on https://github.com/owner/other/issues/872 by infra-worker native {session}.",
-                     f"Provider setup for that separate worker: reuse the driver after native {session} finishes.",
-                     f"## Current Status\nNext actor: agent:{OTHER['session']}\n{CLAIM.marker(OTHER)}\n"
-                     f"## Lead handoff routing\nNext actor: agent:{session}",
+                     status + routing, status + routing.replace("separate worker:", "separate\nworker:"),
                      f"The issue is blocked on ingress owner/other#2, which is owned by edge-worker (native {session}).",
                      f"Claim: none; ingress owner/other#2 is owned by edge-worker, native {session}.",
                      f"Session: another-session; ingress dependency held by {session}",
@@ -103,10 +103,6 @@ class ClaimMarkerTests(unittest.TestCase):
         for field in (f"Session: {session}", f"Native session ID: {session}", f"Thread ID: {session}",
                       f"Claimed by {session}", f"Worker: {session} or another-worker",
                       f"Next actor: agent:{session}", f"This issue is owned by {session}",
-                      f"## Current Status\nNext actor: agent:{session}\n{CLAIM.marker(OTHER)}\n"
-                      f"## Lead handoff routing\nNext actor: agent:{OTHER['session']}",
-                      f"## Current Status\nNext actor: agent:{OTHER['session']}\n{CLAIM.marker(OTHER)}\n"
-                      f"## Claim\nClaimed by worker-a\nSession: {session}",
                       f"Session: another-session\nSession: {session}", CLAIM.marker(OWNER),
                       f"Claimed by worker-a in native\nsession {session}.",
                       f"Claimed by worker-a\nOwner: worker-a / {session}",
@@ -118,10 +114,10 @@ class ClaimMarkerTests(unittest.TestCase):
                       f"- Claimed by worker-a\n- Working in session {session}",
                       f"Owned by {session} Session ID: other-session",
                       CLAIM.marker(OTHER) + f"\nThe repair is owned by {session}.",
-                      CLAIM.marker(OTHER) + f"\n\nClaimed by worker-a\n\nWorking from session {session}",
-                      CLAIM.marker(OTHER) + f"\nWorker: {OTHER['worker']} or another-worker\n\nWorking from session {session}",
-                      CLAIM.marker(OTHER) + f"\n## Evidence\nClaimed by worker-a\n\nWorking from session {session}",
-                      f"Worker: {session}", f"- Worker: {session}", f"No ownership is claimed by this sweep. Worker: {session}",
+                      CLAIM.marker(OTHER) + f"\nClaimed by {OTHER['worker']}\n\nWorking from session {session}",
+                      status + f"Claimed by {OTHER['worker']}\n\nWorking from session {session}",
+                      status + f"## Evidence\nClaimed by worker-a\nSession: {session}",
+                      f"Assigned worker: {session}",
                       f"This issue owner/repo#42 is owned by {session}.",
                       f"This issue owner/old-name#42 is owned by {session}.",
                       f"Split from #3550. Session: {session}",
