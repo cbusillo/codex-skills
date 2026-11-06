@@ -93,7 +93,6 @@ SUPERVISOR_SETTLEMENT = re.compile(
 )
 
 
-
 def settlement_time(value: Any) -> datetime | None:
     try:
         parsed = datetime.fromisoformat(value)
@@ -104,8 +103,8 @@ def settlement_time(value: Any) -> datetime | None:
 
 def supervisor_settled_questions(comments: list[dict[str, Any]], trusted: set[str], *,
                                 withdrawals_only: bool = False) -> set[str]:
-    def author(comment: dict[str, Any]) -> str:
-        return str((comment.get("user") or {}).get("login") or comment.get("author") or "").casefold()
+    def author(source: dict[str, Any]) -> str:
+        return str((source.get("user") or {}).get("login") or source.get("author") or "").casefold()
 
     settlements: dict[str, list[dict[str, Any]]] = {}
     for comment in comments:

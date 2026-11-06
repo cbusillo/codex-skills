@@ -236,7 +236,7 @@ When asking, follow [Director Questions](#director-questions).
   when the answer arrived under another heading or a link. Omit only private
   commentary that does not change the answer; retain it only in an authorized
   private destination when needed. When acting, quote the answer with its link.
-- An asker withdraws their own question through the configured trusted recorder
+- The original asker, using its configured trusted identity, withdraws a question
   with `Q123 withdrawn by the Supervisor. REASON` as the first line, using its
   original Q ID. For an existing replacement, name its bare Q ID in the reason.
   Post this once in the original question's thread or configured queue; it
