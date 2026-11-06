@@ -530,6 +530,9 @@ behavior or provenance-sensitive evidence. To catch up a clean install that
 has fallen behind, run its own copy:
 `uv run <runtime-checkout>/skills/github/scripts/reconcile-runtime-checkout.py --repo cbusillo/codex-skills`.
 
+Clean-tree callers share `skills/github/scripts/git_status.py` and Git's ignore
+rules. Catalog-generated paths belong in `.gitignore`.
+
 Running sessions follow the recovery notice in [catalog_runtime.py](scripts/catalog_runtime.py).
 An independently required native-client restart keeps the same session ID and brief.
 Resume a stopped interactive client with `codex resume <session-id>` or

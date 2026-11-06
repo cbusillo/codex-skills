@@ -1114,7 +1114,7 @@ class FinishedScanTests(Fixture):
             def simulate_timeout(
                 checkout: Path, *args: str, timeout: float = 30, command_name: str = command
             ) -> subprocess.CompletedProcess[str]:
-                if checkout == path and args[0] == command_name:
+                if checkout == path and command_name in args:
                     raise subprocess.TimeoutExpired(command_name, 1)
                 return git(checkout, *args, timeout=timeout)
 

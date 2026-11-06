@@ -25,6 +25,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
+from git_status import read_status
+
 import dev_worktree
 import github_plan_claim
 import github_plan_release
@@ -54,6 +56,12 @@ def git(checkout: Path, *args: str, input_text: str | None = None, timeout: floa
         input=input_text,
         timeout=timeout,
     )
+
+
+def checked_git(checkout: Path, *args: str) -> str:
+    result = git(checkout, *args)
+    result.check_returncode()
+    return result.stdout
 
 
 def registered(checkout: Path, *, include_primary: bool = False, timeout: float = 30) -> list[Worktree]:
@@ -174,8 +182,11 @@ def portable_retire(path: Path, *, dry_run: bool) -> subprocess.CompletedProcess
     def kept(reason: str) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess([], 1, "", f"{reason}; follow work-closeout before retrying")
 
-    status = git(path, "status", "--porcelain", "--ignored", "--untracked-files=all")
-    if status.returncode or status.stdout.strip():
+    try:
+        changes = read_status(lambda *args: checked_git(path, *args), ignored=True)
+    except (ValueError, subprocess.SubprocessError):
+        return kept("Git status unavailable")
+    if changes:
         return kept("uncommitted, untracked or ignored files remain")
     try:
         head = git(path, "rev-parse", "HEAD").stdout.strip()
@@ -493,7 +504,7 @@ def finished(root: Path, pulls_for, include=lambda slug: True) -> tuple[list[dic
                     if (helper is None and tree.lock is not None) or not tree.branch or not is_under(tree.path, folder):
                         continue
                     row = {"repo": slug, "task": tree.path.name, "branch": tree.branch,
-                           "dirty": bool(git(tree.path, "status", "--porcelain").stdout.strip()), "pull": None}
+                           "dirty": bool(read_status(lambda *args: checked_git(tree.path, *args))), "pull": None}
                     if tip and contained(task, tree.head, tip):
                         since = last_checkout(tree.path)
                         found.append({**row, "basis": "in default branch", "since": since.isoformat() if since else None})
@@ -513,6 +524,8 @@ def finished(root: Path, pulls_for, include=lambda slug: True) -> tuple[list[dic
                                       "pull": {"url": pull.get("html_url"), "number": pull.get("number")}})
                 except subprocess.TimeoutExpired:
                     gaps.append({"source": f"{slug}:{tree.branch}", "reason": "git_read_timed_out"})
+                except (ValueError, subprocess.CalledProcessError):
+                    gaps.append({"source": f"{slug}:{tree.branch}", "reason": "git_status_unavailable"})
     return found, gaps
 
 

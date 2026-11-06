@@ -25,6 +25,9 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 
+STATUS_READER = Path(__file__).resolve().with_name("git_status.py")
+read_status = runpy.run_path(str(STATUS_READER))["read_status"]
+
 SCHEMA_VERSION = 1
 HELPER_IN_CATALOG = Path("skills/github/scripts/reconcile-runtime-checkout.py")
 SUCCESS_STATUSES = frozenset({"synchronized", "already_current", "not_applicable"})
@@ -324,7 +327,11 @@ def reconcile_checkout(
 
                 executing_helper = Path(__file__).read_bytes()
                 receipt["helper_sha256"] = hashlib.sha256(executing_helper).hexdigest()
+                reader_path = helper_relative_path.with_name("git_status.py")
+                executing_reader = canonical_script_bytes(STATUS_READER.read_bytes())
                 try:
+                    landing_reader = canonical_script_bytes(git_blob_bytes(source_root, landing_sha, reader_path))
+                    tip_reader = canonical_script_bytes(git_blob_bytes(source_root, fetched_sha, reader_path))
                     landing_helper = git_blob_bytes(
                         source_root,
                         landing_sha,
@@ -353,10 +360,10 @@ def reconcile_checkout(
                 receipt["helper_tip_blob_oid"] = tip_helper_oid
                 canonical_executing_helper = canonical_script_bytes(executing_helper)
                 receipt["helper_landing_verified"] = (
-                    canonical_executing_helper == canonical_script_bytes(landing_helper)
+                    canonical_executing_helper == canonical_script_bytes(landing_helper) and executing_reader == landing_reader
                 )
                 receipt["helper_tip_verified"] = (
-                    canonical_executing_helper == canonical_script_bytes(tip_helper)
+                    canonical_executing_helper == canonical_script_bytes(tip_helper) and executing_reader == tip_reader
                 )
                 if not (receipt["helper_landing_verified"] and receipt["helper_tip_verified"]):
                     receipt["after_sha"] = current_sha
@@ -645,13 +652,11 @@ def runtime_blockers(runtime_root: Path, default_branch: str, receipt: dict[str,
         blockers.append("runtime_wrong_branch")
     if git_has_hidden_index_state(runtime_root):
         blockers.append("runtime_hidden_index_state")
-    changes = run_git(runtime_root, "status", "--porcelain=v1", "-z", "--untracked-files=all").stdout
-    entries = iter(changes.decode(errors="surrogateescape").split("\0")[:-1])
-    paths: list[str] = []
-    for entry in entries:
-        paths.append(entry[3:])
-        if "R" in entry[:2] or "C" in entry[:2]:
-            paths.append(next(entries))
+    try:
+        changes = read_status(lambda *args: run_git(runtime_root, *args).stdout)
+    except ValueError as exc:
+        raise GitCommandError("status", str(exc)) from exc
+    paths = [path for change in changes for path in change.paths]
     if receipt is not None:
         receipt["dirty_paths"] = paths
     if paths:

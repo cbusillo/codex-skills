@@ -16,7 +16,10 @@ from typing import Any
 
 from cleanup_probe import ProbeError, command, signature, tag
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
+from skills.github.scripts.git_status import read_status
+
 published_history = importlib.import_module("published_history")
 
 OPERATIONS = ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD", "BISECT_LOG",
@@ -171,9 +174,16 @@ def snapshot(repo: str, key: bytes, remote_probe: bool = True,
                         tracked=[os.fsdecode(p) for p in git(path, "ls-files", "-z")[1].split(b"\0") if p],
                         ignored=[os.fsdecode(p) for p in git(path, "ls-files", "--others", "--ignored",
                                                           "--exclude-standard", "-z")[1].split(b"\0") if p])
-            dirty = git(path, "status", "--porcelain=v1", "-z", "--untracked-files=no")[1]
-            item.update(dirty_tracked=bool(dirty), _status_tag=tag(key, dirty), coverage="completed")
-        except (OSError, ProbeError):
+            raw_status = b""
+
+            def status_git(*args: str, checkout: str = path) -> bytes:
+                nonlocal raw_status
+                raw_status = git(checkout, *args)[1]
+                return raw_status
+
+            dirty = read_status(status_git, untracked=False)
+            item.update(dirty_tracked=bool(dirty), _status_tag=tag(key, raw_status), coverage="completed")
+        except (OSError, ProbeError, ValueError):
             item["coverage"] = "unavailable"
         worktrees.append(item)
     coverage = {}
