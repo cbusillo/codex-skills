@@ -83,24 +83,17 @@ def run_helper(script: str, args: list[str], env: dict[str, str] | None = None) 
 
 
 def assert_rejects_url(value: str, code: str) -> None:
-    try:
+    with pytest.raises(safety.LaunchplaneSafetyError) as caught:
         safety.validate_service_url(value)
-    except safety.LaunchplaneSafetyError as exc:
-        assert exc.code == code, exc.code
-    else:
-        raise AssertionError(f"expected {value!r} to be rejected")
+    assert getattr(caught.value, "code") == code, getattr(caught.value, "code")
 
 
 def test_agent_operator_contract_routes_every_local_consumer() -> None:
     for lookup, key in ((contract.operation_path, "unknown_operation"),
                         (contract.helper_command_path, "unknown_command"),
                         (contract.internal_helper_path, "unknown_route")):
-        try:
+        with pytest.raises(contract.ContractError):
             lookup(key)
-        except contract.ContractError:
-            pass
-        else:
-            raise AssertionError("unknown bindings must fail closed")
     context_args = argparse.Namespace(
         repo="example/repo", branch=None, issue=None, pr=None
     )
@@ -187,22 +180,16 @@ def test_repository_inventory_review_evidence_binds_exact_private_payload() -> N
         assert apply_body["mode"] == "apply"
 
         apply_args.idempotency_key = "repository-inventory-example-2"
-        try:
+        with pytest.raises(ValueError) as caught:
             write_action.repository_inventory_payload_body(apply_args, mode="apply")
-        except ValueError as exc:
-            assert str(exc) == "reviewed_dry_run_not_apply_eligible"
-        else:
-            raise AssertionError("changed idempotency key must invalidate dry-run evidence")
+        assert str(caught.value) == "reviewed_dry_run_not_apply_eligible"
         apply_args.idempotency_key = idempotency_key
 
         payload["expected_current_record_id"] = "repository-inventory-1001-r0"
         payload_path.write_text(json.dumps(payload), encoding="utf-8")
-        try:
+        with pytest.raises(ValueError) as caught:
             write_action.repository_inventory_payload_body(apply_args, mode="apply")
-        except ValueError as exc:
-            assert str(exc) == "reviewed_dry_run_not_apply_eligible"
-        else:
-            raise AssertionError("changed inventory payload must invalidate dry-run evidence")
+        assert str(caught.value) == "reviewed_dry_run_not_apply_eligible"
 
 
 def test_repository_inventory_projection_is_bounded_and_fail_closed() -> None:
@@ -280,16 +267,13 @@ def test_repository_inventory_projection_is_bounded_and_fail_closed() -> None:
         idempotency_key_fingerprint
     )
     provider_payload["result"]["repository"] = "example/repository"
-    try:
+    with pytest.raises(safety.LaunchplaneSafetyError) as caught:
         write_action.summarize_success(
             operation="repository-inventory-apply",
             request={"mode": "apply", "payload_source": "private_file"},
             provider_payload=provider_payload,
         )
-    except safety.LaunchplaneSafetyError as exc:
-        assert exc.code == "unsafe_response_shape"
-    else:
-        raise AssertionError("unexpected inventory response fields must fail closed")
+    assert getattr(caught.value, "code") == "unsafe_response_shape"
 
 
 def test_agent_operator_contract_cli_is_public_safe_and_hermetic() -> None:
@@ -477,7 +461,7 @@ def test_merge_train_policy_import_body_projection_and_redaction() -> None:
     malformed_record = malformed_result["record"]
     assert isinstance(malformed_record, dict)
     malformed_record["unexpected"] = "must-not-pass"
-    try:
+    with pytest.raises(safety.LaunchplaneSafetyError) as caught:
         write_action.summarize_merge_train_policy_import_success(
             operation="merge-train-policy-import-dry-run",
             request={"mode": "dry_run"},
@@ -486,10 +470,7 @@ def test_merge_train_policy_import_body_projection_and_redaction() -> None:
             expected_record_id=f"merge-train-policy-20260829T203000Z-{'c' * 12}",
             expected_policy_sha256="c" * 64,
         )
-    except safety.LaunchplaneSafetyError as exc:
-        assert exc.code == "unsafe_response_shape"
-    else:
-        raise AssertionError("expected extra merge-train import response field to fail closed")
+    assert getattr(caught.value, "code") == "unsafe_response_shape"
 
 
 def test_merge_train_policy_import_accepts_free_text_source_without_emitting_it() -> None:
@@ -513,12 +494,9 @@ def test_merge_train_policy_import_accepts_free_text_source_without_emitting_it(
     assert free_text not in json.dumps(evidence)
 
     for invalid_source in ("   ", 7):
-        try:
+        with pytest.raises(safety.LaunchplaneSafetyError) as caught:
             summarize(invalid_source)
-        except safety.LaunchplaneSafetyError as exc:
-            assert exc.code == "invalid_response"
-        else:
-            raise AssertionError(f"expected source {invalid_source!r} to fail closed")
+        assert getattr(caught.value, "code") == "invalid_response"
 
 
 def test_merge_train_policy_import_apply_requires_bound_evidence() -> None:
@@ -558,14 +536,11 @@ def test_merge_train_policy_import_apply_requires_bound_evidence() -> None:
         ):
             invalid_args = copy.copy(args)
             setattr(invalid_args, attribute, value)
-            try:
+            with pytest.raises(ValueError) as caught:
                 write_action.merge_train_policy_import_body(
                     invalid_args, mode="apply"
                 )
-            except ValueError as exc:
-                assert str(exc) == expected_code
-            else:
-                raise AssertionError(f"expected {expected_code}")
+            assert str(caught.value) == expected_code
 
         mismatched_evidence = _merge_train_policy_dry_run_evidence()
         mismatched_result = mismatched_evidence["result"]
@@ -574,12 +549,9 @@ def test_merge_train_policy_import_apply_requires_bound_evidence() -> None:
         assert isinstance(mismatched_current_policy, dict)
         mismatched_current_policy["policy_sha256"] = "b" * 64
         evidence_path.write_text(json.dumps(mismatched_evidence), encoding="utf-8")
-        try:
+        with pytest.raises(ValueError) as caught:
             write_action.merge_train_policy_import_body(args, mode="apply")
-        except ValueError as exc:
-            assert str(exc) == "reviewed_dry_run_not_apply_eligible"
-        else:
-            raise AssertionError("expected mismatched policy evidence to fail closed")
+        assert str(caught.value) == "reviewed_dry_run_not_apply_eligible"
 
 
 def test_merge_train_policy_import_preflight_blocks_stale_policy_before_post() -> None:
@@ -789,21 +761,15 @@ def test_endpoint_validation_policy() -> None:
 def test_build_url_and_redirect_policy() -> None:
     assert safety.build_launchplane_url("https://launchplane.example.invalid/base/", "/v1/agent/context", query="repository=a%2Fb") == "https://launchplane.example.invalid/base/v1/agent/context?repository=a%2Fb"
     for bad_path in ("v1/agent/context", "https://other.example.invalid/v1", "//other.example.invalid/v1"):
-        try:
+        with pytest.raises(safety.LaunchplaneSafetyError) as caught:
             safety.build_launchplane_url("https://launchplane.example.invalid", bad_path)
-        except safety.LaunchplaneSafetyError as exc:
-            assert exc.code == "invalid_request_path"
-        else:
-            raise AssertionError(f"expected bad path {bad_path!r} to fail")
+        assert getattr(caught.value, "code") == "invalid_request_path"
     request = urllib.request.Request("https://launchplane.example.invalid/v1/example")
     handler = safety.SameOriginRedirectHandler()
     assert handler.redirect_request(request, None, 302, "Found", {}, "/v1/other").full_url == "https://launchplane.example.invalid/v1/other"
-    try:
+    with pytest.raises(safety.LaunchplaneSafetyError) as caught:
         handler.redirect_request(request, None, 302, "Found", {}, "https://evil.example.invalid/v1/steal")
-    except safety.LaunchplaneSafetyError as exc:
-        assert exc.code == "unsafe_redirect"
-    else:
-        raise AssertionError("expected cross-origin redirect to fail")
+    assert getattr(caught.value, "code") == "unsafe_redirect"
 
 
 def test_write_helper_validates_cli_env_and_json_url_sources() -> None:
@@ -849,12 +815,9 @@ def test_context_helper_validates_env_and_json_url_sources() -> None:
     ):
         with patch.dict(context_helper.os.environ, {"LAUNCHPLANE_CONTEXT_TOKEN": "secret"}, clear=True):
             settings = context_helper.resolve_settings(argparse.Namespace(config="local.json", url=None))
-    try:
+    with pytest.raises(safety.LaunchplaneSafetyError) as caught:
         safety.validate_service_url(settings["service_url"])
-    except safety.LaunchplaneSafetyError as exc:
-        assert exc.code == "invalid_service_url_http"
-    else:
-        raise AssertionError("expected JSON config URL source to fail")
+    assert getattr(caught.value, "code") == "invalid_service_url_http"
 
 
 def test_success_projection_preserves_contracts() -> None:
@@ -989,13 +952,10 @@ def test_invalid_private_payload_does_not_expose_path() -> None:
     with TemporaryDirectory(dir=Path.home()) as directory:
         payload_path = Path(directory) / "private-payload.json"
         payload_path.write_text("{broken", encoding="utf-8")
-        try:
+        with pytest.raises(ValueError) as caught:
             write_action.read_payload_file(str(payload_path))
-        except ValueError as exc:
-            assert str(exc) == "invalid_payload"
-            assert str(payload_path) not in str(exc)
-        else:
-            raise AssertionError("expected invalid private payload rejection")
+        assert str(caught.value) == "invalid_payload"
+        assert str(payload_path) not in str(caught.value)
 
 
 @pytest.mark.parametrize("relative", [False, True])
@@ -1661,12 +1621,8 @@ def test_merge_train_queue_rejects_malformed_or_sensitive_evidence() -> None:
     ):
         response = _queue_refusal_response()
         response["result"]["dry_run_result"][key] = value
-        try:
+        with pytest.raises(safety.LaunchplaneSafetyError):
             _summarize_queue_response(response)
-        except safety.LaunchplaneSafetyError:
-            pass
-        else:
-            raise AssertionError(f"expected malformed {key} to fail closed")
     for key, value in (
         ("number", True), ("number", 0), ("head_sha", None), ("actor_role", []),
         ("eligible", "false"), ("branch_update_required", None),
@@ -1676,12 +1632,8 @@ def test_merge_train_queue_rejects_malformed_or_sensitive_evidence() -> None:
     ):
         response = _queue_refusal_response()
         response["result"]["dry_run_result"]["queue"][0][key] = value
-        try:
+        with pytest.raises(safety.LaunchplaneSafetyError):
             _summarize_queue_response(response)
-        except safety.LaunchplaneSafetyError:
-            pass
-        else:
-            raise AssertionError(f"expected unsafe queue field {key} to fail closed")
 
 
 def test_controller_branch_update_result_reaches_the_caller() -> None:
@@ -1851,7 +1803,7 @@ def test_current_launchplane_service_response_shapes() -> None:
         ("state", {}),
         ("reason_codes", [{"unexpected": "shape"}]),
     ):
-        try:
+        with pytest.raises(safety.LaunchplaneSafetyError) as caught:
             write_action.summarize_success(
                 operation="merge-train-controller-run-once",
                 request={
@@ -1875,12 +1827,9 @@ def test_current_launchplane_service_response_shapes() -> None:
                     },
                 },
             )
-        except safety.LaunchplaneSafetyError as exc:
-            assert exc.code == "invalid_response"
-        else:
-            raise AssertionError(f"expected invalid {field} value to fail closed")
+        assert getattr(caught.value, "code") == "invalid_response"
 
-    try:
+    with pytest.raises(safety.LaunchplaneSafetyError) as caught:
         write_action.summarize_success(
             operation="merge-train-controller-run-once",
             request={
@@ -1904,10 +1853,7 @@ def test_current_launchplane_service_response_shapes() -> None:
                 },
             },
         )
-    except safety.LaunchplaneSafetyError as exc:
-        assert exc.code == "invalid_response"
-    else:
-        raise AssertionError("expected invalid blocking reason code to fail closed")
+    assert getattr(caught.value, "code") == "invalid_response"
 
     preflight = write_action.summarize_success(
         operation="product-config-preflight",
@@ -2059,11 +2005,8 @@ def test_product_config_projection_keeps_adoption_names_and_refuses_values() -> 
         [{"key": "EXAMPLE_LABEL", "disposition": "private-value"}],
         [{"key": "private value", "disposition": "adopted"}],
     ):
-        try:
+        with pytest.raises(safety.LaunchplaneSafetyError):
             write_action._project_provider_key_adoption(unsafe)
-        except safety.LaunchplaneSafetyError:
-            continue
-        raise AssertionError(f"expected {unsafe!r} to be refused")
 
 
 def _calendar_payload(operation: str = "set") -> dict[str, Any]:
@@ -2739,12 +2682,9 @@ def test_product_config_secret_copy_refuses_a_value_or_malformed_source() -> Non
             payload_entries = cast(list[dict[str, object]], payload["secrets"])
             payload_entries[0] = {**payload_entries[0], **change}
             payload_path.write_text(json.dumps(payload), encoding="utf-8")
-            try:
+            with pytest.raises(ValueError) as caught:
                 write_action.product_config_payload_body(args, mode="dry-run")
-            except ValueError as exc:
-                assert str(exc) == code
-            else:
-                raise AssertionError(f"expected {code}")
+            assert str(caught.value) == code
 
         ordinary = {
             "product": "example-product",
@@ -2765,15 +2705,12 @@ def test_product_config_secret_copy_projection_refuses_extra_source_fields() -> 
         response = _copy_reference_response("apply")
         result = cast(dict[str, Any], response["result"])
         result["secrets"][0]["copy_from"] = copy_from
-        try:
+        with pytest.raises(safety.LaunchplaneSafetyError):
             write_action.summarize_success(
                 operation="product-config-apply",
                 request={"mode": "apply", "payload_source": "private_file"},
                 provider_payload=response,
             )
-        except safety.LaunchplaneSafetyError:
-            continue
-        raise AssertionError(f"expected {copy_from!r} to be refused")
 
 
 def _secret_bindings_response() -> dict[str, object]:
@@ -2944,12 +2881,9 @@ def test_integration_allowances_plan_projection_keeps_diff_and_digest() -> None:
 def test_integration_allowances_projection_refuses_unknown_fields() -> None:
     allowance = _integration_allowance_payload()
     allowance["value"] = "not-allowed"
-    try:
+    with pytest.raises(write_action.LaunchplaneSafetyError) as caught:
         write_action._project_integration_allowance(allowance)
-    except write_action.LaunchplaneSafetyError as exc:
-        assert exc.code == "unsafe_response_shape"
-    else:
-        raise AssertionError("unknown allowance field was accepted")
+    assert getattr(caught.value, "code") == "unsafe_response_shape"
 
 
 def test_integration_allowance_removal_with_credential_prose() -> None:
@@ -3127,11 +3061,8 @@ def test_integration_allowances_read_shows_why_a_lane_key_is_shared() -> None:
     )
     assert redacted["evidence"] == "Verified read-only scope of [redacted] on 2026-10-02."
     for unsafe in ({**sharing_reason, "value": "x"}, {**sharing_reason, "kind": "borrowed"}):
-        try:
+        with pytest.raises(write_action.LaunchplaneSafetyError):
             write_action._project_sharing_reason(unsafe)
-        except write_action.LaunchplaneSafetyError:
-            continue
-        raise AssertionError(f"expected {unsafe!r} to be refused")
 
 
 def test_integration_allowances_payload_rejects_unknown_fields_and_unreviewed_apply() -> None:
@@ -3149,12 +3080,9 @@ def test_integration_allowances_payload_rejects_unknown_fields_and_unreviewed_ap
         }
         payload_path.write_text(json.dumps(payload), encoding="utf-8")
         args = argparse.Namespace(payload_file=str(payload_path), idempotency_key="")
-        try:
+        with pytest.raises(ValueError) as caught:
             write_action.integration_allowances_body(args, mode="dry-run")
-        except ValueError as exc:
-            assert str(exc) == "unsupported_allowance_field"
-        else:
-            raise AssertionError("unknown allowance input field was accepted")
+        assert str(caught.value) == "unsupported_allowance_field"
 
         payload["allowances"] = [{"integration": "fishbowl", "kind": "pre_live", "reason": "Not live yet."}]
         payload_path.write_text(json.dumps(payload), encoding="utf-8")
@@ -3165,21 +3093,15 @@ def test_integration_allowances_payload_rejects_unknown_fields_and_unreviewed_ap
             expected_plan_digest="b" * 64,
             dry_run_evidence_file="",
         )
-        try:
+        with pytest.raises(ValueError) as caught:
             write_action.integration_allowances_body(apply_args, mode="apply")
-        except ValueError as exc:
-            assert str(exc) == "reviewed_dry_run_not_apply_eligible"
-        else:
-            raise AssertionError("apply without saved dry-run evidence was accepted")
+        assert str(caught.value) == "reviewed_dry_run_not_apply_eligible"
 
 
 def _expect_error(call: Any, code: str) -> None:
-    try:
+    with pytest.raises((ValueError, write_action.LaunchplaneSafetyError)) as caught:
         call()
-    except (ValueError, write_action.LaunchplaneSafetyError) as exc:
-        assert getattr(exc, "code", str(exc)) == code, (code, exc)
-    else:
-        raise AssertionError(f"expected {code}")
+    assert getattr(caught.value, "code", str(caught.value)) == code, (code, caught.value)
 
 
 def _testing_hold_plan(**overrides: object) -> dict[str, object]:
@@ -3777,14 +3699,11 @@ def test_path_check_refuses_bad_selector_and_surfaces_read_denial() -> None:
     assert status == 2 and not calls
     assert payload["warnings"][0]["code"] == "invalid_product"
     with redirect_stderr(io.StringIO()):
-        try:
+        with pytest.raises(SystemExit) as caught:
             _run_product_read(
                 ["path-check", "--product", "example-product", "--path", "rollback"], {}
             )
-        except SystemExit as exc:
-            assert exc.code == 2
-        else:
-            raise AssertionError("Unsupported path was accepted")
+        assert getattr(caught.value, "code") == 2
     denied = urllib.error.HTTPError(
         "https://launchplane.example.invalid", 404, "Not found", Message(),
         io.BytesIO(json.dumps({"status": "error", "trace_id": "launchplane_req_denied",
@@ -6452,24 +6371,16 @@ def test_runtime_retirement_projection_rejects_values_and_malformed_metadata() -
                 **runtime,
                 field: {"retired_provider_keys": invalid} if field == "record" else invalid,
             }
-            try:
+            with pytest.raises(safety.LaunchplaneSafetyError):
                 write_action._project_runtime_environment(candidate)
-            except safety.LaunchplaneSafetyError:
-                pass
-            else:
-                raise AssertionError("expected malformed retirement metadata to fail closed")
 
     for extra in (
         {"record": {"retired_provider_keys": ["LEGACY_KEY"], "env": {"KEY": "value"}}},
         {"provider_environment": {"KEY": "value"}},
         {"scope": "context", "instance": "", "retired_provider_keys_after": ["LEGACY_KEY"]},
     ):
-        try:
+        with pytest.raises(safety.LaunchplaneSafetyError):
             write_action._project_runtime_environment({**runtime, **extra})
-        except safety.LaunchplaneSafetyError:
-            pass
-        else:
-            raise AssertionError("expected unsafe retirement response to fail closed")
 
     cleared = write_action._project_runtime_environment(
         {**runtime, "retired_provider_keys_before": ["LEGACY_KEY"], "retired_provider_keys_after": []}
@@ -6480,12 +6391,9 @@ def test_runtime_retirement_projection_rejects_values_and_malformed_metadata() -
 
 def test_optional_public_identifier_rejects_null_values() -> None:
     assert write_action._optional_public_identifier("") is None
-    try:
+    with pytest.raises(safety.LaunchplaneSafetyError) as caught:
         write_action._optional_public_identifier(None)
-    except safety.LaunchplaneSafetyError as exc:
-        assert exc.code == "invalid_response"
-    else:
-        raise AssertionError("expected null optional identifier to fail closed")
+    assert getattr(caught.value, "code") == "invalid_response"
 
 
 def test_runtime_environment_projection_enforces_scope_identity() -> None:
@@ -6512,7 +6420,7 @@ def test_runtime_environment_projection_enforces_scope_identity() -> None:
         {"scope": "instance", "context": "testing", "instance": ""},
         {"scope": "global", "context": "testing", "instance": ""},
     ):
-        try:
+        with pytest.raises(safety.LaunchplaneSafetyError) as caught:
             write_action._project_runtime_environment(
                 {
                     "action": "updated",
@@ -6524,15 +6432,12 @@ def test_runtime_environment_projection_enforces_scope_identity() -> None:
                     "record": None,
                 }
             )
-        except safety.LaunchplaneSafetyError as exc:
-            assert exc.code == "invalid_response"
-        else:
-            raise AssertionError(f"expected invalid runtime target to fail: {invalid_target}")
+        assert getattr(caught.value, "code") == "invalid_response"
 
 
 def test_success_projection_fails_closed_on_secret_bearing_payloads() -> None:
     for key in ("secret", "client_secret", "api_key", "private_key", "credential", "cookie", "token", "opaque_value"):
-        try:
+        with pytest.raises(safety.LaunchplaneSafetyError) as caught:
             write_action.summarize_success(
                 operation="merge-train-controller-run-once",
                 request={"repository": "example/repo", "base_branch": "main", "mutate": False},
@@ -6543,11 +6448,8 @@ def test_success_projection_fails_closed_on_secret_bearing_payloads() -> None:
                     "result": {"repository": "example/repo", "base_branch": "main", "controller_action": "build_candidate", key: "secret-value"},
                 },
             )
-        except safety.LaunchplaneSafetyError as exc:
-            assert exc.code == "unsafe_response_shape"
-        else:
-            raise AssertionError(f"expected secret key {key!r} to fail closed")
-    try:
+        assert getattr(caught.value, "code") == "unsafe_response_shape"
+    with pytest.raises(safety.LaunchplaneSafetyError) as caught:
         write_action.summarize_success(
             operation="product-config-preflight",
             request={"product": "example-product", "context": "example-testing"},
@@ -6563,24 +6465,18 @@ def test_success_projection_fails_closed_on_secret_bearing_payloads() -> None:
                 },
             },
         )
-    except safety.LaunchplaneSafetyError as exc:
-        assert exc.code == "unsafe_response_shape"
-    else:
-        raise AssertionError("expected nested secret-bearing product-config payload to fail closed")
+    assert getattr(caught.value, "code") == "unsafe_response_shape"
 
 
 def test_trace_ids_refuse_secrets_and_response_prose_redacts_them() -> None:
     for trace_id in ("Bearer secret-token", "https://private.example.invalid/trace", "trace id with spaces"):
-        try:
+        with pytest.raises(safety.LaunchplaneSafetyError) as caught:
             write_action.summarize_success(
                 operation="merge-train-controller-run-once",
                 request={"repository": "example/repo", "base_branch": "main", "mutate": False},
                 provider_payload={"status": "accepted", "trace_id": trace_id, "records": {}, "result": {"repository": "example/repo", "base_branch": "main", "controller_action": "build_candidate"}},
             )
-        except safety.LaunchplaneSafetyError as exc:
-            assert exc.code == "invalid_response"
-        else:
-            raise AssertionError(f"expected unsafe trace id {trace_id!r} to fail closed")
+        assert getattr(caught.value, "code") == "invalid_response"
     output = write_action.summarize_success(
         operation="product-config-preflight",
         request={"product": "example-product", "context": "example-testing"},
@@ -6588,7 +6484,7 @@ def test_trace_ids_refuse_secrets_and_response_prose_redacts_them() -> None:
     )
     assert output["result"]["intent"]["next_action"]
     assert "secret-token" not in json.dumps(output)
-    try:
+    with pytest.raises(safety.LaunchplaneSafetyError) as caught:
         write_action.summarize_success(
             operation="merge-train-controller-run-once",
             request={"repository": "example/repo", "base_branch": "main", "mutate": True},
@@ -6608,10 +6504,7 @@ def test_trace_ids_refuse_secrets_and_response_prose_redacts_them() -> None:
                 },
             },
         )
-    except safety.LaunchplaneSafetyError as exc:
-        assert exc.code == "unsafe_response_shape"
-    else:
-        raise AssertionError("expected unsafe merge blocking reason to fail closed")
+    assert getattr(caught.value, "code") == "unsafe_response_shape"
     output = write_action.summarize_success(
         operation="merge-train-controller-run-once",
         request={"repository": "example/repo", "base_branch": "main", "mutate": True},
@@ -6777,12 +6670,9 @@ def test_context_projection_contract_and_secret_shape() -> None:
     assert payload["summary"] == provider_context["summary"]
     assert payload["sections"]["work_graph"] == provider_context["sections"]["work_graph"]
     provider_payload = {"result": {"context": {"work_graph": {"status": "available", "items": [{"source_of_truth_url": "https://github.com/example/repo/issues/1", "state": "waiting", "safe_to_start": False, "next_action": "Wait for checks.", "api_key": "secret-value"}]}}}}
-    try:
+    with pytest.raises(safety.LaunchplaneSafetyError) as caught:
         context_helper.normalize_launchplane_payload(provider_payload, request={"repository": "example/repo"})
-    except safety.LaunchplaneSafetyError as exc:
-        assert exc.code == "unsafe_response_shape"
-    else:
-        raise AssertionError("expected context projection to fail closed")
+    assert getattr(caught.value, "code") == "unsafe_response_shape"
 
 
 @pytest.mark.parametrize("selector", ["--repo", "--branch"])
@@ -7152,44 +7042,32 @@ def test_generic_web_deploy_recovery_apply_requires_review_idempotency_and_reaso
             expected_recovery_digest="",
             dry_run_evidence_file=str(evidence_path),
         )
-        try:
+        with pytest.raises(ValueError) as caught:
             write_action.generic_web_deploy_recovery_body(args, mode="dry_run")
-        except ValueError as exc:
-            assert str(exc) == "idempotency_key_required"
-        else:
-            raise AssertionError("expected idempotency requirement for dry-run")
+        assert str(caught.value) == "idempotency_key_required"
 
         args.idempotency_key = "original-deploy-key-1"
         dry_run_body = write_action.generic_web_deploy_recovery_body(args, mode="dry_run")
         assert dry_run_body["reason"] == "Recover from failed deploy."
 
         args.idempotency_key = ""
-        try:
+        with pytest.raises(ValueError) as caught:
             write_action.generic_web_deploy_recovery_body(args, mode="apply")
-        except ValueError as exc:
-            assert str(exc) == "idempotency_key_required"
-        else:
-            raise AssertionError("expected idempotency requirement for apply")
+        assert str(caught.value) == "idempotency_key_required"
 
         args.idempotency_key = "original-deploy-key-1"
-        try:
+        with pytest.raises(ValueError) as caught:
             write_action.generic_web_deploy_recovery_body(args, mode="apply")
-        except ValueError as exc:
-            assert str(exc) == "reviewed_dry_run_required"
-        else:
-            raise AssertionError("expected reviewed_dry_run requirement")
+        assert str(caught.value) == "reviewed_dry_run_required"
 
         args.reviewed_dry_run = True
         payload_path.write_text(
             json.dumps(_generic_web_deploy_recovery_payload(reason="")),
             encoding="utf-8",
         )
-        try:
+        with pytest.raises(ValueError) as caught:
             write_action.generic_web_deploy_recovery_body(args, mode="apply")
-        except ValueError as exc:
-            assert str(exc) == "reason_required"
-        else:
-            raise AssertionError("expected embedded reason requirement")
+        assert str(caught.value) == "reason_required"
 
         payload_path.write_text(
             json.dumps(
@@ -7201,20 +7079,14 @@ def test_generic_web_deploy_recovery_apply_requires_review_idempotency_and_reaso
             encoding="utf-8",
         )
         args.expected_recovery_digest = "a" * 64
-        try:
+        with pytest.raises(ValueError) as caught:
             write_action.generic_web_deploy_recovery_body(args, mode="apply")
-        except ValueError as exc:
-            assert str(exc) == "recovery_digest_mismatch"
-        else:
-            raise AssertionError("expected recovery_digest_mismatch")
+        assert str(caught.value) == "recovery_digest_mismatch"
 
         args.expected_recovery_digest = "not-a-digest"
-        try:
+        with pytest.raises(ValueError) as caught:
             write_action.generic_web_deploy_recovery_body(args, mode="apply")
-        except ValueError as exc:
-            assert str(exc) == "invalid_expected_recovery_digest"
-        else:
-            raise AssertionError("expected invalid_expected_recovery_digest")
+        assert str(caught.value) == "invalid_expected_recovery_digest"
 
 
 def test_generic_web_deploy_recovery_apply_requires_apply_eligible_evidence() -> None:
@@ -7242,20 +7114,14 @@ def test_generic_web_deploy_recovery_apply_requires_apply_eligible_evidence() ->
         )
         for evidence in ineligible_evidence:
             evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
-            try:
+            with pytest.raises(ValueError) as caught:
                 write_action.generic_web_deploy_recovery_body(args, mode="apply")
-            except ValueError as exc:
-                assert str(exc) == "reviewed_dry_run_not_apply_eligible"
-            else:
-                raise AssertionError("expected ineligible reviewed dry-run rejection")
+            assert str(caught.value) == "reviewed_dry_run_not_apply_eligible"
 
         args.dry_run_evidence_file = ""
-        try:
+        with pytest.raises(ValueError) as caught:
             write_action.generic_web_deploy_recovery_body(args, mode="apply")
-        except ValueError as exc:
-            assert str(exc) == "reviewed_dry_run_not_apply_eligible"
-        else:
-            raise AssertionError("expected reviewed dry-run evidence requirement")
+        assert str(caught.value) == "reviewed_dry_run_not_apply_eligible"
 
 
 def test_generic_web_deploy_recovery_payload_rejects_repo_local_files() -> None:
@@ -7268,7 +7134,7 @@ def test_generic_web_deploy_recovery_payload_rejects_repo_local_files() -> None:
             encoding="utf-8",
         )
         with temporary_attribute(write_action, "active_repo_root", lambda: repo_root):
-            try:
+            with pytest.raises(ValueError) as caught:
                 write_action.generic_web_deploy_recovery_body(
                     argparse.Namespace(
                         payload_file=str(payload_path),
@@ -7277,10 +7143,7 @@ def test_generic_web_deploy_recovery_payload_rejects_repo_local_files() -> None:
                     ),
                     mode="dry_run",
                 )
-            except ValueError as exc:
-                assert str(exc) == "repo_local_payload_unsupported"
-            else:
-                raise AssertionError("expected repo-local payload rejection")
+            assert str(caught.value) == "repo_local_payload_unsupported"
 
 
 def test_generic_web_deploy_recovery_cli_dispatches_exact_routes() -> None:
@@ -7398,7 +7261,7 @@ def test_generic_web_deploy_recovery_cli_refuses_ineligible_evidence_without_htt
 
 
 def test_generic_web_deploy_recovery_projection_fails_closed_on_extra_fields() -> None:
-    try:
+    with pytest.raises(safety.LaunchplaneSafetyError) as caught:
         write_action.summarize_success(
             operation="generic-web-deploy-recovery-apply",
             request={"mode": "apply", "payload_source": "private_file"},
@@ -7413,10 +7276,7 @@ def test_generic_web_deploy_recovery_projection_fails_closed_on_extra_fields() -
                 },
             },
         )
-    except safety.LaunchplaneSafetyError as exc:
-        assert exc.code == "unsafe_response_shape"
-    else:
-        raise AssertionError("expected extra field to fail closed")
+    assert getattr(caught.value, "code") == "unsafe_response_shape"
 
 
 def test_generic_web_deploy_recovery_apply_unverified_on_projection_failure() -> None:
@@ -7611,11 +7471,8 @@ def test_expected_config_removal_items_are_plain_identities() -> None:
         assert write_action.product_expected_config_payload_body(args, mode="dry-run")["remove_managed_secret_bindings"] == [valid_binding]
         for kind, item in refused:
             payload_path.write_text(json.dumps({**base, kind: [item]}))
-            try:
+            with pytest.raises(ValueError):
                 write_action.product_expected_config_payload_body(args, mode="dry-run")
-            except ValueError:
-                continue
-            raise AssertionError(f"{kind} accepted {item!r}")
 
 
 def test_owner_review_reader_keeps_full_prose_and_uses_only_the_private_route() -> None:
@@ -10203,28 +10060,20 @@ def test_odoo_addon_settings_projection_redacts_secret_settings() -> None:
     leaked_changes = cast(list[dict[str, Any]], leaked["changes"])
     leaked_before = cast(dict[str, Any], leaked_changes[1]["before"])
     leaked_before["value"] = "plaintext-token-value"
-    try:
+    with pytest.raises(write_action.LaunchplaneSafetyError):
         write_action.summarize_success(
             operation="odoo-addon-settings-dry-run",
             request={},
             provider_payload={"status": "accepted", "records": {}, "result": leaked},
         )
-    except write_action.LaunchplaneSafetyError:
-        pass
-    else:
-        raise AssertionError("secret literal must not be projected")
 
     extra = {**_odoo_addon_settings_result(), "unexpected": "field"}
-    try:
+    with pytest.raises(write_action.LaunchplaneSafetyError):
         write_action.summarize_success(
             operation="odoo-addon-settings-dry-run",
             request={},
             provider_payload={"status": "accepted", "records": {}, "result": extra},
         )
-    except write_action.LaunchplaneSafetyError:
-        pass
-    else:
-        raise AssertionError("unknown result fields must fail closed")
 
 
 def test_odoo_addon_settings_body_refuses_plaintext_and_binds_digest() -> None:
@@ -10258,25 +10107,19 @@ def test_odoo_addon_settings_body_refuses_plaintext_and_binds_digest() -> None:
             ({"idempotency_key": ""}, "idempotency_key_required"),
         ):
             args = argparse.Namespace(**{**vars(apply_args), **overrides})
-            try:
+            with pytest.raises(ValueError) as caught:
                 write_action.odoo_addon_settings_body(args, mode="apply")
-            except ValueError as exc:
-                assert str(exc) == code
-            else:
-                raise AssertionError(f"expected {code}")
+            assert str(caught.value) == code
 
         plaintext = _odoo_addon_settings_payload()
         cast(dict[str, object], plaintext["shopify"])["api_token"] = "plaintext"
         payload_path.write_text(json.dumps(plaintext), encoding="utf-8")
-        try:
+        with pytest.raises(ValueError) as caught:
             write_action.odoo_addon_settings_body(
                 argparse.Namespace(payload_file=str(payload_path), idempotency_key=""),
                 mode="dry-run",
             )
-        except ValueError as exc:
-            assert str(exc) == "unsupported_shopify_field"
-        else:
-            raise AssertionError("plaintext secret field must be refused")
+        assert str(caught.value) == "unsupported_shopify_field"
 
 
 def test_odoo_addon_settings_cli_dispatches_projected_route() -> None:
