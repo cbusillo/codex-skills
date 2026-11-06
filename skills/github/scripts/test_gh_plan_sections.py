@@ -163,7 +163,7 @@ class SectionTests(unittest.TestCase):
 
     def run_comment_update(self, *body_args: str, section: str = "Finish Line") -> tuple[int, dict, Mock, Mock, str]:
         post = Mock(return_value={"comment": {"id": 7}})
-        with patch.object(PLAN.github_comment_core, "comment", post):
+        with patch.multiple(PLAN.github_comment_core, comment=post):
             code, result, edit, errors = self.run_update(
                 *body_args, section=section, comment_current_status=Mock(return_value="State: Active"),
                 comment_route=Mock(return_value=("automation-gh", "bot-gh", "fixture-bot[bot]")))

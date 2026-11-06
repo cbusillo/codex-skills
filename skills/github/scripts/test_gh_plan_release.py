@@ -1850,7 +1850,7 @@ class OwnReleaseTests(ReleaseHarness):
         self.f.issue["body"] = PLAN.github_plan_body.wrap_contributor_plan(
             {"body": "Original report"}, "## Current Status\n\nNext actor: agent\nNext action: Investigate.")
         envelope = self.f.issue["body"]
-        with patch.object(PLAN, "next_status_body_time", return_value="2026-01-01T00:00:00+00:00"):
+        with patch.multiple(PLAN, next_status_body_time=Mock(return_value="2026-01-01T00:00:00+00:00")):
             self.run_own_release()
         self.assertTrue(self.f.emitted.call_args.args[0]["ok"])
         self.assertEqual(self.f.issue["body"], envelope)
