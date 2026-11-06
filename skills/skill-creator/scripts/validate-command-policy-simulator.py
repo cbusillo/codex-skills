@@ -23,7 +23,6 @@ from unittest.mock import patch
 
 import yaml
 
-
 ROOT = Path(__file__).resolve().parents[2]
 IGNORED_SKILL_DIRS = {".disabled", ".git", ".local", ".system", ".code"}
 
@@ -100,6 +99,7 @@ def match_policy(
     shell: str,
     repository: str | None = None,
     command_texts: list[str] | None = None,
+    command_context: str | None = None,
 ) -> PolicyMatch | None:
     matcher = policy.get("match")
     if not isinstance(matcher, dict):
@@ -128,6 +128,8 @@ def match_policy(
             # Opt in to whole-command anchoring with \A. Preserve legacy
             # token-suffix matching (including ^) for existing policies.
             texts = command_texts[:1] if r"\A" in pattern.pattern else command_texts
+            if command_context is not None:
+                texts = [*texts, command_context]
             matched = any(pattern.match(text) for text in texts)
         if matched:
             return PolicyMatch(skill, policy_id, "shell_regex", (1, 0, -skill_order, -index))
@@ -171,6 +173,7 @@ def simulate(
     *,
     cwd: Path | None = None,
     command_argv: list[str] | None = None,
+    context_argv: list[str] | None = None,
 ) -> list[PolicyMatch]:
     """Match `argv` against every policy.
 
@@ -180,6 +183,7 @@ def simulate(
     """
     shell_text = shell if shell is not None else shlex.join(argv)
     command_texts = command_position_texts(command_argv) if command_argv is not None else None
+    command_context = shlex.join(context_argv) if context_argv is not None else None
     policies = iter_policies()
     needs_repository = any(
         argv[:len(exception["argv_prefix"])] == exception["argv_prefix"]
@@ -189,7 +193,7 @@ def simulate(
     matches = [
         match
         for skill_order, skill, index, policy in policies
-        if (match := match_policy(skill_order, skill, index, policy, argv, shell_text, repository, command_texts)) is not None
+        if (match := match_policy(skill_order, skill, index, policy, argv, shell_text, repository, command_texts, command_context)) is not None
     ]
     return sorted(matches, key=lambda match: match.score, reverse=True)
 

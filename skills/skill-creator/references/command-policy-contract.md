@@ -76,6 +76,20 @@ For the shared hook's command-position checks, any `\A` in a pattern opts that
 entire pattern into matching only the whole simple command. Other regexes retain token-suffix matching, including
 the existing meaning of `^` at each token start.
 
+The shared hook adds regex context rendered by `shlex.join` as `'&' command ...`
+when a shell script contains an unquoted `&`, or the command runs through
+`nohup` or `setsid`. A watcher mixed with any shell background job therefore
+needs its own tool call. Quoted arguments and heredoc data do not create this
+context. Nested shell programs retain it. A regex can match the literal `'&'`
+prefix; `\A` anchors it to the whole context. Both harnesses use this hook.
+
+Ordinary argv normalization lives in the hook's `executable_arguments`;
+`policy_context` reuses it to look through known execution wrappers solely for
+the extra regex view. Ordinary argv rules and repository exceptions keep their
+original view. The implementation and flag sets in
+[`command_policy_hook.py`](https://github.com/cbusillo/codex-skills/blob/main/hooks/command_policy_hook.py) are the source
+for both views; the simulator evaluates them in one sorted policy pass.
+
 When multiple policies match, the primary policy is selected deterministically:
 
 1. `argv_exact`
