@@ -110,11 +110,12 @@ class CloseAttentionTests(unittest.TestCase):
             row(9, addressed=True, later_reply=f"https://github.com/{REPO}/issues/9#issuecomment-901"),)))
         self.assertEqual(answered["result"], "passed")
 
-    def test_replied_and_automation_comments_pass(self) -> None:
+    def test_replied_comments_pass_but_unanswered_external_agents_refuse(self) -> None:
         result = gate.check(REPO, 7, reader=fake_reader(), radar=radar(
-            row(later_reply="https://github.com/director/project/issues/7#issuecomment-800"),
-            row(author="deploy-bot", author_class="automation")))
+            row(later_reply="https://github.com/director/project/issues/7#issuecomment-800")))
         self.assertEqual(result["result"], "passed")
+        with self.assertRaises(gate.CloseAttentionError):
+            gate.check(REPO, 7, reader=fake_reader(), radar=radar(row(author="client-agent", author_class="automation")))
 
     def test_a_targeted_response_without_a_later_posted_reply_refuses(self) -> None:
         # The radar's targeted response follows edit time, so an edited older comment can be one.

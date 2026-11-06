@@ -465,7 +465,7 @@ def github_logins(person: dict[str, Any]) -> tuple[list[str], list[str]]:
 
 
 def people_identities(self_logins: set[str], index_path: Path | None) -> dict[str, Any]:
-    empty = {"director_names": [], "director_ambiguous": False, "automation": {}, "address_names": {}}
+    empty = {"director_names": [], "director_ambiguous": False, "automation": {}, "address_names": {}, "own_automation": []}
     if index_path is not None and not index_path.expanduser().is_file():
         # An index someone named must exist; only the default index is optional.
         return {**empty, "status": "error", "error": f"people index {index_path} does not exist"}
@@ -506,6 +506,10 @@ def people_identities(self_logins: set[str], index_path: Path | None) -> dict[st
         # names rather than guess which match is the Director.
         return {**empty, "status": status, "director_ambiguous": len(directors) > 1, "automation": automation}
     [director] = directors
+    own_automation = [login for login in github_logins(director)[1] if len(login_people[login]) == 1]
+    empty["own_automation"] = own_automation
+    for login in own_automation:
+        automation.pop(login)
     names = [
         *rollup.as_str_list(director.get("display_name")),
         *rollup.as_str_list(director.get("preferred_reference")),
@@ -531,12 +535,13 @@ def is_github_bot(author: str, author_type: str) -> bool:
 
 def is_external_comment(
     comment: Comment, self_logins: set[str], bot_logins: set[str], automation_logins: dict[str, str] | None = None,
+    own_automation: set[str] | None = None,
 ) -> bool:
     author = normalize_login(comment.author)
     # Opening an issue or PR needs attention even with an empty description.
     if not author or (not comment.body.strip() and comment.kind != OPENING_POST):
         return False
-    if author in self_logins or author in bot_logins:
+    if author in self_logins or author in bot_logins or author in (own_automation or set()):
         return False
     return comment.kind == OPENING_POST or not is_github_bot(comment.author, comment.author_type) or author in (automation_logins or {})
 
@@ -685,8 +690,10 @@ def opened_threads(repo: str, since: datetime, until: datetime, *, per_page: int
         page += 1
 
 
-def scan_identity(self_logins: set[str], bot_logins: set[str], automation_logins: dict[str, str]) -> str:
-    identity = json.dumps([sorted(self_logins), sorted(bot_logins), sorted(automation_logins.items())])
+def scan_identity(
+    self_logins: set[str], bot_logins: set[str], automation_logins: dict[str, str], own_automation: set[str] | None = None,
+) -> str:
+    identity = json.dumps([sorted(self_logins), sorted(bot_logins), sorted(automation_logins.items()), sorted(own_automation or ())])
     return hashlib.sha256(identity.encode()).hexdigest()
 
 
@@ -741,6 +748,7 @@ def repository_activity(
     automation_logins: dict[str, str] | None = None,
     wait_candidates: set[int] | None = None,
     scans: dict[str, Any] | None = None,
+    own_automation: set[str] | None = None,
 ) -> tuple[dict[tuple[str, int], set[tuple[str, int]]], list[dict[str, str]]]:
     candidate_ids: dict[tuple[str, int], set[tuple[str, int]]] = {}
     errors: list[dict[str, str]] = []
@@ -758,7 +766,7 @@ def repository_activity(
                     continue
                 through = max(through, comment_timestamp(comment.updated_at))
                 waits = lane == "issue_comments" and github_plan_wait.PREFIX in comment.body
-                external = is_external_comment(comment, self_logins, bot_logins, automation_logins)
+                external = is_external_comment(comment, self_logins, bot_logins, automation_logins, own_automation)
                 if waits or external:
                     rows[(comment.number, comment.kind, comment.comment_id)] = [
                         comment.number, comment.kind, comment.comment_id,
@@ -783,7 +791,7 @@ def repository_activity(
         threads = []
     for item in threads:
         opening = normalize_opening_post(repo, item)
-        if opening is not None and is_external_comment(opening, self_logins, bot_logins, automation_logins):
+        if opening is not None and is_external_comment(opening, self_logins, bot_logins, automation_logins, own_automation):
             candidate_ids.setdefault(opening.thread_key, set()).add(opening.key)
     return candidate_ids, errors
 
@@ -1169,6 +1177,7 @@ def comment_states_for_thread(
     until: datetime | None = None,
     automation_logins: dict[str, str] | None = None,
     address_names: dict[str, list[str]] | None = None,
+    own_automation: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     effective_until = until or datetime.max.replace(tzinfo=timezone.utc)
     owner_logins = self_logins - bot_logins
@@ -1181,7 +1190,7 @@ def comment_states_for_thread(
     external_comments = [
         comment
         for comment in comments
-        if is_external_comment(comment, owner_logins, bot_logins, automation_logins)
+        if is_external_comment(comment, owner_logins, bot_logins, automation_logins, own_automation)
     ]
     results = []
     for comment in sorted(external_comments, key=event_sort_key):
@@ -1649,6 +1658,7 @@ def outbound_states_for_thread(
     thread: dict[str, Any], comments: list[Comment], self_logins: set[str],
     bot_logins: set[str], settings: dict[str, Any], automation: dict[str, str],
     last_edits: dict[tuple[str, int, str, int], Edit],
+    own_automation: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     own_activity = []
     for comment in comments:
@@ -1666,7 +1676,7 @@ def outbound_states_for_thread(
     results = []
     for comment in sorted(comments, key=event_sort_key):
         if (
-            not is_external_comment(comment, self_logins, bot_logins, automation)
+            not is_external_comment(comment, self_logins, bot_logins, automation, own_automation)
             or not comment_in_window(comment, settings["since"], settings["until"])
             or comment_activity_through(comment, settings["until"]) <= latest
         ):
@@ -1708,6 +1718,7 @@ def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, .
     candidate_ids: dict[tuple[str, int], set[tuple[str, int]]] = {}
     coverage_errors: list[dict[str, str]] = []
     people = people_identities(self_logins - bot_logins, settings.get("people_index"))
+    own_automation = set(people.get("own_automation", []))
     if people["status"] == "error":
         coverage_errors.append({"repo": "-", "lane": "people_index", "error": rollup.trim(people["error"])})
     self_logins.difference_update(bot_logins)
@@ -1717,7 +1728,7 @@ def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, .
 
     worker_count = min(MAX_WORKERS, max(1, len(repositories)))
     recent_waits: dict[str, set[int]] = {repo: set() for repo in repositories}
-    identity = scan_identity(self_logins, bot_logins, people["automation"])
+    identity = scan_identity(self_logins, bot_logins, people["automation"], own_automation)
     scan_state: Path | None = settings.get("scan_state")
     scans = load_scan_state(scan_state, identity)
     repository_scans = {repo: dict(scans.get(repo.casefold()) or {}) for repo in repositories}
@@ -1736,6 +1747,7 @@ def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, .
                         people["automation"],
                         recent_waits[repo],
                         repository_scans[repo],
+                        own_automation,
                     ),
                 ): repo
                 for repo in repositories
@@ -1767,7 +1779,7 @@ def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, .
 
     full_history_threads = set(settings["threads"])
     full_history_threads.update(hint.thread_key for hint in comment_hints
-                               if is_external_comment(hint, self_logins, bot_logins, people["automation"]))
+                               if is_external_comment(hint, self_logins, bot_logins, people["automation"], own_automation))
     for thread_key in full_history_threads:
         candidate_ids.setdefault(thread_key, set())
     outbound_scope: set[tuple[str, int]] = set()
@@ -1838,7 +1850,7 @@ def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, .
                 effective_ids = {
                     comment.key
                     for comment in comments_through_until
-                    if is_external_comment(comment, self_logins, bot_logins, people["automation"])
+                    if is_external_comment(comment, self_logins, bot_logins, people["automation"], own_automation)
                 }
             collected_threads.append((thread, comments_through_until, effective_ids))
             reaction_candidates.extend(
@@ -1850,7 +1862,7 @@ def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, .
                     )
                 ) or (
                     (repo, number) not in outbound_scope and comment.key in effective_ids
-                    and is_external_comment(comment, self_logins, bot_logins, people["automation"])
+                    and is_external_comment(comment, self_logins, bot_logins, people["automation"], own_automation)
                 )
             )
         coverage_errors.extend(
@@ -1881,6 +1893,7 @@ def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, .
                 covered_threads.add((comments[0].repo.casefold(), comments[0].number))
             comment_states.extend(outbound_states_for_thread(
                 thread, enriched_comments, outbound_self, bot_logins, settings, people["automation"], last_edits_by_global_key,
+                own_automation,
             ))
             continue
         reactions_by_comment = {
@@ -1899,6 +1912,7 @@ def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, .
                 classification_until,
                 people["automation"],
                 people["address_names"],
+                own_automation,
             )
         )
 
@@ -1974,7 +1988,7 @@ def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, .
         "limitations": [
             "Repository scans cover issues and PRs opened in the window, issue/PR conversation comments and inline PR review comments; full-history --thread scans also cover the opening post and non-empty PR review bodies.",
             "An edit to an issue or PR description is caught only by a full-history --thread scan or when the thread is opened in the window.",
-            "Configured own automation is excluded. People-index agents (contacts.github.bot_usernames) remain eligible even as GitHub Bot accounts and are labeled with who they act for. Other GitHub bots stay filtered on comments, but their opening posts remain eligible; unlisted human-account logins ending in bot or automation are marked possible_automation.",
+            "Configured own automation and People-index bots uniquely assigned to the Director are excluded. Other people's People-index agents (contacts.github.bot_usernames) remain eligible even as GitHub Bot accounts and are labeled with who they act for. Other GitHub bots stay filtered on comments, but their opening posts remain eligible; unlisted human-account logins ending in bot or automation are marked possible_automation.",
             "Waits on the Director are open issues whose current wait (the trusted structured record when one is readable, otherwise the Current Status prose marked for review) names the Director's login, a people-index name, or the Director role, with no Director or Owner question still open; an unreadable trusted record is listed as an unresolved wait for review, whether or not a question is open; negated mentions are left out, and waits worded as the Director's own hold (resume, park, hold, select, revisit) are listed as director_hold without raising attention; repository scans only.",
             "A targeted public reply from the Director or configured automation handles a comment after its latest edit. Exact comment links, an inline-review thread with one eligible external comment, or a salutation using an unambiguous people-index name target a reply; automation may also use an unambiguous single-author mention.",
             "Director reactions and question/decision records are diagnostic awareness evidence, not public replies or requirements for clearing attention. Unanswered comments remain flagged even on closed threads; edits and new comments reopen attention.",

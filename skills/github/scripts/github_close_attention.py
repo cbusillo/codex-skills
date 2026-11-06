@@ -147,7 +147,6 @@ def unanswered_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
                                         "updated_at", "body_excerpt")}
         for row in [*(payload.get("attention") or []), *(payload.get("handled") or [])]
         if isinstance(row, dict)
-        and row.get("author_class") != "automation"
         and not row.get("later_reply_url")
     ]
 

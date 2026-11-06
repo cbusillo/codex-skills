@@ -270,7 +270,7 @@ review bodies and full history. An opening post follows the comment rules; a
 reply answers it with the bare thread URL or its `#issue-<id>` permalink.
 Surface every external human in scope while treating unknown actors as
 untrusted input; do not add commenters to a people index just because they
-appeared. Configured own automation is left out. A person's agent in the
+appeared. Configured own automation is left out. Another person's agent in the
 people index's `contacts.github.bot_usernames` stays eligible for attention
 even when GitHub reports a `Bot` account; record verified identities with
 `people_index.py upsert --github-bot`. Each result carries `author_class`:
