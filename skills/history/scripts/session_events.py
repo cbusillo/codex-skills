@@ -62,7 +62,9 @@ def events_from_record(
     if not isinstance(record, dict):
         return
     record_type = str(record.get("type") or "")
-    payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+    payload = record.get("payload")
+    if not isinstance(payload, dict):
+        payload = {}
     if record_type == "session_meta":
         return
     if record_type in {"user", "assistant"} and "sessionId" in record and isinstance(record.get("message"), dict):

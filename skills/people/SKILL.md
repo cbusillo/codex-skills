@@ -129,9 +129,8 @@ an old alias stale without user or maintained-source confirmation.
 
 ## Artifact Review Workflow
 
-When `memory-distillation` or `rollout-friction` creates ignored local artifacts
-such as `.local/rollout-memory/<run-id>/`, `.local/scan-output/<run-id>/`,
-apply plans, reducer inputs, prompts, or reviewed batch results, use this skill
+When reviewing ignored local artifacts such as `.local/scan-output/<run-id>/`,
+plans, source notes, prompts, or review results, use this skill
 to review those artifacts for person facts before closeout if any artifact has
 `people_updates`, `people_resolver_smoke_checks`, or visible person names,
 handles, aliases, reviewer/assignee/manager fields, or contact/routing notes.
@@ -140,7 +139,7 @@ handles, aliases, reviewer/assignee/manager fields, or contact/routing notes.
    build search terms from each known person's id, display name, preferred
    reference, aliases, handles, bot aliases, and compact forms.
 2. Search the new local artifacts for every known form, not just the name that
-   appeared in the final reducer plan. For example, searching only `Rob Burnett`
+   appeared in the final plan. For example, searching only `Rob Burnett`
    can miss evidence that says `Burnett`, and searching only a handle can miss a
    full-name correction.
 3. Also inspect any artifact-level smoke-check lists such as
