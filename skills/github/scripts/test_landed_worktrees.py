@@ -369,8 +369,9 @@ class RepositoryTests(Fixture):
         grafts = Path(self.git(self.repo, "rev-parse", "--path-format=absolute", "--git-path", "info/grafts"))
         eligible = ("eligible", "pull_only", "amended", "retained_reflog", "signed_config", "upstream_only", "fork_only",
                     "detached_published", "fetched_snapshot", "graft_recovery", "same_name")
-        for cause in (*eligible, "dirty", "ignored", "unpublished", "unique_reflog", "branch_reflog", "in_use", "proof_unavailable",
-                      "detached_unique", "detached_stale"):
+        causes: tuple[str, ...] = (*eligible, "dirty", "ignored", "unpublished", "unique_reflog", "branch_reflog", "in_use",
+                                   "proof_unavailable", "detached_unique", "detached_stale")
+        for cause in causes:
             path = self.worktree(cause, lock=None)
             if cause == "same_name":
                 self.git(path, "tag", f"work/{cause}")
