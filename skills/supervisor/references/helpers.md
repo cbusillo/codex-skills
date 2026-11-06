@@ -1437,6 +1437,8 @@ stays UNKNOWN and preserves the worker. Completed native compaction, API-error
 messages and task/subagent list observations do not count as background work.
 A canceled background command needs its matching native error notification;
 a kill request alone cannot prove completion. Unfinished commands still block.
+Completed `search_web` calls use the existing completed-tool reader. A native
+async declaration still requires matching task-completion proof for any tool.
 Use `cd /absolute/repository && exec agy`
 so folder trust has an exact target. Under the same approved Developer and
 registered-worktree boundary as Claude, the shared atomic writer adds only that

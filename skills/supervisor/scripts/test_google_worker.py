@@ -320,18 +320,30 @@ runpy.run_path(sys.argv[0], run_name="__main__")
                             self.assertTrue(results[-1]["is_error"])
                     writer.execute("DELETE FROM steps WHERE idx>0")
                     writer.commit()
-                for tool in ("read_file", "unrecognized_background_tool"):
-                    call = protobuf({1: b"native-call", 2: tool.encode(), 3: b"{}"})
+                for tool, change in product(
+                    ("read_file", "search_web", "unrecognized_background_tool"),
+                    ("completed", "pending", "async", "child", "old_final"),
+                ):
+                    arguments = {"query": "fixture query", "domain": "example.invalid"} if tool == "search_web" else {}
+                    call = protobuf({1: b"native-call", 2: tool.encode(), 3: json.dumps(arguments).encode()})
                     tool_metadata = protobuf({1: protobuf({1: int(timestamp.timestamp())}), 4: call})
-                    tool_step = protobuf({1: 132, 4: 3, 5: tool_metadata, 140: protobuf({2: protobuf({1: b"native result"})})})
-                    writer.execute("INSERT INTO steps VALUES (1,132,3,0,?)", (tool_step,))
-                    writer.execute("INSERT INTO steps VALUES (2,15,3,0,?)", (response,))
+                    status = 2 if change == "pending" else 3
+                    step = {1: 132, 4: status, 5: tool_metadata, 140: protobuf({2: protobuf({1: b"native result"})})}
+                    if change == "async":
+                        background = json.loads((Path(__file__).parent / "fixtures/agy-command-background.json").read_text())
+                        declaration = fields(fields(bytes.fromhex(background["steps"][0]["step_payload_hex"]))[148])
+                        declaration[1] = f"{session}/task-1".encode()
+                        step[148] = protobuf(declaration)
+                    writer.execute("INSERT INTO steps VALUES (1,132,?,?,?)", (status, int(change == "child"), protobuf(step)))
+                    if change != "old_final":
+                        writer.execute("INSERT INTO steps VALUES (2,15,3,0,?)", (response,))
                     writer.commit()
-                    if tool == "read_file":
-                        self.assertTrue(session_closeout.ready(entry, "supervisor")["safe_verdict"])
-                    else:
-                        with self.assertRaises(ValueError):
-                            session_closeout.ready(entry, "supervisor")
+                    with self.subTest(tool=tool, change=change):
+                        if tool in {"read_file", "search_web"} and change == "completed":
+                            self.assertTrue(session_closeout.ready(entry, "supervisor")["safe_verdict"])
+                        else:
+                            with self.assertRaises(ValueError):
+                                session_closeout.ready(entry, "supervisor")
                     writer.execute("DELETE FROM steps WHERE idx>0")
                     writer.commit()
                 for fixture_name, change in product(
