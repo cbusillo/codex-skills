@@ -3,6 +3,10 @@ from __future__ import annotations
 import re
 from typing import Any
 
+ISSUE_REFERENCE = re.compile(
+    r"(?:https://github[.]com/([\w.-]+/[\w.-]+)/issues/|([\w.-]+/[\w.-]+)?#)([1-9]\d*)\b"
+)
+
 
 def pr_issue_reference(pull: dict[str, Any], number: int, *, repo: str,
                        local_references: bool = True, attestation: bool = False, record_kind: str = "issue",
@@ -39,8 +43,7 @@ def pr_issue_reference(pull: dict[str, Any], number: int, *, repo: str,
 def linked_issues(repo: str, pull: dict[str, Any]) -> list[tuple[str, int]]:
     title = pull.get("title") or ""
     text = title + "\n" + (pull.get("body") or "")
-    refs = [(match[1] or match[2] or repo, int(match[3])) for match in re.finditer(
-        r"(?:https://github[.]com/([\w.-]+/[\w.-]+)/issues/|([\w.-]+/[\w.-]+)?#)([1-9]\d*)\b", text)]
+    refs = [(match[1] or match[2] or repo, int(match[3])) for match in ISSUE_REFERENCE.finditer(text)]
     return [(target, issue) for target, issue in refs if pr_issue_reference(
         pull, issue, repo=target, local_references=target.casefold() == repo.casefold())
         or titled_qualified_reference(title, target, issue)]

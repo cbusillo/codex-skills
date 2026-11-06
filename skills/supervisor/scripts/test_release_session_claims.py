@@ -1874,17 +1874,12 @@ class ReleaseTests(unittest.TestCase):
     def test_discovery_finds_status_only_native_ownership(self):
         self.reader.paged_json.side_effect = lambda path, **_kw: [{"number": 9, "body": "Claimed by trial\nSession: source-session"}] if path.endswith("/issues") else []
         self.assertEqual(helper.discover(self.reader, "test", [self.entry], ["test/a"])[0], [("test/a", 9)])
-        self.assertTrue(helper.belongs_to_session(
-            "## Claim\nClaimed by trial\nSession: source-session\n## Current Status\nNext action: Continue", "source-session"))
-        self.assertTrue(helper.belongs_to_session(
-            "<details>\n## Current Status\nClaimed by trial\nSession: source-session\n</details>", "source-session"))
         for quoted in ("> Session: source-session", "```\nSession: source-session\n```",
                        "<blockquote>\nSession: source-session\n</blockquote>", "> Previous worker:\nSession: source-session"):
             for body in ("## Diagnosis\n" + quoted, "## Current Status\nNext actor: agent\n## Diagnosis\n" + quoted):
                 with self.subTest(body=body):
                     self.reader.paged_json.side_effect = lambda path, **_kw: [{"number": 9, "body": body}] if path.endswith("/issues") else []
                     self.assertEqual(helper.discover(self.reader, "test", [self.entry], ["test/a"])[0], [])
-                    self.assertFalse(helper.belongs_to_session(body, "source-session"))
 
     def test_legacy_and_status_only_sources_are_reported_instead_of_skipped(self):
         for field in ("Session: source-session", "Session ID: source-session"):
@@ -1896,6 +1891,22 @@ class ReleaseTests(unittest.TestCase):
         self.reader.get_json.return_value["body"] = "Claimed by trial\nSession: source-session"
         report = helper.release_session(self.reader, self.entry, ACTOR, "supervisor", [("test/a", 1)], self.root, False)
         self.assertIn("status-only", report["issue_refusals"][0]["error"])
+
+    def test_discovery_attributes_sessions_to_owning_records(self) -> None:
+        body = (
+            "## Current Status\nNext actor: agent:onboarding-session\n\n"
+            "Ingress https://github.com/test/b/issues/2 is independently owned by edge-worker, native source-session.\n\n"
+            + github_plan_claim.marker({**SOURCE, "session": "onboarding-session"})
+        )
+        self.reader.paged_json.side_effect = lambda path, **_kw: [{"number": 9, "body": body}] if path.endswith("/issues") else []
+        self.assertEqual(helper.discover(self.reader, "test", [self.entry], ["test/a"])[0], [])
+
+    def test_discovery_refuses_an_unbound_canonical_claim_record(self) -> None:
+        self.reader.paged_json.side_effect = lambda path, **_kw: [] if path.endswith("/issues") else [
+            {"body": "Waiting for source-session to finish its separate work", "issue_url": "https://api.github.com/repos/other/repo/issues/9"}
+        ]
+        with self.assertRaises(ValueError):
+            helper.discover(self.reader, "test", [self.entry], ["test/a"])
 
     def test_foreign_issue_does_not_block_independent_claim_release(self):
         foreign = {**self.source, "user": {"login": "human"}}
