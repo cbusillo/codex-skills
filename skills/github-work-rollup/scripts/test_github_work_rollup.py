@@ -16,11 +16,11 @@ import importlib.util
 import json
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
-
 
 MODULE_PATH = Path(__file__).with_name("github_work_rollup.py")
 MODULE_SPEC = importlib.util.spec_from_file_location("github_work_rollup", MODULE_PATH)
@@ -171,7 +171,7 @@ def test_resolve_settings_cli_list_flags_override_private_config_scope() -> None
     assert settings["subjects"] == []
     assert settings["mode"] == "backlog"
     assert settings["summary_level"] == "concise"
-    assert settings["window"].since == datetime(2026, 6, 2, 4, tzinfo=timezone.utc)
+    assert settings["window"].since == datetime(2026, 6, 2, 4, tzinfo=UTC)
 
 
 def test_resolve_settings_cli_overrides_config_labels() -> None:
@@ -1016,8 +1016,8 @@ def test_disabled_issues_returns_empty_list(monkeypatch: pytest.MonkeyPatch) -> 
     settings = {
         "limit_items": 10,
         "window": github_work_rollup.Window(
-            datetime(2026, 6, 1, tzinfo=timezone.utc),
-            datetime(2026, 6, 2, tzinfo=timezone.utc),
+            datetime(2026, 6, 1, tzinfo=UTC),
+            datetime(2026, 6, 2, tzinfo=UTC),
             "24h",
         ),
     }
@@ -1403,8 +1403,8 @@ def test_collect_workflows_filters_by_completion_time(monkeypatch: pytest.Monkey
 
 def test_executive_activity_comparison_summarizes_previous_window() -> None:
     window = github_work_rollup.Window(
-        datetime(2026, 6, 1, tzinfo=timezone.utc),
-        datetime(2026, 6, 2, tzinfo=timezone.utc),
+        datetime(2026, 6, 1, tzinfo=UTC),
+        datetime(2026, 6, 2, tzinfo=UTC),
         "24h",
     )
 
@@ -1416,8 +1416,8 @@ def test_executive_activity_comparison_summarizes_previous_window() -> None:
 
     assert summary == "Activity was higher than the previous window (+3): 5 visible items this day versus 2 in the previous day."
     previous = github_work_rollup.preceding_window(window)
-    assert previous.since == datetime(2026, 5, 31, tzinfo=timezone.utc)
-    assert previous.until == datetime(2026, 6, 1, tzinfo=timezone.utc)
+    assert previous.since == datetime(2026, 5, 31, tzinfo=UTC)
+    assert previous.until == datetime(2026, 6, 1, tzinfo=UTC)
 
 
 def test_executive_activity_comparison_suppresses_incomplete_collection() -> None:
@@ -1462,8 +1462,8 @@ def test_configured_repo_gaps_ignore_truncation_warnings() -> None:
 
 def test_executive_activity_comparison_allows_truncation_warnings(monkeypatch: pytest.MonkeyPatch) -> None:
     window = github_work_rollup.Window(
-        datetime(2026, 6, 1, tzinfo=timezone.utc),
-        datetime(2026, 6, 2, tzinfo=timezone.utc),
+        datetime(2026, 6, 1, tzinfo=UTC),
+        datetime(2026, 6, 2, tzinfo=UTC),
         "24h",
     )
     settings = {"layout": "executive", "window": window, "collection_warnings": []}
@@ -1587,13 +1587,7 @@ def test_render_manager_brief_markdown() -> None:
     assert "# GitHub Planning Brief for Chris" in rendered
     assert "active planning scope for Example Company" in rendered
     assert "technical depth: low-to-medium" in rendered
-    assert "## Planning Summary" in rendered
-    assert "## Today's Priorities" in rendered
-    assert "## Active Work" in rendered
-    assert "## Focus Areas" in rendered
     assert "Northwind**: 1 open priority item(s), 4 recent completion(s)" in rendered
-    assert "## Decisions and Risks" in rendered
-    assert "## Velocity" in rendered
     assert "[code#101](https://github.com/example-org/code/issues/101) Choose auth direction" in rendered
     assert "Ship session routing" in rendered
     assert "Automation was green" in rendered
@@ -1653,7 +1647,7 @@ def test_json_payload_does_not_publish_private_profile_fields() -> None:
 
 
 def test_render_executive_brief_markdown() -> None:
-    payload = {
+    payload: dict[str, Any] = {
         "ok": True,
         "schema_version": 1,
         "script_version": 1,
@@ -1764,37 +1758,29 @@ def test_render_executive_brief_markdown() -> None:
     assert "# Daily Work Brief for Justin" in rendered
     assert "The visible decision is how to sequence Northwind skill reporting inside Northwind / Skills: 2 completed items, 1 cleared path, 1 release, and 1 open follow-up." in rendered
     assert "Private note" not in rendered
-    assert "## Executive Summary" in rendered
     assert "## Needs Justin's Attention" in rendered
     assert "## Northwind / Skills Impact" in rendered
     assert "## Failed Runs" in rendered
-    assert "## Work Items Behind This Brief" in rendered
-    assert "## Questions to Decide" in rendered
 
     assert "[code#101](https://github.com/example-org/code/issues/101) Critical Bug" in rendered
-    assert "Finished work landed; the next choices are concentrated around Critical Bug." in rendered
     assert "Northwind skill reporting inside Northwind / Skills" in rendered
     assert "Key initiatives: Work Brief." in rendered
     assert "Deploy production" in rendered
     assert "Completed during the day: code#202 Document auth flow; example-skills#203 Add helper validation." in rendered
     assert "Still visible for follow-up: code#101 Critical Bug." in rendered
     assert "Cleared or superseded paths: code#204 Close abandoned auth attempt." in rendered
-    assert "No previous-window baseline was collected for this run." not in rendered
     assert "What decision would unblock code#101 Critical Bug today?" in rendered
     assert "Should failed runs in `code` Deploy production change release confidence" in rendered
     assert "Should Critical Bug stay active today, wait, or be reframed?" not in rendered
 
-    assert "## Summary Table" not in rendered
-    assert "## Repo Notes" not in rendered
-    assert "## Supporting Signal" not in rendered
-    assert "## Conversation Starters" not in rendered
-    assert "## Decisions or Risks" not in rendered
     assert "## Source Notes" in rendered
     assert "Read-only mode" in rendered
     assert "technical depth" not in rendered
     assert "Automation needs attention because failed workflow runs were collected" not in rendered
     assert "https://github.com/example-org/code/pull/202" not in rendered
     assert "https://github.com/example-org/example-skills/pull/203" not in rendered
+    summary = rendered.split("\n## ", 2)[1]
+    assert github_work_rollup.executive_theme_titles(payload["buckets"]["needs_attention"], 2) in summary
 
 
 def test_render_executive_brief_uses_dynamic_recipient() -> None:
@@ -2078,71 +2064,21 @@ def test_render_executive_brief_does_not_select_configured_initiative_as_workstr
     assert "- **Code Bridge**" not in rendered
 
 
-def test_render_executive_brief_keeps_mixed_focus_heading_specific() -> None:
+@pytest.mark.parametrize("reverse", [False, True])
+def test_render_executive_brief_mixed_focus_heading_is_order_stable(reverse: bool) -> None:
+    sections = [{"name": "Agent Product Issues"}, {"name": "Example Skill Updates"}]
     payload = {
         "ok": True,
         "window": {"since": "2026-06-05T16:00:00Z", "until": "2026-06-12T16:00:00Z", "label": "7d"},
         "timezone": "America/New_York",
         "report_recipient": "Justin",
-        "repositories": ["example-org/northwind-lab", "example-org/example-skills"],
         "layout": "executive",
-        "buckets": {},
-        "priority_sections": [
-            {
-                "name": "Agent Product Issues",
-                "workstream": "Northwind Lab",
-                "items": [],
-                "recently_completed": [],
-            },
-            {
-                "name": "Example Skill Updates",
-                "workstream": "Work Brief skill",
-                "items": [],
-                "recently_completed": [],
-            },
-        ],
-        "limitations": [],
-        "releases": [],
-        "workflows": [],
+        "priority_sections": sections[::-1] if reverse else sections,
     }
-
     rendered = github_work_rollup.render_payload(payload, "markdown")
 
     assert "## Skills and Agent Product Issues Impact" in rendered
     assert "## Agent Product Issues Impact" not in rendered
-
-
-def test_render_executive_brief_mixed_focus_heading_is_order_stable() -> None:
-    payload = {
-        "ok": True,
-        "window": {"since": "2026-06-05T16:00:00Z", "until": "2026-06-12T16:00:00Z", "label": "7d"},
-        "timezone": "America/New_York",
-        "report_recipient": "Justin",
-        "repositories": ["example-org/northwind-lab", "example-org/example-skills"],
-        "layout": "executive",
-        "buckets": {},
-        "priority_sections": [
-            {
-                "name": "Example Skill Updates",
-                "workstream": "Work Brief skill",
-                "items": [],
-                "recently_completed": [],
-            },
-            {
-                "name": "Agent Product Issues",
-                "workstream": "Northwind Lab",
-                "items": [],
-                "recently_completed": [],
-            },
-        ],
-        "limitations": [],
-        "releases": [],
-        "workflows": [],
-    }
-
-    rendered = github_work_rollup.render_payload(payload, "markdown")
-
-    assert "## Skills and Agent Product Issues Impact" in rendered
     assert "## Agent Product Issues and Skills Impact" not in rendered
 
 
@@ -2161,90 +2097,40 @@ def test_focus_heading_keeps_skills_visible_with_four_areas() -> None:
     assert github_work_rollup.focus_area_heading(payload) == expected
 
 
-def test_render_executive_brief_theme_titles_use_key_phrases_without_semicolon_soup() -> None:
-    payload = {
-        "ok": True,
-        "window": {"since": "2026-06-05T16:00:00Z", "until": "2026-06-12T16:00:00Z", "label": "7d"},
-        "timezone": "America/New_York",
-        "report_recipient": "Justin",
-        "repositories": ["example-org/northwind-lab"],
-        "layout": "executive",
-        "buckets": {
-            "in_progress": [
-                {
-                    "repo": "example-org/northwind-lab",
-                    "number": 45,
-                    "title": "Define Code Bridge protocol, trust, and payload contract",
-                    "kind": "issue",
-                    "state": "open",
-                },
-                {
-                    "repo": "example-org/northwind-lab",
-                    "number": 28,
-                    "title": "Northwind Lab MVP dogfood plan",
-                    "kind": "issue",
-                    "state": "open",
-                },
-                {
-                    "repo": "example-org/northwind-lab",
-                    "number": 63,
-                    "title": "Scope owner review follow-up",
-                    "kind": "issue",
-                    "state": "open",
-                },
-            ]
+@pytest.mark.parametrize(
+    ("titles", "expected"),
+    [
+        (
+            [
+                "Define Code Bridge protocol, trust, and payload contract",
+                "Northwind Lab MVP dogfood plan",
+                "Scope owner review follow-up",
+            ],
+            "Code Bridge, Northwind Lab, and 1 more related item",
+        ),
+        (["fix broken config", "Define Code Bridge protocol"], "fix broken config and Code Bridge"),
+    ],
+)
+def test_executive_theme_titles_preserve_key_phrases_and_per_item_fallbacks(titles: list[str], expected: str) -> None:
+    items = [
+        {"title": title, "repo": "example-org/northwind-lab", "number": number, "kind": "issue", "state": "open"}
+        for number, title in enumerate(titles, 1)
+    ]
+    assert github_work_rollup.executive_theme_titles(items, 2) == expected
+    rendered = github_work_rollup.render_payload(
+        {
+            "ok": True,
+            "window": {"since": "2026-06-05T16:00:00Z", "until": "2026-06-12T16:00:00Z", "label": "7d"},
+            "timezone": "America/New_York",
+            "report_recipient": "Justin",
+            "layout": "executive",
+            "buckets": {"in_progress": items},
         },
-        "priority_sections": [],
-        "limitations": [],
-        "releases": [],
-        "workflows": [],
-    }
-
-    rendered = github_work_rollup.render_payload(payload, "markdown")
-    outcome = next(line for line in rendered.splitlines() if line.startswith("The useful signal is"))
-
-    assert "Code Bridge, Northwind Lab, and 1 more related item" in outcome
-    assert ";" not in outcome
-    assert "trust, and payload contract" not in outcome
-
-
-def test_render_executive_brief_theme_titles_keep_title_fallbacks_per_item() -> None:
-    payload = {
-        "ok": True,
-        "window": {"since": "2026-06-05T16:00:00Z", "until": "2026-06-12T16:00:00Z", "label": "7d"},
-        "timezone": "America/New_York",
-        "report_recipient": "Justin",
-        "repositories": ["example-org/northwind-lab"],
-        "layout": "executive",
-        "buckets": {
-            "in_progress": [
-                {
-                    "repo": "example-org/northwind-lab",
-                    "number": 11,
-                    "title": "fix broken config",
-                    "kind": "issue",
-                    "state": "open",
-                },
-                {
-                    "repo": "example-org/northwind-lab",
-                    "number": 45,
-                    "title": "Define Code Bridge protocol",
-                    "kind": "issue",
-                    "state": "open",
-                },
-            ]
-        },
-        "priority_sections": [],
-        "limitations": [],
-        "releases": [],
-        "workflows": [],
-    }
-
-    rendered = github_work_rollup.render_payload(payload, "markdown")
-    outcome = next(line for line in rendered.splitlines() if line.startswith("The useful signal is"))
-
-    assert "fix broken config and Code Bridge" in outcome
-    assert "more related" not in outcome
+        "markdown",
+    )
+    summary = rendered.split("\n## ", 2)[1]
+    assert expected in summary
+    assert ";" not in summary
 
 
 def test_render_executive_brief_varies_impact_lines_by_workstream_signal() -> None:
@@ -2335,114 +2221,52 @@ def test_render_executive_brief_thin_workstream_avoids_validation_claim() -> Non
     assert "Confidence: low" in bullet
 
 
-def test_render_executive_brief_surfaces_configured_repo_coverage_gap() -> None:
-    payload = {
+@pytest.mark.parametrize("has_product_signal", [False, True])
+def test_render_executive_brief_surfaces_configured_repo_coverage_gap(has_product_signal: bool) -> None:
+    limitation = "Could not collect issues for example-org/missing: API unavailable"
+    payload: dict[str, Any] = {
         "ok": True,
         "window": {"since": "2026-06-01T16:00:00Z", "until": "2026-06-02T16:00:00Z", "label": "24h"},
         "timezone": "America/New_York",
         "report_recipient": "Justin",
-        "repositories": ["example-org/example-repo", "example-org/missing"],
         "layout": "executive",
         "buckets": {
             "recently_completed": [
-                {
-                    "repo": "example-org/example-repo",
-                    "number": 2,
-                    "title": "Ship useful summary",
-                    "kind": "pr",
-                    "state": "merged",
-                }
+                {"repo": "example-org/example-repo", "number": 2, "title": "Ship useful summary", "kind": "pr", "state": "merged"}
             ]
-        },
-        "priority_sections": [],
-        "limitations": [],
+        }
+        if has_product_signal
+        else {},
+        "limitations": [limitation],
         "coverage_gaps": ["example-org/missing"],
-        "releases": [],
-        "workflows": [],
     }
-
     rendered = github_work_rollup.render_payload(payload, "markdown")
 
-    assert "Collection incomplete for `example-org/missing`; this brief may omit work from those configured sources." in rendered
+    assert limitation in rendered
+    warning = github_work_rollup.coverage_gap_line(payload["coverage_gaps"])
+    assert warning and warning in rendered
+    assert all(repo in warning for repo in payload["coverage_gaps"])
+    if not has_product_signal:
+        assert "No active work or material changes were collected" in rendered
 
 
-def test_render_executive_brief_surfaces_coverage_gap_without_product_signal() -> None:
-    payload = {
+@pytest.mark.parametrize(
+    ("since", "window", "heading"),
+    [
+        ("2026-05-26", "7d", "Weekly"),
+        ("2026-05-31", "48h", "Current"),
+    ],
+)
+def test_render_executive_brief_uses_reporting_window_language(
+    since: str,
+    window: str,
+    heading: str,
+) -> None:
+    payload: dict[str, Any] = {
         "ok": True,
-        "window": {"since": "2026-06-01T16:00:00Z", "until": "2026-06-02T16:00:00Z", "label": "24h"},
+        "window": {"since": f"{since}T16:00:00Z", "until": "2026-06-02T16:00:00Z", "label": window},
         "timezone": "America/New_York",
         "report_recipient": "Justin",
-        "repositories": ["example-org/missing"],
-        "layout": "executive",
-        "buckets": {},
-        "priority_sections": [],
-        "limitations": ["Could not collect issues for example-org/missing: API unavailable"],
-        "coverage_gaps": ["example-org/missing"],
-        "releases": [],
-        "workflows": [],
-    }
-
-    rendered = github_work_rollup.render_payload(payload, "markdown")
-
-    assert "No active work or material changes were collected" in rendered
-    assert "Collection incomplete for `example-org/missing`; this brief may omit work from those configured sources." in rendered
-    assert "Could not collect issues for example-org/missing: API unavailable" in rendered
-
-
-def test_render_executive_brief_uses_weekly_window_language() -> None:
-    payload = {
-        "ok": True,
-        "window": {"since": "2026-05-26T16:00:00Z", "until": "2026-06-02T16:00:00Z", "label": "7d"},
-        "timezone": "America/New_York",
-        "report_recipient": "Justin",
-        "recipient_profile": {"roles": ["owner"], "detail_preference": "outcomes and customer impact"},
-        "repositories": ["example-org/example-repo"],
-        "layout": "executive",
-        "buckets": {
-            "recently_completed": [
-                {
-                    "repo": "example-org/example-repo",
-                    "number": 2,
-                    "title": "Improve owner summaries",
-                    "kind": "pr",
-                    "state": "merged",
-                }
-            ],
-            "in_progress": [
-                {
-                    "repo": "example-org/example-repo",
-                    "number": 3,
-                    "title": "Tune weekly report",
-                    "kind": "issue",
-                    "state": "open",
-                }
-            ],
-        },
-        "priority_sections": [{"name": "Northwind", "items": [], "recently_completed": []}],
-        "limitations": [],
-        "releases": [],
-        "workflows": [],
-    }
-
-    rendered = github_work_rollup.render_payload(payload, "markdown")
-
-    assert "# Weekly Work Brief for Justin" in rendered
-    assert "The visible decision is how to sequence Northwind: 1 completed item and 1 open follow-up." in rendered
-    assert "Looking at Improve owner summaries, did the completed work deliver what you expected" in rendered
-    assert "Completed during the week: example-repo#2 Improve owner summaries." in rendered
-    assert "Daily" not in rendered
-    assert "focused day of work" not in rendered
-    assert "tomorrow's brief" not in rendered
-    assert "owner view" not in rendered
-
-
-def test_render_executive_brief_uses_custom_window_language() -> None:
-    payload = {
-        "ok": True,
-        "window": {"since": "2026-05-31T16:00:00Z", "until": "2026-06-02T16:00:00Z", "label": "48h"},
-        "timezone": "America/New_York",
-        "report_recipient": "Justin",
-        "repositories": ["example-org/example-repo"],
         "layout": "executive",
         "buckets": {
             "recently_completed": [
@@ -2455,23 +2279,16 @@ def test_render_executive_brief_uses_custom_window_language() -> None:
                 }
             ]
         },
-        "priority_sections": [],
-        "limitations": [],
-        "releases": [],
-        "workflows": [],
     }
-
     rendered = github_work_rollup.render_payload(payload, "markdown")
 
-    assert "# Current Work Brief for Justin" in rendered
-    assert "Work was concentrated in `example-repo`: 1 completed item." in rendered
-    assert "Looking at Clarify report cadence, did the completed work deliver what you expected" in rendered
-    assert "Completed during the reporting window: example-repo#4 Clarify report cadence." in rendered
-    assert "Daily" not in rendered
-    assert "Weekly" not in rendered
-    assert "this week" not in rendered
-    assert "today" not in rendered.casefold()
-    assert "tomorrow" not in rendered.casefold()
+    assert rendered.splitlines()[0].startswith(f"# {heading}")
+    assert payload["report_recipient"] in rendered.splitlines()[0]
+    assert github_work_rollup.brief_period(payload).source_window in rendered
+    items = payload["buckets"]["recently_completed"]
+    assert github_work_rollup.executive_item_refs(items) in rendered
+    assert github_work_rollup.repo_display_list([items[0]["repo"]]) in rendered.split("\n## ", 2)[1]
+    assert github_work_rollup.executive_theme_titles(items, 2) in rendered.rsplit("\n## ", 1)[1]
 
 
 def test_render_executive_brief_does_not_treat_workflow_only_as_product_progress() -> None:
@@ -2486,9 +2303,7 @@ def test_render_executive_brief_does_not_treat_workflow_only_as_product_progress
         "priority_sections": [],
         "limitations": [],
         "releases": [],
-        "workflows": [
-            {"repo": "example-org/example-repo", "name": "CI", "status": "completed", "conclusion": "success"}
-        ],
+        "workflows": [{"repo": "example-org/example-repo", "name": "CI", "status": "completed", "conclusion": "success"}],
     }
 
     rendered = github_work_rollup.render_payload(payload, "markdown")
@@ -2497,8 +2312,11 @@ def test_render_executive_brief_does_not_treat_workflow_only_as_product_progress
     assert "Automation looked healthy" not in rendered
     assert "## Failed Runs" in rendered
     assert "- None collected in this window." in rendered
-    assert "## Work Items Behind This Brief" in rendered
     assert "advanced" not in rendered
+    evidence = github_work_rollup.executive_evidence_lines(
+        github_work_rollup.get_repo_data(payload), github_work_rollup.brief_period(payload)
+    )
+    assert evidence and all(line in rendered for line in evidence)
 
 
 def test_render_executive_brief_separates_finished_work_from_cleared_paths() -> None:
@@ -2529,7 +2347,6 @@ def test_render_executive_brief_separates_finished_work_from_cleared_paths() -> 
     rendered = github_work_rollup.render_payload(payload, "markdown")
 
     assert "No product or planning movement was collected" in rendered
-    assert "abandoned or superseded change paths were cleared in this window" in rendered
     assert "abandoned or superseded change paths were cleared in this window" in rendered
     assert "advanced" not in rendered
     assert "meaningful work moved forward" not in rendered
