@@ -28,6 +28,7 @@ from urllib.parse import urlencode
 import dev_worktree
 import github_plan_claim
 import github_plan_release
+import published_history
 
 ANY_CLAIM = {"worker": "", "session": "", "branch": "", "claimed_at": ""}
 NO_WORKTREES = {"worktrees": []}
@@ -169,6 +170,13 @@ def delete_merged_branch(checkout: Path, branch: str | None, head: str) -> str:
     return f"deleted merged local branch {branch}" if result.returncode == 0 else "local branch kept: tip changed or deletion failed"
 
 
+def publication_git(path: Path | str, *args: str, input_text: str | None = None) -> str:
+    result = git(Path(path), "--no-replace-objects", *args, input_text=input_text)
+    if result.returncode:
+        raise published_history.PublicationError("publication evidence unavailable")
+    return result.stdout.strip()
+
+
 def portable_retire(path: Path, *, dry_run: bool) -> subprocess.CompletedProcess[str]:
     def kept(reason: str) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess([], 1, "", f"{reason}; follow work-closeout before retrying")
@@ -179,30 +187,9 @@ def portable_retire(path: Path, *, dry_run: bool) -> subprocess.CompletedProcess
     try:
         head = git(path, "rev-parse", "HEAD").stdout.strip()
         branch = git(path, "symbolic-ref", "--short", "-q", "HEAD").stdout.strip() or None
-        history = git(path, "--no-replace-objects", "rev-list", "--walk-reflogs", "--no-commit-header", "--format=%H",
-                      "HEAD", *([f"refs/heads/{branch}"] if branch else []))
-        remote = git(path, "ls-remote", "origin", "refs/heads/*", "refs/tags/*", "refs/pull/*/head")
-        if not head or history.returncode or remote.returncode or not remote.stdout.strip():
-            return kept("live publication or reflog evidence unavailable")
-        tips = [line.split()[0] for line in remote.stdout.splitlines()]
-        objects = git(path, "cat-file", "--batch-check=%(objectname) %(objecttype)", input_text="\n".join(tips) + "\n")
-        available = [line.split()[0] for line in objects.stdout.splitlines() if line.split()[-1] in {"commit", "tag"}]
-        unpublished = git(path, "--no-replace-objects", "rev-list", "--no-commit-header", "--format=%H %T", "--stdin",
-                          input_text="\n".join([head, *history.stdout.split(), *(f"^{tip}" for tip in available)]) + "\n")
-        if objects.returncode or unpublished.returncode:
-            return kept("publication evidence unavailable")
-        snapshots = dict(line.split() for line in unpublished.stdout.splitlines())
-        if head in snapshots:
-            return kept("HEAD history is unpublished")
-        if snapshots:
-            preserved = git(path, "--no-replace-objects", "rev-list", "--no-commit-header", "--format=%T",
-                            head, "--branches", "--tags", *available)
-            if preserved.returncode:
-                return kept("retained snapshot evidence unavailable")
-            if set(snapshots.values()) - set(preserved.stdout.split()):
-                return kept("unique reflog content is unpublished; preserve it on a branch first")
-    except subprocess.TimeoutExpired:
-        return kept("live publication or reflog read timed out")
+        published_history.check_retirement(path, publication_git)
+    except (published_history.PublicationError, OSError, subprocess.TimeoutExpired) as exc:
+        return kept(str(exc))
     try:
         if not has_no_live_users(path, directory=True):
             return kept("worktree is in use or live-use proof is incomplete")

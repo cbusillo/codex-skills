@@ -242,14 +242,14 @@ class CleanupContracts(unittest.TestCase):
         selected, omitted = self.many_refs()
         self.private_files(self.worktree / "out")
         (self.worktree / "local.txt").write_text("local-only work\n")
-        original = cleanup_git.git
+        original = cleanup_git.published_history.ref_coverage
 
-        def budgeted_git(repo, *args, **kwargs):
-            if args[:2] == ("merge-base", "--is-ancestor") and args[2] != selected:
+        def budgeted_coverage(repo, oid, *args, **kwargs):
+            if oid != selected:
                 raise cleanup.ProbeError("unselected_ancestry_exceeds_budget")
-            return original(repo, *args, **kwargs)
+            return original(repo, oid, *args, **kwargs)
 
-        with patch.object(cleanup_git, "git", budgeted_git):
+        with patch.object(cleanup_git.published_history, "ref_coverage", budgeted_coverage):
             report = self.inventory(self.worktree)
             self.assertTrue(report["complete"], report["repository"])
             self.assertTrue(report["git_stable"])
@@ -568,6 +568,13 @@ class CleanupContracts(unittest.TestCase):
         result = self.inventory()
         self.assertFalse(result["complete"])
         self.assertEqual(result["repository"]["remotes"][0]["coverage"], "unavailable")
+
+    def test_self_referential_remote_cannot_clear_unpublished_history(self):
+        run_git(self.repo, "remote", "set-url", "origin", str(self.repo))
+        report = self.inventory(self.worktree)
+        self.assertFalse(report["complete"])
+        self.assertEqual(report["repository"]["ref_coverage"]["refs/heads/work/fixture"]["state"], "unknown")
+        self.assertFalse(report["policy"]["may_delete"])
 
     def test_remote_urls_and_errors_do_not_echo_credentials(self):
         credentialed_url = "https://" + "synthetic:" + FIXTURE_MARKER + "@example.invalid/repo"

@@ -8,10 +8,15 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
 from cleanup_probe import ProbeError, command, signature, tag
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
+import published_history
 
 UNSAFE_ENV = {"GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
               "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
@@ -133,20 +138,12 @@ def snapshot(repo: str, key: bytes, remote_probe: bool = True,
                   "coverage": "excluded" if not remote_probe else "unavailable"}
         if remote_probe:
             try:
-                code, output = git(root, "ls-remote", "--symref", "--", name,
-                                   "HEAD", "refs/heads/*", "refs/tags/*", check=False)
-                if code == 0:
-                    advertised = {}
-                    for line in output.splitlines():
-                        value, _, ref = line.partition(b"\t")
-                        if value.startswith(b"ref: ") and ref == b"HEAD":
-                            if name == "origin" or ("origin" not in names and len(names) == 1):
-                                default_branch = os.fsdecode(value[5:]).removeprefix("refs/heads/")
-                        elif re.fullmatch(rb"[0-9a-f]{40,64}", value):
-                            advertised[os.fsdecode(ref)] = os.fsdecode(value)
-                    remote.update(coverage="completed", refs=advertised)
-                    live_tips.update({f"{name}:{ref}": oid for ref, oid in advertised.items()})
-            except ProbeError as exc:
+                advertised, default = published_history.advertisement(root, name)
+                if name == "origin" or ("origin" not in names and len(names) == 1):
+                    default_branch = default
+                remote.update(coverage="completed", refs=advertised)
+                live_tips.update({f"{name}:{ref}": oid for ref, oid in advertised.items()})
+            except (published_history.PublicationError, OSError, subprocess.TimeoutExpired) as exc:
                 remote["error"] = str(exc)
         remotes.append(remote)
     worktrees = []
@@ -174,17 +171,10 @@ def snapshot(repo: str, key: bytes, remote_probe: bool = True,
         if scoped and name not in selected_branches:
             coverage[name] = {"state": "unknown", "method": "excluded_explicit_roots", "remote_ref": None}
             continue
-        covered = next((ref for ref, tip in live_tips.items() if tip == oid), None)
-        method = "exact_advertisement" if covered else "unknown"
-        if not covered and name.startswith("refs/heads/"):
-            for ref, tip in live_tips.items():
-                if ":refs/heads/" not in ref:
-                    continue
-                code, _ = git(root, "merge-base", "--is-ancestor", oid, tip, check=False)
-                if code == 0:
-                    covered, method = ref, "ancestor_of_live_tip"
-                    break
-        coverage[name] = {"state": "covered" if covered else "unknown", "method": method, "remote_ref": covered}
+        try:
+            coverage[name] = published_history.ref_coverage(root, oid, live_tips, ancestors=name.startswith("refs/heads/"))
+        except (published_history.PublicationError, OSError, subprocess.TimeoutExpired):
+            coverage[name] = {"state": "unknown", "method": "unknown", "remote_ref": None}
     stash_code, stash_data = git(root, "rev-list", "--walk-reflogs", "--no-commit-header", "--format=%H", "refs/stash", check=False)
     if stash_code and "refs/stash" in refs:
         raise ProbeError("stash_evidence_unavailable")

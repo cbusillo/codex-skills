@@ -366,7 +366,7 @@ class RepositoryTests(Fixture):
 
     def test_portable_retirement_keeps_private_or_unpublished_work_and_live_use(self) -> None:
         run = subprocess.run
-        eligible = ("eligible", "pull_only", "amended", "retained_reflog", "signed_config")
+        eligible = ("eligible", "pull_only", "amended", "retained_reflog", "signed_config", "upstream_only", "fork_only")
         for cause in (*eligible, "dirty", "ignored", "unpublished", "unique_reflog", "branch_reflog", "in_use", "proof_unavailable"):
             path = self.worktree(cause, lock=None)
             if cause == "dirty":
@@ -382,6 +382,13 @@ class RepositoryTests(Fixture):
             elif cause == "pull_only":
                 self.commit(path, "Squashed source")
                 self.git(path, "push", "origin", "HEAD:refs/pull/7/head")
+            elif cause in {"upstream_only", "fork_only"}:
+                remote = self.base / f"{cause}.git"
+                self.git(self.repo, "init", "--bare", str(remote))
+                name = "upstream" if cause == "upstream_only" else "fork"
+                self.git(path, "remote", "add", name, str(remote))
+                self.commit(path, "Published outside origin")
+                self.git(path, "push", "--set-upstream", name, f"HEAD:work/{cause}")
             elif cause == "signed_config":
                 verifier = self.base / "verify-signature"
                 verifier.write_text("#!/bin/sh\necho fixture verification >&2\nexit 1\n")

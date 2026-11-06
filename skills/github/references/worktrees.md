@@ -201,7 +201,11 @@ are kept with reasons. A commit GitHub explicitly reports as missing is kept as
 an unpushed commit; other GitHub failures remain unavailable evidence. The host command still owns volume, publication,
 ignored-file, live-use and IDE checks. No lock is rewritten or bypassed.
 
-Portable unlocked trees require live origin publication of HEAD and its reachable commits.
+The catalog's [publication reader](../scripts/published_history.py) supplies
+live publication evidence for retirement and cleanup inventories. Portable and
+managed-host retirement accept origin, upstream and the branch's configured
+remote, including published tags and PR heads. Tracking refs alone do not count;
+local remotes must have independent, complete object storage.
 Reflog-only commits may be superseded when their complete file snapshots remain
 reachable from HEAD, retained local branches/tags or published and fetched history. Unique
 reflog content keeps the tree until it is preserved on a branch or published;
