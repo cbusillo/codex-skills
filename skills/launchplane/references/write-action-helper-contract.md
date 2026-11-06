@@ -817,14 +817,19 @@ installed local helper bindings.
   changes DNS, proxy settings, credentials or runtime records to make that path.
   No redirect or alternate identity is followed. Find the current private
   ingress address in the user's operational docs; never commit that address.
+  The address must be RFC1918 IPv4 or IPv6 ULA; mapped IPv4 is checked as IPv4.
 
   The helper hashes both original files before contacting the upload route.
   It reads the exact original upload state and sends the original prefix digest.
   The service checks that retained prefix before accepting binary frames of at
   most 1 MiB. This avoids HTTP request-body buffering at the existing proxy. A lost receipt
   reply replays zero bytes to the original completed part so the service can
-  reconcile its saved receipt. On uncertainty, retain the pair and repeat the
-  same command; it inspects the original prefix and never submits a new rebuild.
+  reconcile its saved receipt. On transport uncertainty, retain the pair and
+  read the original operation before repeating this same command; it inspects
+  the original prefix and never submits a new rebuild. Refusals, binding errors
+  and invalid connection settings stop without retry advice. TCP, handshake and
+  state reads use the normal timeout; prefix verification and the final receipt
+  allow time for the complete declared files.
   A recorded upload receipt is still not a successful testing restore. Continue
   reading the same normal rebuild operation until its actual result is known.
 

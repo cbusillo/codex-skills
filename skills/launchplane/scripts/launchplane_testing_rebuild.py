@@ -13,10 +13,11 @@ import re
 import urllib.error
 from typing import Any
 
+from launchplane_migrated_upload import COMMAND as UPLOAD_COMMAND
+
 COMMAND = "testing-rebuild-submit"
 PLAN_COMMAND = "testing-rebuild-dry-run"
 READ_COMMAND = "testing-rebuild-operation-read"
-from launchplane_migrated_upload import COMMAND as UPLOAD_COMMAND
 
 COMMANDS = frozenset({COMMAND, PLAN_COMMAND, READ_COMMAND, UPLOAD_COMMAND})
 COPY_SOURCES = {
@@ -274,8 +275,8 @@ def rejection(h: Any, request: dict[str, object], error: urllib.error.HTTPError)
 
 
 def execute(h: Any, args: argparse.Namespace) -> int:
-    from launchplane_migrated_upload import COMMAND as upload_command, execute as upload
-    if args.command == upload_command:
+    from launchplane_migrated_upload import execute as upload
+    if args.command == UPLOAD_COMMAND:
         return upload(h, args)
     if args.command == READ_COMMAND:
         return execute_read(h, args)

@@ -30,7 +30,7 @@ def add_parser(subparsers: Any) -> None:
         parser.add_argument("--" + name, required=True, type=Path)
 
 
-def load_manifest(path: Path, *, product: str) -> dict[str, Any]:
+def read_manifest(path: Path, *, product: str) -> dict[str, Any]:
     if path.stat().st_size > 16 * 1024:
         raise ValueError("invalid_migrated_manifest")
     source = json.loads(path.read_text())
@@ -74,12 +74,32 @@ def load_manifest(path: Path, *, product: str) -> dict[str, Any]:
     return source
 
 
+def load_manifest(path: Path, *, product: str) -> dict[str, Any]:
+    try:
+        return read_manifest(path, product=product)
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError("invalid_migrated_manifest") from error
+
+
+class UploadRefused(ValueError):
+    pass
+
+
+def validated_private_address(value: str) -> str:
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError as error:
+        raise UploadRefused("private_operator_address_required") from error
+    address = getattr(address, "ipv4_mapped", None) or address
+    networks = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7")
+    if not any(address.version == network.version and address in network for network in map(ipaddress.ip_network, networks)):
+        raise UploadRefused("private_operator_address_required")
+    return str(address)
+
+
 class PrivateHTTPSConnection(http.client.HTTPSConnection):
     def __init__(self, hostname: str, port: int, private_address: str, *, timeout: float) -> None:
-        address = ipaddress.ip_address(private_address)
-        if not address.is_private or address.is_loopback or address.is_link_local or address.is_unspecified or address.is_multicast:
-            raise ValueError("private_operator_address_required")
-        self.private_address = str(address)
+        self.private_address = validated_private_address(private_address)
         self.tls_context = ssl.create_default_context()
         super().__init__(hostname, port, timeout=timeout, context=self.tls_context, blocksize=1024 * 1024)
 
@@ -100,7 +120,7 @@ def private_request(
     *,
     timeout: float,
 ) -> dict[str, Any]:
-    origin = urlsplit(h.build_url(settings["service_url"], path))
+    origin = urlsplit(str(h.build_url(settings["service_url"], path)))
     if origin.scheme != "https" or not origin.hostname:
         raise ValueError("private_operator_https_required")
     connection = PrivateHTTPSConnection(origin.hostname, origin.port or 443, address, timeout=timeout)
@@ -112,11 +132,18 @@ def private_request(
         )
         response = connection.getresponse()
         content = response.read(1024 * 1024 + 1)
-        if len(content) > 1024 * 1024 or response.status != 200:
-            raise ValueError("migrated_upload_unavailable")
-        result = json.loads(content)
+        if response.status >= 500:
+            raise OSError("migrated_upload_unavailable")
+        if response.status != 200:
+            raise UploadRefused("authorization_denied" if response.status in {401, 403} else "migrated_upload_refused")
+        if len(content) > 1024 * 1024:
+            raise UploadRefused("invalid_migrated_upload_response")
+        try:
+            result = json.loads(content)
+        except (ValueError, UnicodeError) as error:
+            raise UploadRefused("invalid_migrated_upload_response") from error
         if not isinstance(result, dict):
-            raise ValueError("invalid_migrated_upload_response")
+            raise UploadRefused("invalid_migrated_upload_response")
         return result
     finally:
         connection.close()
@@ -129,21 +156,22 @@ def private_send(
     path: str,
     *,
     timeout: float,
+    connect_timeout: float,
     handle: BinaryIO,
     offset: int,
     prefix: str,
     remaining: int,
 ) -> dict[str, Any]:
-    from websockets.exceptions import WebSocketException
+    from websockets.exceptions import ConnectionClosed, InvalidStatus, WebSocketException
     from websockets.sync.client import connect
 
-    origin = urlsplit(h.build_url(settings["service_url"], path))
+    origin = urlsplit(str(h.build_url(settings["service_url"], path)))
     if origin.scheme != "https" or not origin.hostname:
         raise ValueError("private_operator_https_required")
     connection = PrivateHTTPSConnection(origin.hostname, origin.port or 443, address, timeout=timeout)
     logger = logging.Logger("migrated-upload")
     logger.disabled = True
-    with socket.create_connection((connection.private_address, connection.port), timeout) as raw:
+    with socket.create_connection((connection.private_address, connection.port), connect_timeout) as raw:
         try:
             with connect(
                 origin._replace(scheme="wss").geturl(),
@@ -154,13 +182,12 @@ def private_send(
                 proxy=None,
                 compression=None,
                 logger=logger,
-                open_timeout=timeout,
-                ping_timeout=timeout,
+                open_timeout=connect_timeout,
                 legacy=True,
             ) as websocket:
                 websocket.send(json.dumps({"offset": offset, "prefix_sha256": prefix, "size": remaining}))
                 if json.loads(websocket.recv(timeout=timeout)) != {"ready": True, "offset": offset}:
-                    raise ValueError("migrated_prefix_unconfirmed")
+                    raise UploadRefused("migrated_prefix_unconfirmed")
                 while remaining:
                     data = handle.read(min(remaining, 1024 * 1024))
                     if not data:
@@ -172,8 +199,16 @@ def private_send(
                 if not isinstance(result, dict):
                     raise ValueError("invalid_migrated_upload_response")
                 return result
+        except InvalidStatus as error:
+            if error.response.status_code >= 500:
+                raise OSError("migrated_upload_unavailable") from error
+            raise UploadRefused("migrated_upload_refused") from error
+        except ConnectionClosed as error:
+            if error.rcvd is not None and error.rcvd.code == 1008:
+                raise UploadRefused("migrated_upload_refused") from error
+            raise OSError("migrated_upload_incomplete") from error
         except WebSocketException as error:
-            raise ValueError("migrated_upload_incomplete") from error
+            raise UploadRefused("migrated_websocket_refused") from error
 
 
 def prefix_digest(handle: BinaryIO, size: int) -> str:
@@ -194,10 +229,10 @@ def check_state(state: dict[str, Any], *, product: str, operation: str, binding:
         operation,
         binding,
     ) or type(state.get("receipt_recorded")) is not bool:
-        raise ValueError("migrated_upload_binding_changed")
+        raise UploadRefused("migrated_upload_binding_changed")
     parts = state.get("parts")
     if not isinstance(parts, dict) or set(parts) != set(PARTS):
-        raise ValueError("invalid_migrated_upload_response")
+        raise UploadRefused("invalid_migrated_upload_response")
     for part in PARTS:
         item = parts[part]
         if (
@@ -208,13 +243,13 @@ def check_state(state: dict[str, Any], *, product: str, operation: str, binding:
             or item["complete"]
             and item["size"] != source[part]["size"]
         ):
-            raise ValueError("invalid_migrated_upload_response")
+            raise UploadRefused("invalid_migrated_upload_response")
     if state["receipt_recorded"] and not all(parts[part]["complete"] for part in PARTS):
-        raise ValueError("incomplete_migrated_receipt")
+        raise UploadRefused("incomplete_migrated_receipt")
 
 
 def execute(h: Any, args: argparse.Namespace) -> int:
-    product, operation = (h._required_argument(args, key) for key in ("product", "operation_id"))
+    product, operation = (str(getattr(args, key, "") or "").strip() for key in ("product", "operation_id"))
     if any(h.PRODUCT_READ_PATH_SEGMENT_RE.fullmatch(item) is None for item in (product, operation)):
         raise ValueError("invalid_request")
     source = load_manifest(args.migrated_source_file, product=product)
@@ -224,20 +259,23 @@ def execute(h: Any, args: argparse.Namespace) -> int:
         "operation_id": h.public_identifier(operation),
         "source_binding_sha256": binding,
     }
-    paths = {part: getattr(args, part).resolve(strict=True) for part in PARTS}
-    for part, path in paths.items():
-        if not path.is_file() or path.stat().st_size != source[part]["size"]:
-            raise ValueError("original_migrated_input_changed")
-        with path.open("rb") as handle:
-            if hashlib.file_digest(handle, "sha256").hexdigest() != source[part]["sha256"]:
+    try:
+        paths = {part: getattr(args, part).resolve(strict=True) for part in PARTS}
+        for part, path in paths.items():
+            if not path.is_file() or path.stat().st_size != source[part]["size"]:
                 raise ValueError("original_migrated_input_changed")
+            with path.open("rb") as handle:
+                if hashlib.file_digest(handle, "sha256").hexdigest() != source[part]["sha256"]:
+                    raise ValueError("original_migrated_input_changed")
+    except OSError as error:
+        raise ValueError("original_migrated_input_changed") from error
     settings = h.prepare_operator_settings(args=args, operation=COMMAND, request=request)
     if settings is None:
         return 2
     timeout = max(args.timeout, sum(source[part]["size"] for part in PARTS) / (4 * 1024 * 1024))
     route = h.internal_helper_path("testing-rebuild-migrated-state").format(product=product, operation_id=operation)
     try:
-        state = private_request(h, settings, args.private_address, route, timeout=timeout)
+        state = private_request(h, settings, args.private_address, route, timeout=args.timeout)
         check_state(state, product=product, operation=operation, binding=binding, source=source)
         for part, path in paths.items():
             saved = state["parts"][part]
@@ -255,6 +293,7 @@ def execute(h: Any, args: argparse.Namespace) -> int:
                     args.private_address,
                     upload,
                     timeout=timeout,
+                    connect_timeout=args.timeout,
                     handle=handle,
                     offset=saved["size"],
                     prefix=prefix,
@@ -274,7 +313,18 @@ def execute(h: Any, args: argparse.Namespace) -> int:
         h.assert_public_safe_shape(output["result"])
         h.emit(output)
         return 0
-    except (OSError, TimeoutError, ValueError, http.client.HTTPException):
+    except (ValueError, UnicodeError) as error:
+        output = h.unavailable_payload(
+            operation=COMMAND,
+            request=request,
+            status="refused",
+            code=str(error) if isinstance(error, UploadRefused) else "invalid_migrated_upload_response",
+            message="Retain the original pair and operation. Inspect its state, original intent and connection settings before another upload.",
+        )
+        output["summary"] = {"recommendation": "Inspect the original intent and private connection settings."}
+        h.emit(output)
+        return 2
+    except (OSError, TimeoutError, http.client.HTTPException):
         output = h.unavailable_payload(
             operation=COMMAND,
             request=request,
