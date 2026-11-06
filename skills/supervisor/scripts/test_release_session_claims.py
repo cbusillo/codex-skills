@@ -1164,35 +1164,39 @@ class ReleaseTests(unittest.TestCase):
 
     def test_finish_accounts_for_authored_signoffs_only_with_verified_releases(self) -> None:
         session = "11111111-1111-4111-8111-111111111111"
-        source = {**self.source, "body": helper.claim.marker({**SOURCE, "session": session})}
+        source = {**self.source, "body": github_plan_claim.marker({**SOURCE, "session": session})}
         entry = {**self.entry, "session_id": session, "_finish_scope": "owner-wide scope"}
         formats = (f"Session: {session}", f"- **Session:** {session}", f"Session:{session}", f"Native session: {session} (Codex)")
         for same_record, is_pr, field in itertools.product((False, True), (False, True), formats):
-            for variant in ("signoff", "closed", "unrouted", "held", "foreign", "claimed", "routed", "alias", "ambiguous", "unrelated"):
+            base = f"## Current Status\nNext actor: agent:supervisor\n{field}"
+            unrouted = f"## Current Status\n{field}"
+            bodies = {
+                "signoff": base, "local": base, "closed": unrouted, "unrouted": unrouted,
+                "held": base, "foreign": base, "unrelated": base,
+                "claimed": base + "\nClaimed by trial", "worker": base + "\nWorker: trial",
+                "owned": base + "\nExecution is owned by trial",
+                "routed": base.replace("agent:supervisor", f"agent:{session}"),
+                "alias": base.replace("agent:supervisor", "agent:trial"),
+                "invalid": base.replace("agent:supervisor", "untyped-recipient"),
+                "duplicate": base + "\nNext actor: agent", "ambiguous": base + "\nSession: other-session",
+                "historical": base + f"\n## History\nNext actor: agent:{session}",
+            }
+            for variant, body in bodies.items():
                 with self.subTest(same_record=same_record, is_pr=is_pr, field=field, variant=variant):
-                    body = f"## Current Status\nNext actor: agent:supervisor\n{field}"
-                    if variant == "claimed":
-                        body = body.replace("## Current Status\n", "## Current Status\nClaimed by trial\n")
-                    if variant == "routed":
-                        body = body.replace("agent:supervisor", f"agent:{session}")
-                    if variant == "alias":
-                        body = body.replace("agent:supervisor", "agent:trial")
-                    if variant in {"closed", "unrouted"}:
-                        body = body.replace("Next actor: agent:supervisor\n", "")
-                    if variant == "ambiguous":
-                        body += "\nSession: other-session"
                     record = {"body": body, "user": {"login": "foreign[bot]" if variant == "foreign" else ACTOR}}
                     if variant == "closed":
                         record["state"] = "closed"
                     if is_pr:
                         record["pull_request"] = {}
                     release = self.own_release(body="Released claim 1\n\nRefs test/a#2." if variant != "unrelated" else "Released claim 1")
+                    if variant == "local":
+                        release["body"] = "Released claim 1\n\nOpened follow-up #2."
                     comments = [source] if variant == "held" else [source, release]
                     self.reader.get_json.side_effect = lambda path, **_kw: record if same_record or path.endswith("/2") else {"body": ""}
                     self.reader.paged_json.side_effect = lambda path, **_kw: comments if path.endswith("/1/comments") else []
                     issues = [("test/a", 1)] if same_record else [("test/a", 2), ("test/a", 1)]
                     report = helper.finished_claims(self.reader, entry, ACTOR, issues, False)
-                    expected = variant in {"signoff", "closed"} or same_record and variant == "unrelated"
+                    expected = variant in {"signoff", "local", "closed", "historical"} or same_record and variant in {"unrelated", "foreign"}
                     self.assertEqual(bool(report["issue_refusals"]), not expected, report)
                     self.assertEqual(bool(report["retained_status_claims"]), not expected, report)
 

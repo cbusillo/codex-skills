@@ -88,7 +88,10 @@ def retained_handoff(comments, source, pulls, *, repo, number, is_pr):
     return verified
 
 
-def check_record(reader, repo, number, session, actor, *, pulls_cache=None, data_cache=None, signoffs=None, release_proofs=None):
+def check_record(
+    reader: GitHubReader, repo: str, number: int, session: str, actor: str, *, pulls_cache: dict | None = None,
+    data_cache: dict | None = None, signoffs: dict | None = None, release_proofs: list[dict] | None = None,
+) -> list[dict]:
     if data_cache is None:
         data_cache = {}
     if (repo, number) not in data_cache:

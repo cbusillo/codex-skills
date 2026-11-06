@@ -749,8 +749,8 @@ def finished_claims(reader, entry, actor, issues, apply):
     retained_status.extend(identity for identity, issue in signoffs if not claim.released_session_signoff(
         issue, entry["session_id"], actor, repo=identity["repository"], number=identity["issue"], releases=release_proofs))
     for identity in retained_status:
-        identity["next_action"] = "reconcile the authored Current Status ownership"
         refused.append({**identity, "error": "status-only ownership has no matching canonical structured source"})
+        identity["next_action"] = "reconcile the authored Current Status ownership"
     scope = entry["_finish_scope"]
     result_status = "needs reconciliation" if refused else "already released" if released else "nothing to release"
     if scope == "explicit scope":

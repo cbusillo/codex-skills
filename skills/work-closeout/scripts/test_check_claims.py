@@ -524,7 +524,7 @@ class ClaimCloseoutTests(unittest.TestCase):
     def test_another_natives_release_does_not_account_for_a_signoff(self) -> None:
         other = "22222222-2222-4222-8222-222222222222"
         entries = [self.receipt_entry(records=((REPO, 2),)), self.receipt_entry(other)]
-        self.comments = [{**self.source, "body": helper.claim.marker({**SOURCE, "session": other})},
+        self.comments = [{**self.source, "body": claim_logic.marker({**SOURCE, "session": other})},
                          {**self.release, "body": f"Released claim 10\n\nSession: {other}\nRefs {REPO}#2."}]
         signoff = {"body": f"## Current Status\nNext actor: agent:supervisor\nSession: {SESSION}", "user": {"login": ACTOR}}
         self.reader.get_json.side_effect = lambda path, **_kw: signoff if path.endswith("/2") else self.issue
