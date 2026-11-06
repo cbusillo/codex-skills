@@ -12,6 +12,7 @@ import sys
 import tempfile
 import unittest
 from datetime import UTC, datetime
+from itertools import product
 from pathlib import Path
 from unittest.mock import patch
 
@@ -63,30 +64,40 @@ class GoogleWorkerTests(unittest.TestCase):
                     self.assertEqual(first, [])
                 self.assertEqual(reader(entry), first)
 
-    def test_completed_native_compaction_does_not_veto_final_verdict(self) -> None:
+    def test_native_error_requires_a_new_final_while_compaction_preserves_the_verdict(self) -> None:
         fields = iterm_tab.claim_history.protobuf_fields
         metadata = protobuf({1: protobuf({1: 1})})
         final = {"type": "assistant", "message": {"content": "Safe to exit: yes", "stop_reason": "end_turn"}}
-        for status, children in ((3, False), (2, False), (3, True)):
-            with self.subTest(status=status, children=children):
-                step = fields(protobuf({1: 23, 4: status, 5: metadata, 30: protobuf({5: b"<summary>context</summary>"})}))
-                records = iterm_tab.claim_history.agy_step_records("session", 0, 23, status, children, step, {})
+        for kind, (status, children) in product((17, 23), ((3, False), (2, False), (3, True))):
+            with self.subTest(kind=kind, status=status, children=children):
+                payload = (
+                    {24: protobuf({3: protobuf({2: b"API unavailable"})})}
+                    if kind == 17
+                    else {30: protobuf({5: b"<summary>context</summary>"})}
+                )
+                step = fields(protobuf({1: kind, 4: status, 5: metadata, **payload}))
+                records = iterm_tab.claim_history.agy_step_records("session", 0, kind, status, children, step, {})
                 summary = session_record.summarize([*records, final], "agy")
                 self.assertEqual(summary["safe_verdict"], status == 3 and not children)
                 self.assertEqual(bool(summary["background_tasks"]), status != 3 or children)
+                self.assertEqual(
+                    session_record.summarize([final, *records], "agy")["safe_verdict"], kind == 23 and status == 3 and not children
+                )
 
-    def test_finished_manage_task_does_not_count_as_background_work(self) -> None:
+    def test_finished_task_and_subagent_lists_do_not_count_as_background_work(self) -> None:
         fields = iterm_tab.claim_history.protobuf_fields
         final = {"type": "assistant", "message": {"content": "Safe to exit: yes", "stop_reason": "end_turn"}}
-        for status in (3, 2):
-            with self.subTest(status=status):
-                call = protobuf({1: b"call", 2: b"manage_task", 3: b'{"Action":"list"}'})
+        for (tool, action), status in product(
+            (("manage_task", "list"), ("manage_subagents", "list"), ("manage_subagents", "unverified")), (3, 2)
+        ):
+            with self.subTest(tool=tool, action=action, status=status):
+                call = protobuf({1: b"call", 2: tool.encode(), 3: json.dumps({"Action": action}).encode()})
                 metadata = protobuf({1: protobuf({1: 1}), 4: call})
                 step = fields(protobuf({1: 132, 4: status, 5: metadata, 140: protobuf({2: protobuf({1: b"[]"})})}))
                 records = iterm_tab.claim_history.agy_step_records("session", 0, 132, status, False, step, {})
                 summary = session_record.summarize([*records, final], "agy")
-                self.assertEqual(summary["safe_verdict"], status == 3)
-                self.assertEqual(bool(summary["background_tasks"]), status != 3)
+                self.assertEqual(summary["safe_verdict"], status == 3 and action == "list")
+                self.assertEqual(bool(summary["background_tasks"]), status != 3 or action != "list")
 
     def test_google_ledger_preparation_uses_the_existing_capacity_choice(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
@@ -323,21 +334,29 @@ runpy.run_path(sys.argv[0], run_name="__main__")
                             session_closeout.ready(entry, "supervisor")
                     writer.execute("DELETE FROM steps WHERE idx>0")
                     writer.commit()
-                background = json.loads((Path(__file__).parent / "fixtures/agy-command-background.json").read_text())
-                for change in (
-                    "captured",
-                    "pending",
-                    "missing_notification",
-                    "old_final",
-                    "foreign_task",
-                    "cancel",
-                    "foreign_origin",
-                    "unknown_notification",
-                    "opaque_notification",
+                for fixture_name, change in product(
+                    ("agy-command-background.json", "agy-command-cancelled.json"),
+                    (
+                        "captured",
+                        "pending",
+                        "missing_notification",
+                        "old_final",
+                        "foreign_task",
+                        "cancel",
+                        "foreign_origin",
+                        "unknown_notification",
+                        "opaque_notification",
+                        "running",
+                        "foreign_call",
+                        "non_error",
+                    ),
                 ):
+                    background = json.loads((Path(__file__).parent / "fixtures" / fixture_name).read_text())
                     steps = [fields(bytes.fromhex(row["step_payload_hex"])) for row in background["steps"]]
                     if change == "pending":
                         steps[0].pop(140)
+                    elif change == "running":
+                        steps[0][4] = 2
                     elif change in {"missing_notification", "old_final"}:
                         steps[2] = fields(response)
                     elif change in {"foreign_task", "cancel"}:
@@ -348,15 +367,26 @@ runpy.run_path(sys.argv[0], run_name="__main__")
                         call_fields[3] = json.dumps(arguments).encode()
                         metadata_fields[4] = protobuf(call_fields)
                         steps[1][5] = protobuf(metadata_fields)
-                    elif change in {"foreign_origin", "unknown_notification", "opaque_notification"}:
+                    elif change in {"foreign_origin", "foreign_call", "non_error", "unknown_notification", "opaque_notification"}:
                         note = fields(steps[2][114])
                         if change in {"unknown_notification", "opaque_notification"}:
                             note[3] = b"unverified"
                             if change == "opaque_notification":
                                 note[4] = 1
+                        elif change == "non_error":
+                            result = fields(note[2])
+                            result.pop(4, None)
+                            note[2] = protobuf(result)
                         else:
                             envelope = fields(note[4])
-                            envelope[2] = b"another-session"
+                            if change == "foreign_call":
+                                origin = fields(fields(envelope[12])[1])
+                                call_fields = fields(origin[3])
+                                call_fields[1] = b"unrelated-call"
+                                origin[3] = protobuf(call_fields)
+                                envelope[12] = protobuf({1: protobuf(origin)})
+                            else:
+                                envelope[2] = b"another-session"
                             note[4] = protobuf(envelope)
                         steps[2][114] = protobuf(note)
                     writer.execute("DELETE FROM steps")
@@ -369,8 +399,11 @@ runpy.run_path(sys.argv[0], run_name="__main__")
                     )
                     writer.execute("INSERT INTO steps VALUES (3,?,?,0,?)", (last[1], last[4], protobuf(last)))
                     writer.commit()
-                    with self.subTest(background=change):
-                        self.assertEqual(session_record.session_status(entry)["safe_verdict"], change == "captured")
+                    with self.subTest(fixture=fixture_name, background=change):
+                        self.assertEqual(
+                            session_record.session_status(entry)["safe_verdict"],
+                            change == "captured" or change == "non_error" and fixture_name == "agy-command-background.json",
+                        )
                 writer.execute("DELETE FROM steps")
                 writer.execute("INSERT INTO steps VALUES (0,15,3,0,?)", (response,))
                 writer.commit()
