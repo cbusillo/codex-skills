@@ -19,9 +19,6 @@ from cleanup_probe import ProbeError, command, signature, tag
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
 published_history = importlib.import_module("published_history")
 
-UNSAFE_ENV = {"GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
-              "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-              "GIT_CONFIG", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS"}
 OPERATIONS = ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD", "BISECT_LOG",
               "BISECT_START", "rebase-merge", "rebase-apply", "sequencer", "index.lock",
               "HEAD.lock", "config.lock", "packed-refs.lock", "shallow.lock")
@@ -30,7 +27,7 @@ MAX_REGISTRATIONS = 4096
 
 
 def git(repo: str, *args: str, check: bool = True) -> tuple[int, bytes]:
-    if UNSAFE_ENV.intersection(os.environ):
+    if published_history.REDIRECT_ENV.intersection(os.environ):
         raise ProbeError("git_environment_override")
     env = published_history.git_environment()
     result = command(["git", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false",
@@ -138,6 +135,12 @@ def snapshot(repo: str, key: bytes, remote_probe: bool = True,
     remotes = []
     default_branch = None
     live_tips: dict[str, str] = {}
+    history_error = None
+    if remote_probe:
+        try:
+            published_history.verify_original_history(root, publication_git)
+        except (published_history.PublicationError, OSError, subprocess.TimeoutExpired) as exc:
+            history_error = str(exc)
     names = git_text(root, "remote").splitlines()
     if len(names) > 16:
         raise ProbeError("remote_limit")
@@ -146,6 +149,8 @@ def snapshot(repo: str, key: bytes, remote_probe: bool = True,
                   "coverage": "excluded" if not remote_probe else "unavailable"}
         if remote_probe:
             try:
+                if history_error:
+                    raise published_history.PublicationError(history_error)
                 advertised, default = published_history.advertisement(root, name, publication_git)
                 if name == "origin" or ("origin" not in names and len(names) == 1):
                     default_branch = default

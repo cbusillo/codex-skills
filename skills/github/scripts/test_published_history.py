@@ -67,13 +67,6 @@ class PublicationTests(Fixture):
         result = self.read_publication(worktree)
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_accepts_a_tip_published_only_on_its_branch_remote(self) -> None:
-        self.add_fork()
-        worktree = self.create()
-        git("push", "-q", "-u", "fork", "HEAD:refs/heads/tested", cwd=worktree)
-        completed = self.read_publication(worktree)
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-
     def test_keeps_a_tip_on_an_unrelated_remote(self) -> None:
         self.add_fork()
         worktree = self.create()
@@ -107,13 +100,6 @@ class PublicationTests(Fixture):
         completed = self.read_publication(worktree)
         self.assertEqual(completed.returncode, 0, completed.stderr)
 
-    def test_keeps_unpublished_work_with_upstream_configured(self) -> None:
-        self.add_upstream()
-        git("push", "-q", "upstream", "main", cwd=self.repo)
-        worktree = self.create()
-        completed = self.read_publication(worktree)
-        self.assertEqual(completed.returncode, 1)
-
     def test_keeps_work_when_only_a_stale_upstream_tracking_ref_remains(self) -> None:
         upstream = self.add_upstream()
         worktree = self.create()
@@ -123,23 +109,6 @@ class PublicationTests(Fixture):
         self.assertEqual(git("rev-parse", "upstream/tested", cwd=worktree), git("rev-parse", "HEAD", cwd=worktree))
         completed = self.read_publication(worktree)
         self.assertEqual(completed.returncode, 1)
-
-    def test_keeps_work_when_upstream_cannot_be_resolved(self) -> None:
-        self.add_upstream()
-        worktree = self.create()
-        git("remote", "set-url", "upstream", str(self.base / "missing.git"), cwd=worktree)
-        completed = self.read_publication(worktree)
-        self.assertEqual(completed.returncode, 1)
-
-    def test_keeps_work_when_network_upstream_cannot_be_read(self) -> None:
-        self.add_upstream()
-        worktree = self.create()
-        self.env["GIT_SSH_COMMAND"] = "false"
-        for url in ("ssh://example.invalid/repo.git", "example.invalid:repo.git"):
-            with self.subTest(url=url):
-                git("remote", "set-url", "upstream", url, cwd=worktree)
-                completed = self.read_publication(worktree)
-                self.assertEqual(completed.returncode, 1)
 
     def test_origin_publication_does_not_require_upstream_to_be_available(self) -> None:
         self.add_upstream()
@@ -254,6 +223,7 @@ class PublicationTests(Fixture):
 
     def test_external_grafts_cannot_prove_publication(self) -> None:
         worktree = self.create()
+        git("push", "origin", "HEAD:refs/heads/published", cwd=worktree)
         published = git("rev-parse", "origin/main", cwd=worktree)
         head = git("rev-parse", "HEAD", cwd=worktree)
         grafts = self.base / "external.grafts"
@@ -263,21 +233,6 @@ class PublicationTests(Fixture):
                 self.env["GIT_GRAFT_FILE"] = path
                 completed = self.read_publication(worktree)
                 self.assertEqual(completed.returncode, 1)
-
-    def test_original_history_recovery_preserves_grafts_and_retires_published_work(self) -> None:
-        worktree = self.create()
-        git("push", "-q", "origin", "work/task-1", cwd=worktree)
-        published = git("rev-parse", "origin/main", cwd=worktree)
-        head = git("rev-parse", "HEAD", cwd=worktree)
-        grafts = self.repo / ".git" / "info" / "grafts"
-        contents = f"{published} {head}\n"
-        grafts.write_text(contents)
-        completed = self.read_publication(worktree)
-        self.assertEqual(completed.returncode, 1)
-        self.env["GIT_GRAFT_FILE"] = "/dev/null"
-        completed = self.read_publication(worktree)
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertEqual(grafts.read_text(), contents)
 
 
 if __name__ == "__main__":

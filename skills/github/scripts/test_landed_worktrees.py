@@ -368,7 +368,7 @@ class RepositoryTests(Fixture):
         run = subprocess.run
         grafts = Path(self.git(self.repo, "rev-parse", "--path-format=absolute", "--git-path", "info/grafts"))
         eligible = ("eligible", "pull_only", "amended", "retained_reflog", "signed_config", "upstream_only", "fork_only",
-                    "detached_published", "fetched_snapshot", "graft_recovery")
+                    "detached_published", "fetched_snapshot", "graft_recovery", "same_name")
         for cause in (*eligible, "dirty", "ignored", "unpublished", "unique_reflog", "branch_reflog", "in_use", "proof_unavailable",
                       "detached_unique", "detached_stale"):
             path = self.worktree(cause, lock=None)
@@ -400,14 +400,19 @@ class RepositoryTests(Fixture):
                     self.git(path, "push", "origin", f"{alternate}:refs/pull/9/head")
                 self.git(path, "reset", "--hard", base)
             elif cause == "graft_recovery":
-                grafts.write_text(self.git(path, "rev-parse", "HEAD") + "\n")
+                base = self.git(path, "rev-parse", "HEAD")
+                head = self.commit(path, "Unmerged published work")
+                self.git(path, "push", "origin", "HEAD:refs/heads/graft-recovery")
+                grafts.write_text(f"{base} {head}\n{head}\n")
+            elif cause == "same_name":
+                self.git(path, "tag", f"work/{cause}")
             elif cause in {"upstream_only", "fork_only"}:
                 remote = self.base / f"{cause}.git"
                 self.git(self.repo, "init", "--bare", str(remote))
                 name = "upstream" if cause == "upstream_only" else "fork"
                 self.git(path, "remote", "add", name, str(remote))
                 self.commit(path, "Published outside origin")
-                self.git(path, "push", "--set-upstream", name, f"HEAD:work/{cause}")
+                self.git(path, "push", *(["--set-upstream"] if name == "fork" else []), name, f"HEAD:work/{cause}")
             elif cause == "signed_config":
                 verifier = self.base / "verify-signature"
                 verifier.write_text("#!/bin/sh\necho fixture verification >&2\nexit 1\n")
@@ -461,7 +466,7 @@ class RepositoryTests(Fixture):
             if cause == "graft_recovery":
                 grafts.unlink()
             branches = self.git(self.repo, "for-each-ref", "--format=%(refname)", f"refs/heads/work/{cause}")
-            self.assertEqual(bool(branches), cause not in {"eligible", "retained_reflog", "graft_recovery"}, cause)
+            self.assertEqual(bool(branches), cause not in {"eligible", "retained_reflog", "same_name"}, cause)
 
 
 class StrayTests(Fixture):

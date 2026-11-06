@@ -206,6 +206,12 @@ live publication evidence for retirement and cleanup inventories. Portable and
 managed-host retirement accept origin, upstream and the branch's configured
 remote, including published tags and PR heads. Tracking refs alone do not count;
 local remotes must have independent, complete object storage.
+Cleanup inventories request heads and tags: branches may use live branch
+ancestry, while tags and stashes need an exact advertised object. Retirement
+also accepts PR heads and compares reflog snapshots; those are separate caller
+policies over the shared evidence reader. Publication commands ignore Git
+repository redirects. Cleanup inventories refuse exported redirects; retry
+with the reported Git environment overrides unset.
 Reflog-only commits may be superseded when their complete file snapshots remain
 reachable from HEAD, retained local branches/tags or published and fetched history. Unique
 reflog content keeps the tree until it is preserved on a branch or published;

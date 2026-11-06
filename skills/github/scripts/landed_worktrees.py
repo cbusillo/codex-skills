@@ -50,7 +50,7 @@ def git(checkout: Path, *args: str, input_text: str | None = None, timeout: floa
         ["git", "-C", str(checkout), *args],
         capture_output=True,
         text=True,
-        env=dev_worktree.git_environment(),
+        env=published_history.git_environment(),
         input=input_text,
         timeout=timeout,
     )
@@ -81,7 +81,7 @@ def contained(checkout: Path, head: str, tip: str) -> bool:
     if head == tip:
         return True
     return (git(checkout, "cat-file", "-e", f"{tip}^{{commit}}").returncode == 0
-            and git(checkout, "merge-base", "--is-ancestor", head, tip).returncode == 0)
+            and git(checkout, "--no-replace-objects", "merge-base", "--is-ancestor", head, tip).returncode == 0)
 
 
 def is_under(path: Path, root: Path) -> bool:
@@ -179,7 +179,8 @@ def portable_retire(path: Path, *, dry_run: bool) -> subprocess.CompletedProcess
         return kept("uncommitted, untracked or ignored files remain")
     try:
         head = git(path, "rev-parse", "HEAD").stdout.strip()
-        branch = git(path, "symbolic-ref", "--short", "-q", "HEAD").stdout.strip() or None
+        ref = git(path, "rev-parse", "--symbolic-full-name", "HEAD").stdout.strip()
+        branch = ref.removeprefix("refs/heads/") if ref.startswith("refs/heads/") else None
         published_history.check_retirement(path)
     except (published_history.PublicationError, OSError, subprocess.TimeoutExpired) as exc:
         return kept(str(exc))
@@ -205,7 +206,7 @@ def portable_retire(path: Path, *, dry_run: bool) -> subprocess.CompletedProcess
         ],
         capture_output=True,
         text=True,
-        env=dev_worktree.git_environment(),
+        env=published_history.git_environment(),
     )
     if result.returncode == 0 and not dry_run:
         if path.exists() or any(tree.path == path for tree in registered(common.parent)):

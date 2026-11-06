@@ -584,6 +584,29 @@ class CleanupContracts(unittest.TestCase):
         self.assertEqual(report["repository"]["ref_coverage"]["refs/heads/work/fixture"]["state"], "unknown")
         self.assertFalse(report["policy"]["may_delete"])
 
+    def test_pull_head_changes_do_not_enter_cleanup_coverage_or_stability(self) -> None:
+        base = run_git(self.worktree, "rev-parse", "HEAD")
+        (self.worktree / "README.md").write_text("unmerged work")
+        run_git(self.worktree, "commit", "-am", "PR-only work")
+        pull_ref = "refs/pull/8/head"
+        run_git(self.worktree, "push", "origin", f"HEAD:{pull_ref}")
+        snapshot = cleanup_git.snapshot
+        calls = 0
+
+        def move_pull_head(*args: Any, **kwargs: Any) -> dict:
+            nonlocal calls
+            report = snapshot(*args, **kwargs)
+            calls += 1
+            if calls == 1:
+                run_git(self.remote, "update-ref", pull_ref, base)
+            return report
+
+        with patch_attr(cleanup_git, "snapshot", move_pull_head):
+            report = self.inventory(self.worktree)
+        self.assertTrue(report["git_stable"])
+        self.assertNotIn(pull_ref, report["repository"]["remotes"][0]["refs"])
+        self.assertEqual(report["repository"]["ref_coverage"]["refs/heads/work/fixture"]["state"], "unknown")
+
     def test_timed_out_remote_keeps_the_rest_of_the_bounded_snapshot(self) -> None:
         command = cleanup_probe.command
 

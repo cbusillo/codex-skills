@@ -14,6 +14,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 GitReader = Callable[..., str]
+INVENTORY_REFS = ("HEAD", "refs/heads/*", "refs/tags/*")
 REDIRECT_ENV = {
     "GIT_DIR",
     "GIT_COMMON_DIR",
@@ -48,6 +49,7 @@ def git(repo: Path | str, *args: str, input_text: str | None = None) -> str:
         text=True,
         errors="surrogateescape",
         input=input_text,
+        stdin=subprocess.DEVNULL if input_text is None else None,
         timeout=30,
         env=git_environment(),
     )
@@ -93,11 +95,12 @@ def verify_remote(repo: Path | str, remote: str, run: GitReader = git) -> None:
         raise PublicationError(f"the {remote} local repository has incomplete history or objects")
 
 
-def advertisement(repo: Path | str, remote: str, run: GitReader = git) -> tuple[dict[str, str], str | None]:
-    verify_original_history(repo, run)
+def advertisement(
+    repo: Path | str, remote: str, run: GitReader = git, patterns: tuple[str, ...] = INVENTORY_REFS
+) -> tuple[dict[str, str], str | None]:
     verify_remote(repo, remote, run)
     try:
-        output = run(repo, "ls-remote", "--symref", "--", remote, "HEAD", "refs/heads/*", "refs/tags/*", "refs/pull/*/head")
+        output = run(repo, "ls-remote", "--symref", "--", remote, *patterns)
     except PublicationError as exc:
         raise PublicationError(f"cannot read the {remote} remote") from exc
     refs: dict[str, str] = {}
@@ -137,7 +140,6 @@ def unpublished(repo: Path | str, roots: Iterable[str], tips: Iterable[str], run
 
 
 def ref_coverage(repo: Path | str, oid: str, tips: dict[str, str], *, ancestors: bool, run: GitReader = git) -> dict:
-    verify_original_history(repo, run)
     for ref, tip in tips.items():
         if tip == oid:
             return {"state": "covered", "method": "exact_advertisement", "remote_ref": ref}
@@ -154,8 +156,9 @@ def ref_coverage(repo: Path | str, oid: str, tips: dict[str, str], *, ancestors:
 
 
 def check_retirement(repo: Path | str, run: GitReader = git) -> None:
+    verify_original_history(repo, run)
     head = run(repo, "rev-parse", "HEAD")
-    branch = run(repo, "rev-parse", "--abbrev-ref", "HEAD")
+    branch = run(repo, "rev-parse", "--symbolic-full-name", "HEAD").removeprefix("refs/heads/")
     reflogs = ["HEAD", *([f"refs/heads/{branch}"] if branch != "HEAD" else [])]
     history = run(repo, "rev-list", "--walk-reflogs", "--no-commit-header", "--format=%H", *reflogs).split()
     snapshots = run(
@@ -170,7 +173,9 @@ def check_retirement(repo: Path | str, run: GitReader = git) -> None:
         "--tags",
         input_text="\n".join(history) + "\n",
     )
-    preserved = set(run(repo, "rev-list", "--no-commit-header", "--format=%T", head, "--branches", "--tags").split())
+    preserved = (
+        set(run(repo, "rev-list", "--no-commit-header", "--format=%T", head, "--branches", "--tags").split()) if snapshots else set()
+    )
     roots = {head, *(line.split()[1] for line in snapshots.splitlines() if line.split()[0] not in preserved)}
     names = run(repo, "remote").splitlines()
     branch_remote = run(repo, "config", "--default", "", "--get", f"branch.{branch}.remote")
@@ -182,11 +187,11 @@ def check_retirement(repo: Path | str, run: GitReader = git) -> None:
         ]
     )
     for remote in remotes:
-        refs, _ = advertisement(repo, remote, run)
+        refs, _ = advertisement(repo, remote, run, (*INVENTORY_REFS, "refs/pull/*/head"))
         remaining = unpublished(repo, roots, refs.values(), run)
         if not remaining:
             return
-        available = available_tips(repo, refs.values(), run)
+        available = available_tips(repo, refs.values(), run) if snapshots else []
         if available:
             preserved.update(run(repo, "rev-list", "--no-commit-header", "--format=%T", *available).split())
         roots = {commit for commit, tree in remaining.items() if commit == head or tree not in preserved}
