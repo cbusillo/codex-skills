@@ -1206,6 +1206,143 @@ def test_repository_comment_pages_preserve_results_when_large_read_fails(
     assert bool(errors) == fail_last_page
 
 
+def scan_comment(comment_id: int, author: str, at: str, number: int = 42, body: str = "Reply") -> dict[str, Any]:
+    return api_comment(comment_id, author, at, body, issue_url=f"https://api.github.com/repos/example/repo/issues/{number}")
+
+
+def scan_repository(
+    monkeypatch: pytest.MonkeyPatch, scans: dict[str, Any], since: datetime, until: datetime, comments: list[dict[str, Any]],
+) -> tuple[dict[tuple[str, int], set[tuple[str, int]]], set[int], list[str]]:
+    reads_from = []
+
+    def read(command: list[str]) -> object:
+        endpoint = command[2]
+        if "/issues/comments?" not in endpoint:
+            return []
+        reads_from.append(parse_qs(urlsplit(endpoint).query)["since"][0])
+        return comments
+
+    patch_radar(monkeypatch, "run_json", read)
+    waits: set[int] = set()
+    candidates, errors = github_unanswered_comments.repository_activity(
+        "example/repo", since, until, {"cbusillo"}, {"fixture-automation"}, wait_candidates=waits, scans=scans,
+    )
+    assert not errors
+    return candidates, waits, reads_from
+
+
+def test_incremental_scan_keeps_every_window_candidate_while_reading_only_new_comments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scans: dict[str, Any] = {}
+    first = [scan_comment(1, "outside-user", "2026-07-02T00:00:00Z"),
+             scan_comment(2, "outside-user", "2026-07-20T00:00:00Z"),
+             scan_comment(3, "cbusillo", "2026-07-21T00:00:00Z", number=7, body=github_unanswered_comments.github_plan_wait.PREFIX)]
+    scan_repository(monkeypatch, scans, datetime(2026, 7, 1, tzinfo=UTC), datetime(2026, 7, 26, tzinfo=UTC), first)
+
+    candidates, waits, reads_from = scan_repository(
+        monkeypatch, scans, datetime(2026, 7, 5, tzinfo=UTC), datetime(2026, 7, 27, tzinfo=UTC),
+        [scan_comment(4, "outside-user", "2026-07-26T12:00:00Z")],
+    )
+
+    assert reads_from == ["2026-07-20T23:50:00Z"]
+    assert candidates == {("example/repo", 42): {("issue_comment", 2), ("issue_comment", 4)}}
+    assert waits == {7}
+    assert scans["issue_comments"]["from"] == "2026-07-05T00:00:00Z"
+    assert scans["issue_comments"]["through"] == "2026-07-26T12:00:00Z"
+
+
+@pytest.mark.parametrize("previous", [
+    None,
+    {"from": "2026-07-10T00:00:00Z", "through": "2026-07-26T00:00:00Z", "rows": [[42, "issue_comment", 9, "2026-07-20T00:00:00Z", "2026-07-20T00:00:00Z", True, False]]},
+    {"from": "2026-07-01T00:00:00Z", "through": "2026-07-26T00:00:00Z", "rows": [["malformed"]]},
+])
+def test_scan_state_that_does_not_cover_the_window_reads_it_all(monkeypatch: pytest.MonkeyPatch, previous: Any) -> None:
+    scans = {} if previous is None else {"issue_comments": previous}
+    candidates, _waits, reads_from = scan_repository(
+        monkeypatch, scans, datetime(2026, 7, 5, tzinfo=UTC), datetime(2026, 7, 27, tzinfo=UTC),
+        [scan_comment(4, "outside-user", "2026-07-26T12:00:00Z")],
+    )
+    assert reads_from == ["2026-07-05T00:00:00Z"]
+    assert candidates == {("example/repo", 42): {("issue_comment", 4)}}
+    assert scans["issue_comments"]["from"] == "2026-07-05T00:00:00Z"
+
+
+def test_comment_edited_during_the_scan_does_not_hide_a_later_page(monkeypatch: pytest.MonkeyPatch) -> None:
+    page_size = github_unanswered_comments.REPOSITORY_COMMENT_PAGE_SIZE
+    comments = [scan_comment(number, "outside-user", f"2026-07-10T{number // 60:02d}:{number % 60:02d}:00Z")
+                for number in range(1, page_size + 50)]
+
+    def read(command: list[str]) -> object:
+        query = parse_qs(urlsplit(command[2]).query)
+        if "/issues/comments" not in command[2]:
+            return []
+        since, page = query["since"][0], int(query["page"][0])
+        listed = sorted((row for row in comments if row["updated_at"] >= since), key=lambda row: row["updated_at"])
+        if page == 1 and comments[0]["updated_at"] < "2026-07-20":
+            comments[0] = {**comments[0], "updated_at": "2026-07-20T00:00:00Z"}
+        return listed[(page - 1) * page_size:page * page_size]
+
+    patch_radar(monkeypatch, "run_json", read)
+    candidates, errors = github_unanswered_comments.repository_activity(
+        "example/repo", datetime(2026, 7, 1, tzinfo=UTC), datetime(2026, 7, 27, tzinfo=UTC),
+        {"cbusillo"}, {"fixture-automation"}, scans={},
+    )
+    assert not errors
+    assert candidates[("example/repo", 42)] == {("issue_comment", row["id"]) for row in comments}
+
+
+def test_timestamp_tie_read_by_page_number_keeps_the_watermark_before_the_tie(monkeypatch: pytest.MonkeyPatch) -> None:
+    page_size = github_unanswered_comments.REPOSITORY_COMMENT_PAGE_SIZE
+    tied = [scan_comment(number, "outside-user", "2026-07-10T00:00:00Z") for number in range(1, page_size + 50)]
+    later = scan_comment(500, "outside-user", "2026-07-20T00:00:00Z")
+
+    def read(command: list[str]) -> object:
+        if "/issues/comments" not in command[2]:
+            return []
+        page = int(parse_qs(urlsplit(command[2]).query)["page"][0])
+        return [*tied, later][(page - 1) * page_size:page * page_size]
+
+    patch_radar(monkeypatch, "run_json", read)
+    scans: dict[str, Any] = {}
+    github_unanswered_comments.repository_activity(
+        "example/repo", datetime(2026, 7, 1, tzinfo=UTC), datetime(2026, 7, 27, tzinfo=UTC),
+        {"cbusillo"}, {"fixture-automation"}, scans=scans,
+    )
+    assert scans["issue_comments"]["through"] <= "2026-07-10T00:00:00Z"
+
+
+def test_failed_lane_read_keeps_its_previous_watermark(monkeypatch: pytest.MonkeyPatch) -> None:
+    previous = {"from": "2026-07-01T00:00:00Z", "through": "2026-07-26T00:00:00Z",
+                "rows": [[42, "issue_comment", 2, "2026-07-20T00:00:00Z", "2026-07-20T00:00:00Z", True, False]]}
+    scans = {"issue_comments": previous}
+
+    def read(command: list[str]) -> object:
+        if "/issues/comments?" in command[2]:
+            raise github_unanswered_comments.rollup.RollupError("page failed")
+        return []
+
+    patch_radar(monkeypatch, "run_json", read)
+    candidates, errors = github_unanswered_comments.repository_activity(
+        "example/repo", datetime(2026, 7, 5, tzinfo=UTC), datetime(2026, 7, 27, tzinfo=UTC),
+        {"cbusillo"}, {"fixture-automation"}, scans=scans,
+    )
+    assert scans["issue_comments"] is previous
+    assert candidates == {("example/repo", 42): {("issue_comment", 2)}}
+    assert errors[0]["lane"] == "issue_comments"
+
+
+def test_scan_state_from_other_identities_is_not_reused(tmp_path: Path) -> None:
+    path = tmp_path / "scan.json"
+    lanes = {"example/repo": {"issue_comments": {"from": "2026-07-01T00:00:00Z"}}}
+    identity = github_unanswered_comments.scan_identity({"cbusillo"}, {"bot"}, {})
+    github_unanswered_comments.save_scan_state(path, identity, lanes)
+
+    assert github_unanswered_comments.load_scan_state(path, identity) == lanes
+    other = github_unanswered_comments.scan_identity({"cbusillo"}, {"bot", "new-bot"}, {})
+    assert github_unanswered_comments.load_scan_state(path, other) == {}
+
+
 def test_outside_pull_request_opened_in_window_needs_attention(monkeypatch) -> None:
     # Reproduces BD_to_AVP#880: an outside contributor opens a PR and nobody comments.
     pull = opening()

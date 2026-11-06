@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -33,14 +34,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "direction/scripts"
 director_waits = importlib.import_module("director_waits")
 
 
+READS_AFTER = {"comments": "questions"}
+
+
+def read_source(read: Callable[[], dict], prerequisite: Future | None) -> dict:
+    if prerequisite is not None:
+        prerequisite.result()
+    try:
+        return read()
+    except (Exception, SystemExit) as error:  # noqa: BLE001
+        return {"error": str(error), "coverage": {"complete": False}}
+
+
 def collect(readers: dict[str, Callable[[], dict]]) -> dict[str, dict]:
-    results = {}
-    for name, read in readers.items():
-        try:
-            results[name] = read()
-        except (Exception, SystemExit) as error:  # noqa: BLE001
-            results[name] = {"error": str(error), "coverage": {"complete": False}}
-    return results
+    futures: dict[str, Future] = {}
+    with ThreadPoolExecutor(max_workers=max(1, len(readers))) as pool:
+        for name, read in readers.items():
+            futures[name] = pool.submit(read_source, read, futures.get(READS_AFTER.get(name, "")))
+    return {name: future.result() for name, future in futures.items()}
 
 
 def watch_report(path: Path, *, service: bool = False, window: str = radar.DEFAULT_WINDOW, now: datetime | None = None) -> dict:
@@ -309,6 +320,7 @@ def build_readers(args: argparse.Namespace, watch: dict) -> dict[str, Callable[[
                 errors.append({"repo": notice.get("repository", "-"), "lane": "watch_hint", "error": str(error)})
         settings = radar.resolve_settings(radar_args, radar.rollup.load_config(args.radar_config))
         settings["discussion_sources"] = discussions
+        settings["scan_state"] = scan_state_path(args)
         result = radar.collect_payload(settings, comment_hints=tuple(hints))
         result["coverage"]["errors"].extend(errors)
         result["ok"] = result["ok"] and not errors
@@ -325,6 +337,11 @@ def build_readers(args: argparse.Namespace, watch: dict) -> dict[str, Callable[[
         "waits": waits,
         "comments": comments,
     }
+
+
+def scan_state_path(args: argparse.Namespace) -> Path | None:
+    ledger = getattr(args, "ledger", None)
+    return ledger.with_name(f"{ledger.stem}-radar-scan.json") if isinstance(ledger, Path) else None
 
 
 def comment_hint(notice: dict) -> Any:
