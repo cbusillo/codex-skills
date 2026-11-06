@@ -147,7 +147,7 @@ hook checks it against successful helper output in the local transcript; it
 does not read GitHub. Re-read an existing question with `--chat` before presenting
 it. Historical prose questions print their full original body and link without
 rewriting the source or allocating a new number.
-Revise an unanswered question with
+Revise an unanswered question in place instead of creating a replacement Q ID, with
 `oq.py update ORIGINAL_URL --record-file FILE --expected-updated-at TIMESTAMP --owner OWNER`, using `show-question`'s timestamp.
 The update keeps the number, URL and queue registration,
 and refuses an answered question or a changed source. If the options changed
@@ -228,12 +228,23 @@ When asking, follow [Director Questions](#director-questions).
 - Messages from the Director delivered through a Discord session channel that
   relays only their messages count as their own words, regardless of a harness
   label on mid-turn delivery. Record `via Discord` in source prose before the quote.
-- Record a `Director decision:` as the link to the question it answers, when
-  one exists, and the Director's exact operative answer, including every
-  condition, limit and scope, with nothing after the quote. In audience-visible
-  records, omit only private commentary that does not change the answer;
-  retain it only in an authorized private destination when needed.
-  When acting on a decision, quote it with its link, not its Q ID alone.
+- Start a decision record's first line with `Director decision:`. Link every
+  original question it settles before the Director's exact operative answer,
+  including every condition, limit and scope, with nothing after the quote.
+  A decision settling several questions links them all in that same record;
+  mentioning their Q IDs in its explanation does not settle them. Keep the
+  heading first even when the answer arrived under another heading or a link.
+  Omit only private commentary that does not change the answer; retain it only
+  in an authorized private destination when needed. When acting, quote the
+  answer with its link, not its Q ID alone.
+- An asker withdrawing their own question records
+  `Director decision: Withdrawn by asker. Question: ORIGINAL_QUESTION_URL`,
+  followed by the reason. This disposes of the question, never approves its
+  proposal or attributes an answer to the Director. For an existing replacement,
+  use that same linked format with `Replaced by REPLACEMENT_QUESTION_URL`.
+  Record the withdrawal or replacement in this form once, rather than writing
+  prose and a second queue-clearing record. Only the asker may withdraw their
+  question; a different scope or outcome still needs the Director's decision.
 - Every new question has a shared-counter Q ID in chat and on GitHub.
   GitHub's `gh-comment`, `gh-pr.py comment`, and `gh-issue` comment paths number
   bodies starting with `Owner question:` or `Director question:` automatically;
@@ -365,9 +376,7 @@ When asking, follow [Director Questions](#director-questions).
   or unknown send remains unacknowledged and resurfaces at the next check.
   Acknowledgement is delivery, never approval: unanswered questions stay queued,
   including "later". A linked reply is a candidate for the Supervisor to
-  reconcile; the queue resolves only an explicit Owner/Director decision linked
-  to the original question or naming its unique Q ID, authored by the Director
-  or a trusted recorder. Read the entire oldest-first
+  reconcile using the recording rules above. Read the entire oldest-first
   unresolved queue, including acknowledged items; `resurface` only identifies
   missing delivery receipts. Queue records, not hand-applied labels, own delivery state.
 - Before asking the Director to approve an admin path (deploy, promotion,
