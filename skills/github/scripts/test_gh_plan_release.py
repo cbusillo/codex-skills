@@ -1051,12 +1051,13 @@ class ReleaseTests(ReleaseHarness):
 
     def test_unstructured_followup_still_invalidates_structured_release(self):
         self.run_release()
-        self.f.comments.append(self.comment(3, f"Claimed by {fixtures.OTHER['worker']}",
-                                           "2026-10-04T00:00:00Z"))
-        with self.assertRaisesRegex(ValueError, "ownership activity"):
-            release._check_activity(self.f.comments, self.f.comments[0],
-                                    release.stamp("2026-10-02T00:00:00Z"),
-                                    release.source_record(self.f.comments[0]))
+        for header in (f"Claimed by {fixtures.OTHER['worker']}", f"**Claimed by** {fixtures.OTHER['worker']}"):
+            with self.subTest(header=header):
+                followup = self.comment(3, header, "2026-10-04T00:00:00Z")
+                with self.assertRaisesRegex(ValueError, "ownership activity"):
+                    release._check_activity([*self.f.comments, followup], self.f.comments[0],
+                                            release.stamp("2026-10-02T00:00:00Z"),
+                                            release.source_record(self.f.comments[0]))
 
     def test_release_closed_issue_without_reopening_or_enabling_new_claim(self):
         self.f.issue["state"] = "closed"
