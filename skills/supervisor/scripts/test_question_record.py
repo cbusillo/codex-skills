@@ -333,6 +333,18 @@ class QuestionRecordTests(unittest.TestCase):
         with patch.dict(os.environ, {"CODEX_SKILLS_ENV_FILE": "/missing/fixture.env"}):
             with_call_stub(api, run)
 
+    def test_withdrawn_question_cannot_be_revised_into_hidden_work(self) -> None:
+        self.source["id"] = 17
+        self.source["created_at"] = "2026-11-03T12:00:00Z"
+        self.args.url = self.source["url"]
+        self.args.expected_updated_at = self.source["updated_at"]
+        withdrawal = {"body": "Q5 withdrawn by the Supervisor. The premise was wrong.", "author": AUTHOR,
+                      "created_at": "2026-11-03T14:00:00Z", "url": "withdrawal"}
+        self.fetch.return_value = [self.source, withdrawal]
+        with self.assertRaises(ValueError):
+            record.update(question(), self.args, self.storage, self.fetch)
+        self.storage.update.assert_not_called()
+
     def test_source_reads_need_no_local_counter_or_lock(self) -> None:
         storage = record.GitHubComments(lambda _item: [self.source])
         view = record.read_record(storage.read(self.source["url"]))

@@ -236,15 +236,12 @@ When asking, follow [Director Questions](#director-questions).
   when the answer arrived under another heading or a link. Omit only private
   commentary that does not change the answer; retain it only in an authorized
   private destination when needed. When acting, quote the answer with its link.
-- An asker withdrawing their own question records
-  `Director decision: Withdrawn by asker. Question: ORIGINAL_QUESTION_URL`,
-  followed by the reason. For an existing replacement, use the same form with
-  `Replaced by Q123`, naming the replacement by bare Q ID, never its link.
-  Write the disposition in this form once, not prose plus a queue-clearing
-  record. It disposes of the question; it never approves the proposal or
-  records a Director answer. Never cite it as approval or Director-set wait
-  evidence. Only the asker may withdraw their question; a different scope or
-  outcome still needs the Director's decision.
+- An asker withdraws their own question through the configured trusted recorder
+  with `Q123 withdrawn by the Supervisor. REASON` as the first line, using its
+  original Q ID. For an existing replacement, name its bare Q ID in the reason.
+  Post this once in the original question's thread or configured queue; it
+  removes the original from the queue without becoming a Director decision.
+  A different scope or outcome still needs the Director's decision.
 - Every new question has a shared-counter Q ID in chat and on GitHub.
   GitHub's `gh-comment`, `gh-pr.py comment`, and `gh-issue` comment paths number
   bodies starting with `Owner question:` or `Director question:` automatically;

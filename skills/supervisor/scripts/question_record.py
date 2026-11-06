@@ -221,8 +221,11 @@ def update(record: Any, args: argparse.Namespace, storage: QuestionStorage, fetc
             related = fetch(queue)
         question = next((q for q in delivery.oq.questions(comments, args.owner, args.decision_author, related)
                          if q["url"] == args.url), None)
-        if question is None or question["answers"]:
-            raise ValueError("question is unavailable or already answered; do not revise it")
+        withdrawn = delivery.oq.question_records.supervisor_settled_questions(
+            [*comments, *related], trusted, withdrawals_only=True,
+        )
+        if question is None or question["answers"] or args.url in withdrawn:
+            raise ValueError("question is unavailable, answered or withdrawn; do not revise it")
         position = next(i for i, comment in enumerate(comments) if comment["url"] == args.url)
         if any((comment.get("author") or "").casefold() == args.owner.casefold() for comment in comments[position + 1:]):
             raise ValueError("Director replied after this question; confirm the answer before revising")

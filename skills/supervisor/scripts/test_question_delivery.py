@@ -32,6 +32,41 @@ class DeliveryTests(unittest.TestCase):
         self.assertNotIn(target["url"], {q["url"] for q in report["questions"]})
         self.assertEqual(report["queue_length"], len(self.questions) - 1)
 
+    def test_asker_withdrawal_clears_only_its_question_without_becoming_a_decision(self) -> None:
+        self.run_queue(register=True)
+        target = self.questions[0]
+        number = delivery.question_id(target["body"])
+        withdrawal = {"author": target["author"], "body": f"{number} withdrawn by the Supervisor. Replaced by Q999.",
+                      "created_at": self.fixture["observed_at"], "url": "withdrawal"}
+        self.comments.append(withdrawal)
+        report = self.run_queue(items=[])
+        self.assertTrue(report["complete"])
+        self.assertEqual([q["url"] for q in report["questions"]], [self.questions[1]["url"]])
+        self.comments.pop()
+        self.sources[delivery.source_item(target["url"])].append(withdrawal)
+        self.assertEqual([q["url"] for q in self.run_queue(items=[])["questions"]], [self.questions[1]["url"]])
+        self.sources[delivery.source_item(target["url"])].pop()
+        self.comments.append(withdrawal)
+        decisions = delivery.oq.questions([target], self.owner, self.authors, [withdrawal], recorded_decisions_only=True)
+        self.assertEqual(decisions[0]["answers"], [])
+        for changes in ({"author": "outsider"}, {"author": self.owner},
+                        {"created_at": target["created_at"]}, {"created_at": "invalid"},
+                        {"body": f"> {withdrawal['body']}"},
+                        {"body": f"Supervisor answer to {number}: Yes, continue."},
+                        {"body": "Q999 withdrawn by the Supervisor."}):
+            with self.subTest(changes=changes):
+                self.comments[-1] = {**withdrawal, **changes}
+                self.assertEqual(self.run_queue(items=[])["queue_length"], len(self.questions))
+
+    def test_ambiguous_question_number_does_not_hide_either_source(self) -> None:
+        target = self.questions[0]
+        number = delivery.question_id(target["body"])
+        duplicate = {**target, "url": target["url"] + "9", "id": int(str(target["id"]) + "9")}
+        withdrawal = {"author": target["author"], "body": f"{number} withdrawn by the Supervisor.",
+                      "created_at": self.fixture["observed_at"], "url": "withdrawal"}
+        report = delivery.inventory([target, duplicate], [withdrawal], self.owner, self.authors)
+        self.assertEqual({q["url"] for q in report["questions"]}, {target["url"], duplicate["url"]})
+
     def setUp(self):
         self.fixture = json.loads((Path(__file__).parent / "fixtures/question-delivery-week-2026-10-15.json").read_text())
         # Keep the historical evidence unchanged; queue exercises use repaired
