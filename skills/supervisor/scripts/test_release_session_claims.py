@@ -1610,9 +1610,10 @@ class ReleaseTests(unittest.TestCase):
     def test_related_followup_is_passed_to_existing_release_gate(self):
         session = "81687039-a90a-4107-a144-29bd815ce6ba"
         source = {**self.source, "body": github_plan_claim.marker({**SOURCE, "session": session})}
-        for field in (f"Session: {session}", f"- Session: Claude Code CLI `{session}`"):
-            with self.subTest(field=field):
-                self.reader.paged_json.return_value = [source, comment(2, "Claimed by trial\n" + field)]
+        for header, field in itertools.product(("Claimed by trial", "**Claimed by** trial", "Claimed by **trial**"),
+                                              (f"Session: {session}", f"- Session: Claude Code CLI `{session}`")):
+            with self.subTest(header=header, field=field):
+                self.reader.paged_json.return_value = [source, comment(2, header + "\n" + field)]
                 found = helper.active_claims(self.reader, "test/a", 1, session, ACTOR)
                 self.assertEqual(found[0][1], [2])
 
@@ -1924,8 +1925,6 @@ class ReleaseTests(unittest.TestCase):
             + github_plan_claim.marker({**SOURCE, "session": "onboarding-session"})
         )
         self.reader.paged_json.side_effect = lambda path, **_kw: [{"number": 9, "body": body}] if path.endswith("/issues") else []
-        self.assertEqual(helper.discover(self.reader, "test", [self.entry], ["test/a"])[0], [])
-        body += "\nStaffing: source-session remains closeout-only. State: Active; owned by lead-worker."
         self.assertEqual(helper.discover(self.reader, "test", [self.entry], ["test/a"])[0], [])
 
     def test_discovery_refuses_an_unbound_canonical_claim_record(self) -> None:

@@ -142,7 +142,7 @@ def references_issue(text: str, number: int) -> bool:
                 or re.search(rf"(?:^|/){number}[-_]", text))
 
 
-def ownership_text(text: str, *, strip_quotes: bool = True) -> str:
+def ownership_text(text: str, *, strip_quotes: bool = True, keep_link_targets: bool = False) -> str:
     """Unwrap human-readable Markdown without changing machine directives."""
     text = "\n".join(text.splitlines())
     # Code content is literal Markdown: protect it while unwrapping other spans.
@@ -203,12 +203,14 @@ def ownership_text(text: str, *, strip_quotes: bool = True) -> str:
             block_start = not line.strip()
     text = "\n".join(lines)
     text = re.sub(rf"\[([^][]*)]\(([ \t]*{destination}{title})[ \t]*\)",
-                  r"\1", text)
+                  (r"\1 \2" if keep_link_targets else r"\1"), text)
     text = re.sub(r"\[([^][]+)]\[([^]\n]*)]",
-                  lambda match: match.group(1)
+                  lambda match: (match.group(1) + (" " + references[reference_key(match.group(2) or match.group(1))]
+                                                if keep_link_targets else ""))
                   if reference_key(match.group(2) or match.group(1)) in references else match.group(), text)
     text = re.sub(r"\[([^][]+)]",
-                  lambda match: match.group(1) if reference_key(match.group(1)) in references else match.group(), text)
+                  lambda match: (match.group(1) + (" " + references[reference_key(match.group(1))] if keep_link_targets else ""))
+                  if reference_key(match.group(1)) in references else match.group(), text)
     # Paired delimiters only: underscores inside identity tokens are literal.
     # Repetition handles nested emphasis and links inside emphasized spans.
     emphasis = r"(?<!\w)(\*{1,3}|_{1,3})(?=\S)(.+?)(?<=\S)\1(?!\w)"
@@ -362,17 +364,20 @@ def legacy_claim_worker(text: str) -> str | None:
 
 def belongs_to_session(body: str, session: str) -> bool:
     body = unquoted_text(body)
-    if any(owner["session"] == session for owner in records(body)):
+    structured = records(body)
+    if any(owner["session"] == session for owner in structured):
         return True
     identity = re.compile(rf"(?<![\w-]){re.escape(session)}(?![\w-])")
-    if legacy_claim_worker(body) and identity.search(body):
+    directive = re.split(r"\n[ \t]*\n", body.strip(), maxsplit=1)[0]
+    if not structured and legacy_claim_worker(body) and identity.search(directive):
         return True
     contexts = [body[span] for name, span in section_ranges(body) if name == "Current Status"]
     status = "\n\n".join(contexts or [body])
     if any(actor == f"agent:{session}" for _, actor in next_actor.fields(status)):
         return True
-    return any(identity.search(value.split(";", 1)[0])
-               for value in session_fields(body, include_quotes=False, current_only=True))
+    fields = session_fields(ownership_text(body, strip_quotes=False, keep_link_targets=True),
+                            include_quotes=False, current_only=True)
+    return any(identity.search(value.split(";", 1)[0]) for value in fields)
 
 
 def released_successor_route(
@@ -558,17 +563,16 @@ def discussion_evidence(
                     record["session"] for record in parsed_prior
                     if ownership_text(record["worker"], strip_quotes=False) == legacy_worker
                 )
-                if not parsed_prior:
-                    if legacy_claim_worker(prior_text) == legacy_worker:
-                        sessions = [
-                            session for field in session_fields(prior_text) for session in session_identifiers(field)
-                            if session.strip() and session.strip().casefold().strip("().,;<> \t")
-                            not in EMPTY_HOLDERS | {"unknown", "tbd", "session", "session-id", "not recorded",
-                                                   "unavailable", "pending", "?", "—", "–"}
-                        ]
-                        # Missing identity cannot establish that two claims are
-                        # the same session; exact comment IDs remain recoverable.
-                        prior_sessions.update(sessions or [prior_index])
+                if not parsed_prior and legacy_claim_worker(prior_text) == legacy_worker:
+                    sessions = [
+                        session for field in session_fields(prior_text) for session in session_identifiers(field)
+                        if session.strip() and session.strip().casefold().strip("().,;<> \t")
+                        not in EMPTY_HOLDERS | {"unknown", "tbd", "session", "session-id", "not recorded",
+                                               "unavailable", "pending", "?", "—", "–"}
+                    ]
+                    # Missing identity cannot establish that two claims are
+                    # the same session; exact comment IDs remain recoverable.
+                    prior_sessions.update(sessions or [prior_index])
             # A reused token cannot release a different native session.
             if len(prior_sessions) <= 1:
                 released[worker, author] = index

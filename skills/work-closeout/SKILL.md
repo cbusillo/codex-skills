@@ -402,10 +402,7 @@ claim on each target against its exact authored release or validated Supervisor
 release, and checks each retained PR's handoff. Repeat `--session` and
 `--transcript` for any other session to include. A transcript belonging to
 another session, malformed claim evidence or an incomplete GitHub read refuses.
-Session attribution uses claim records and explicit session fields; `Next actor`
-fields use Current Status when present. Legacy `Claimed by` directives remain
-claims requiring their exact authored releases. Ownership and staffing prose
-outside those directives never attributes a session to a record.
+Attribution follows the [claim and legacy-release contract](../github/references/cli-reference.md#planning-claim).
 Unrelated truncated transcript noise is ignored; a malformed recorded claim
 is not.
 `--repository OWNER/REPO` and `--owner OWNER` are compatibility context flags;

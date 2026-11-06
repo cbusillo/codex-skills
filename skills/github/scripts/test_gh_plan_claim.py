@@ -91,12 +91,14 @@ class ClaimMarkerTests(unittest.TestCase):
                       f"Claimed by worker-a in native session {session}",
                       f"Claimed by worker-a\nOwner: worker-a / {session}",
                       f"Claimed by worker-a\n| Worker | Session |\n|---|---|\n| worker-a | {session} |",
+                      f"Session: [thread](https://example.com/{session})",
                       status + f"## Claim\nSession: {session}"):
             with self.subTest(field=field):
                 self.assertTrue(CLAIM.belongs_to_session(field, session))
         for prose in (f"This issue is owned by {session}.", f"Worker: {session} or another-worker",
                       f"State: Active; owned by another-worker. Waiting on {session} for ingress.",
                       f"Staffing: native {session} remains closeout-only. State: Active; owned by lead-worker.",
+                      f"Claimed by lead-worker\n\nIngress owner/other#2 is owned by edge, native {session}.",
                       f"Ingress https://github.com/owner/other/issues/1 is independently owned by edge, native {session}."):
             for body in (prose, status + prose):
                 with self.subTest(body=body):
