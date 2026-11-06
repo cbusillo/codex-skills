@@ -918,7 +918,7 @@ retry_eligibility = "safe"
 reconciliation_strategy = "paged_read"
 retained_graphql_rationale = "Explicit --batch-read GraphQL cold/changed repository issue graph enrichment through the shared bulk reader; fully paginated connections and same-actor REST recovery. Default conditional REST retains zero-primary unchanged reads. Claims and global discovery retain their existing evidence paths; Project Focus retains read-only GraphQL. Permission and actor failures remain terminal after same-actor REST recovery."
 source_refs = ["github/scripts/github_plan_graph.py:planning_graph", "github/scripts/gh-plan.py:read_planning_graph", "github/scripts/gh-plan.py:cmd_show", "github/scripts/gh-plan.py:read_plan_sections", "github/scripts/gh-plan.py:collect_paged_rest_items", "github/scripts/github_read.py:request"]
-test_refs = ["github/scripts/test_github_plan_graph.py", "github/scripts/validate-gh-plan.py:test_cmd_show_reads_unmarked_human_authored_plan_sections", "github/scripts/validate-gh-plan.py:test_cmd_show_full_reports_unmanaged_provenance", "github/scripts/validate-gh-plan.py:test_read_plan_sections_reports_contributor_wrap_eligibility", "github/scripts/validate-gh-plan.py:test_cmd_show_fails_closed_on_malformed_contributor_markers", "github/scripts/validate-gh-plan.py:test_cmd_show_full_reads_malformed_contributor_markers_with_unknown_provenance", "github/scripts/validate-gh-plan.py:test_cmd_show_reads_only_managed_contributor_sections", "github/scripts/validate-gh-plan.py:test_cmd_show_reports_automation_managed_provenance", "github/scripts/validate-gh-plan.py:test_cmd_show_includes_all_comment_pages_in_every_mode", "github/scripts/validate-gh-plan.py:test_cmd_show_does_not_emit_success_for_an_incomplete_discussion", "github/scripts/validate-operation-matrix.py:self-test", "github/scripts/validate-gh-plan.py:test_read_only_planning_revalidates_cache_and_keeps_write_preflights_fresh", "github/scripts/validate-gh-plan.py:test_planning_conditional_reads_do_not_hide_permission_or_actor_failures", "github/scripts/validate-gh-plan.py:test_authorized_planning_fallback_retains_uncached_actor_route", "github/scripts/test_github_read.py:test_revalidation_readers_do_not_hold_cache_lock_during_transport_wait"]
+test_refs = ["github/scripts/test_github_plan_graph.py", "github/scripts/validate-gh-plan.py:test_cmd_show_reads_unmarked_human_authored_plan_sections", "github/scripts/validate-gh-plan.py:test_cmd_show_full_reports_unmanaged_provenance", "github/scripts/validate-gh-plan.py:test_plan_body_writers_never_edit_a_body_the_automation_did_not_author", "github/scripts/validate-gh-plan.py:test_cmd_show_fails_closed_on_malformed_contributor_markers", "github/scripts/validate-gh-plan.py:test_cmd_show_full_reads_malformed_contributor_markers_with_unknown_provenance", "github/scripts/validate-gh-plan.py:test_cmd_show_reads_only_managed_contributor_sections", "github/scripts/validate-gh-plan.py:test_cmd_show_reports_automation_managed_provenance", "github/scripts/validate-gh-plan.py:test_cmd_show_includes_all_comment_pages_in_every_mode", "github/scripts/validate-gh-plan.py:test_cmd_show_does_not_emit_success_for_an_incomplete_discussion", "github/scripts/validate-operation-matrix.py:self-test", "github/scripts/validate-gh-plan.py:test_read_only_planning_revalidates_cache_and_keeps_write_preflights_fresh", "github/scripts/validate-gh-plan.py:test_planning_conditional_reads_do_not_hide_permission_or_actor_failures", "github/scripts/validate-gh-plan.py:test_authorized_planning_fallback_retains_uncached_actor_route", "github/scripts/test_github_read.py:test_revalidation_readers_do_not_hold_cache_lock_during_transport_wait"]
 
 [[operations]]
 id = "github.plan.create"
@@ -1032,22 +1032,22 @@ capabilities = ["issues_write"]
 permission_mode = "fixed"
 permission_note = "Required capabilities for the maintained operation. Use each capability safe probe and degraded behavior; no separate profile grant."
 entrypoint = "github/scripts/gh-plan.py update-section"
-intent = "Patch one markdown section in a planning issue body."
-current_transport = "rest_api"
-selected_transport = "rest_api"
-endpoint_or_command = "GET /repos/{repo}/issues/{number}; PATCH /repos/{repo}/issues/{number}"
+intent = "Patch one markdown section in an automation-authored planning issue body, or post it as a bot-authored comment on anyone else's issue."
+current_transport = "composite"
+selected_transport = "composite"
+endpoint_or_command = "GET /repos/{repo}/issues/{number}; PATCH /repos/{repo}/issues/{number} for automation-authored bodies; otherwise shared comment POST"
 quota_bucket = "rest_core"
 actor_policy = "automation_required_for_writes"
-mutation_class = "update"
-idempotency = "idempotent"
+mutation_class = "mixed"
+idempotency = "conditional"
 retry_eligibility = "conditional"
 reconciliation_strategy = "read_after_write"
-retained_graphql_rationale = "No retained GraphQL transport; REST issue body reads and PATCH updates preserve deterministic section replacement."
-source_refs = ["github/scripts/gh-plan.py:cmd_update_section"]
+retained_graphql_rationale = "No retained GraphQL transport; REST issue body reads and PATCH updates preserve deterministic section replacement, and the shared comment transport owns dedupe and unknown-write reconciliation."
+source_refs = ["github/scripts/gh-plan.py:cmd_update_section", "github/scripts/gh-plan.py:require_automation_authored_body"]
 test_refs = [
   "github/scripts/validate-gh-plan.py:test_issue_body_updates_use_rest_patch",
   "github/scripts/test_gh_plan_sections.py:test_literal_text_survives_body_file_and_stdin_updates",
-  "github/scripts/test_gh_plan_sections.py:test_contributor_request_survives_literal_section_updates",
+  "github/scripts/test_gh_plan_sections.py:test_reporter_body_gets_a_status_comment_and_stays_unchanged",
   "github/scripts/test_gh_plan_sections.py:test_unreadable_body_file_fails_before_mutation",
   "github/scripts/test_gh_plan_sections.py:test_undecodable_stdin_fails_before_mutation",
   "github/scripts/test_gh_plan_sections.py:test_section_preparation_failure_is_structured",

@@ -448,9 +448,9 @@ creating labels other than the `friction` label that
 
 Treat every human-authored title and body as immutable source material.
 Repository role grants permissions, not automation ownership of authored words.
-Never retitle or replace someone's request as plan maintenance. Use an authorized
-bot-authored planning comment or linked maintainer-owned plan, or change only an
-established automation-managed block. Before creating or editing an issue, read
+Never retitle or replace someone's request as plan maintenance. Planning writers
+edit only bodies the automation authored; on anyone else's issue they post a
+bot-authored comment or use a linked automation-authored plan. Before creating or editing an issue, read
 [issue templates and ownership](../github/references/issue-templates.md);
 inspect the helper's provenance and keep unknown ownership or disallowed
 section updates read-only.
