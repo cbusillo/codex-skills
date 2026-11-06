@@ -173,7 +173,7 @@ def simulate(
     *,
     cwd: Path | None = None,
     command_argv: list[str] | None = None,
-    detached: bool = False,
+    context_argv: list[str] | None = None,
 ) -> list[PolicyMatch]:
     """Match `argv` against every policy.
 
@@ -183,7 +183,7 @@ def simulate(
     """
     shell_text = shell if shell is not None else shlex.join(argv)
     command_texts = command_position_texts(command_argv) if command_argv is not None else None
-    command_context = shlex.join(["&", *command_argv]) if detached and command_argv is not None else None
+    command_context = shlex.join(context_argv) if context_argv is not None else None
     policies = iter_policies()
     needs_repository = any(
         argv[:len(exception["argv_prefix"])] == exception["argv_prefix"]

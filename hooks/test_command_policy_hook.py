@@ -100,16 +100,27 @@ class CommandPolicyHookTests(unittest.TestCase):
             f"sudo nohup {watcher}", f"timeout 5 setsid {watcher}",
             f"nohup sudo bash -c {shlex.quote(watcher)}", f"uv run python skills/supervisor/scripts/foreign_watch.py &",
             f"nohup bash <<'EOF'\n{watcher}\nEOF", f"printf '%s' \"$({watcher})\" &",
+            f"true & {watcher}", f"{watcher}; sleep 1 &",
+            f"for s in a; do while true; do {watcher}; done; done &",
+            f"if true; then if true; then {watcher}; fi; fi &",
+            f"while :; do {{ {watcher}; }} & done",
+            f"nohup timeout -k 5 1d {watcher}", f"timeout --foreground 1d {watcher} &",
+            f"timeout -s KILL 1d {watcher} &", f"caffeinate -i env X=1 {watcher} &",
+            "caffeinate -i uv run --extra dev skills/supervisor/scripts/foreign_watch.py &",
+            f"sudo nohup bash -c {shlex.quote(watcher)}",
+            f"timeout 5 setsid bash -c {shlex.quote(watcher)}",
         )
         allowed = (
-            watcher, f"{watcher} 2>&1", f"true && {watcher}", f"true & {watcher}",
+            watcher, f"{watcher} 2>&1", f"true && {watcher}",
             f"echo {shlex.quote(watcher + ' &')}", f"rg {shlex.quote(watcher + ' & disown')} notes.md",
             f"cat <<'EOF'\n{watcher} &\nEOF", f"{watcher} --state 'a&b.json'",
             f"{watcher} --state '&'", "nohup sleep 1", "sleep 1 &",
-            f"env -u nohup {watcher}", f"{watcher}; sleep 1 &", "kill 123 &",
+            f"env -u nohup {watcher}", "kill 123 &",
             f"echo foreign_watch.py &", f"printf '%s' 'foreign_watch.py' &",
             f"caffeinate -i {watcher}", f"nice -n 5 {watcher}", f"sudo -u nohup {watcher}",
             f"{watcher} &>watch.log", f"{watcher} \\&", f"{watcher} # & disown\ntrue",
+            "python -c 'foreign_watch.py' &", "python -m foreign_watch.py &",
+            "echo foreign_watch.py | python - &",
         )
         expected = SIMULATOR.simulate(["&", "foreign_watch.py"])[0]
         for command in refused:
@@ -507,6 +518,7 @@ class CommandPolicyHookTests(unittest.TestCase):
             subprocess.run(["git", "-C", str(checkout), "config", "remote.origin.url", "https://github.com/cbusillo/launchplane.git"], check=True)
             command = "launchplane service export-openapi --output artifact.json"
             for line in (
+                "setsid uv run " + command,
                 "cd /other && " + command,
                 ". /other/setup && uv run " + command,
                 "uv run ruff check . && . /other/setup && uv run " + command,
