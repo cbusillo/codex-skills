@@ -17,6 +17,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from collections.abc import Mapping, Sequence
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from skills.github.scripts.git_status import read_status
+
 from pep723_metadata import (
     PACKAGE_NAME_PATTERN,
     DependencyPolicyError,
@@ -351,15 +354,12 @@ def _require_checkout_at(base_sha: str, cwd: Path) -> None:
 
 
 def _workspace_changes(base: BaseSnapshot, cwd: Path) -> dict[str, str]:
-    status = git(cwd, "status", "--porcelain=v1", "--untracked-files=all", "-z")
     files: dict[str, str] = {}
-    for entry in status.split(b"\0"):
-        if not entry:
-            continue
-        code, path = entry[:3], decode_utf8(entry[3:], "A changed path")
+    for change in read_status(lambda *args: git(cwd, *args)):
+        code, path = change.status, change.paths[0]
         require(
-            code == b" M " and path in base.modes and path in base.sources,
-            f"The updater may only modify tracked Python files; found {entry[:3].decode()!r} {path}.",
+            code == " M" and path in base.modes and path in base.sources,
+            f"The updater may only modify tracked Python files; found {code!r} {path}.",
         )
         file_status = os.lstat(cwd / path)
         require(
@@ -454,7 +454,7 @@ def prepare_request(
     context: RunContext, candidate_directory: Path, expected_digest: str, cwd: Path
 ) -> PreparedRequest:
     require(
-        git(cwd, "status", "--porcelain=v1", "--untracked-files=all", "-z") == b"",
+        not read_status(lambda *args: git(cwd, *args)),
         "The trusted checkout is not clean.",
     )
     _require_checkout_at(context.base_sha, cwd)

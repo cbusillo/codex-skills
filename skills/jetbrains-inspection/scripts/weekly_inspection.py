@@ -20,6 +20,7 @@ from typing import Any
 
 CATALOG = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(CATALOG))
+from skills.github.scripts.git_status import read_status
 from skills.supervisor.scripts.check_changes import save_state
 from skills.supervisor.scripts.services import service_lock
 
@@ -120,7 +121,7 @@ def report(repo: str, *, path: Path | None = None, now: dt.datetime | None = Non
 def git(repo: Path, *arguments: str) -> str:
     return subprocess.run(
         ["git", "-C", str(repo), *arguments], check=True, capture_output=True, text=True, timeout=120
-    ).stdout.strip()
+    ).stdout.rstrip()
 
 
 def inspection_worktree(repo: str, root: Path, state: dict[str, Any]) -> Path:
@@ -137,7 +138,7 @@ def inspection_worktree(repo: str, root: Path, state: dict[str, Any]) -> Path:
             git(worktree, "rev-parse", "--path-format=absolute", "--git-common-dir")
             != git(source, "rev-parse", "--path-format=absolute", "--git-common-dir")
             or git(worktree, "branch", "--show-current") != entry["branch"]
-            or git(worktree, "status", "--porcelain", "--untracked-files=all")
+            or read_status(lambda *args: git(worktree, *args))
         ):
             raise ValueError("weekly worktree identity or clean state changed; preserve it")
         git(worktree, "merge", "--ff-only", base)
@@ -232,7 +233,7 @@ def inspect_repository(worktree: Path, evidence: Path, now: dt.datetime) -> dict
         signatures[lane] = {key: native.get(key) for key in ("profile_sha256", "helper_revision", "backend_revision", "ide_build")}
     if not signatures:
         raise ValueError("no configured code selections")
-    if git(worktree, "rev-parse", "HEAD") != source or git(worktree, "status", "--porcelain", "--untracked-files=all"):
+    if git(worktree, "rev-parse", "HEAD") != source or read_status(lambda *args: git(worktree, *args)):
         raise ValueError("source changed between lane inspections")
     return {
         "status": "complete",

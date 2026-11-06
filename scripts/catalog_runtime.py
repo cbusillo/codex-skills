@@ -25,6 +25,7 @@ INSTRUCTION_PREVIEW_TIMEOUT = 15
 DELIVERY_NOTICE = "DIRECTION delivery"
 sys.path.insert(0, str(ROOT))
 from skills.github.scripts import github_catalog_health
+from skills.github.scripts.git_status import read_status
 
 
 def git(root: Path, *args: str) -> str:
@@ -41,16 +42,9 @@ def checkout_state(root: Path) -> dict:
     branch = git(root, "rev-parse", "--abbrev-ref", "HEAD")
     if branch != "main":
         return {"state": "blocked", "reason": f"branch is {branch}, expected main", "head": head}
-    changes = git(root, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+    changes = read_status(lambda *args: git(root, *args))
     if changes:
-        entries = iter(changes.split("\0"))
-        paths = []
-        for entry in entries:
-            if not entry:
-                continue
-            paths.append(entry[3:])
-            if "R" in entry[:2] or "C" in entry[:2]:
-                paths.append(next(entries))
+        paths = [path for change in changes for path in change.paths]
         return {"state": "blocked", "reason": "checkout has local changes", "head": head,
                 "blocking_paths": paths[:MAX_BLOCKING_PATHS],
                 "blocking_paths_omitted": max(0, len(paths) - MAX_BLOCKING_PATHS)}
