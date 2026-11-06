@@ -499,6 +499,7 @@ def test_relative_import_does_not_create_exit_alias() -> None:
         "if __name__ == '__main__':",
         "from .sys import exit as stop\nstop(0)\n\nif __name__ == '__main__':",
     )
+    assert modified != original
     assert validate_script(modified) == []
 
 
@@ -508,6 +509,7 @@ def test_rebound_exit_alias_before_guard_passes() -> None:
         "if __name__ == '__main__':",
         "import sys\nstop = sys.exit\nstop = print\nstop('continuing')\n\nif __name__ == '__main__':",
     )
+    assert modified != original
     assert validate_script(modified) == []
 
 
@@ -517,6 +519,7 @@ def test_nested_exit_before_guard_does_not_fail() -> None:
         "if __name__ == '__main__':",
         "def stop_later():\n    raise SystemExit(0)\n\nif __name__ == '__main__':",
     )
+    assert modified != original
     assert validate_script(modified) == []
 
 
@@ -526,6 +529,7 @@ def test_docstring_and_import_before_pytest_entrypoint_passes() -> None:
         "    raise SystemExit(pytest.main([__file__]))",
         '    """Run the helper tests."""\n    import os\n    raise SystemExit(pytest.main([__file__]))',
     )
+    assert modified != original
     assert validate_script(modified) == []
 
 
@@ -535,6 +539,7 @@ def test_import_without_docstring_before_pytest_entrypoint_passes() -> None:
         "    raise SystemExit(pytest.main([__file__]))",
         "    import os\n    raise SystemExit(pytest.main([__file__]))",
     )
+    assert modified != original
     assert validate_script(modified) == []
 
 
