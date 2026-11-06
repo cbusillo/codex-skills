@@ -194,6 +194,9 @@ def verify_decision(reader: GitHubReader, repo: str, number: int, url: str,
             if reaction.get("content") == "+1" and login == owner and reacted is not None and reacted >= created:
                 return {"approval": "director_reaction", "comment_url": url,
                         "reacted_at": reaction.get("created_at")}
+        raise ValueError(f"Director approval is missing. Have {owner} add a thumbs-up (+1) to this exact decision "
+                         f"comment:\n{url}\nA reaction on another comment does not count. "
+                         f"Then rerun with --unanswered-decision {url}")
     raise ValueError(f"{url} is neither the Director's comment nor an unedited Director decision record "
                      "the Director approved with a thumbs-up")
 
