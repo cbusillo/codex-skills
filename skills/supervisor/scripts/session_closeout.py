@@ -106,7 +106,7 @@ def ready(entry: dict, supervisor: str) -> dict:
     return status
 
 
-def handoff_evidence(entry: dict, operation: Operation) -> list[dict]:
+def claim_evidence(entry: dict, operation: Operation, key: str) -> list[dict]:
     path = operation.evidence / "claims.json"
     if not path.exists():
         return []
@@ -117,7 +117,7 @@ def handoff_evidence(entry: dict, operation: Operation) -> list[dict]:
             or checked.get("session_ids") != [entry["session_id"]]
             or checked.get("blocked") != [] or checked.get("unresolved_invocations") != []):
         return []
-    rows = checked.get("handoff_comments", [])
+    rows = checked.get(key, [])
     if not isinstance(rows, list):
         return []
     return [row for row in rows if isinstance(row, dict) and row.get("source_session") == entry["session_id"]]
@@ -176,7 +176,9 @@ def verify_handoff(entry: dict, args: argparse.Namespace, operation: Operation, 
                 or not isinstance(number, int) or isinstance(number, bool) or number <= 0):
             raise GateFailed("handoff", "discovery needs the ledger's exact repository and issue")
         comments = reader.paged_json(f"/repos/{repo}/issues/{number}/comments", step_prefix="closeout_handoff")
-        evidence = handoff_evidence(entry, operation)
+        evidence = claim_evidence(entry, operation, "handoff_comments")
+        releases = {int(match[3]) for row in claim_evidence(entry, operation, "released_claims")
+                    if (match := claim_release.COMMENT_URL.fullmatch(row.get("release_url") or ""))}
         scoped = [row for row in evidence if str(row.get("repository") or "").casefold() == repo.casefold()
                   and row.get("number") == number]
         candidates = [comment for comment in comments
@@ -185,6 +187,7 @@ def verify_handoff(entry: dict, args: argparse.Namespace, operation: Operation, 
                       and not re.match(r"(?i)^Claimed by\b", (comment.get("body") or "").strip())
                       and (explicit_session(comment.get("body") or "", args.session_id)
                            or projected_handoff(comment, scoped, actor, args.session_id))]
+        candidates = [comment for comment in candidates if comment.get("id") in releases] or candidates
         require(len(candidates) == 1, "handoff",
                 f"requires one posted handoff; found {len(candidates)} candidates: {[row.get('html_url') for row in candidates]}; "
                 f"examined: {[handoff_refusal(row, scoped, args.session_id, actor) for row in [comment for comment in comments if (comment.get("user") or {}).get("login") == actor][-10:]]}; "
@@ -201,7 +204,7 @@ def verify_handoff(entry: dict, args: argparse.Namespace, operation: Operation, 
     except ValueError as error:
         raise GateFailed("handoff", f"{selected}: {error}") from error
     if not explicit_session(handoff.get("body") or "", args.session_id):
-        evidence = evidence if evidence is not None else handoff_evidence(entry, operation)
+        evidence = evidence if evidence is not None else claim_evidence(entry, operation, "handoff_comments")
         require(projected_handoff(handoff, evidence, actor, args.session_id),
                 "handoff", handoff_refusal({**handoff, "html_url": selected}, evidence, args.session_id, actor))
     operation.state["handoff"] = {"url": selected, "session_id": args.session_id, "author": actor,
