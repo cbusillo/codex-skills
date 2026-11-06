@@ -92,6 +92,7 @@ class ClaimMarkerTests(unittest.TestCase):
         for body in (dependency, f"Claimed by another-worker\n\n{dependency}",
                      f"Next actor: agent:another-session\n\n{dependency}",
                      CLAIM.marker(OTHER) + "\n\n" + dependency,
+                     CLAIM.marker(OTHER) + f"\nSession: {OTHER['session']}\nNext action: Product apply remains owned by operator {session}.",
                      status + routing,
                      status + f"## Lead routing\nProvider setup on https://github.com/owner/other/issues/872 is separately owned by infra-worker native {session}.",
                      f"The issue is blocked on ingress owner/other#2, which is owned by edge-worker (native {session}).",

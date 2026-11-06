@@ -363,7 +363,8 @@ def belongs_to_session(body: str, session: str, *, record: tuple[str, int]) -> b
     body = unquoted_text(body)
     if session not in body:
         return False
-    if any(owner["session"] == session for owner in records(body)):
+    structured = records(body)
+    if any(owner["session"] == session for owner in structured):
         return True
     identity = re.compile(rf"(?<![\w-]){re.escape(session)}(?![\w-])")
     prose = ownership_text(body, keep_link_targets=True)
@@ -394,6 +395,10 @@ def belongs_to_session(body: str, session: str, *, record: tuple[str, int]) -> b
     fields = session_fields(prose, include_quotes=False, current_only=True)
     if any(identity.search(value.split(";", 1)[0]) for value in fields):
         return True
+    if fields and len(structured) == 1 and all(
+        session_identifiers(value.split(";", 1)[0]) == {structured[0]["session"]} for value in fields
+    ):
+        return False
     assertions = ownership_assertions(prose, include_sessions=False)
     if any(not foreign_assertion(prefix) and identity.search(holder) for prefix, holder in assertions):
         return True

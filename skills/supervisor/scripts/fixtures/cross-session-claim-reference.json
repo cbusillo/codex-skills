@@ -1,0 +1,28 @@
+{
+  "repository": "cbusillo/launchplane",
+  "issue": 5188,
+  "operator_session": "01a1a955-011d-7312-90bc-3c859dff4616",
+  "ended_at": "2026-11-06T05:35:07.344758+00:00",
+  "comments": [
+    {
+      "id": 6647675904,
+      "body": "Claimed by O20W5188-RESET-FIX-1104\n\nSession: 01a1a975-b06a-78e3-8a0c-ef0a9b3b6c28\nBranch: work/o20w5188-reset-fix-1104\nClaimed at: 2026-11-04T21:08:27-05:00\nNext action: Reproduce destroyed-preview destroy admission on fetched main; repair and test source only, then review, train and normal deploy. Product apply remains owned by operator 01a1a955-011d-7312-90bc-3c859dff4616.\n\nAdmission: milestone; https://github.com/cbusillo/direction/issues/4\n\n<!-- github-plan:claim {\"branch\": \"work/o20w5188-reset-fix-1104\", \"claimed_at\": \"2026-11-04T21:08:27-05:00\", \"resume_from\": \"6644336946\", \"retained_handoff\": \"https://github.com/cbusillo/launchplane/issues/5188#issuecomment-6645942857\", \"session\": \"01a1a975-b06a-78e3-8a0c-ef0a9b3b6c28\", \"worker\": \"O20W5188-RESET-FIX-1104\"} -->",
+      "user": {
+        "login": "shiny-code-app[bot]"
+      },
+      "created_at": "2026-11-05T02:08:39Z",
+      "updated_at": "2026-11-05T02:08:39Z",
+      "html_url": "https://github.com/cbusillo/launchplane/issues/5188#issuecomment-6647675904"
+    },
+    {
+      "id": 6648682596,
+      "body": "Released claim 6647675904\n\nSession: 01a1a975-b06a-78e3-8a0c-ef0a9b3b6c28\nSession: 01a1a975-b06a-78e3-8a0c-ef0a9b3b6c28",
+      "user": {
+        "login": "shiny-code-app[bot]"
+      },
+      "created_at": "2026-11-05T03:14:28Z",
+      "updated_at": "2026-11-05T03:14:28Z",
+      "html_url": "https://github.com/cbusillo/launchplane/issues/5188#issuecomment-6648682596"
+    }
+  ]
+}
