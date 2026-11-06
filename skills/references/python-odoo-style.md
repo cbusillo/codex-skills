@@ -1,7 +1,7 @@
 # Python And Odoo Style
 
 Use this style when you write Python or Odoo XML/JavaScript. Framework-specific
-sections apply only to that framework; repository-specific style and supported
+rules apply only to that framework; repository-specific style and supported
 Python versions remain authoritative. It exists because code that is easy to
 understand and has one source of truth is easier to maintain and change, for
 people and for agents. Names carry the meaning, functions are small, and
@@ -220,8 +220,8 @@ unclear code stand by explaining it.
 ## Tooling
 
 - Check your diff against this style before handoff. Review whether a docstring
-  is rendered by a tool; `uv run scripts/check_new_comments.py --base origin/main`
-  runs the catalog's comment CI check locally.
+  is rendered by a tool. Where CI uses the catalog's comment checker, run
+  `uv run <catalog>/scripts/check_new_comments.py --repo <repository> --base origin/main`.
 - Run `uv run ruff format` and `uv run ruff check --fix`. Where a repository
   sets no Ruff configuration, use line length 133, select `ANN`, `UP`, `B`,
   `I`, `G`, `BLE`, and `S608`, and ignore `D`, `UP037`, which would strip the
