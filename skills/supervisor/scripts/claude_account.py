@@ -18,6 +18,9 @@ import tempfile
 import uuid
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from skills.github.scripts.git_status import read_status
+
 MOVE_DIR = "CLAUDE_ACCOUNT_MOVE_DIR"
 ENABLED = "CLAUDE_ACCOUNT_MOVE_ENABLED"
 
@@ -49,10 +52,10 @@ def runtime_script():
         result = subprocess.run(["git", "-C", str(catalog), *args], capture_output=True, text=True, timeout=5)
         if result.returncode:
             raise ValueError("runtime must have a known default branch and clean checkout")
-        return result.stdout.strip()
+        return result.stdout.rstrip("\n")
     branch = git("symbolic-ref", "--short", "HEAD")
     default = git("symbolic-ref", "--short", "refs/remotes/origin/HEAD").removeprefix("origin/")
-    if branch != default or git("status", "--porcelain"):
+    if branch != default or read_status(git):
         raise ValueError("enroll only from the clean default-branch runtime checkout")
     return script
 

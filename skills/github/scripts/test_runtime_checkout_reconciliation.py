@@ -28,6 +28,21 @@ import pytest
 SCRIPT = Path(__file__).with_name("reconcile-runtime-checkout.py")
 
 
+def test_incomplete_status_cannot_report_a_clean_runtime() -> None:
+    namespace = runpy.run_path(str(SCRIPT))
+    blockers = namespace["runtime_blockers"]
+    with (
+        mock.patch.dict(blockers.__globals__, {
+            "current_branch": lambda root: "main",
+            "git_has_hidden_index_state": lambda root: False,
+            "run_git": lambda *args: subprocess.CompletedProcess(args, 0, b"?? unfinished"),
+            "git_text": lambda *args: "\n".join("/absent/git-operation" for arg in args if arg == "--git-path"),
+        }),
+        pytest.raises(namespace["GitCommandError"]),
+    ):
+        blockers(Path("/fixture"), "main")
+
+
 @dataclass
 class RuntimeFixture:
     repo: str
@@ -142,9 +157,13 @@ def build_runtime_fixture(
     metadata.write_text('{"defaultBranch":"main"}\n')
     (seed / ".gitignore").write_text("runtime-secret.txt\n")
     git(seed, "add", ".github/github.json", ".gitignore")
+    reader = seed / helper_relative_path.parent / "git_status.py"
+    reader.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(SCRIPT.with_name("git_status.py"), reader)
+    git(seed, "add", str(reader.relative_to(seed)))
     if helper_in_initial:
         copied_script = seed / helper_relative_path
-        copied_script.parent.mkdir(parents=True)
+        copied_script.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(SCRIPT, copied_script)
         git(seed, "add", str(helper_relative_path))
     for relative, source in (extra_files or {}).items():
@@ -167,7 +186,7 @@ def build_runtime_fixture(
     git(runtime, "worktree", "add", "-b", "runtime-test-source", str(merged), "main")
     if not helper_in_initial:
         copied_script = merged / helper_relative_path
-        copied_script.parent.mkdir(parents=True)
+        copied_script.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(SCRIPT, copied_script)
         git(merged, "add", str(helper_relative_path))
     (merged / "feature.txt").write_text("feature\n")
@@ -202,6 +221,19 @@ def build_runtime_fixture(
         landing_sha=landing_sha,
         helper_relative_path=helper_relative_path,
     )
+
+
+def test_status_reader_changes_require_a_matching_landed_copy(tmp_path: Path) -> None:
+    fixture = build_runtime_fixture(tmp_path)
+    reader_path = fixture.helper_relative_path.with_name("git_status.py")
+    reader = fixture.landing / reader_path
+    commit_file(fixture.landing, str(reader_path), reader.read_text() + "\n", "update reader")
+    git(fixture.landing, "push", "origin", "main")
+    proc, receipt = fixture.run()
+    assert proc.returncode == 1
+    assert receipt["reason_code"] == "helper_status_reader_source_mismatch"
+    assert receipt["helper_source_verified"] is False
+    assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
 
 
 def test_reconcile_fast_forwards_symlinked_runtime_and_is_idempotent(tmp_path: Path) -> None:
@@ -875,7 +907,8 @@ def test_session_start_skips_development_checkout_and_compaction(tmp_path: Path)
 def test_claude_plugin_cache_hook_resolves_the_bound_runtime(tmp_path: Path) -> None:
     fixture = session_fixture(tmp_path / "fixture")
     cache = tmp_path / "plugin-cache"
-    for relative in ("hooks/direction_check_hook.py", str(fixture.helper_relative_path)):
+    for relative in ("hooks/direction_check_hook.py", str(fixture.helper_relative_path),
+                     str(fixture.helper_relative_path.with_name("git_status.py"))):
         copied = cache / relative
         copied.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(fixture.runtime / relative, copied)

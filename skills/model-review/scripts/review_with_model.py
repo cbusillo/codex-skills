@@ -36,7 +36,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import review_policy
-from review_worktree import is_review_scratch
+from skills.github.scripts.git_status import read_status
 
 from skills.supervisor.scripts import account_choice, claim_history
 from skills.supervisor.scripts.claim_history import agy_model, protobuf_fields
@@ -473,13 +473,10 @@ def branch_diff(repo: Path) -> bytes:
         if branch.stdout.strip() not in {"main", "master"}:
             raise RuntimeError("could not identify the default branch for the review diff")
         default = "HEAD"
-    tracked = subprocess.run(["git", "-C", str(repo), "diff", "--quiet", "HEAD", "--"])
-    untracked = subprocess.run(
-        ["git", "-C", str(repo), "ls-files", "--others", "--exclude-standard", "-z"],
-        capture_output=True,
-    )
-    project_files = [name for name in untracked.stdout.split(b"\0") if name and not is_review_scratch(name)]
-    if tracked.returncode != 0 or untracked.returncode != 0 or project_files:
+    def git(*args: str) -> bytes:
+        return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, check=True).stdout
+
+    if read_status(git, allow_review_scratch=True):
         raise RuntimeError("review checkout has uncommitted or untracked files; commit the change first")
     base = subprocess.run(
         ["git", "-C", str(repo), "merge-base", "HEAD", default],

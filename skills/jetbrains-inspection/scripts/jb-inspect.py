@@ -30,6 +30,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from skills.github.scripts.git_status import read_status
 from xml.parsers.expat import ExpatError
 
 if sys.platform == "win32":
@@ -2653,7 +2656,7 @@ def retirement_worktree(path: Path, dry_run: bool = False, offline_only: bool = 
         raise InspectError("Primary or locked worktrees cannot be removed; finish the cleanup ownership checks first.", 3)
     if git_common_worktree(root) is None:
         raise InspectError("Cannot resolve the primary checkout for worktree removal.", 3)
-    if subprocess.check_output(["git", "-C", str(root), "status", "--porcelain"], text=True).strip():
+    if read_status(lambda *args: subprocess.check_output(["git", "-C", str(root), *args])):
         raise InspectError("Preserve uncommitted work before removing this worktree.", 3)
     reconcile_retirement_leases(root, dry_run, offline_only)
     return root

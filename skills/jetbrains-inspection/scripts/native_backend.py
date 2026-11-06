@@ -35,6 +35,9 @@ from pathlib import Path
 from typing import Any, NamedTuple
 from xml.etree import ElementTree
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from skills.github.scripts.git_status import read_status
+
 _spec = importlib.util.spec_from_file_location("native_common", Path(__file__).with_name("native_common.py"))
 if _spec is None or _spec.loader is None:
     raise ImportError("Native shared backend unavailable")
@@ -1830,7 +1833,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
         receipt["framework_revisions"] = [host.git_head_sha(root) for root in framework]
         if odoo:
             receipt["odoo_context"] = framework_context(repo, selected, framework)
-        if any(common.checked(["git", "-C", str(root), "status", "--porcelain", "--untracked-files=normal"]).strip() for root in framework):
+        if any(read_status(lambda *args: common.checked(["git", "-C", str(root), *args])) for root in framework):
             raise Blocked("native_framework_inputs_unproven")
         if not selected:
             raise Blocked("native_scope_empty")
@@ -2040,7 +2043,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
             raise Blocked("native_framework_inputs_changed")
         if odoo and framework_context(repo, selected, framework) != receipt["odoo_context"]:
             raise Blocked("native_odoo_context_changed")
-        if any(common.checked(["git", "-C", str(root), "status", "--porcelain", "--untracked-files=normal"]).strip() for root in framework):
+        if any(read_status(lambda *args: common.checked(["git", "-C", str(root), *args])) for root in framework):
             raise Blocked("native_framework_inputs_changed")
         if args.severity != "all":
             findings = [finding for finding in findings if finding["severity"].lower() == args.severity.lower()]

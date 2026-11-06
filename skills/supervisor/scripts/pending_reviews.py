@@ -36,7 +36,7 @@ from github_read import (GitHubReader, GitHubReadError, GitHubReadShapeError,
                          automation_only_gh_prefix_args, resolve_repo_from_remote)
 from ready_handoff import (SUPERVISOR_REPORT_HEADING as REPORT_HEADING, raw_receipt, reported_review,
                            review_prose_lines, review_receipt_head, supervisor_review_request)
-from review_worktree import is_review_scratch
+from skills.github.scripts.git_status import read_status
 from review_notifications import NotSent
 
 REPO = re.compile(r"[\w.-]+/[\w.-]+", re.ASCII)
@@ -581,7 +581,7 @@ def git(path, *args):
     result = run(["git", "-C", str(path), *args], timeout=60)
     if result.returncode:
         raise ReviewError(f"git {' '.join(args[:2])} failed: {result.stderr.strip()}")
-    return result.stdout.strip()
+    return result.stdout.rstrip("\n")
 
 
 def check_worktree(path, repo, branch, head):
@@ -589,9 +589,7 @@ def check_worktree(path, repo, branch, head):
         raise ReviewError("worktree repository mismatch")
     if git(path, "rev-parse", "HEAD") != head or git(path, "symbolic-ref", "--short", "HEAD") != branch:
         raise ReviewError("worktree head or branch moved")
-    git(path, "diff", "--quiet", "HEAD", "--")
-    names = git(path, "ls-files", "--others", "--exclude-standard", "-z").split("\0")
-    if any(name and not is_review_scratch(name) for name in names):
+    if read_status(lambda *args: git(path, *args), allow_review_scratch=True):
         raise ReviewError("dirty worktree (including untracked project files)")
 
 

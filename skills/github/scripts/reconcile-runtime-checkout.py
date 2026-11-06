@@ -25,6 +25,9 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 
+STATUS_READER = Path(__file__).with_name("git_status.py")
+read_status = runpy.run_path(str(STATUS_READER))["read_status"]
+
 SCHEMA_VERSION = 1
 HELPER_IN_CATALOG = Path("skills/github/scripts/reconcile-runtime-checkout.py")
 SUCCESS_STATUSES = frozenset({"synchronized", "already_current", "not_applicable"})
@@ -367,6 +370,13 @@ def reconcile_checkout(
                     if not receipt["helper_landing_verified"]:
                         return finish(receipt, "failed", "helper_landing_source_mismatch")
                     return finish(receipt, "failed", "helper_tip_source_mismatch")
+                reader_path = STATUS_READER.relative_to(source_root)
+                executing_reader = canonical_script_bytes(STATUS_READER.read_bytes())
+                for revision in (landing_sha, fetched_sha):
+                    if executing_reader != canonical_script_bytes(git_blob_bytes(source_root, revision, reader_path)):
+                        receipt["after_sha"] = current_sha
+                        receipt["detail"] = f"Run the helper and its status reader from a worktree at {fetched_sha}."
+                        return finish(receipt, "failed", "helper_status_reader_source_mismatch")
                 receipt["helper_source_verified"] = True
             if not git_is_ancestor(runtime_root, current_sha, fetched_sha):
                 receipt["after_sha"] = current_sha
@@ -645,13 +655,11 @@ def runtime_blockers(runtime_root: Path, default_branch: str, receipt: dict[str,
         blockers.append("runtime_wrong_branch")
     if git_has_hidden_index_state(runtime_root):
         blockers.append("runtime_hidden_index_state")
-    changes = run_git(runtime_root, "status", "--porcelain=v1", "-z", "--untracked-files=all").stdout
-    entries = iter(changes.decode(errors="surrogateescape").split("\0")[:-1])
-    paths: list[str] = []
-    for entry in entries:
-        paths.append(entry[3:])
-        if "R" in entry[:2] or "C" in entry[:2]:
-            paths.append(next(entries))
+    try:
+        changes = read_status(lambda *args: run_git(runtime_root, *args).stdout)
+    except ValueError as exc:
+        raise GitCommandError("status", str(exc)) from exc
+    paths = [path for change in changes for path in change.paths]
     if receipt is not None:
         receipt["dirty_paths"] = paths
     if paths:

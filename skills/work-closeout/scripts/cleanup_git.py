@@ -8,10 +8,14 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
 from cleanup_probe import ProbeError, command, signature, tag
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from skills.github.scripts.git_status import read_status
 
 UNSAFE_ENV = {"GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
               "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
@@ -161,9 +165,9 @@ def snapshot(repo: str, key: bytes, remote_probe: bool = True,
                         tracked=[os.fsdecode(p) for p in git(path, "ls-files", "-z")[1].split(b"\0") if p],
                         ignored=[os.fsdecode(p) for p in git(path, "ls-files", "--others", "--ignored",
                                                           "--exclude-standard", "-z")[1].split(b"\0") if p])
-            dirty = git(path, "status", "--porcelain=v1", "-z", "--untracked-files=no")[1]
-            item.update(dirty_tracked=bool(dirty), _status_tag=tag(key, dirty), coverage="completed")
-        except (OSError, ProbeError):
+            dirty = read_status(lambda *args: git(path, *args)[1], untracked=False)
+            item.update(dirty_tracked=bool(dirty), _status_tag=tag(key, os.fsencode(repr(dirty))), coverage="completed")
+        except (OSError, ProbeError, ValueError):
             item["coverage"] = "unavailable"
         worktrees.append(item)
     coverage = {}
