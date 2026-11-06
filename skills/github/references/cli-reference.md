@@ -1352,7 +1352,6 @@ links use `link` under the [milestone contract](../../github-plan/references/mil
 It revalidates the cited Track before success, including recovery of an existing claim.
 The Track's milestone must be open and listed in the merged overall direction.
 Missing or unreadable Track evidence refuses the claim.
-Claim a canonical issue for milestone work rather than its PR.
 `--admission-unlinked REASON` is deprecated compatibility context and cannot replace Track evidence.
 Existing paths are preserved. Capacity classification uses that same shared
 native traversal; claim admissions do not replace graph evidence.
