@@ -643,6 +643,14 @@ installed local helper bindings.
   `requests[].last_plan.rejected_builds[].error`. Malformed identifiers/codes
   are omitted and counted; a rejection without a usable commit is omitted and
   counted as an entry. Lists retain the existing 20-entry bound.
+  `timing` retains only `requested_at`, `started_at`, `planning_finished_at`
+  and `feedback_finished_at`, validated with the existing public UTC timestamp
+  rules, including optional fractional seconds. Missing or empty timestamps
+  stay absent; malformed values are omitted and counted, and secret-looking
+  values fail the read. Unknown timing fields are withheld and counted under
+  `requests[].last_plan.timing.<unlisted field>`. A malformed timing object is
+  empty and counted by name. Missing timing stays absent/UNKNOWN; the reader
+  never reconstructs overwritten history or infers times from other records.
   `pr_feedback` retains bounded `status`, `delivery_status`, `delivery_action`
   and feedback-time `owner_review` codes, `feedback_id`, nonnegative PR/comment ids,
   and the comment body's `body_sha256` digest. Invalid or empty optional fields

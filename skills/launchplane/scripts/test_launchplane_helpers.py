@@ -4894,6 +4894,69 @@ def test_reconcile_requests_read_keeps_the_decision_and_drops_the_rest() -> None
     assert not payload["result"]
 
 
+@pytest.mark.parametrize("field", ["requested_at", "started_at", "planning_finished_at", "feedback_finished_at"])
+def test_reconcile_requests_read_rejects_secret_shaped_timing(field: str) -> None:
+    response = _reconcile_requests_response()
+    cast(list[dict[str, Any]], response["requests"])[0]["last_plan"]["timing"] = {
+        field: "token ghp_abcdefghijklmnop"
+    }
+    status, payload, _calls = _run_product_read(
+        ["reconcile-requests-read", "--product", "example-product"], response
+    )
+    assert status == 1
+    assert payload["status"] == "invalid"
+    assert not payload["result"]
+
+
+@pytest.mark.parametrize(
+    "timing,expected,dropped",
+    [
+        (
+            {
+                "requested_at": "2026-11-06T07:00:00Z",
+                "started_at": "2026-11-06T07:00:01.123456Z",
+                "planning_finished_at": "2026-11-06T07:00:02Z",
+                "feedback_finished_at": "2026-11-06T07:00:03Z",
+                "private_field": {"private": "PRIVATE_SENTINEL"},
+            },
+            {
+                "requested_at": "2026-11-06T07:00:00Z",
+                "started_at": "2026-11-06T07:00:01.123456Z",
+                "planning_finished_at": "2026-11-06T07:00:02Z",
+                "feedback_finished_at": "2026-11-06T07:00:03Z",
+            },
+            ["<unlisted field>"],
+        ),
+        ({}, {}, []),
+        ({"started_at": "2026-11-06T07:00:01Z"}, {"started_at": "2026-11-06T07:00:01Z"}, []),
+        ({"private_field": {"private": "PRIVATE_SENTINEL"}}, {}, ["<unlisted field>"]),
+        ({"requested_at": None, "started_at": ""}, {}, []),
+        ({"requested_at": "UNKNOWN"}, {}, ["requested_at"]),
+        ({"started_at": 123}, {}, ["started_at"]),
+        ({"planning_finished_at": []}, {}, ["planning_finished_at"]),
+        ({"feedback_finished_at": "2026-11-06T07:00:03Z" + "x" * 1000}, {}, ["feedback_finished_at"]),
+        (None, {}, [""]),
+        ([], {}, [""]),
+        ("UNKNOWN", {}, [""]),
+    ],
+)
+def test_reconcile_requests_read_preserves_only_valid_recorded_timing(
+    timing: object, expected: dict[str, str], dropped: list[str]
+) -> None:
+    response = _reconcile_requests_response()
+    response["requests"] = [{"target_key": "example-product:testing", "last_plan": {"timing": timing}}]
+    status, payload, _calls = _run_product_read(
+        ["reconcile-requests-read", "--product", "example-product"], response
+    )
+    assert status == 0
+    assert payload["result"]["requests"][0]["last_plan"] == {"timing": expected}
+    assert payload["result"]["dropped_field_count"] == len(dropped)
+    assert payload["result"]["dropped_field_paths"] == [
+        "requests[].last_plan.timing" + (f".{field}" if field else "") for field in dropped
+    ]
+    assert "PRIVATE_SENTINEL" not in json.dumps(payload)
+
+
 def test_reconcile_requests_read_keeps_a_summary_that_lists_many_keys() -> None:
     keys = ", ".join(f"EXAMPLE_TUNING_SETTING_{index:02d}" for index in range(32))
     summary = (

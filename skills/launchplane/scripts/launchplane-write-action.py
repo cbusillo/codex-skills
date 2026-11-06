@@ -3654,6 +3654,22 @@ def _project_reconcile_scan(value: object, drops: _FieldDrops) -> dict[str, obje
     return projected
 
 
+def _project_reconcile_timing(value: object, drops: _FieldDrops) -> dict[str, object]:
+    path = "requests[].last_plan.timing"
+    if not isinstance(value, dict):
+        drops.drop(path)
+        return {}
+    projected: dict[str, object] = {}
+    for key, item in value.items():
+        if key not in {"requested_at", "started_at", "planning_finished_at", "feedback_finished_at"}:
+            drops.drop(f"{path}.<unlisted field>")
+            continue
+        kept = drops.keep(f"{path}.{key}", public_timestamp, item)
+        if kept != "":
+            projected[key] = kept
+    return projected
+
+
 def _project_reconcile_plan(plan_value: object, drops: _FieldDrops) -> dict[str, object]:
     """The plan fields the reconciler is known to write. Any other field, and a value
     that does not validate, is dropped and counted."""
@@ -3675,6 +3691,8 @@ def _project_reconcile_plan(plan_value: object, drops: _FieldDrops) -> dict[str,
             projected[key] = _project_rejected_builds(value, drops)
         elif key == "pr_feedback":
             projected[key] = _project_reconcile_feedback(value, drops)
+        elif key == "timing":
+            projected[key] = _project_reconcile_timing(value, drops)
         elif key == "artifact_scan":
             projected[key] = _project_reconcile_scan(value, drops)
         elif key in RECONCILE_PLAN_WITHHELD:
