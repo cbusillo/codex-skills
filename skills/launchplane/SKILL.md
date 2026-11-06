@@ -754,6 +754,8 @@ policy:
         argv_prefix: ["launchplane"]
       exceptions:
         - repository: cbusillo/launchplane
+          argv_prefix: ["launchplane", "runner-host-hygiene-qualify"]
+        - repository: cbusillo/launchplane
           argv_prefix: ["launchplane", "ingress", "health-history-summary"]
         - repository: cbusillo/launchplane
           argv_prefix: ["launchplane", "service", "export-openapi"]
@@ -828,7 +830,9 @@ is not visible to the hook, so use the `cd` prefix. Other shell
 directory/project overrides retain the block. Consumers without
 repository-exception support keep the original block; do not bypass it through
 an alternate entry point. The local gates support chained checks and output
-redirection.
+redirection. A leading `UV_PROJECT_ENVIRONMENT=` may place the project's
+environment outside the checkout when uv syncs it; `--no-sync` and `UV_NO_SYNC`
+in the hook's inherited environment retain the block with that selector.
 
 For the Director-approved testing local-consumer path (Q921), read the
 [custody contract](https://github.com/cbusillo/launchplane/blob/main/docs/testing-local-consumer.md)

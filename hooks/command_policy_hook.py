@@ -681,13 +681,21 @@ def exception_cwd(shell: str, cwd: Path) -> Path | None:
                     return None
                 return exception_cwd(tokens[index + 1], cwd)
         return None
-    for token in (token for argv in commands for span in execution_spans(argv) for token in span):
-        if Path(token).name in SHELLS:
-            return None
-        if token.startswith(POSTGRES_URL_VARIABLE) and loopback_database(token.removeprefix(POSTGRES_URL_VARIABLE)):
-            continue
-        if ASSIGNMENT.match(token):
-            return None
+    for span in (span for argv in commands for span in execution_spans(argv)):
+        for token in span:
+            if Path(token).name in SHELLS:
+                return None
+            if token.startswith(POSTGRES_URL_VARIABLE) and loopback_database(token.removeprefix(POSTGRES_URL_VARIABLE)):
+                continue
+            if (
+                token.startswith("UV_PROJECT_ENVIRONMENT=")
+                and executable_arguments(span).argv[:1] == ["launchplane"]
+                and "--no-sync" not in span
+                and not os.environ.get("UV_NO_SYNC")
+            ):
+                continue
+            if ASSIGNMENT.match(token):
+                return None
     for raw_argv in commands:
         argv = without_redirections(raw_argv)
         while argv and (argv[0] in TRANSPARENT | SHELL_KEYWORDS | {"builtin", "function"} or ASSIGNMENT.match(argv[0])):

@@ -478,6 +478,7 @@ class CommandPolicyHookTests(unittest.TestCase):
                     self.assertEqual(bash("uv run " + command, linked).returncode, 0)
                     self.assertEqual(bash("uv run " + command, frontend).returncode, 0)
                     self.assertEqual(bash("uv run --extra dev " + command, checkout).returncode, 0)
+                    self.assertEqual(bash("UV_PROJECT_ENVIRONMENT=/task/venv uv run " + command, checkout).returncode, 0)
                     self.assertEqual(bash("uv run " + command, root).returncode, 2)
                     self.assertEqual(bash("uv run --directory /other " + command, checkout).returncode, 2)
                     self.assertEqual(bash("uv run --directory=/other " + command, checkout).returncode, 2)
@@ -628,6 +629,8 @@ class CommandPolicyHookTests(unittest.TestCase):
                 "launchplane action-pins report --revision HEAD --repository cbusillo/launchplane",
                 "launchplane merge-train run-once",
                 "launchplane service start",
+                "launchplane runner-host-hygiene-qualify-other",
+                "launchplane runner-host-hygiene-execute",
             ):
                 with self.subTest(command=command):
                     self.assertEqual(bash("uv run --extra dev " + command, checkout).returncode, 2)
@@ -704,6 +707,7 @@ class CommandPolicyHookTests(unittest.TestCase):
             for local_gate in (
                 gate,
                 "uv run launchplane service plan-config-authority-transition --base-branch main --required-checks-file checks.json",
+                "uv run launchplane runner-host-hygiene-qualify --audit-file saved-audit.json --as-of 2026-11-04T00:00:00+0000 --require-qualified",
             ):
                 for line in (
                     local_gate + " > output.log 2>&1",
@@ -724,6 +728,38 @@ class CommandPolicyHookTests(unittest.TestCase):
             ):
                 with self.subTest(command=command):
                     self.assertEqual(bash(command + " && " + gate, checkout).returncode, 0)
+
+    def test_project_environment_selection_preserves_repository_gate_context(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checkout = root / "checkout"
+            subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+            subprocess.run(["git", "-C", str(checkout), "config", "remote.origin.url", "git@github.com:cbusillo/launchplane.git"], check=True)
+            linked = linked_worktree(checkout, root / "linked")
+            environment = shlex.quote(str(root / "task evidence" / "venv"))
+            gate = "UV_PROJECT_ENVIRONMENT=" + environment + " uv run launchplane service export-agent-contract --output artifact.json"
+            for target in (checkout, linked):
+                command = gate + " > export.log 2>&1 && cmp contracts/agent-operator-contract.json artifact.json"
+                with self.subTest(target=target):
+                    result = bash(command, target)
+                    self.assertEqual((result.returncode, result.stderr), (0, ""))
+                    result = bash("cd " + shlex.quote(str(target)) + " && " + command, root)
+                    self.assertEqual((result.returncode, result.stderr), (0, ""))
+            for command in (
+                gate.replace("uv run", "UV_PROJECT=/other uv run"),
+                gate.replace("uv run", "PATH=/other/bin uv run"),
+                gate.replace("uv run", "PYTHONPATH=/other uv run"),
+                gate.replace("uv run", "uv run --no-sync"),
+                "set -a; UV_PROJECT_ENVIRONMENT=" + environment + "; uv run --no-sync launchplane service export-agent-contract",
+                gate.replace("launchplane service export-agent-contract", "launchplane service start"),
+                gate.replace("launchplane service export-agent-contract", "/global/bin/launchplane service export-agent-contract"),
+                gate.replace("uv run", ""),
+            ):
+                with self.subTest(command=command):
+                    self.assertEqual(bash(command, checkout).returncode, 2)
+            self.assertEqual(bash(gate, root).returncode, 2)
+            with mock.patch.dict(os.environ, {"UV_NO_SYNC": "1"}):
+                self.assertEqual(bash(gate, checkout).returncode, 2)
 
     def test_postgres_gate_runs_only_against_a_named_loopback_database(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

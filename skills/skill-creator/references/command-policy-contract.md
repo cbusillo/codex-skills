@@ -114,7 +114,7 @@ or a security boundary.
 The hook uses the event's `cwd` (or its process cwd when absent), or one leading
 literal absolute `cd <directory> &&` prefix whose existing target is independently
 verified by Git. It never executes the shell to infer context. Other directory
-or uv project switches, environment assignments, explicit Launchplane
+or uv project switches, unrecognized environment assignments, explicit Launchplane
 executable paths, `$()` substitutions, and backticks retain the block. Unquoted
 newlines separate commands, including after comments. Heredoc scripts retain the
 existing matcher behavior tracked in #671 and cannot use repository exceptions.
