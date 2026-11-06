@@ -2501,59 +2501,6 @@ def test_public_dns_names_with_token_like_substrings_are_supported() -> None:
     assert result["result"]["public_hosts"]["read_back_hosts"] == hosts
 
 
-def test_product_config_secret_results_keep_declared_secret_class() -> None:
-    projected = write_action._project_secret_results(
-        [
-            {
-                "action": "rotated",
-                "scope": "context_instance",
-                "integration": "runtime_environment",
-                "name": "EXAMPLE_API_TOKEN",
-                "binding_key": "EXAMPLE_API_TOKEN",
-                "context": "example-product",
-                "instance": "testing",
-                "secret_id": "secret-record-example",
-                "secret_class": "testing",
-            },
-            {
-                "action": "created",
-                "scope": "context_instance",
-                "integration": "runtime_environment",
-                "name": "EXAMPLE_SYNC_API_TOKEN",
-                "binding_key": "EXAMPLE_SYNC_API_TOKEN",
-                "context": "example-product",
-                "instance": "testing",
-                "secret_class": "shared_safe",
-                "sharing_reason": {
-                    "kind": "read_only_source",
-                    "reason": "Testing imports from the production account.",
-                    "evidence": "The Client confirmed a read-only token on 2026-10-02.",
-                },
-            },
-        ]
-    )
-
-    assert projected == [
-        {
-            "action": "rotated",
-            "integration": "runtime_environment",
-            "binding_key": "EXAMPLE_API_TOKEN",
-            "secret_class": "testing",
-        },
-        {
-            "action": "created",
-            "integration": "runtime_environment",
-            "binding_key": "EXAMPLE_SYNC_API_TOKEN",
-            "secret_class": "shared_safe",
-            "sharing_reason": {
-                "kind": "read_only_source",
-                "reason": "Testing imports from the production account.",
-                "evidence": "The Client confirmed a read-only token on 2026-10-02.",
-            },
-        },
-    ]
-
-
 def test_product_config_projection_keeps_declared_secret_class_end_to_end() -> None:
     result = write_action.summarize_success(
         operation="product-config-dry-run",

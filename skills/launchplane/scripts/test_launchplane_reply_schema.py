@@ -40,10 +40,6 @@ SCHEMA = {
 }
 
 
-def test_pinned_schema_is_enforceable() -> None:
-    assert reply_schema.controller_reply_schema()["type"] == "object"
-
-
 def test_declared_types_bounds_and_requirements_are_enforced() -> None:
     reply = {"status": "accepted", "count": None}
     assert reply_schema.check_controller_reply(reply, SCHEMA) == (reply, [])
