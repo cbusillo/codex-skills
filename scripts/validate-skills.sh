@@ -65,7 +65,6 @@ explicit_helper_validators=(
 # Files matching the helper names that are CLIs or fixtures requiring
 # arguments or live context, so the loop below does not run them.
 helper_test_skiplist=(
-	skills/rollout-friction/scripts/validate_rollout_memory_llm_results.py
 	# CLI runs in its own warning step; its behavior tests run below.
 	scripts/check_test_quality.py
 )

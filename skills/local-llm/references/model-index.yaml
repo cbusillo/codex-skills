@@ -163,18 +163,6 @@ model_roles:
     timeout_seconds: 180
     load_policy: jit_chat
     ttl_seconds: 300
-  rollout_memory_review:
-    description: >-
-      Trusted-local review of broad rollout-memory extraction batches.
-    primary: qwen3-coder-64b
-    fallback: qwen3-coder-next
-    temperature: 0.1
-    max_tokens: 7000
-    timeout_seconds: 600
-    load:
-      policy: api_explicit
-      context_length: 131072
-      flash_attention: true
   work_brief_writer:
     description: >-
       Trusted-local synthesis of GitHub work briefs from evidence JSON.

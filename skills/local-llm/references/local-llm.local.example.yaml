@@ -37,15 +37,6 @@ model_roles:
     timeout_seconds: 180
     load_policy: jit_chat
     ttl_seconds: 300
-  rollout_memory_review:
-    endpoint: lmstudio-localhost
-    primary: qwen3-coder-64b
-    max_tokens: 7000
-    timeout_seconds: 600
-    load:
-      policy: api_explicit
-      context_length: 131072
-      flash_attention: true
   work_brief_writer:
     endpoint: lmstudio-localhost
     primary: qwen3-coder-64b
