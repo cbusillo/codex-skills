@@ -390,8 +390,8 @@ class RepositoryTests(Fixture):
                     orphan = self.git(path, *IDENTITY, "commit-tree", tree, "-p", base, "-m", "Branch reflog content")
                     orphan = self.git(path, *IDENTITY, "commit-tree", f"{base}^{{tree}}", "-p", orphan, "-m", "Reverted content")
                     self.git(path, "reset", "--hard", base)
-                    self.git(path, "update-ref", f"refs/heads/work/{cause}", orphan)
-                    self.git(path, "update-ref", f"refs/heads/work/{cause}", base)
+                    self.git(self.repo, "update-ref", f"refs/heads/work/{cause}", orphan)
+                    self.git(self.repo, "update-ref", f"refs/heads/work/{cause}", base)
                 else:
                     self.commit(path, "Before amendment")
                 if cause == "amended":
