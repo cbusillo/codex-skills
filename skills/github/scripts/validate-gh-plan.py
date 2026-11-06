@@ -1414,7 +1414,7 @@ def test_project_sync_failures_preserve_issue_creation_and_closure() -> None:
         ("create", "enroll", "project sync throttled", "project_update_failed"),
         ("create", "enroll", "HTTP 403: resource not accessible by integration", "project_auth_denied"),
         ("close", "lookup", "Project not found for owner: Roadmap", "lookup_stale"),
-        ("close", "lookup", "HTTP 403: resource not accessible by integration", "project_auth_denied"),
+        ("close", "fields", "HTTP 403: resource not accessible by integration", "project_auth_denied"),
     )
     for command, failure_stage, message, error_code in scenarios:
         plan = load_plan_module()
@@ -1436,8 +1436,8 @@ def test_project_sync_failures_preserve_issue_creation_and_closure() -> None:
                 raise plan.project_error(message)
             return "automation-gh", 7, {"title": "Roadmap", "number": 7}
 
-        def enroll(args: list[str], **_kwargs: Any) -> tuple[str, str, str]:
-            assert args[:2] == ["project", "item-add"], args
+        def enroll(project_args: list[str], **_kwargs: Any) -> tuple[str, str, str]:
+            assert project_args[:2] == ["project", "item-add"], project_args
             calls.append("enroll")
             raise plan.project_error(message)
 
@@ -1449,6 +1449,11 @@ def test_project_sync_failures_preserve_issue_creation_and_closure() -> None:
             calls.append("close")
             return {"actor": "automation-gh", "expected_actor": "shiny-code-bot"}
 
+        def fields(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            calls.append("fields")
+            raise plan.project_error(message)
+
+        plan.project_fields = fields
         plan.resolve_project = project_lookup
         plan.project_meta = project_lookup
         plan.run_raw = enroll
@@ -1471,7 +1476,7 @@ def test_project_sync_failures_preserve_issue_creation_and_closure() -> None:
         assert warning["warning"] is True and warning["blocking"] is False, warning
         assert warning["operation"] == f"{command}_project_sync", warning
         assert warning["target"] == {"owner": "owner", "project": "Roadmap"}, warning
-        project_calls = ["lookup", *(["enroll"] if failure_stage == "enroll" else [])]
+        project_calls = ["lookup", *([failure_stage] if failure_stage != "lookup" else [])]
         assert calls == (["create", *project_calls] if command == "create" else [*project_calls, "close"]), calls
 
 
