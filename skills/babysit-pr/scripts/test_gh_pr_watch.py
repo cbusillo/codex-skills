@@ -102,6 +102,27 @@ def sample_rest_view(**overrides):
     }
 
 
+def review_document(pr: dict[str, Any], **overrides: Any) -> dict[str, Any]:
+    return {
+        "data": {
+            "repository": {
+                "nameWithOwner": pr["repo"],
+                "pullRequest": {
+                    "number": pr["number"],
+                    "url": pr["url"],
+                    "headRefOid": pr["head_sha"],
+                    "baseRefName": pr["base_branch"],
+                    "isDraft": False,
+                    "state": "OPEN",
+                    "reviewDecision": "APPROVED",
+                    "mergeStateStatus": "CLEAN",
+                    **overrides,
+                },
+            }
+        }
+    }
+
+
 class ReviewReader:
     def __init__(self, body=None, *, degraded_reasons=None):
         self.body = body
@@ -428,8 +449,7 @@ def test_confirmed_conflict_requests_refresh_instead_of_idle(conflict):
     assert gh_pr_watch.recommend_actions(pr, sample_checks(), [], [], [], 0, 3) == ["refresh_conflicting_branch"]
 
 
-@pytest.mark.parametrize("unread", ["mergeable", "merge_state_status"])
-def test_unknown_mergeability_waits_without_refresh(unread):
+def test_unknown_mergeability_waits_without_refresh() -> None:
     pr = sample_pr()
     pr.update({"mergeable": "UNKNOWN", "merge_state_status": "UNKNOWN"})
     assert gh_pr_watch.recommend_actions(pr, sample_checks(), [], [], [], 0, 3) == ["idle"]
@@ -443,16 +463,7 @@ def test_unknown_mergeability_waits_without_refresh(unread):
 def test_review_readiness_query_distinguishes_nullable_decision():
     pr = sample_pr()
     pr.update({"review_decision": "", "review_requirement": "unknown", "review_decision_source": "not_queried"})
-    body = {
-        "data": {"repository": {
-            "nameWithOwner": "openai/codex",
-            "pullRequest": {
-                "number": 123, "url": pr["url"], "headRefOid": pr["head_sha"],
-                "baseRefName": "main", "isDraft": False, "state": "OPEN",
-                "reviewDecision": None, "mergeStateStatus": "CLEAN",
-            },
-        }}
-    }
+    body = review_document(pr, reviewDecision=None)
 
     review, _ = gh_pr_watch.query_review_readiness(pr, ReviewReader(body))
     gh_pr_watch.apply_review_readiness(pr, review)
@@ -477,11 +488,8 @@ def test_review_readiness_partial_error_is_unknown():
 
 def test_review_readiness_missing_field_is_distinct_from_nullable():
     pr = sample_pr()
-    body = {"data": {"repository": {"nameWithOwner": pr["repo"], "pullRequest": {
-        "number": pr["number"], "url": pr["url"], "headRefOid": pr["head_sha"],
-        "baseRefName": pr["base_branch"], "isDraft": False, "state": "OPEN",
-        "reviewDecision": None,
-    }}}}
+    body = review_document(pr, reviewDecision=None)
+    del body["data"]["repository"]["pullRequest"]["mergeStateStatus"]
 
     reader = ReviewReader(body)
     review, _ = gh_pr_watch.query_review_readiness(pr, reader)
@@ -491,14 +499,7 @@ def test_review_readiness_missing_field_is_distinct_from_nullable():
 
 def test_nullable_review_decision_does_not_override_blocking_merge_state():
     pr = sample_pr()
-    body = {"data": {"repository": {
-        "nameWithOwner": "openai/codex",
-        "pullRequest": {
-            "number": 123, "url": pr["url"], "headRefOid": pr["head_sha"],
-            "baseRefName": "main", "isDraft": False, "state": "OPEN",
-            "reviewDecision": None, "mergeStateStatus": "BLOCKED",
-        },
-    }}}
+    body = review_document(pr, reviewDecision=None, mergeStateStatus="BLOCKED")
 
     review, _ = gh_pr_watch.query_review_readiness(pr, ReviewReader(body))
     gh_pr_watch.apply_review_readiness(pr, review)
@@ -535,14 +536,7 @@ def test_review_readiness_requires_exact_check_head():
 )
 def test_review_readiness_decision_matrix(decision: str, requirement: str, ready: bool):
     pr = sample_pr()
-    body = {"data": {"repository": {
-        "nameWithOwner": pr["repo"],
-        "pullRequest": {
-            "number": pr["number"], "url": pr["url"], "headRefOid": pr["head_sha"],
-            "baseRefName": pr["base_branch"], "isDraft": False, "state": "OPEN",
-            "reviewDecision": decision, "mergeStateStatus": "CLEAN",
-        },
-    }}}
+    body = review_document(pr, reviewDecision=decision)
 
     review, _ = gh_pr_watch.query_review_readiness(pr, ReviewReader(body))
     gh_pr_watch.apply_review_readiness(pr, review)
@@ -588,11 +582,7 @@ def test_review_readiness_same_document_identity_mismatch_is_unknown(field: str)
 
 def test_review_readiness_unknown_enum_remains_actionable():
     pr = sample_pr()
-    body = {"data": {"repository": {"nameWithOwner": pr["repo"], "pullRequest": {
-        "number": pr["number"], "url": pr["url"], "headRefOid": pr["head_sha"],
-        "baseRefName": pr["base_branch"], "isDraft": False, "state": "OPEN",
-        "reviewDecision": "FUTURE_ENUM", "mergeStateStatus": "CLEAN",
-    }}}}
+    body = review_document(pr, reviewDecision="FUTURE_ENUM")
 
     review, _ = gh_pr_watch.query_review_readiness(pr, ReviewReader(body))
     gh_pr_watch.apply_review_readiness(pr, review)
@@ -604,11 +594,7 @@ def test_review_readiness_unknown_enum_remains_actionable():
 
 def test_review_readiness_actor_drift_is_unknown():
     pr = sample_pr()
-    body = {"data": {"repository": {"nameWithOwner": pr["repo"], "pullRequest": {
-        "number": pr["number"], "url": pr["url"], "headRefOid": pr["head_sha"],
-        "baseRefName": pr["base_branch"], "isDraft": False, "state": "OPEN",
-        "reviewDecision": "APPROVED", "mergeStateStatus": "CLEAN",
-    }}}}
+    body = review_document(pr)
 
     review, _ = gh_pr_watch.query_review_readiness(
         pr, ReviewReader(body, degraded_reasons=[{"component": "actor", "code": "actor_changed"}])
