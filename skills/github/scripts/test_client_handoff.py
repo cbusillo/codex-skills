@@ -27,7 +27,6 @@ class FakeLaunchplane:
         self.repositories: list[Any] = []
         self.ambiguous: Any = []
         self.profiles: dict[str, dict[str, Any]] = {}
-        self.sources: dict[tuple[str, str], list[str]] = {}
         self.failure: Optional[Exception] = None
 
     def product(self, repository, product, *, client="client", release="held", driver="generic-web", lanes=()):
@@ -40,10 +39,6 @@ class FakeLaunchplane:
             "lanes": [{"context": f"{product}-{lane}", "instance": lane} for lane in lanes],
             "updated_at": "2026-01-01T00:00:00Z",
         }
-
-    def pin(self, product, sources, lanes=("prod", "testing")):
-        for lane in lanes:
-            self.sources[(product, lane)] = list(sources)
 
     def read(self, **kwargs):
         if self.failure:
@@ -63,12 +58,7 @@ class FakeLaunchplane:
                         "product": product, "environment": lane, "context": lane,
                         "repository": profile["repository"], "driver_id": profile["driver_id"],
                         "target": {"provider": "dokploy", "target_type": "compose", "provider_target_type": "compose",
-                                   "target_id_recorded": True, "artifact_manifest": {
-                                       "artifact_id": "artifact-1", "source_commit": "c" * 40,
-                                       "image": {"repository": "ghcr.io/example/runtime", "digest": "sha256:" + "d" * 64},
-                                       "addon_sources": [{"repository": source, "commit": "e" * 40}
-                                                         for source in self.sources.get((product, lane), [])],
-                                   }},
+                                   "target_id_recorded": True, "artifact_manifest": None},
                     }}
         raise AssertionError(path)
 
@@ -106,7 +96,7 @@ class ClientRuleTests(unittest.TestCase):
         return refusal
 
     def test_unmapped_repository_with_client_notes_gets_plain_ready(self):
-        self.launchplane.product("example/client", "client-runtime")
+        self.launchplane.product("example/client", "client-runtime", driver="odoo", lanes=("testing",))
         self.assertEqual(self.verdict(CLIENT_NOTES), "")
         self.assertEqual(self.verdict("No notes section."), "")
 
@@ -120,21 +110,6 @@ class ClientRuleTests(unittest.TestCase):
         self.assertIn("Client test notes are missing", self.verdict("No notes section."))
         self.assertEqual(self.verdict(NOTHING_TO_TEST), "")
 
-    def test_repository_pinned_into_a_client_odoo_lane_waits(self):
-        self.launchplane.product(REPO, "tool", release="director_standing", client="director")
-        self.launchplane.product("example/tenant", "tenant", driver="odoo", lanes=("prod", "testing"))
-        self.launchplane.pin("tenant", [REPO], lanes=("testing",))
-        self.assertTrue(self.verdict(CLIENT_NOTES))
-        self.launchplane.pin("tenant", ["example/other-addons"], lanes=("testing",))
-        self.assertEqual(self.verdict(CLIENT_NOTES), "")
-
-    def test_source_recorded_without_owner_counts_only_for_the_same_name(self):
-        self.launchplane.product("example/tenant", "tenant", driver="odoo", lanes=("prod",))
-        self.launchplane.pin("tenant", ["other-addons"], lanes=("prod",))
-        self.assertEqual(self.verdict(CLIENT_NOTES), "")
-        self.launchplane.pin("tenant", ["tool"], lanes=("prod",))
-        self.assertTrue(self.verdict(CLIENT_NOTES))
-
     def test_director_standing_product_skips_acceptance_unless_held(self):
         self.launchplane.product(REPO, "tool", client="director", release="director_standing")
         self.assertEqual(self.verdict(CLIENT_NOTES), "")
@@ -145,17 +120,11 @@ class ClientRuleTests(unittest.TestCase):
         self.assertIn("Client test notes are missing", self.verdict("No notes section."))
 
     def test_unsettled_reads_hold_on_the_client_path(self):
-        truncated = [f"lane-{index}" for index in range(lp.PRODUCT_PROFILE_MAX_LANES + 1)]
-
         def failed():
             self.launchplane.failure = TimeoutError()
 
         def ambiguous():
             self.launchplane.ambiguous = ["example/shared"]
-
-        def lanes_truncated():
-            self.launchplane.product("example/tenant", "tenant", driver="odoo", lanes=("prod",))
-            self.launchplane.profiles["tenant"]["lanes"] = [{"context": lane, "instance": "prod"} for lane in truncated]
 
         def malformed():
             self.launchplane.repositories.append("example/tool")
@@ -167,7 +136,7 @@ class ClientRuleTests(unittest.TestCase):
         def no_token():
             self.token = ""
 
-        for unsettle in (failed, ambiguous, lanes_truncated, malformed, unreadable_profile, no_token):
+        for unsettle in (failed, ambiguous, malformed, unreadable_profile, no_token):
             with self.subTest(read=unsettle.__name__):
                 self.launchplane.__init__()
                 self.token = "fixture"

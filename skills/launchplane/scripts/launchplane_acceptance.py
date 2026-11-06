@@ -5,7 +5,6 @@
 # ///
 import http.client
 import importlib.util
-from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -95,60 +94,7 @@ def _omits_required_profile_fields(raw_profile: object) -> bool:
     if not isinstance(raw_profile, dict) or not ({"client", "owner"} & raw_profile.keys()):
         return True
     client = raw_profile["client"] if "client" in raw_profile else raw_profile["owner"]
-    return (
-        (client is not None and not (isinstance(client, dict) and "github_login" in client))
-        or not isinstance(raw_profile.get("lanes"), list)
-        or "driver_id" not in raw_profile
-    )
-
-
-def _source_may_be_repository(source_key: str, target_key: str) -> bool:
-    return source_key in {target_key, target_key.split("/", 1)[1]}
-
-
-def _lane_pins(settings: dict[str, Any], *, product: str, instance: str, target_key: str) -> bool:
-    payload = _read(
-        settings,
-        operator.helper_command_path("product-environment-read").format(product=product, environment=instance),
-    )
-    summary = operator.summarize_product_environment_read(
-        request={"product": product, "environment": instance}, provider_payload=payload,
-    )
-    result = summary["result"]
-    if summary["status"] != "ok" or result["product"] != product or result["environment"] != instance:
-        raise UnsettledRead("Launchplane's lane record does not match its product")
-    environment = payload.get("environment")
-    target = environment.get("target") if isinstance(environment, dict) else None
-    manifest = target.get("artifact_manifest") if isinstance(target, dict) else None
-    sources = manifest.get("addon_sources") if isinstance(manifest, dict) else None
-    if not isinstance(sources, list) or not all(
-        isinstance(source, dict) and isinstance(source.get("repository"), str) for source in sources
-    ):
-        raise UnsettledRead("Launchplane's addon sources for an Odoo lane are unreadable")
-    return any(_source_may_be_repository(repository_key(source["repository"]), target_key) for source in sources)
-
-
-def _pinned_release_modes(
-    settings: dict[str, Any], entries: list[dict[str, Any]], target_key: str
-) -> Iterator[str]:
-    for entry in entries:
-        mapped_driver = entry.get("driver_id") or None
-        if mapped_driver not in {"odoo", None}:
-            continue
-        profile = _client_profile(settings, entry)
-        if profile is None or (profile.get("driver_id") != "odoo" and mapped_driver is None):
-            continue
-        if profile.get("driver_id") != "odoo" or profile.get("lanes_truncated"):
-            raise UnsettledRead("Launchplane's lane list for an Odoo product is incomplete")
-        instances = dict.fromkeys(
-            str(lane["instance"]) for lane in profile.get("lanes") or []
-            if isinstance(lane, dict) and lane.get("instance") in {"prod", "testing"}
-        )
-        if any(
-            _lane_pins(settings, product=str(profile["product"]), instance=instance, target_key=target_key)
-            for instance in instances
-        ):
-            yield profile["release_on_acceptance"]
+    return client is not None and not (isinstance(client, dict) and "github_login" in client)
 
 
 def _settled_release(settings: dict[str, Any], target_key: str) -> str:
@@ -163,10 +109,6 @@ def _settled_release(settings: dict[str, Any], target_key: str) -> str:
     ]
     if any(mode != DIRECTOR_STANDING for mode in modes):
         return CLIENT
-    for mode in _pinned_release_modes(settings, entries, target_key):
-        if mode != DIRECTOR_STANDING:
-            return CLIENT
-        modes.append(mode)
     return DIRECTOR_STANDING if modes else NO_CLIENT
 
 

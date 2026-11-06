@@ -733,8 +733,7 @@ forward, the train can admit this checked Client wait without another `ready`
 call. Other waits still require a fresh Ready; all other train checks still apply.
 
 `ready` uses one Client rule, `client_handoff` in `ready_handoff.py`. Client acceptance is required only when Launchplane maps the
-repository, directly or as an addon source pinned in an Odoo product's prod or
-testing lane, to an active product whose Client is not the Director, or when the
+repository to an active product whose Client is not the Director, or when the
 PR carries an explicit hold: an `owner-review` label, or a
 `launchplane/owner-review` check other than a completed neutral check or an
 unfinished advisory for current engineering notes. `ready` excludes that
@@ -743,7 +742,7 @@ releases on `director_standing` is the Director's, so it keeps standing
 acceptance unless explicitly held. A repository with no Client gets a plain
 Ready with no notes, `Client change:` statement or no-test declaration.
 Launchplane answers Client, Director standing, no Client, or unknown. Missing
-credentials and a failed, ambiguous, malformed or truncated read are unknown:
+credentials and a failed, ambiguous or malformed read are unknown:
 the PR stays on the Client path and the refusal names the read, so
 `Nothing for the Client to test: <reason>` still gets a plain Ready. This read
 grants no release authority.
