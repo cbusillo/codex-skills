@@ -97,10 +97,16 @@ def validated_private_address(value: str) -> str:
     return str(address)
 
 
+def private_tls_context() -> ssl.SSLContext:
+    context = ssl.create_default_context()
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    return context
+
+
 class PrivateHTTPSConnection(http.client.HTTPSConnection):
     def __init__(self, hostname: str, port: int, private_address: str, *, timeout: float) -> None:
         self.private_address = validated_private_address(private_address)
-        self.tls_context = ssl.create_default_context()
+        self.tls_context = private_tls_context()
         super().__init__(hostname, port, timeout=timeout, context=self.tls_context, blocksize=1024 * 1024)
 
     def connect(self) -> None:
@@ -173,7 +179,7 @@ def private_send(
 
     origin, hostname = private_origin(h, settings, path)
     target_address = validated_private_address(address)
-    tls_context = ssl.create_default_context()
+    tls_context = private_tls_context()
     logger = logging.Logger("migrated-upload")
     logger.disabled = True
     with socket.create_connection((target_address, origin.port or 443), connect_timeout) as raw:

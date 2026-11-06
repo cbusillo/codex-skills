@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["pytest==9.1.1", "websockets==17.2"]
+# dependencies = ["pytest==9.1.1", "websockets==17.3"]
 # ///
 import argparse
 import hashlib
