@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import fcntl
@@ -26,6 +27,7 @@ from skills.github.scripts.github_plan_status.questions import COMMENT_URL
 from skills.direction.scripts.question_id import counter_path, heading_id
 
 MARKER = re.compile(r"<!-- director-question:delivery (\{[^\n]*}) -->")
+SOURCE_READERS = 8
 
 
 def source_item(url):
@@ -237,11 +239,17 @@ def reconcile(args, fetch):
     explicit_discussions = set(args.items) - targets
     comments_by_url: dict[str, dict[str, Any]] = {}
     errors = []
-    for item in items:
+    def read_source(discussion: str) -> list[dict[str, Any]] | dict[str, str]:
         try:
-            source_comments = queue_comments if item == args.queue else fetch(item)
+            return queue_comments if discussion == args.queue else fetch(discussion)
         except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
-            errors.append({"item": item, "error": str(error)})
+            return {"item": discussion, "error": str(error)}
+
+    with ThreadPoolExecutor(max_workers=SOURCE_READERS) as pool:
+        sources = list(pool.map(read_source, items))
+    for item, source_comments in zip(items, sources):
+        if isinstance(source_comments, dict):
+            errors.append(source_comments)
             continue
         for comment in source_comments:
             comments_by_url[comment["url"]] = comment
