@@ -112,7 +112,7 @@ def review_document(pr: dict[str, Any], **overrides: Any) -> dict[str, Any]:
                     "url": pr["url"],
                     "headRefOid": pr["head_sha"],
                     "baseRefName": pr["base_branch"],
-                    "isDraft": False,
+                    "isDraft": pr["draft"],
                     "state": "OPEN",
                     "reviewDecision": "APPROVED",
                     "mergeStateStatus": "CLEAN",
@@ -554,30 +554,32 @@ def test_review_readiness_decision_matrix(decision: str, requirement: str, ready
 @pytest.mark.parametrize("field", ["url", "headRefOid", "baseRefName", "isDraft", "state"])
 def test_review_readiness_same_document_identity_mismatch_is_unknown(field: str):
     pr = sample_pr()
-    item = {
-        "number": pr["number"], "url": pr["url"], "headRefOid": pr["head_sha"],
-        "baseRefName": pr["base_branch"], "isDraft": False, "state": "OPEN",
-        "reviewDecision": "APPROVED", "mergeStateStatus": "CLEAN",
-        field: {
-            "url": "https://github.com/openai/codex/pull/999",
-            "headRefOid": "different",
-            "baseRefName": "other",
-            "isDraft": True,
-            "state": "CLOSED",
-        }[field],
-    }
-    body = {"data": {"repository": {"nameWithOwner": pr["repo"], "pullRequest": item}}}
+    body = review_document(
+        pr,
+        **{
+            field: {
+                "url": "https://github.com/openai/codex/pull/999",
+                "headRefOid": "different",
+                "baseRefName": "other",
+                "isDraft": True,
+                "state": "CLOSED",
+            }[field]
+        },
+    )
 
     reader = ReviewReader(body)
     review, _ = gh_pr_watch.query_review_readiness(pr, reader)
     assert review["requirement"] == "unknown"
-    assert reader.degraded[1] == {
-        "url": "graphql_head_mismatch",
-        "headRefOid": "graphql_head_mismatch",
-        "baseRefName": "graphql_state_mismatch",
-        "isDraft": "graphql_state_mismatch",
-        "state": "graphql_state_mismatch",
-    }[field]
+    assert (
+        reader.degraded[1]
+        == {
+            "url": "graphql_head_mismatch",
+            "headRefOid": "graphql_head_mismatch",
+            "baseRefName": "graphql_state_mismatch",
+            "isDraft": "graphql_state_mismatch",
+            "state": "graphql_state_mismatch",
+        }[field]
+    )
 
 
 def test_review_readiness_unknown_enum_remains_actionable():
