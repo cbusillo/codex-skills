@@ -127,7 +127,9 @@ class CommandPolicyHookTests(unittest.TestCase):
             with self.subTest(command=command):
                 result = bash(command)
                 self.assertEqual(result.returncode, 2, result.stderr)
-                policy, skill, _ = command_policy_hook.blocking_policy(command)
+                blocked = command_policy_hook.blocking_policy(command)
+                assert blocked is not None
+                policy, skill, _ = blocked
                 self.assertEqual((skill, policy["id"]), (expected.skill, expected.policy_id))
         for command in allowed:
             with self.subTest(command=command):

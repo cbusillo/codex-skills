@@ -43,6 +43,7 @@ import os
 import re
 import shlex
 import sys
+from collections import deque
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import ModuleType
@@ -104,8 +105,17 @@ class ShellStream(io.StringIO):
         return line
 
 
+class CommandLexer(shlex.shlex):
+    _pushback_chars: deque[str]
+
+    @property
+    def pushback_count(self) -> int:
+        return len(self._pushback_chars)
+
+
 def shell_tokens(shell: str, operator_positions: set[int] | None = None) -> list[str]:
-    lexer = shlex.shlex(ShellStream(shell), posix=True, punctuation_chars="();<>|&\n")
+    stream = ShellStream(shell)
+    lexer = CommandLexer(stream, posix=True, punctuation_chars="();<>|&\n")
     lexer.whitespace = " \t\r"
     lexer.whitespace_split = True
     if operator_positions is None:
@@ -113,7 +123,7 @@ def shell_tokens(shell: str, operator_positions: set[int] | None = None) -> list
     tokens: list[str] = []
     cursor = 0
     for token in lexer:
-        end = lexer.instream.tell() - len(lexer._pushback_chars)
+        end = stream.tell() - lexer.pushback_count
         raw = shell[cursor:end].strip(" \t\r")
         if OPERATORS.fullmatch(token) and (
             raw == token or token.endswith("\n") and raw.endswith(token)
