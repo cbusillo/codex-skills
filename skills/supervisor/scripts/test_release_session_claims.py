@@ -1609,11 +1609,15 @@ class ReleaseTests(unittest.TestCase):
     def test_related_followup_is_passed_to_existing_release_gate(self):
         session = "81687039-a90a-4107-a144-29bd815ce6ba"
         source = {**self.source, "body": github_plan_claim.marker({**SOURCE, "session": session})}
-        for field in (f"Session: {session}", f"- Session: Claude Code CLI `{session}`"):
-            with self.subTest(field=field):
-                self.reader.paged_json.return_value = [source, comment(2, "Claimed by trial\n" + field)]
+        for header, field in itertools.product(("Claimed by trial", "**Claimed by** trial", "Claimed by **trial**"),
+                                              (f"Session: {session}", f"- Session: Claude Code CLI `{session}`")):
+            with self.subTest(header=header, field=field):
+                self.reader.paged_json.return_value = [source, comment(2, header + "\n" + field)]
                 found = helper.active_claims(self.reader, "test/a", 1, session, ACTOR)
                 self.assertEqual(found[0][1], [2])
+                github_plan_release.check_related(github_plan_claim.records(source["body"])[0],
+                                                 self.reader.paged_json.return_value[1], ACTOR,
+                                                 github_plan_release.stamp(self.entry["ended_at"]))
 
     def test_related_alias_without_exact_session_is_not_released(self):
         for body in ("Claimed by trial", "Claimed by trial\nSession: another-session",

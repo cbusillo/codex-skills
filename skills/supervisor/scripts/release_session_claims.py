@@ -472,7 +472,7 @@ def discover(
             if not match:
                 raise ValueError(f"claim comment has an unexpected canonical issue URL at {c.get('html_url')}")
             try:
-                matching = any(claim.belongs_to_session(body, s, record=(repo, int(match[1]))) for s in sessions)
+                matching = any(claim.belongs_to_session(body, s) for s in sessions)
             except ValueError as error:
                 raise ValueError(f"unreadable claim at {c.get('html_url')}: {error}") from error
             if matching:
@@ -489,7 +489,7 @@ def discover(
             number = issue.get("number")
             if type(number) is not int or number < 1:
                 raise ValueError("status record has no canonical issue number")
-            if any(claim.belongs_to_session(body, session, record=(repo, number)) for session in sessions):
+            if any(claim.belongs_to_session(body, session) for session in sessions):
                 issues.add((repo, number))
     return sorted(issues), repos
 
@@ -519,9 +519,8 @@ def active_claims(reader, repo, number, session, actor, *, comments=None, verifi
     for c in comments:
         records = claim.records(c.get("body") or "")
         if (c["id"] in active_ids and not records
-                and claim.belongs_to_session(c.get("body") or "", session, record=(repo, number))
-                and not any(r["session"] == session and re.match(
-                    rf"Claimed by {re.escape(r['worker'])}(?:\s|$)", c.get("body") or "")
+                and claim.belongs_to_session(c.get("body") or "", session)
+                and not any(r["session"] == session and claim.legacy_claim_worker(c.get("body") or "") == r["worker"]
                     for source in comments if source["id"] in active_ids
                     for r in claim.records(source.get("body") or ""))):
             # The existing release route requires a structured source. Never
@@ -536,14 +535,14 @@ def active_claims(reader, repo, number, session, actor, *, comments=None, verifi
             record = release.source_record(c)
             related = [r["id"] for r in comments if r["id"] != c["id"] and r["id"] in active_ids
                        and not claim.records(r.get("body") or "")
-                       and re.match(rf"Claimed by {re.escape(record['worker'])}(?:\s|$)", r.get("body") or "")
+                       and claim.legacy_claim_worker(r.get("body") or "") == record["worker"]
                        and (r.get("user") or {}).get("login") == actor
                        and release.related_sessions_match(claim.unquoted_text(r.get("body") or ""), session, require_explicit=True, include_quotes=False)]
             unresolved = [r["id"] for r in comments if r["id"] in active_ids and r["id"] not in related
                           and not claim.records(r.get("body") or "")
-                          and re.match(rf"Claimed by {re.escape(record['worker'])}(?:\s|$)", r.get("body") or "")
+                          and claim.legacy_claim_worker(r.get("body") or "") == record["worker"]
                           and (r.get("user") or {}).get("login") == actor
-                          and (claim.belongs_to_session(r.get("body") or "", session, record=(repo, number))
+                          and (claim.belongs_to_session(r.get("body") or "", session)
                                or not claim.session_fields(r.get("body") or "", include_quotes=False, current_only=True))]
             sources.append((c, related, unresolved))
     if diagnostic is not None:
@@ -663,10 +662,9 @@ def finished_claims(reader, entry, actor, issues, apply):
                 f"/repos/{repo}/issues/{number}/comments", step_prefix="finished_claim_history"))
             def source_refusal(source, message):
                 return {**identity, "claim_comment": source["id"], "error": message}
-            sources = [c for c in comments if claim.belongs_to_session(c.get("body") or "", entry["session_id"], record=(repo, number))
-                       and (claim.records(c.get("body") or "") or re.match(
-                           r"Claimed by:?\s+\S+", claim.ownership_text(c.get("body") or "", strip_quotes=False), re.IGNORECASE))]
-            if claim.belongs_to_session(issue.get("body") or "", entry["session_id"], record=(repo, number)):
+            sources = [c for c in comments if claim.belongs_to_session(c.get("body") or "", entry["session_id"])
+                       and (claim.records(c.get("body") or "") or claim.legacy_claim_worker(c.get("body") or ""))]
+            if claim.belongs_to_session(issue.get("body") or "", entry["session_id"]):
                 body_records = [r for r in claim.records(issue["body"]) if r["session"] == entry["session_id"]]
                 source_records = [r for c in sources for r in claim.records(c.get("body") or "")]
                 if not body_records or any(r not in source_records for r in body_records):
@@ -805,7 +803,7 @@ def plan_issue(reader, repo, number, entry, actor, handoff_prs: set[str], pulls_
             if row["repo"] != repo or row["issue"] != number:
                 continue
             expected = next((c for c in comments if c["id"] == row["claim_comment_id"]), {})
-            if not expected or (expected.get("user") or {}).get("login") != actor or not claim.belongs_to_session(expected.get("body") or "", entry["session_id"], record=(repo, number)):
+            if not expected or (expected.get("user") or {}).get("login") != actor or not claim.belongs_to_session(expected.get("body") or "", entry["session_id"]):
                 raise ValueError("inventory PR source is missing or lacks exact native-session/author evidence")
             entry.setdefault("_inventory_results", {})[(repo, number, row["claim_comment_id"])] = {
                 "repository": repo, "issue": number, "claim_comment": row["claim_comment_id"],
@@ -835,11 +833,11 @@ def plan_issue(reader, repo, number, entry, actor, handoff_prs: set[str], pulls_
         entry.setdefault("_pr_claim_handoffs", {}).update(rows)
         return [], retained_status
     comments = reader.paged_json(f"/repos/{repo}/issues/{number}/comments", step_prefix="session_issue_filter")
-    if not any(claim.belongs_to_session(c.get("body") or "", entry["session_id"], record=(repo, number)) for c in comments) and not claim.belongs_to_session(issue.get("body") or "", entry["session_id"], record=(repo, number)):
+    if not any(claim.belongs_to_session(c.get("body") or "", entry["session_id"]) for c in comments) and not claim.belongs_to_session(issue.get("body") or "", entry["session_id"]):
         if entry.get("_inventory"):
             raise ValueError("inventory source is missing or lacks exact native-session evidence")
         return [], retained_status
-    if claim.belongs_to_session(issue.get("body") or "", entry["session_id"], record=(repo, number)):
+    if claim.belongs_to_session(issue.get("body") or "", entry["session_id"]):
         retained_status.append({"repository": repo, "issue": number,
                                 "next_action": "reconcile Current Status or use the supported --resume-from handoff route"})
     sources = active_claims(reader, repo, number, entry["session_id"], actor)
@@ -848,7 +846,7 @@ def plan_issue(reader, repo, number, entry, actor, handoff_prs: set[str], pulls_
         if row["repo"] != repo or row["issue"] != number:
             continue
         expected = next((c for c in comments if c["id"] == row["claim_comment_id"]), {})
-        if not expected or (expected.get("user") or {}).get("login") != actor or not claim.belongs_to_session(expected.get("body") or "", entry["session_id"], record=(repo, number)):
+        if not expected or (expected.get("user") or {}).get("login") != actor or not claim.belongs_to_session(expected.get("body") or "", entry["session_id"]):
             raise ValueError("inventory source is missing or lacks exact native-session/author evidence")
         entry.setdefault("_inventory_results", {})[(repo, number, row["claim_comment_id"])] = {
             "repository": repo, "issue": number, "claim_comment": row["claim_comment_id"],

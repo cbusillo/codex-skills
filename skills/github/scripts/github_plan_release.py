@@ -108,7 +108,7 @@ def _check_activity(comments, source, cutoff, record):
         if not parsed:
             # Structured claims carry session, worker and branch identity;
             # their header alone cannot attribute activity to the source.
-            matching |= bool(re.match(rf"Claimed by {re.escape(record['worker'])}(?:\s|$)", text))
+            matching |= claim.legacy_claim_worker(text) == record["worker"]
         if matching and stamp(comment.get("updated_at") or comment.get("created_at")) >= cutoff:
             raise ValueError("Source session shows ownership activity after the cited evidence")
 
@@ -175,7 +175,7 @@ def parse_release(source: dict[str, Any], evidence: dict[str, Any], *, actor: st
 def check_related(record: dict[str, str], comment: dict[str, Any], actor: str, cutoff: datetime) -> None:
     """Bind an unstructured follow-up to its source worker, native ID and closure."""
     if ((comment.get("user") or {}).get("login") != actor or claim.records(comment.get("body") or "")
-            or not re.match(rf"Claimed by {re.escape(record['worker'])}(?:\s|$)", comment.get("body") or "")):
+            or claim.legacy_claim_worker(comment.get("body") or "") != record["worker"]):
         raise ValueError("Related release must name an unstructured ownership follow-up of this exact source worker")
     if not related_sessions_match(comment.get("body") or "", record["session"]):
         raise ValueError("Related ownership follow-up names a different native session; obtain that session's own closure evidence")
