@@ -30,6 +30,7 @@ from git_status import read_status
 import dev_worktree
 import github_plan_claim
 import github_plan_release
+import published_history
 
 ANY_CLAIM = {"worker": "", "session": "", "branch": "", "claimed_at": ""}
 NO_WORKTREES = {"worktrees": []}
@@ -51,7 +52,7 @@ def git(checkout: Path, *args: str, input_text: str | None = None, timeout: floa
         ["git", "-C", str(checkout), *args],
         capture_output=True,
         text=True,
-        env=dev_worktree.git_environment(),
+        env=published_history.git_environment(),
         input=input_text,
         timeout=timeout,
     )
@@ -88,7 +89,7 @@ def contained(checkout: Path, head: str, tip: str) -> bool:
     if head == tip:
         return True
     return (git(checkout, "cat-file", "-e", f"{tip}^{{commit}}").returncode == 0
-            and git(checkout, "merge-base", "--is-ancestor", head, tip).returncode == 0)
+            and git(checkout, "--no-replace-objects", "merge-base", "--is-ancestor", head, tip).returncode == 0)
 
 
 def is_under(path: Path, root: Path) -> bool:
@@ -189,31 +190,11 @@ def portable_retire(path: Path, *, dry_run: bool) -> subprocess.CompletedProcess
         return kept("uncommitted, untracked or ignored files remain")
     try:
         head = git(path, "rev-parse", "HEAD").stdout.strip()
-        branch = git(path, "symbolic-ref", "--short", "-q", "HEAD").stdout.strip() or None
-        history = git(path, "--no-replace-objects", "rev-list", "--walk-reflogs", "--no-commit-header", "--format=%H",
-                      "HEAD", *([f"refs/heads/{branch}"] if branch else []))
-        remote = git(path, "ls-remote", "origin", "refs/heads/*", "refs/tags/*", "refs/pull/*/head")
-        if not head or history.returncode or remote.returncode or not remote.stdout.strip():
-            return kept("live publication or reflog evidence unavailable")
-        tips = [line.split()[0] for line in remote.stdout.splitlines()]
-        objects = git(path, "cat-file", "--batch-check=%(objectname) %(objecttype)", input_text="\n".join(tips) + "\n")
-        available = [line.split()[0] for line in objects.stdout.splitlines() if line.split()[-1] in {"commit", "tag"}]
-        unpublished = git(path, "--no-replace-objects", "rev-list", "--no-commit-header", "--format=%H %T", "--stdin",
-                          input_text="\n".join([head, *history.stdout.split(), *(f"^{tip}" for tip in available)]) + "\n")
-        if objects.returncode or unpublished.returncode:
-            return kept("publication evidence unavailable")
-        snapshots = dict(line.split() for line in unpublished.stdout.splitlines())
-        if head in snapshots:
-            return kept("HEAD history is unpublished")
-        if snapshots:
-            preserved = git(path, "--no-replace-objects", "rev-list", "--no-commit-header", "--format=%T",
-                            head, "--branches", "--tags", *available)
-            if preserved.returncode:
-                return kept("retained snapshot evidence unavailable")
-            if set(snapshots.values()) - set(preserved.stdout.split()):
-                return kept("unique reflog content is unpublished; preserve it on a branch first")
-    except subprocess.TimeoutExpired:
-        return kept("live publication or reflog read timed out")
+        ref = git(path, "rev-parse", "--symbolic-full-name", "HEAD").stdout.strip()
+        branch = ref.removeprefix("refs/heads/") if ref.startswith("refs/heads/") else None
+        published_history.check_retirement(path)
+    except (published_history.PublicationError, OSError, subprocess.TimeoutExpired) as exc:
+        return kept(str(exc))
     try:
         if not has_no_live_users(path, directory=True):
             return kept("worktree is in use or live-use proof is incomplete")
@@ -236,7 +217,7 @@ def portable_retire(path: Path, *, dry_run: bool) -> subprocess.CompletedProcess
         ],
         capture_output=True,
         text=True,
-        env=dev_worktree.git_environment(),
+        env=published_history.git_environment(),
     )
     if result.returncode == 0 and not dry_run:
         if path.exists() or any(tree.path == path for tree in registered(common.parent)):

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import copy
+import importlib
 import json
 import os
 import shutil
@@ -17,11 +18,18 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import cleanup_git
 import cleanup_probe
 import repo_cleanup as cleanup
+
+publication = importlib.import_module("published_history")
+
+
+def patch_attr(target: Any, name: str, *args: Any, **kwargs: Any) -> Any:
+    return patch.object(target, name, *args, **kwargs)
 
 # Public canary text for temporary fixtures; never real credentials.
 FIXTURE_MARKER = "SYNTHETIC-PRIVATE-CONTENT-47129"
@@ -244,14 +252,14 @@ class CleanupContracts(unittest.TestCase):
         selected, omitted = self.many_refs()
         self.private_files(self.worktree / "out")
         (self.worktree / "local.txt").write_text("local-only work\n")
-        original = cleanup_git.git
+        original = publication.ref_coverage
 
-        def budgeted_git(repo, *args, **kwargs):
-            if args[:2] == ("merge-base", "--is-ancestor") and args[2] != selected:
+        def budgeted_coverage(repo: str, oid: str, tips: dict[str, str], **kwargs: Any) -> dict:
+            if oid != selected:
                 raise cleanup.ProbeError("unselected_ancestry_exceeds_budget")
-            return original(repo, *args, **kwargs)
+            return original(repo, oid, tips, **kwargs)
 
-        with patch.object(cleanup_git, "git", budgeted_git):
+        with patch_attr(publication, "ref_coverage", budgeted_coverage):
             report = self.inventory(self.worktree)
             self.assertTrue(report["complete"], report["repository"])
             self.assertTrue(report["git_stable"])
@@ -570,6 +578,50 @@ class CleanupContracts(unittest.TestCase):
         result = self.inventory()
         self.assertFalse(result["complete"])
         self.assertEqual(result["repository"]["remotes"][0]["coverage"], "unavailable")
+
+    def test_self_referential_remote_cannot_clear_unpublished_history(self) -> None:
+        run_git(self.repo, "remote", "set-url", "origin", str(self.repo))
+        report = self.inventory(self.worktree)
+        self.assertFalse(report["complete"])
+        self.assertEqual(report["repository"]["ref_coverage"]["refs/heads/work/fixture"]["state"], "unknown")
+        self.assertFalse(report["policy"]["may_delete"])
+
+    def test_pull_head_changes_do_not_enter_cleanup_coverage_or_stability(self) -> None:
+        base = run_git(self.worktree, "rev-parse", "HEAD")
+        (self.worktree / "README.md").write_text("unmerged work")
+        run_git(self.worktree, "commit", "-am", "PR-only work")
+        pull_ref = "refs/pull/8/head"
+        run_git(self.worktree, "push", "origin", f"HEAD:{pull_ref}")
+        snapshot = cleanup_git.snapshot
+        calls = 0
+
+        def move_pull_head(*args: Any, **kwargs: Any) -> dict:
+            nonlocal calls
+            observed = snapshot(*args, **kwargs)
+            calls += 1
+            if calls == 1:
+                run_git(self.remote, "update-ref", pull_ref, base)
+            return observed
+
+        with patch_attr(cleanup_git, "snapshot", move_pull_head):
+            report = self.inventory(self.worktree)
+        self.assertTrue(report["git_stable"])
+        self.assertNotIn(pull_ref, report["repository"]["remotes"][0]["refs"])
+        self.assertEqual(report["repository"]["ref_coverage"]["refs/heads/work/fixture"]["state"], "unknown")
+
+    def test_timed_out_remote_keeps_the_rest_of_the_bounded_snapshot(self) -> None:
+        command = cleanup_probe.command
+
+        def delayed_remote(args: list[str], **kwargs: Any) -> tuple[int, bytes]:
+            if "ls-remote" in args:
+                raise cleanup.ProbeError("command_timed_out")
+            return command(args, **kwargs)
+
+        with patch_attr(cleanup_git, "command", delayed_remote):
+            report = self.inventory(self.worktree)
+        self.assertFalse(report["complete"])
+        self.assertEqual(report["repository"]["remotes"][0]["coverage"], "unavailable")
+        self.assertEqual(report["repository"]["worktrees"][0]["coverage"], "completed")
 
     def test_remote_urls_and_errors_do_not_echo_credentials(self):
         credentialed_url = "https://" + "synthetic:" + FIXTURE_MARKER + "@example.invalid/repo"

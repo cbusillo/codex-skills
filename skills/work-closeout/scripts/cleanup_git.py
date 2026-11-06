@@ -6,8 +6,10 @@
 
 from __future__ import annotations
 
+import importlib
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -15,11 +17,11 @@ from typing import Any
 from cleanup_probe import ProbeError, command, signature, tag
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
 from skills.github.scripts.git_status import read_status
 
-UNSAFE_ENV = {"GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
-              "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-              "GIT_CONFIG", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS"}
+published_history = importlib.import_module("published_history")
+
 OPERATIONS = ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD", "BISECT_LOG",
               "BISECT_START", "rebase-merge", "rebase-apply", "sequencer", "index.lock",
               "HEAD.lock", "config.lock", "packed-refs.lock", "shallow.lock")
@@ -28,9 +30,9 @@ MAX_REGISTRATIONS = 4096
 
 
 def git(repo: str, *args: str, check: bool = True) -> tuple[int, bytes]:
-    if UNSAFE_ENV.intersection(os.environ):
+    if published_history.REDIRECT_ENV.intersection(os.environ):
         raise ProbeError("git_environment_override")
-    env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"}
+    env = published_history.git_environment()
     result = command(["git", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false",
                       "-c", "core.hooksPath=/dev/null", "-C", repo, *args], env=env)
     if check and result[0]:
@@ -40,6 +42,13 @@ def git(repo: str, *args: str, check: bool = True) -> tuple[int, bytes]:
 
 def git_text(repo: str, *args: str) -> str:
     return os.fsdecode(git(repo, *args)[1]).strip()
+
+
+def publication_git(repo: Path | str, *args: str) -> str:
+    try:
+        return git_text(str(repo), "--no-replace-objects", *args)
+    except ProbeError as exc:
+        raise published_history.PublicationError(str(exc)) from exc
 
 
 def registrations(repo: str) -> list[dict]:
@@ -129,6 +138,12 @@ def snapshot(repo: str, key: bytes, remote_probe: bool = True,
     remotes = []
     default_branch = None
     live_tips: dict[str, str] = {}
+    history_error = None
+    if remote_probe:
+        try:
+            published_history.verify_original_history(root, publication_git)
+        except (published_history.PublicationError, OSError, subprocess.TimeoutExpired) as exc:
+            history_error = str(exc)
     names = git_text(root, "remote").splitlines()
     if len(names) > 16:
         raise ProbeError("remote_limit")
@@ -137,20 +152,14 @@ def snapshot(repo: str, key: bytes, remote_probe: bool = True,
                   "coverage": "excluded" if not remote_probe else "unavailable"}
         if remote_probe:
             try:
-                code, output = git(root, "ls-remote", "--symref", "--", name,
-                                   "HEAD", "refs/heads/*", "refs/tags/*", check=False)
-                if code == 0:
-                    advertised = {}
-                    for line in output.splitlines():
-                        value, _, ref = line.partition(b"\t")
-                        if value.startswith(b"ref: ") and ref == b"HEAD":
-                            if name == "origin" or ("origin" not in names and len(names) == 1):
-                                default_branch = os.fsdecode(value[5:]).removeprefix("refs/heads/")
-                        elif re.fullmatch(rb"[0-9a-f]{40,64}", value):
-                            advertised[os.fsdecode(ref)] = os.fsdecode(value)
-                    remote.update(coverage="completed", refs=advertised)
-                    live_tips.update({f"{name}:{ref}": oid for ref, oid in advertised.items()})
-            except ProbeError as exc:
+                if history_error:
+                    raise published_history.PublicationError(history_error)
+                advertised, default = published_history.advertisement(root, name, publication_git)
+                if name == "origin" or ("origin" not in names and len(names) == 1):
+                    default_branch = default
+                remote.update(coverage="completed", refs=advertised)
+                live_tips.update({f"{name}:{ref}": oid for ref, oid in advertised.items()})
+            except (published_history.PublicationError, OSError, subprocess.TimeoutExpired) as exc:
                 remote["error"] = str(exc)
         remotes.append(remote)
     worktrees = []
@@ -185,17 +194,11 @@ def snapshot(repo: str, key: bytes, remote_probe: bool = True,
         if scoped and name not in selected_branches:
             coverage[name] = {"state": "unknown", "method": "excluded_explicit_roots", "remote_ref": None}
             continue
-        covered = next((ref for ref, tip in live_tips.items() if tip == oid), None)
-        method = "exact_advertisement" if covered else "unknown"
-        if not covered and name.startswith("refs/heads/"):
-            for ref, tip in live_tips.items():
-                if ":refs/heads/" not in ref:
-                    continue
-                code, _ = git(root, "merge-base", "--is-ancestor", oid, tip, check=False)
-                if code == 0:
-                    covered, method = ref, "ancestor_of_live_tip"
-                    break
-        coverage[name] = {"state": "covered" if covered else "unknown", "method": method, "remote_ref": covered}
+        try:
+            coverage[name] = published_history.ref_coverage(root, oid, live_tips, ancestors=name.startswith("refs/heads/"),
+                                                          run=publication_git)
+        except (published_history.PublicationError, OSError, subprocess.TimeoutExpired):
+            coverage[name] = {"state": "unknown", "method": "unknown", "remote_ref": None}
     stash_code, stash_data = git(root, "rev-list", "--walk-reflogs", "--no-commit-header", "--format=%H", "refs/stash", check=False)
     if stash_code and "refs/stash" in refs:
         raise ProbeError("stash_evidence_unavailable")

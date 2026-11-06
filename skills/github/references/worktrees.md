@@ -198,10 +198,20 @@ PR is checked like a closed one, including claims on that PR, its linked issues
 and its head branch. Active source/calling checkouts, trees without exact PR or default-history
 provenance, foreign locks, dirty or unpublished work and incomplete evidence
 are kept with reasons. A commit GitHub explicitly reports as missing is kept as
-an unpushed commit; other GitHub failures remain unavailable evidence. The host command still owns volume, publication,
+an unpushed commit; other GitHub failures remain unavailable evidence. The host command still owns volume,
 ignored-file, live-use and IDE checks. No lock is rewritten or bypassed.
 
-Portable unlocked trees require live origin publication of HEAD and its reachable commits.
+The catalog's [publication reader](../scripts/published_history.py) supplies
+live publication evidence for retirement and cleanup inventories. Portable and
+managed-host retirement accept origin, upstream and the branch's configured
+remote, including published tags and PR heads. Tracking refs alone do not count;
+local remotes must have independent, complete object storage.
+Cleanup inventories request heads and tags: branches may use live branch
+ancestry, while tags and stashes need an exact advertised object. Retirement
+also accepts PR heads and compares reflog snapshots; those are separate caller
+policies over the shared evidence reader. Publication commands ignore Git
+repository redirects. Cleanup inventories refuse exported redirects; retry
+with the reported Git environment overrides unset.
 Reflog-only commits may be superseded when their complete file snapshots remain
 reachable from HEAD, retained local branches/tags or published and fetched history. Unique
 reflog content keeps the tree until it is preserved on a branch or published;
