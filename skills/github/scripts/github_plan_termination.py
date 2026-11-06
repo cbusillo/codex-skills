@@ -65,11 +65,13 @@ def _validate_metadata(data, session):
 
 def validate(data, session, *, apply_policy=True):
     _validate_metadata(data, session)
+    if data.get("exit_record") or data.get("terminal_state") == "exit recorded":
+        raise ValueError("Termination evidence requires native crash metadata")
     ended, checked, last = (stamp(data[key]) for key in ("ended_at", "checked_at", "last_activity_at"))
     if last > ended or ended > checked or apply_policy and checked - last < QUIET_PERIOD:
         raise ValueError("Source transcript has recent activity or activity after termination")
     if (not isinstance(data.get("terminal_state"), str) or not data["terminal_state"]
-            or data["terminal_state"] not in {"pane dead", "server missing", "server replaced"}):
+            or apply_policy and data["terminal_state"] not in {"pane dead", "server missing", "server replaced"}):
         raise ValueError("Termination evidence requires a dead pane or missing server")
     return data
 
@@ -348,7 +350,7 @@ def body(data):
     validate(data, data["session_id"])
     artifacts = "\n".join(f"- {a.get('worktree') or 'no local worktree'} (branch {a['branch']})" for a in data["retained_artifacts"]) or "None; no source branch or worktree was created."
     return (f"Terminated session {data['session_id']}\nEnded at: {data['ended_at']}\n"
-            f"Recorded PID: {data['pid'] or 'not recorded'}\nTermination cause: {data['cause']}\n"
+            f"Recorded PID: {data['pid']}\nTermination cause: {data['cause']}\n"
             f"Fresh process, transcript and terminal checks: {data['checked_at']}; {data['terminal_state']}.\n"
             f"Retained artifacts (resume; preserve uncommitted work):\n\n{artifacts}\n\n"
             "<!-- " + MARKER + json.dumps(data, sort_keys=True).replace(">", "\\u003e") + " -->")

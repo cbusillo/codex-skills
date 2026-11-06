@@ -833,7 +833,7 @@ class ReleaseTests(ReleaseHarness):
                 self.f.assert_no_writes()
 
     def test_terminated_session_uncertain_identity_terminal_or_evidence_refuses(self):
-        for mode in ("pid", "host", "transcript", "pane", "server_error", "missing_record", "artifacts", "source_branch", "recorded_exit"):
+        for mode in ("pid", "host", "transcript", "pane", "server_error", "missing_record", "artifacts", "source_branch"):
             with self.subTest(mode=mode):
                 self.setUp()
                 transcript = self.termination_setup()
@@ -844,8 +844,6 @@ class ReleaseTests(ReleaseHarness):
                     release.termination.run_terminal.return_value = SimpleNamespace(
                         returncode=0 if mode == "pane" else 1,
                         stdout="a" * 32 + "\t0\t1\n", stderr="error connecting to /fixture/socket (Permission denied)")
-                if mode == "recorded_exit":
-                    self.evidence["body"] = self.evidence["body"].replace('"terminal_state": "server missing"', '"terminal_state": "exit recorded"')
                 if mode == "missing_record": self.args.termination_record = None
                 if mode == "artifacts": self.termination_record["retained_artifacts"] = []
                 if mode == "source_branch":
@@ -890,6 +888,10 @@ class ReleaseTests(ReleaseHarness):
         self.run_release()
         with patch.object(release.termination, "QUIET_PERIOD", timedelta(days=2)):
             self.successor()
+        data = release.termination.evidence(self.evidence["body"], "session-b", apply_policy=False)
+        data.update(terminal_state="exit recorded", exit_record={"kind": "codex_command"}, exit_digest="a" * 64)
+        with self.assertRaises(ValueError):
+            release.termination.validate(data, "session-b", apply_policy=False)
 
     def test_termination_wrong_or_missing_retained_worktree_refuses(self):
         self.termination_setup()
@@ -1362,12 +1364,15 @@ class ReleaseTests(ReleaseHarness):
                 self.assertTrue(self.f.emitted.call_args.args[0]["ok"])
 
     def test_source_edit_invalidates_existing_release_at_successor_claim(self):
-        self.run_release()
-        self.f.comments[0]["updated_at"] = "2026-10-04T00:00:00Z"
-        with self.assertRaisesRegex(PLAN.PlanError, "ownership evidence"):
-            self.f.args.resume_from = 1
-            with patch.object(self.f, "read_api", side_effect=self.api):
-                self.f.run_claim()
+        for change in ({"updated_at": "2026-10-04T00:00:00Z"}, {"body": "Claimed by trial-b"}):
+            with self.subTest(change=change):
+                self.setUp()
+                self.run_release()
+                self.f.comments[0].update(change)
+                with self.assertRaises(PLAN.PlanError):
+                    self.f.args.resume_from = 1
+                    with patch.object(self.f, "read_api", side_effect=self.api):
+                        self.f.run_claim()
 
     def test_post_write_race_is_not_reported_as_success(self):
         self.race = lambda: self.f.comments.append(self.comment(8, CLAIM.marker(fixtures.OTHER), "2026-10-04T00:00:00Z"))
