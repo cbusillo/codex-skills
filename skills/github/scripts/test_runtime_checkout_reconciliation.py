@@ -331,7 +331,7 @@ def test_reconcile_blocks_dirty_runtime_without_fetching_or_mutating(
     assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
 
 
-@pytest.mark.parametrize("untracked", [None, "new_source.py", "nested/tool.log"])
+@pytest.mark.parametrize("untracked", [None, "new_source.py", "nested/tool.log", "skills/github/scripts/local.py"])
 def test_reconcile_catalog_scratch_preserves_other_untracked_files(
     tmp_path: Path, untracked: str | None,
 ) -> None:
@@ -339,6 +339,7 @@ def test_reconcile_catalog_scratch_preserves_other_untracked_files(
     fixture = build_runtime_fixture(tmp_path, extra_files={".gitignore": source})
     scratch = [fixture.runtime / name for name in (
         "error.log", "tool.log", ".model-review-example/input-1-evidence.md", ".model-review-example/agy-output.log",
+        "skills/github/scripts/uv.lock",
     )]
     for path in scratch:
         path.parent.mkdir(parents=True, exist_ok=True)

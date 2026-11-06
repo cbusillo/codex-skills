@@ -42,6 +42,7 @@ CLAUDE.local.md
 
 __pycache__/
 *.pyc
+/skills/github/scripts/uv.lock
 node_modules/
 .build/
 .swiftpm/
