@@ -44,7 +44,7 @@ class GoogleWorkerTests(unittest.TestCase):
         for kind, action in ((17, None), (132, "list"), (132, "unverified")):
             for status, children in ((3, False), (2, False), (3, True)):
                 with self.subTest(kind=kind, action=action, status=status, children=children):
-                    metadata = {1: protobuf({1: 1})}
+                    metadata: dict[int, int | bytes] = {1: protobuf({1: 1})}
                     payload = {24: protobuf({3: protobuf({2: b"API unavailable"})})}
                     if action:
                         metadata[4] = protobuf({1: b"call", 2: b"manage_subagents", 3: json.dumps({"Action": action}).encode()})
