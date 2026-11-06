@@ -319,16 +319,30 @@ def api_list(endpoint: str) -> list[dict[str, Any]]:
     return [item for page in pages for item in page if isinstance(item, dict)]
 
 
-def repository_comment_pages(endpoint: str) -> Iterator[dict[str, Any]]:
-    page = 1
+def repository_comment_pages(path: str, since: datetime) -> Iterator[dict[str, Any]]:
+    cursor, page, seen = since, 1, set()
     while True:
-        payload = run_json([GH, "api", f"{endpoint}&page={page}"])
+        query = urlencode({"since": format_api_timestamp(cursor), "sort": "updated", "direction": "asc",
+                           "per_page": REPOSITORY_COMMENT_PAGE_SIZE, "page": page})
+        payload = run_json([GH, "api", f"{path}?{query}"])
         if not isinstance(payload, list) or not all(isinstance(item, dict) for item in payload):
-            raise rollup.RollupError(f"GitHub returned an invalid comment page for {endpoint}.")
-        yield from payload
+            raise rollup.RollupError(f"GitHub returned an invalid comment page for {path}.")
+        for item in payload:
+            version = (item.get("id"), item.get("updated_at"))
+            if version not in seen:
+                seen.add(version)
+                yield item
         if len(payload) < REPOSITORY_COMMENT_PAGE_SIZE:
             return
-        page += 1
+        cursor, page = next_comment_page(payload, cursor, page)
+
+
+def next_comment_page(payload: list[dict[str, Any]], cursor: datetime, page: int) -> tuple[datetime, int]:
+    first, last = (comment_timestamp(str(item.get("updated_at") or "")) for item in (payload[0], payload[-1]))
+    resumed = last - timedelta(seconds=1)
+    if first == last or resumed <= cursor:
+        return cursor, page + 1
+    return resumed, 1
 
 
 def authenticated_login() -> str:
@@ -533,10 +547,12 @@ def comment_activity_time(comment: Comment) -> datetime:
     return max(comment_timestamp(comment.created_at), comment_timestamp(comment.updated_at))
 
 
+def in_window(created: str, updated: str, since: datetime, until: datetime) -> bool:
+    return since <= comment_timestamp(created) <= until or since <= comment_timestamp(updated) <= until
+
+
 def comment_in_window(comment: Comment, since: datetime, until: datetime) -> bool:
-    created_at = comment_timestamp(comment.created_at)
-    updated_at = comment_timestamp(comment.updated_at)
-    return since <= created_at <= until or since <= updated_at <= until
+    return in_window(comment.created_at, comment.updated_at, since, until)
 
 
 def parse_number(url: object) -> int | None:
@@ -694,8 +710,8 @@ def save_scan_state(path: Path | None, identity: str, lanes: dict[str, dict[str,
 
 
 class LaneScan(NamedTuple):
-    covered_from: datetime
     read_from: datetime
+    through: datetime
     rows: dict[tuple[int, str, int], list[Any]]
 
 
@@ -703,15 +719,15 @@ def resume_lane(previous: Any, since: datetime) -> LaneScan:
     full_scan = LaneScan(since, since, {})
     try:
         covered_from = rollup.parse_timestamp(previous["from"])
-        covered_through = rollup.parse_timestamp(previous["through"])
-        rows = {(number, kind, comment_id): [number, kind, comment_id, activity, bool(candidate), bool(waits)]
-                for number, kind, comment_id, activity, candidate, waits in previous["rows"]
-                if comment_timestamp(activity) >= since}
+        through = rollup.parse_timestamp(previous["through"])
+        rows = {(number, kind, comment_id): [number, kind, comment_id, created, updated, bool(external), bool(waits)]
+                for number, kind, comment_id, created, updated, external, waits in previous["rows"]
+                if max(comment_timestamp(created), comment_timestamp(updated)) >= since}
     except (KeyError, TypeError, ValueError, AttributeError):
         return full_scan
-    if covered_from is None or covered_through is None or covered_from > since:
+    if covered_from is None or through is None or covered_from > since:
         return full_scan
-    return LaneScan(covered_from, max(since, covered_through - SCAN_OVERLAP), rows)
+    return LaneScan(max(since, through - SCAN_OVERLAP), through, rows)
 
 
 def repository_activity(
@@ -731,32 +747,30 @@ def repository_activity(
         ("review_comments", f"repos/{repo}/pulls/comments", normalize_review_comment),
     )
     for lane, path, normalizer in lanes:
-        covered_from, read_from, rows = resume_lane((scans or {}).get(lane), since)
-        query = urlencode({"since": format_api_timestamp(read_from), "sort": "updated", "direction": "asc",
-                           "per_page": REPOSITORY_COMMENT_PAGE_SIZE})
+        read_from, through, rows = resume_lane((scans or {}).get(lane), since)
         try:
-            for item in repository_comment_pages(f"{path}?{query}"):
+            for item in repository_comment_pages(path, read_from):
                 comment = normalizer(repo, item)
                 if comment is None:
                     continue
+                through = max(through, comment_timestamp(comment.updated_at))
                 waits = lane == "issue_comments" and github_plan_wait.PREFIX in comment.body
-                candidate = (comment_in_window(comment, since, until)
-                             and is_external_comment(comment, self_logins, bot_logins, automation_logins))
-                if waits or candidate:
+                external = is_external_comment(comment, self_logins, bot_logins, automation_logins)
+                if waits or external:
                     rows[(comment.number, comment.kind, comment.comment_id)] = [
                         comment.number, comment.kind, comment.comment_id,
-                        format_api_timestamp(comment_activity_time(comment)), candidate, waits,
+                        comment.created_at, comment.updated_at, external, waits,
                     ]
         except rollup.RollupError as exc:
             errors.append({"repo": repo, "lane": lane, "error": rollup.trim(str(exc))})
         else:
             if scans is not None:
-                scans[lane] = {"from": format_api_timestamp(covered_from), "through": format_api_timestamp(until),
+                scans[lane] = {"from": format_api_timestamp(since), "through": format_api_timestamp(through),
                                "rows": list(rows.values())}
-        for number, kind, comment_id, _activity, candidate, waits in rows.values():
+        for number, kind, comment_id, created, updated, external, waits in rows.values():
             if waits and wait_candidates is not None:
                 wait_candidates.add(number)
-            if candidate:
+            if external and in_window(created, updated, since, until):
                 candidate_ids.setdefault((repo, number), set()).add((kind, comment_id))
     try:
         threads = opened_threads(repo, since, until)

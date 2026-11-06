@@ -1245,14 +1245,16 @@ def test_incremental_scan_keeps_every_window_candidate_while_reading_only_new_co
         [scan_comment(4, "outside-user", "2026-07-26T12:00:00Z")],
     )
 
-    assert reads_from == ["2026-07-25T23:50:00Z"]
+    assert reads_from == ["2026-07-20T23:50:00Z"]
     assert candidates == {("example/repo", 42): {("issue_comment", 2), ("issue_comment", 4)}}
     assert waits == {7}
+    assert scans["issue_comments"]["from"] == "2026-07-05T00:00:00Z"
+    assert scans["issue_comments"]["through"] == "2026-07-26T12:00:00Z"
 
 
 @pytest.mark.parametrize("previous", [
     None,
-    {"from": "2026-07-10T00:00:00Z", "through": "2026-07-26T00:00:00Z", "rows": [[42, "issue_comment", 9, "2026-07-20T00:00:00Z", True, False]]},
+    {"from": "2026-07-10T00:00:00Z", "through": "2026-07-26T00:00:00Z", "rows": [[42, "issue_comment", 9, "2026-07-20T00:00:00Z", "2026-07-20T00:00:00Z", True, False]]},
     {"from": "2026-07-01T00:00:00Z", "through": "2026-07-26T00:00:00Z", "rows": [["malformed"]]},
 ])
 def test_scan_state_that_does_not_cover_the_window_reads_it_all(monkeypatch: pytest.MonkeyPatch, previous: Any) -> None:
@@ -1266,9 +1268,33 @@ def test_scan_state_that_does_not_cover_the_window_reads_it_all(monkeypatch: pyt
     assert scans["issue_comments"]["from"] == "2026-07-05T00:00:00Z"
 
 
+def test_comment_edited_during_the_scan_does_not_hide_a_later_page(monkeypatch: pytest.MonkeyPatch) -> None:
+    page_size = github_unanswered_comments.REPOSITORY_COMMENT_PAGE_SIZE
+    comments = [scan_comment(number, "outside-user", f"2026-07-10T{number // 60:02d}:{number % 60:02d}:00Z")
+                for number in range(1, page_size + 50)]
+
+    def read(command: list[str]) -> object:
+        query = parse_qs(urlsplit(command[2]).query)
+        if "/issues/comments" not in command[2]:
+            return []
+        since, page = query["since"][0], int(query["page"][0])
+        listed = sorted((row for row in comments if row["updated_at"] >= since), key=lambda row: row["updated_at"])
+        if page == 1 and comments[0]["updated_at"] < "2026-07-20":
+            comments[0] = {**comments[0], "updated_at": "2026-07-20T00:00:00Z"}
+        return listed[(page - 1) * page_size:page * page_size]
+
+    patch_radar(monkeypatch, "run_json", read)
+    candidates, errors = github_unanswered_comments.repository_activity(
+        "example/repo", datetime(2026, 7, 1, tzinfo=UTC), datetime(2026, 7, 27, tzinfo=UTC),
+        {"cbusillo"}, {"fixture-automation"}, scans={},
+    )
+    assert not errors
+    assert candidates[("example/repo", 42)] == {("issue_comment", row["id"]) for row in comments}
+
+
 def test_failed_lane_read_keeps_its_previous_watermark(monkeypatch: pytest.MonkeyPatch) -> None:
     previous = {"from": "2026-07-01T00:00:00Z", "through": "2026-07-26T00:00:00Z",
-                "rows": [[42, "issue_comment", 2, "2026-07-20T00:00:00Z", True, False]]}
+                "rows": [[42, "issue_comment", 2, "2026-07-20T00:00:00Z", "2026-07-20T00:00:00Z", True, False]]}
     scans = {"issue_comments": previous}
 
     def read(command: list[str]) -> object:
