@@ -595,11 +595,11 @@ class CleanupContracts(unittest.TestCase):
 
         def move_pull_head(*args: Any, **kwargs: Any) -> dict:
             nonlocal calls
-            report = snapshot(*args, **kwargs)
+            observed = snapshot(*args, **kwargs)
             calls += 1
             if calls == 1:
                 run_git(self.remote, "update-ref", pull_ref, base)
-            return report
+            return observed
 
         with patch_attr(cleanup_git, "snapshot", move_pull_head):
             report = self.inventory(self.worktree)

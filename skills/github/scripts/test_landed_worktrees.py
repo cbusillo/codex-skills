@@ -372,7 +372,9 @@ class RepositoryTests(Fixture):
         for cause in (*eligible, "dirty", "ignored", "unpublished", "unique_reflog", "branch_reflog", "in_use", "proof_unavailable",
                       "detached_unique", "detached_stale"):
             path = self.worktree(cause, lock=None)
-            if cause == "dirty":
+            if cause == "same_name":
+                self.git(path, "tag", f"work/{cause}")
+            elif cause == "dirty":
                 (path / "notes").write_text("private work")
             elif cause == "ignored":
                 (path / ".gitignore").write_text("private\n")
@@ -404,8 +406,6 @@ class RepositoryTests(Fixture):
                 head = self.commit(path, "Unmerged published work")
                 self.git(path, "push", "origin", "HEAD:refs/heads/graft-recovery")
                 grafts.write_text(f"{base} {head}\n{head}\n")
-            elif cause == "same_name":
-                self.git(path, "tag", f"work/{cause}")
             elif cause in {"upstream_only", "fork_only"}:
                 remote = self.base / f"{cause}.git"
                 self.git(self.repo, "init", "--bare", str(remote))
