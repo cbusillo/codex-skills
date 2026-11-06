@@ -195,7 +195,7 @@ policy:
       preferred:
         - kind: script
           path: scripts/foreign_watch.py
-          example_argv: ["uv", "run", "scripts/foreign_watch.py", "--owner", "OWNER", "--state", "<private-state.json>", "--persistent"]
+          example_argv: ["uv", "run", "--no-cache", "scripts/foreign_watch.py", "--owner", "OWNER", "--own-login", "OWN-LOGIN", "--state", "<private-state.json>", "--persistent"]
           purpose: "Start this plain command in its own tool call with Claude Code run_in_background: true or Codex's background terminal."
     - id: prefer-coordinated-codex-resume
       match:
