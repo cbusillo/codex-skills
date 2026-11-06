@@ -114,7 +114,7 @@ or a security boundary.
 The hook uses the event's `cwd` (or its process cwd when absent), or one leading
 literal absolute `cd <directory> &&` prefix whose existing target is independently
 verified by Git. It never executes the shell to infer context. Other directory
-or uv project switches, environment assignments, explicit Launchplane
+or uv project switches, unrecognized environment assignments, explicit Launchplane
 executable paths, `$()` substitutions, and backticks retain the block. Unquoted
 newlines separate commands, including after comments. Heredoc scripts retain the
 existing matcher behavior tracked in #671 and cannot use repository exceptions.
@@ -124,6 +124,10 @@ source-only exports and offline gates. A simple
 shell wrapper uses the same checks on its enclosed command. The simulator
 receives already normalized argv and the consumer's verified command directory;
 `--cwd` describes that directory, not a shell `cd` instruction.
+
+A leading `UV_PROJECT_ENVIRONMENT=` on a repository command selects its dependency
+environment without changing the project. It requires uv synchronization:
+`--no-sync` or an inherited `UV_NO_SYNC` retains the block with that selector.
 
 The reviewed Launchplane testing local-consumer commands also accept their own
 `--directory` destination argument after the subcommand. A `uv --directory`
