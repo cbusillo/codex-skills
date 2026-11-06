@@ -205,9 +205,8 @@ Portable unlocked trees require live origin publication of HEAD and its reachabl
 Reflog-only commits may be superseded when their complete file snapshots remain
 reachable from HEAD, retained local branches/tags or published and fetched history. Unique
 reflog content keeps the tree until it is preserved on a branch or published;
-commit messages and timestamps alone do not make content unique. This compares
-Git tree objects, preserving paths, file modes, symlinks and submodule pointers
-as well as file bytes.
+commit messages and timestamps alone do not make content unique. Content is
+compared by Git tree.
 Retirement also requires
 clean tracked/untracked/ignored state, live-use checks and the existing offline
 IDE retirement proof. Missing tools or unsupported local proof keep the tree;
