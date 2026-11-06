@@ -811,7 +811,7 @@ installed local helper bindings.
   --private-address PRIVATE_IP --migrated-source-file MANIFEST --database DUMP
   --filestore ARCHIVE`. The gzip tar contains every full-filestore file relative
   to its database directory, including checklist entries. This uses the same
-  configured operator token and original TLS hostname over an authenticated
+  configured token and original TLS hostname over an authenticated
   WebSocket, connecting only to the
   supplied private ingress IP with normal certificate verification. It never
   changes DNS, proxy settings, credentials or runtime records to make that path.
@@ -830,6 +830,10 @@ installed local helper bindings.
   and invalid connection settings stop without retry advice. TCP, handshake and
   state reads use the normal timeout; prefix verification and the final receipt
   allow time for the complete declared files.
+  `--restart-part database|filestore` explicitly replaces one corrupt incomplete
+  prefix from the fully verified original at offset zero. It refuses completed
+  artifacts. Omit that flag when resuming a later interruption. Parts upload one
+  at a time under the original pair lock.
   A recorded upload receipt is still not a successful testing restore. Continue
   reading the same normal rebuild operation until its actual result is known.
 

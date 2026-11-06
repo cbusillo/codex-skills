@@ -24,6 +24,11 @@ SHA256 = re.compile(r"[a-f0-9]{64}")
 
 def add_parser(subparsers: Any) -> None:
     parser = subparsers.add_parser(COMMAND, help="Stream the original completed migrated pair into its existing testing rebuild.")
+    parser.add_argument(
+        "--restart-part",
+        choices=PARTS,
+        help="Restart one incomplete part from the verified original; omit this flag when resuming an interruption.",
+    )
     for name in ("product", "operation-id", "private-address"):
         parser.add_argument("--" + name, required=True)
     for name in ("migrated-source-file", "database", "filestore"):
@@ -197,7 +202,7 @@ def private_send(
                 legacy=True,
             ) as websocket:
                 websocket.socket.settimeout(max(connect_timeout, 60))
-                websocket.send(json.dumps({"offset": offset, "prefix_sha256": prefix, "size": remaining}))
+                websocket.send(json.dumps({"offset": offset, "prefix_sha256": prefix}))
                 if json.loads(websocket.recv(timeout=timeout)) != {"ready": True, "offset": offset}:
                     raise UploadRefused("migrated_prefix_unconfirmed")
                 while remaining:
@@ -295,11 +300,15 @@ def execute(h: Any, args: argparse.Namespace) -> int:
         check_state(state, product=product, operation=operation, binding=binding, source=source)
         for part, path in paths.items():
             saved = state["parts"][part]
+            restart = getattr(args, "restart_part", None) == part
+            if restart and saved["complete"]:
+                raise UploadRefused("migrated_artifact_already_complete")
+            offset = 0 if restart else int(saved["size"])
             if saved["complete"] and (state["receipt_recorded"] or part != "filestore"):
                 continue
             with path.open("rb") as handle:
-                prefix = prefix_digest(handle, saved["size"])
-                remaining = source[part]["size"] - saved["size"]
+                prefix = prefix_digest(handle, offset)
+                remaining = source[part]["size"] - offset
                 upload = h.internal_helper_path("testing-rebuild-migrated-upload").format(
                     product=product, operation_id=operation, part=part
                 )
@@ -311,7 +320,7 @@ def execute(h: Any, args: argparse.Namespace) -> int:
                     timeout=timeout,
                     connect_timeout=args.timeout,
                     handle=handle,
-                    offset=saved["size"],
+                    offset=offset,
                     prefix=prefix,
                     remaining=remaining,
                 )
@@ -357,7 +366,7 @@ def execute(h: Any, args: argparse.Namespace) -> int:
             request=request,
             status="unavailable",
             code="migrated_upload_incomplete",
-            message="Retain the original pair. Read the original rebuild and repeat this same upload command to inspect and resume its exact prefix.",
+            message="Retain the original pair. Read the original rebuild and repeat this upload command without --restart-part to inspect and resume its exact prefix.",
         )
         h.emit(output)
         return 1

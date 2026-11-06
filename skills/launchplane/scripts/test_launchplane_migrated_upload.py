@@ -238,7 +238,6 @@ def test_websocket_stream_keeps_private_socket_tls_identity_and_exact_remaining_
     assert json.loads(messages[0]) == {
         "offset": len(prefix),
         "prefix_sha256": hashlib.sha256(prefix).hexdigest(),
-        "size": len(suffix),
     }
     assert messages[1:-1] == [suffix[: 1024 * 1024], suffix[1024 * 1024 :]]
     assert json.loads(messages[-1]) == {"complete": True}
@@ -324,6 +323,30 @@ def test_invalid_connection_settings_fail_before_large_input_hashes(tmp_path: Pa
     ):
         upload.execute(helper, args)
     digest.assert_not_called()
+
+
+def test_explicit_restart_uses_verified_original_at_zero_only_for_incomplete_part(tmp_path: Path) -> None:
+    args, data, manifest = fixture(tmp_path)
+    args.restart_part = "database"
+    offsets = {"database": 4}
+
+    def transport(_h: Any, _settings: dict[str, str], _address: str, path: str, **kwargs: Any) -> dict[str, Any]:
+        if "handle" in kwargs:
+            part = path.rsplit("/", 1)[1]
+            assert kwargs["offset"] == 0
+            assert kwargs["prefix"] == hashlib.sha256().hexdigest()
+            assert kwargs["handle"].read() == data[part]
+            offsets[part] = len(data[part])
+        return state(manifest, data, offsets, receipt=all(offsets.get(part) == len(value) for part, value in data.items()))
+
+    code, output = invoke(args, transport)
+    assert code == 0
+    args.restart_part = "filestore"
+    transport = Mock(return_value=state(manifest, data, {part: len(value) for part, value in data.items()}, receipt=True))
+    code, output = invoke(args, transport)
+    assert code == 2
+    assert output["warnings"][0]["code"] == "migrated_artifact_already_complete"
+    assert transport.call_count == 1
 
 
 if __name__ == "__main__":
