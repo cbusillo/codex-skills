@@ -1117,7 +1117,9 @@ own claim invocation, but still needs its own ownership and hold checks.
 
 For PR-only work, including Dependabot fixes and bare PRs, pass the PR number,
 `OWNER/REPO#N`, or its exact `https://github.com/OWNER/REPO/pull/N` URL to the same
-command. A PR claim uses the same structured comment, ownership/readback,
+command. Milestone admission needs an explicit valid open Track citation with
+`--admission-link`; PRs have no native issue ancestry. A PR claim uses the same
+structured comment, ownership/readback,
 exact-author release and closed-session attestation rules below. Its result
 identifies `record_kind: pr` and `current_status_location: claim_comment`;
 it preserves the PR body and labels and creates no tracking issue. Put recovery

@@ -2845,9 +2845,6 @@ def milestone_claim_ancestry(
 
 
 def milestone_claim_track(issue: dict[str, Any], links: list[str]) -> dict[str, Any]:
-    if "pull_request" in issue:
-        raise ClassifiedPlanError("claim_admission_unlinked",
-            "Milestone work needs a canonical issue; claim that issue instead of its PR.")
     direction_repo = milestone_direction_repo(issue["repo"])
     titles = direction_milestone_titles(load_direction(direction_repo) or "")
     targets = [target[1] for link in links if (target := github_plan_claim.admission_link_target(link))
@@ -2865,6 +2862,9 @@ def milestone_claim_track(issue: dict[str, Any], links: list[str]) -> dict[str, 
 
     if track := valid_track(targets):
         return track
+    if "pull_request" in issue:
+        raise ClassifiedPlanError("claim_admission_unlinked",
+            "PR-only milestone admission needs an open Track citation; use --admission-link URL.")
     ancestry = milestone_claim_ancestry(issue)
     if track := valid_track(sorted(number for repo, number in ancestry.nodes if repo == direction_repo)):
         return track
