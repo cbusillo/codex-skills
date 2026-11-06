@@ -44,9 +44,8 @@ state and reminders do not depend on the surrounding worktree. Receipts record
 catalog and harness hashes, configured models, and deterministic routing scores.
 The runner exits nonzero for a failed grade as well as for a failed CLI run.
 Routing scores record `grader_version` from [the runner](run-routing.py).
-Archived acceptance receipts keep
-their original grades; a new rubric or source revision requires a separately
-identified comparison, not an edit to those receipts.
+Keep each receipt's original grades; identify comparisons with a new rubric or
+source revision separately.
 
 Read delivery and command success are separate observations. When a compound
 shell command returns nonzero, the grader credits only complete pinned catalog
@@ -103,8 +102,7 @@ explicit bounded output contract. The qualified local-fact forms include the
 observed sentence “In local.py, MAX_RETRIES is set to {value}.” and compare
 its whole normalized answer with the captured fixture value. Additional prose,
 including a second contradictory value, falls outside this contract; this does
-not establish general semantic answer grading. Historical trial scores stay
-unchanged when the form list is extended.
+not establish general semantic answer grading.
 
 Private-documentation cases also use `owner_before_read` with an owning skill and
 a read pattern. Grader version 4 requires at least one delivered matching read,
@@ -126,9 +124,7 @@ Completion records or shell hook order alone cannot establish the stronger
 grade. Proven complete source
 delivery before a trailing nonzero search still counts as a load.
 
-Version 3 checked delivery order alone. Historical receipts and native scores
-remain unchanged; any new grading is separate evidence. The stronger check
-still cannot prove choices or outer batches omitted from the host trace (Codex
+The ordering check cannot prove choices or outer batches omitted from the host trace (Codex
 records command starts), every recursive search path, or the timing of failed
 read attempts. Inspect raw tool calls and results too. Literal shell path
 extraction separates newline commands, including after inline comments, while
@@ -161,10 +157,6 @@ must name every blocker at once. They may
 also set `read`, a pattern that some file read before the turn's first
 operation must match, so a case can require the reference that holds the
 contract it tests.
-
-The matched comparison measures the combined instruction and hook changes;
-it does not isolate the Claude-only protocol from the new routing instructions
-in `direction` and the execution loop.
 
 The native plugin-eval schema and limitations are documented in
 [Anthropic's eval reference](https://code.claude.com/docs/en/plugin-evals).
