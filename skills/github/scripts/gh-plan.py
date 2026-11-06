@@ -1666,54 +1666,23 @@ def contributor_plan_body(issue: dict[str, Any]) -> str | None:
         raise PlanError(str(exc)) from exc
 
 
-def ensure_unmarked_contributor_body_is_unambiguous(issue: dict[str, Any]) -> None:
-    body = issue.get("body") or ""
-    recognized_sections = PLAN_SECTION_NAMES.intersection(section_map(body))
-    if recognized_sections:
-        headings = ", ".join(sorted(recognized_sections))
-        raise PlanError(
-            "Contributor issue already contains unmarked planning sections "
-            f"({headings}); automation cannot safely distinguish the original request from prior managed content. "
-            "Preserve the request in a linked maintainer-owned plan or migrate it explicitly."
-        )
-
-
-def wrap_contributor_plan(issue: dict[str, Any], managed_body: str) -> str:
-    try:
-        return github_plan_body.wrap_contributor_plan(issue, managed_body)
-    except github_plan_body.PlanBodyError as exc:
-        raise PlanError(str(exc)) from exc
+def require_automation_authored_body(issue: dict[str, Any]) -> None:
+    if not issue_body_is_fully_managed(issue):
+        raise PlanError("Only issue bodies authored by the automation identity are edited; "
+                        "write plan status as a bot-authored comment")
 
 
 def replace_issue_plan_section(issue: dict[str, Any], section: str, new_text: str) -> str:
-    body = issue.get("body") or ""
     if any(marker in new_text for marker in PLAN_RESERVED_MARKERS):
         raise PlanError("Plan section content contains reserved GitHub plan ownership markers")
-    if issue_body_is_fully_managed(issue):
-        return replace_section(body, section, new_text)
-    if section.casefold() == "original request":
-        raise PlanError("Contributor-authored original request content is immutable")
-    managed_body = contributor_plan_body(issue)
-    if managed_body is None:
-        ensure_unmarked_contributor_body_is_unambiguous(issue)
-    updated_managed = replace_section(managed_body or "", section, new_text)
-    if managed_body is None:
-        return wrap_contributor_plan(issue, updated_managed)
-    managed = marked_block(body, PLAN_MANAGED_START, PLAN_MANAGED_END)
-    if managed is None:
-        raise PlanError("Contributor issue managed plan block disappeared during update")
-    start, end, _ = managed
-    return body[:start] + updated_managed.rstrip() + body[end:]
+    require_automation_authored_body(issue)
+    return replace_section(issue.get("body") or "", section, new_text)
 
 
 def issue_plan_sections(issue: dict[str, Any]) -> dict[str, str]:
     if issue_body_is_fully_managed(issue):
         return section_map(issue.get("body") or "")
-    managed_body = contributor_plan_body(issue)
-    if managed_body is None:
-        ensure_unmarked_contributor_body_is_unambiguous(issue)
-        return {}
-    return section_map(managed_body)
+    return section_map(contributor_plan_body(issue) or "")
 
 
 def read_plan_sections(issue: dict[str, Any]) -> tuple[dict[str, str], dict[str, Any]]:
@@ -1732,16 +1701,13 @@ def read_plan_sections(issue: dict[str, Any]) -> tuple[dict[str, str], dict[str,
             sections = section_map(managed_body)
             ownership = "contributor_envelope"
             sections_source = "managed_block"
-            section_updates_allowed = True
             unmarked_planning_headings = []
         else:
             sections = section_map(body)
             ownership = "contributor_unmanaged"
             sections_source = "unmanaged_body"
             unmarked_planning_headings = sorted(PLAN_SECTION_NAMES.intersection(sections))
-            original_request = body if body else str(issue.get("title") or "").strip()
-            has_reserved_markers = any(marker in original_request for marker in PLAN_RESERVED_MARKERS)
-            section_updates_allowed = not unmarked_planning_headings and not has_reserved_markers
+        section_updates_allowed = False
     provenance = {
         "ownership": ownership,
         "author": author_login,
@@ -1833,6 +1799,7 @@ def relationship_line(rel: str, target: dict[str, Any]) -> str:
 
 
 def add_relationship_note(issue: dict[str, Any], rel: str, target: dict[str, Any]) -> str:
+    require_automation_authored_body(issue)
     line = relationship_line(rel, target)
     sections = issue_plan_sections(issue)
     current = sections.get("Relationships", "")
@@ -1847,6 +1814,7 @@ def add_relationship_note(issue: dict[str, Any], rel: str, target: dict[str, Any
 
 
 def remove_relationship_note(issue: dict[str, Any], rel: str, target: dict[str, Any]) -> str:
+    require_automation_authored_body(issue)
     line = relationship_line(rel, target)
     sections = issue_plan_sections(issue)
     current = sections.get("Relationships", "")
@@ -2100,6 +2068,8 @@ def cmd_show(args: argparse.Namespace) -> None:
     ]
     seed_decision_discussion(issue["repo"], issue["number"],
         github_direction_next.discussion_snapshot(issue, comments, complete=True))
+    if not args.full and "Current Status" in result["sections"] and not issue_body_is_fully_managed(issue):
+        result["sections"]["Current Status"] = effective_current_status(issue, comments)
     try:
         wait = current_wait(issue, comments, issue["repo"])
     except (PlanError, ValueError) as exc:
@@ -2283,6 +2253,19 @@ def claim_current_status(issue: dict[str, Any], sections: dict[str, str], commen
                                            preserve_markers=True, preserve_content=preserve_content)
 
 
+def effective_current_status(issue: dict[str, Any], comments: list[dict[str, Any]]) -> str:
+    status = claim_current_status(issue, issue_plan_sections(issue), comments)
+    return re.sub(r"<!--.*?-->", "", status, flags=re.S).strip()
+
+
+def comment_current_status(issue: dict[str, Any]) -> str:
+    _, comments = collect_paged_rest_items(
+        f"/repos/{issue['repo']}/issues/{issue['number']}/comments",
+        query={}, bucket="rest_core", step_prefix="status_comments",
+    )
+    return effective_current_status(issue, comments)
+
+
 def claim_snapshot(ref: str, repo: str, *, allow_closed: bool = False,
                    preserve_content: bool = False) -> tuple[dict[str, Any], str, list[dict[str, Any]], bool]:
     _, issue = get_issue(ref, repo)
@@ -2296,7 +2279,7 @@ def claim_snapshot(ref: str, repo: str, *, allow_closed: bool = False,
     comments = github_plan_release.verified_comments(comments, _claim_release_evidence)
     seed_decision_discussion(issue["repo"], issue["number"],
         github_direction_next.discussion_snapshot(issue, comments, complete=True))
-    can_update = "pull_request" not in issue and provenance["section_updates_allowed"] and provenance["ownership"] != "contributor_unmanaged"
+    can_update = "pull_request" not in issue and provenance["section_updates_allowed"]
     status = claim_current_status(issue, sections, comments, preserve_content=preserve_content)
     issue["claim_wait"] = current_wait(issue, comments, issue["repo"])
     return issue, status, comments, can_update
@@ -4648,11 +4631,17 @@ def cmd_update_section(args: argparse.Namespace) -> None:
         )
         raise PlanError(message, failure=failure)
     preparation_step = "read_body"
+    body_is_ours = issue_body_is_fully_managed(issue)
+    status_update = args.section.casefold() == "current status"
+    previous_status = ""
+    if status_update:
+        previous_status = (issue_plan_sections(issue).get("Current Status", "") if body_is_ours
+                           else comment_current_status(issue))
     try:
-        actor_only = (args.section.casefold() == "current status" and getattr(args, "next_actor", None) is not None
+        actor_only = (status_update and getattr(args, "next_actor", None) is not None
                       and args.body is None and not args.body_file)
         if actor_only:
-            new_text = issue_plan_sections(issue).get("Current Status", "")
+            new_text = previous_status
         elif args.body is None and not args.body_file:
             raise ValueError(
                 "Section text requires --body TEXT or --body-file FILE; use --body-file - for stdin. "
@@ -4661,8 +4650,7 @@ def cmd_update_section(args: argparse.Namespace) -> None:
         else:
             new_text = read_body(args)
         preparation_step = "input_validation"
-        if args.section.casefold() == "current status":
-            previous_status = issue_plan_sections(issue).get("Current Status", "")
+        if status_update:
             unchanged_actor = ([value for _, value in github_plan_next_actor.fields(new_text)] ==
                                [value for _, value in github_plan_next_actor.fields(previous_status)])
             if actor_only:
@@ -4681,16 +4669,22 @@ def cmd_update_section(args: argparse.Namespace) -> None:
         elif getattr(args, "next_actor", None) is not None:
             raise ValueError("--next-actor applies only to Current Status")
         preparation_step = "section_replacement"
-        updated = replace_issue_plan_section(issue, args.section, new_text)
-        before, after = (
-            {kind: lines for kind, lines in section_machine_markers(body).items() if kind.startswith("github-plan:")}
-            for body in (issue.get("body") or "", updated)
-        )
-        if before != after:
-            raise ValueError("Section corrections preserve planning records; use wait, claim or release to change them")
+        if body_is_ours:
+            updated = replace_issue_plan_section(issue, args.section, new_text)
+            before, after = (
+                {kind: lines for kind, lines in section_machine_markers(body).items() if kind.startswith("github-plan:")}
+                for body in (issue.get("body") or "", updated)
+            )
+            if before != after:
+                raise ValueError("Section corrections preserve planning records; use wait, claim or release to change them")
+            preserved = {line for lines in before.values() for line in lines}
+            authored = "\n".join(line for line in new_text.splitlines() if line not in preserved)
+        else:
+            if "<!-- github-plan:" in new_text or any(marker in new_text for marker in PLAN_RESERVED_MARKERS):
+                raise ValueError("Status comments cannot carry planning records; use wait, claim or release to change them")
+            updated = f"## {args.section}\n\n{new_text.strip()}"
+            authored = new_text
         preparation_step = "input_validation"
-        preserved = {line for lines in before.values() for line in lines}
-        authored = "\n".join(line for line in new_text.splitlines() if line not in preserved)
         github_comment_core.validate_planning_references(args.next_actor if actor_only else authored, issue_repo)
     except (OSError, ValueError, re.error) as exc:
         message = f"Cannot prepare plan section update: {exc}"
@@ -4704,8 +4698,16 @@ def cmd_update_section(args: argparse.Namespace) -> None:
             failed_step=preparation_step,
         )
         raise PlanError(message, failure=failure) from exc
+    if not body_is_ours:
+        actor, gh_cmd, expected_actor = comment_route()
+        posted = github_comment_core.comment("issue", number, updated, repo=issue_repo, gh_cmd=gh_cmd,
+            operation=CURRENT_OPERATION, expected_actor=expected_actor, failed_step="post_status_comment")
+        emit({"ok": True, "actor": actor, "updated_section": args.section, "status_location": "comment",
+              "comment": posted["comment"], "issue": compact_issue(issue)})
+        return
     actor, refreshed = rest_edit_issue(issue_repo, number, body=updated)
-    emit({"ok": True, "actor": actor, "updated_section": args.section, "issue": compact_issue(refreshed)})
+    emit({"ok": True, "actor": actor, "updated_section": args.section, "status_location": "issue_body",
+          "issue": compact_issue(refreshed)})
 
 
 def cmd_link(args: argparse.Namespace) -> None:
