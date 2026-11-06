@@ -31,7 +31,7 @@ MAX_REGISTRATIONS = 4096
 def git(repo: str, *args: str, check: bool = True) -> tuple[int, bytes]:
     if UNSAFE_ENV.intersection(os.environ):
         raise ProbeError("git_environment_override")
-    env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"}
+    env = published_history.git_environment()
     result = command(["git", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false",
                       "-c", "core.hooksPath=/dev/null", "-C", repo, *args], env=env)
     if check and result[0]:
@@ -41,6 +41,13 @@ def git(repo: str, *args: str, check: bool = True) -> tuple[int, bytes]:
 
 def git_text(repo: str, *args: str) -> str:
     return os.fsdecode(git(repo, *args)[1]).strip()
+
+
+def publication_git(repo: Path | str, *args: str) -> str:
+    try:
+        return git_text(str(repo), "--no-replace-objects", *args)
+    except ProbeError as exc:
+        raise published_history.PublicationError(str(exc)) from exc
 
 
 def registrations(repo: str) -> list[dict]:
@@ -138,7 +145,7 @@ def snapshot(repo: str, key: bytes, remote_probe: bool = True,
                   "coverage": "excluded" if not remote_probe else "unavailable"}
         if remote_probe:
             try:
-                advertised, default = published_history.advertisement(root, name)
+                advertised, default = published_history.advertisement(root, name, publication_git)
                 if name == "origin" or ("origin" not in names and len(names) == 1):
                     default_branch = default
                 remote.update(coverage="completed", refs=advertised)
@@ -172,7 +179,8 @@ def snapshot(repo: str, key: bytes, remote_probe: bool = True,
             coverage[name] = {"state": "unknown", "method": "excluded_explicit_roots", "remote_ref": None}
             continue
         try:
-            coverage[name] = published_history.ref_coverage(root, oid, live_tips, ancestors=name.startswith("refs/heads/"))
+            coverage[name] = published_history.ref_coverage(root, oid, live_tips, ancestors=name.startswith("refs/heads/"),
+                                                          run=publication_git)
         except (published_history.PublicationError, OSError, subprocess.TimeoutExpired):
             coverage[name] = {"state": "unknown", "method": "unknown", "remote_ref": None}
     stash_code, stash_data = git(root, "rev-list", "--walk-reflogs", "--no-commit-header", "--format=%H", "refs/stash", check=False)

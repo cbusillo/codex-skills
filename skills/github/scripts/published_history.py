@@ -14,10 +14,31 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 GitReader = Callable[..., str]
+REDIRECT_ENV = {
+    "GIT_DIR",
+    "GIT_COMMON_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CONFIG",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_NAMESPACE",
+}
 
 
 class PublicationError(ValueError):
     pass
+
+
+def git_environment() -> dict[str, str]:
+    return {
+        **{key: value for key, value in os.environ.items() if key not in REDIRECT_ENV},
+        "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_TERMINAL_PROMPT": "0",
+        "LC_ALL": "C",
+    }
 
 
 def git(repo: Path | str, *args: str, input_text: str | None = None) -> str:
@@ -25,9 +46,10 @@ def git(repo: Path | str, *args: str, input_text: str | None = None) -> str:
         ["git", "--no-replace-objects", "-c", "core.hooksPath=/dev/null", "-C", str(repo), *args],
         capture_output=True,
         text=True,
+        errors="surrogateescape",
         input=input_text,
         timeout=30,
-        env={**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"},
+        env=git_environment(),
     )
     if result.returncode:
         raise PublicationError("publication evidence unavailable")
@@ -89,14 +111,20 @@ def advertisement(repo: Path | str, remote: str, run: GitReader = git) -> tuple[
     return refs, default
 
 
+def available_tips(repo: Path | str, tips: Iterable[str], run: GitReader = git) -> list[str]:
+    tips = set(tips)
+    if not tips:
+        return []
+    objects = run(repo, "cat-file", "--batch-check=%(objectname) %(objecttype)", input_text="\n".join(tips) + "\n")
+    return [line.split()[0] for line in objects.splitlines() if line.split()[-1] in {"commit", "tag"}]
+
+
 def unpublished(repo: Path | str, roots: Iterable[str], tips: Iterable[str], run: GitReader = git) -> dict[str, str]:
-    verify_original_history(repo, run)
     tips = set(tips)
     remaining = set(roots) - tips
     if not remaining:
         return {}
-    objects = run(repo, "cat-file", "--batch-check=%(objectname) %(objecttype)", input_text="\n".join(tips) + "\n")
-    available = [line.split()[0] for line in objects.splitlines() if line.split()[-1] in {"commit", "tag"}]
+    available = available_tips(repo, tips, run)
     output = run(
         repo,
         "rev-list",
@@ -115,8 +143,13 @@ def ref_coverage(repo: Path | str, oid: str, tips: dict[str, str], *, ancestors:
             return {"state": "covered", "method": "exact_advertisement", "remote_ref": ref}
     if ancestors:
         for ref, tip in tips.items():
-            if ":refs/heads/" in ref and not unpublished(repo, [oid], [tip], run):
-                return {"state": "covered", "method": "ancestor_of_live_tip", "remote_ref": ref}
+            if ":refs/heads/" not in ref:
+                continue
+            try:
+                run(repo, "merge-base", "--is-ancestor", oid, tip)
+            except PublicationError:
+                continue
+            return {"state": "covered", "method": "ancestor_of_live_tip", "remote_ref": ref}
     return {"state": "unknown", "method": "unknown", "remote_ref": None}
 
 
@@ -143,7 +176,7 @@ def check_retirement(repo: Path | str, run: GitReader = git) -> None:
     branch_remote = run(repo, "config", "--default", "", "--get", f"branch.{branch}.remote")
     remotes = dict.fromkeys(
         [
-            "origin",
+            *(["origin"] if "origin" in names else []),
             *(["upstream"] if "upstream" in names else []),
             *([branch_remote] if branch_remote in names and branch_remote != "." else []),
         ]
@@ -153,7 +186,12 @@ def check_retirement(repo: Path | str, run: GitReader = git) -> None:
         remaining = unpublished(repo, roots, refs.values(), run)
         if not remaining:
             return
-        roots = set(remaining)
+        available = available_tips(repo, refs.values(), run)
+        if available:
+            preserved.update(run(repo, "rev-list", "--no-commit-header", "--format=%T", *available).split())
+        roots = {commit for commit, tree in remaining.items() if commit == head or tree not in preserved}
+        if not roots:
+            return
     raise PublicationError(
         "HEAD or unique retirement reflog content is not on origin, upstream or its branch remote; preserve it on a branch or publish it first"
     )

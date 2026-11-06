@@ -170,13 +170,6 @@ def delete_merged_branch(checkout: Path, branch: str | None, head: str) -> str:
     return f"deleted merged local branch {branch}" if result.returncode == 0 else "local branch kept: tip changed or deletion failed"
 
 
-def publication_git(path: Path | str, *args: str, input_text: str | None = None) -> str:
-    result = git(Path(path), "--no-replace-objects", *args, input_text=input_text)
-    if result.returncode:
-        raise published_history.PublicationError("publication evidence unavailable")
-    return result.stdout.strip()
-
-
 def portable_retire(path: Path, *, dry_run: bool) -> subprocess.CompletedProcess[str]:
     def kept(reason: str) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess([], 1, "", f"{reason}; follow work-closeout before retrying")
@@ -187,7 +180,7 @@ def portable_retire(path: Path, *, dry_run: bool) -> subprocess.CompletedProcess
     try:
         head = git(path, "rev-parse", "HEAD").stdout.strip()
         branch = git(path, "symbolic-ref", "--short", "-q", "HEAD").stdout.strip() or None
-        published_history.check_retirement(path, publication_git)
+        published_history.check_retirement(path)
     except (published_history.PublicationError, OSError, subprocess.TimeoutExpired) as exc:
         return kept(str(exc))
     try:

@@ -198,7 +198,7 @@ PR is checked like a closed one, including claims on that PR, its linked issues
 and its head branch. Active source/calling checkouts, trees without exact PR or default-history
 provenance, foreign locks, dirty or unpublished work and incomplete evidence
 are kept with reasons. A commit GitHub explicitly reports as missing is kept as
-an unpushed commit; other GitHub failures remain unavailable evidence. The host command still owns volume, publication,
+an unpushed commit; other GitHub failures remain unavailable evidence. The host command still owns volume,
 ignored-file, live-use and IDE checks. No lock is rewritten or bypassed.
 
 The catalog's [publication reader](../scripts/published_history.py) supplies

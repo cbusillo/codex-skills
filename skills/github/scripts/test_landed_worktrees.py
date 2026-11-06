@@ -366,8 +366,10 @@ class RepositoryTests(Fixture):
 
     def test_portable_retirement_keeps_private_or_unpublished_work_and_live_use(self) -> None:
         run = subprocess.run
-        eligible = ("eligible", "pull_only", "amended", "retained_reflog", "signed_config", "upstream_only", "fork_only")
-        for cause in (*eligible, "dirty", "ignored", "unpublished", "unique_reflog", "branch_reflog", "in_use", "proof_unavailable"):
+        eligible = ("eligible", "pull_only", "amended", "retained_reflog", "signed_config", "upstream_only", "fork_only",
+                    "detached_published", "fetched_snapshot", "graft_recovery")
+        for cause in (*eligible, "dirty", "ignored", "unpublished", "unique_reflog", "branch_reflog", "in_use", "proof_unavailable",
+                      "detached_unique", "detached_stale"):
             path = self.worktree(cause, lock=None)
             if cause == "dirty":
                 (path / "notes").write_text("private work")
@@ -382,6 +384,23 @@ class RepositoryTests(Fixture):
             elif cause == "pull_only":
                 self.commit(path, "Squashed source")
                 self.git(path, "push", "origin", "HEAD:refs/pull/7/head")
+            elif cause.startswith("detached_") or cause == "fetched_snapshot":
+                base = self.git(path, "rev-parse", "HEAD")
+                self.git(path, "checkout", "--detach")
+                (path / "unique").write_text(cause)
+                self.git(path, "add", "unique")
+                orphan = self.commit(path, "Detached work")
+                if cause == "detached_published":
+                    self.git(path, "push", "origin", "HEAD:refs/pull/8/head")
+                elif cause == "detached_stale":
+                    self.git(path, "update-ref", "refs/remotes/origin/stale", orphan)
+                elif cause == "fetched_snapshot":
+                    alternate = self.git(path, *IDENTITY, "commit-tree", f"{orphan}^{{tree}}", "-p", base, "-m", "Published snapshot")
+                    self.git(path, "push", "origin", f"{alternate}:refs/pull/9/head")
+                self.git(path, "reset", "--hard", base)
+            elif cause == "graft_recovery":
+                grafts = Path(self.git(path, "rev-parse", "--path-format=absolute", "--git-path", "info/grafts"))
+                grafts.write_text(self.git(path, "rev-parse", "HEAD") + "\n")
             elif cause in {"upstream_only", "fork_only"}:
                 remote = self.base / f"{cause}.git"
                 self.git(self.repo, "init", "--bare", str(remote))
@@ -433,13 +452,16 @@ class RepositoryTests(Fixture):
                     return subprocess.CompletedProcess(args, 0, "proved", "")
                 return run(args, **options)
 
-            with self.subTest(cause=cause), mock.patch.object(landed_worktrees.subprocess, "run", side_effect=dispatch) as calls:
+            with self.subTest(cause=cause), mock.patch.dict(os.environ, {"GIT_GRAFT_FILE": os.devnull} if cause == "graft_recovery" else {}), \
+                    mock.patch.object(landed_worktrees.subprocess, "run", side_effect=dispatch) as calls:
                 result = landed_worktrees.portable_retire(path, dry_run=False)
             self.assertEqual(result.returncode == 0, cause in eligible, f"{cause}: {result}")
             removals = [call.args[0] for call in calls.call_args_list if "remove-worktree" in call.args[0]]
             self.assertEqual(len(removals), int(cause in eligible))
+            if cause == "graft_recovery":
+                grafts.unlink()
             branches = self.git(self.repo, "for-each-ref", "--format=%(refname)", f"refs/heads/work/{cause}")
-            self.assertEqual(bool(branches), cause not in {"eligible", "retained_reflog"})
+            self.assertEqual(bool(branches), cause not in {"eligible", "retained_reflog", "graft_recovery"}, cause)
 
 
 class StrayTests(Fixture):

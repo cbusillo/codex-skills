@@ -576,6 +576,20 @@ class CleanupContracts(unittest.TestCase):
         self.assertEqual(report["repository"]["ref_coverage"]["refs/heads/work/fixture"]["state"], "unknown")
         self.assertFalse(report["policy"]["may_delete"])
 
+    def test_timed_out_remote_keeps_the_rest_of_the_bounded_snapshot(self):
+        command = cleanup_git.command
+
+        def delayed_remote(args, **kwargs):
+            if "ls-remote" in args:
+                raise cleanup.ProbeError("command_timed_out")
+            return command(args, **kwargs)
+
+        with patch.object(cleanup_git, "command", delayed_remote):
+            report = self.inventory(self.worktree)
+        self.assertFalse(report["complete"])
+        self.assertEqual(report["repository"]["remotes"][0]["coverage"], "unavailable")
+        self.assertEqual(report["repository"]["worktrees"][0]["coverage"], "completed")
+
     def test_remote_urls_and_errors_do_not_echo_credentials(self):
         credentialed_url = "https://" + "synthetic:" + FIXTURE_MARKER + "@example.invalid/repo"
         run_git(self.repo, "remote", "set-url", "origin", credentialed_url)
