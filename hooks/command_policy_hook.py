@@ -63,18 +63,19 @@ TRANSPARENT = {"command", "exec", "time", "nohup"}
 SHELL_KEYWORDS = {"{", "!", "if", "then", "elif", "else", "do", "while", "until"}
 SHELLS = {"sh", "bash", "zsh"}
 SCRIPT_INTERPRETERS = re.compile(r"^(?:osascript|python[\d.]*|node|swift|xdotool|xte|cliclick)$")
-SCRIPT_WRAPPERS = {"sudo", "timeout", "xargs"}
 STDIN_PROGRAM_PATHS = {"-", "/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"}
 SHELL_COMMAND_FLAG = re.compile(r"^-[A-Za-z]*c$")
 GH_WRAPPER_FLAGS = {"--print-auth-account", "--require-automation-auth"}
 ENV_VALUE_FLAGS = {"-u", "--unset", "-C", "--chdir"}
 UV_VALUE_FLAGS = {"--python", "-p", "--extra", "--group", "--project", "--directory", "--with", "--with-editable", "--with-requirements", "--env-file"}
-CONTEXT_WRAPPER_FLAGS = {
+SSH_VALUE_FLAGS = {"-p", "-l", "-i", "-F", "-o", "-J", "-L", "-R", "-D", "-W", "-S"}
+SCRIPT_WRAPPERS = {
     "caffeinate": {"-w", "-t"},
     "nice": {"-n", "--adjustment"},
     "timeout": {"-k", "--kill-after", "-s", "--signal"},
     "stdbuf": {"-i", "-o", "-e", "--input", "--output", "--error"},
     "sudo": {"-u", "-g", "-h", "-p", "-D", "-T", "--user", "--group", "--host", "--prompt", "--chdir", "--command-timeout"},
+    "xargs": {"-I", "-E", "-n", "-s", "-P", "-L", "-a", "-d", "--arg-file", "--delimiter", "--max-args", "--max-procs", "--max-lines", "--max-chars", "--replace", "--eof"},
 }
 POSTGRES_GATE = ["launchplane", "ci", "postgres-integration"]
 POSTGRES_URL_VARIABLE = "LAUNCHPLANE_TEST_POSTGRES_URL="
@@ -126,7 +127,7 @@ def shell_tokens(shell: str, operator_positions: set[int] | None = None) -> list
         end = stream.tell() - lexer.pushback_count
         raw = shell[cursor:end].strip(" \t\r")
         if OPERATORS.fullmatch(token) and (
-            raw == token or token.endswith("\n") and raw.endswith(token)
+            raw == token or raw.startswith("#") and raw.endswith(token)
         ):
             operator_positions.add(len(tokens))
         tokens.append(token)
@@ -138,6 +139,7 @@ def shell_tokens(shell: str, operator_positions: set[int] | None = None) -> list
 class ShellCommand:
     argv: list[str]
     detached: bool = False
+    context_argv: list[str] | None = None
 
 
 def shell_commands(shell: str) -> list[ShellCommand]:
@@ -147,7 +149,7 @@ def shell_commands(shell: str) -> list[ShellCommand]:
     backgrounded = False
     for index, token in enumerate(shell_tokens(shell, operators)):
         if index in operators:
-            backgrounded |= re.search(r"(?<![&|])&(?!&)", token) is not None
+            backgrounded |= re.search(r"(?<![&|;])&(?!&)", token) is not None
             commands.append([])
         else:
             commands[-1].append(token)
@@ -337,6 +339,13 @@ def reads_program_from_stdin(argv: list[str]) -> bool:
         return len(arguments) == 2 and arguments[0] == "-f" and arguments[1] in STDIN_PROGRAM_PATHS
     if tool == "xte":
         return not arguments
+    arguments = program_arguments(argv)
+    return not arguments or arguments[0] in STDIN_PROGRAM_PATHS
+
+
+def program_arguments(argv: list[str]) -> list[str]:
+    arguments = without_redirections(argv[1:])
+    tool = argv[0]
     value_flags = {"-W", "-X", "--check-hash-based-pycs"} if tool.startswith("python") else {
         "-l", "-s", "-r", "--require", "--input-type", "--loader", "--import", "-I", "-L", "-sdk", "-target",
     }
@@ -344,22 +353,22 @@ def reads_program_from_stdin(argv: list[str]) -> bool:
     while cursor < len(arguments):
         token = arguments[cursor]
         if token in STDIN_PROGRAM_PATHS:
-            return True
+            return arguments[cursor:]
         if token == "--":
-            return cursor + 1 == len(arguments) or arguments[cursor + 1] in STDIN_PROGRAM_PATHS
+            return arguments[cursor + 1:]
         if token in {"-c", "-e", "-m", "-p", "--eval", "--print"} or token.startswith(("--eval=", "--print=")):
-            return False
+            return arguments[cursor:]
         if tool.startswith("python") and re.match(r"^-[bBdEiIOqRsSuvVx]*[cm]", token):
-            return False
+            return arguments[cursor:]
         if tool in {"node", "osascript"} and token.startswith(("-e", "-p")):
-            return False
+            return arguments[cursor:]
         if token in value_flags:
             cursor += 2
         elif token.startswith("-"):
             cursor += 1
         else:
-            return False  # The named script, not stdin, supplies the program.
-    return True
+            return arguments[cursor:]
+    return []
 
 
 def heredoc_script_readers(header: str, delimiter: str, occurrence: int) -> list[list[str]]:
@@ -486,14 +495,15 @@ def drop_flags(argv: list[str], value_flags: set[str] | None = None) -> list[str
     return argv
 
 
-def executable_arguments(argv: list[str]) -> ShellCommand:
+def executable_arguments(argv: list[str], *, context: bool = False) -> ShellCommand:
     detached = False
     while argv:
         head = Path(argv[0]).name
-        if head in {"nohup", "setsid"}:
+        if context and head in {"nohup", "setsid"}:
             detached = True
             argv = drop_flags(argv[1:])
         elif ASSIGNMENT.match(argv[0]) or head in TRANSPARENT | SHELL_KEYWORDS:
+            detached |= head == "nohup"
             argv = argv[1:]
         elif head == "env":
             argv = drop_flags(argv[1:], ENV_VALUE_FLAGS)
@@ -505,21 +515,21 @@ def executable_arguments(argv: list[str]) -> ShellCommand:
 
 
 def policy_context(argv: list[str]) -> ShellCommand:
-    parsed = executable_arguments(argv)
+    parsed = executable_arguments(argv, context=True)
     while parsed.argv:
         head = Path(parsed.argv[0]).name
-        is_python = re.fullmatch(r"python[\d.]*", head) is not None
-        if is_python and (reads_program_from_stdin(parsed.argv) or any(
-            re.match(r"^-[bBdEiIOqRsSuvVx]*[cm]", argument) for argument in parsed.argv[1:]
-        )):
-            return parsed
-        if head not in CONTEXT_WRAPPER_FLAGS and not is_python:
+        is_python = head.startswith("python") and SCRIPT_INTERPRETERS.fullmatch(head) is not None
+        if is_python:
+            arguments = program_arguments(parsed.argv)
+            if not arguments or arguments[0] in STDIN_PROGRAM_PATHS or arguments[0].startswith("-"):
+                return parsed
+        elif head in SCRIPT_WRAPPERS:
+            arguments = drop_flags(parsed.argv[1:], SCRIPT_WRAPPERS[head])
+        else:
             return ShellCommand([head, *parsed.argv[1:]], parsed.detached)
-        flags = {"-W", "-X", "--check-hash-based-pycs"} if is_python else CONTEXT_WRAPPER_FLAGS[head]
-        arguments = drop_flags(parsed.argv[1:], flags)
         if head == "timeout":
             arguments = arguments[1:]
-        normalized = executable_arguments(arguments)
+        normalized = executable_arguments(arguments, context=True)
         parsed = replace(normalized, detached=parsed.detached or normalized.detached)
     return parsed
 
@@ -537,9 +547,10 @@ def execution_spans(argv: list[str]) -> list[list[str]]:
 
 
 def unwrap(argv: list[str]) -> list[ShellCommand]:
+    context = policy_context(argv)
     executable = executable_arguments(argv)
     argv = executable.argv
-    detached = executable.detached or policy_context(argv).detached
+    detached = executable.detached or context.detached
     if not argv:
         return []
     if Path(argv[0]).name == "gh-with-env-token":
@@ -556,19 +567,19 @@ def unwrap(argv: list[str]) -> list[ShellCommand]:
         for index, token in enumerate(argv[1:-1], start=1):
             if SHELL_COMMAND_FLAG.match(token):  # -c, -lc, -ec ...
                 return [replace(command, detached=command.detached or detached) for command in nested_commands([argv[index + 1]])]
-    commands = [ShellCommand(argv, detached)]
+    commands = [ShellCommand(argv, detached, context.argv)]
     for span in execution_spans(executable_argv):
         shells = [index for index, token in enumerate(span[:-1]) if Path(token).name in SHELLS]
         if shells:
             flag = next((index for index in range(shells[0] + 1, len(span) - 1) if SHELL_COMMAND_FLAG.match(span[index])), None)
             if flag is not None:
-                commands += [replace(command, detached=command.detached or detached) for command in nested_commands([span[flag + 1]])]
+                commands += nested_commands([span[flag + 1]])
     if argv[0] == "ssh":
-        # The remote command runs too; the host and option values read as harmless words.
-        commands += nested_commands([" ".join(argv[1:])])
+        remote = drop_flags(without_redirections(argv[1:]), SSH_VALUE_FLAGS)
+        commands += nested_commands([" ".join(remote[1:])])
     if reads_script_from_input(executable_argv) and "<<<" in argv[:-1]:
         commands += nested_commands([argv[argv.index("<<<") + 1]])
-    return commands
+    return [replace(command, detached=command.detached or detached) for command in commands]
 
 
 def runnable(token: str, skill: str) -> str:
@@ -721,7 +732,7 @@ def blocking_policy(shell: str, cwd: Path | None = None) -> tuple[dict[str, Any]
         wrapped_gh = argv[0] == "gh-with-env-token"
         matched_argv = ["gh", *argv[1:]] if wrapped_gh else argv
         # Regex policies see the command as written, wrapper included, from command position only.
-        normalized = policy_context(argv)
+        normalized = policy_context(argv) if command.context_argv is None else ShellCommand(command.context_argv)
         detached_argv = ["&", *normalized.argv] if command.detached or normalized.detached else None
         matches = simulator.simulate(matched_argv, cwd=context, command_argv=argv, context_argv=detached_argv)
         for match in matches:
