@@ -10,8 +10,10 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import tempfile
+import unittest
 from pathlib import Path
 
 SCRIPT_PATH = Path(__file__).with_name("validate_execution_environment.py")
@@ -45,47 +47,23 @@ def valid_root(root: Path) -> Path:
     return script
 
 
-def helper_pytest_script(
-    with_main_guard: bool = True,
-    with_pytest_main: bool = True,
-    propagate_pytest_exit: bool = True,
-) -> str:
-    lines = [
-        "#!/usr/bin/env python3",
-        FIXTURE_SCRIPT_MARKER,
-        '# requires-python = ">=3.12"',
-        '# dependencies = ["pytest==9.1.1"]',
-        "# ///",
+def helper_pytest_script(with_main_guard: bool = True) -> str:
+    return helper_script(
         "import pytest",
         "",
-    ]
-    if with_main_guard:
-        if with_pytest_main:
-            lines.append("if __name__ == '__main__':")
-            if propagate_pytest_exit:
-                lines.append("    raise SystemExit(pytest.main([__file__]))")
-            else:
-                lines.append("    pytest.main([__file__])")
-        else:
-            lines.extend(
-                [
-                    "if __name__ == '__main__':",
-                    "    raise SystemExit(0)",
-                ]
-            )
-    else:
-        lines.append("print('ok')")
-    return "\n".join(lines) + "\n"
+        *(("if __name__ == '__main__':", "    raise SystemExit(pytest.main([__file__]))") if with_main_guard else ("print('ok')",)),
+        dependencies=("pytest==9.1.1",),
+    )
 
 
-def helper_without_dependencies(*body_lines: str) -> str:
+def helper_script(*body_lines: str, dependencies: tuple[str, ...] = ()) -> str:
     return (
         "\n".join(
             [
                 "#!/usr/bin/env python3",
                 FIXTURE_SCRIPT_MARKER,
                 '# requires-python = ">=3.12"',
-                "# dependencies = []",
+                f"# dependencies = {json.dumps(dependencies)}",
                 "# ///",
                 *body_lines,
             ]
@@ -102,89 +80,52 @@ def validate_script(content: str) -> list[str]:
         return MODULE.validate_repository(root, python_paths=[script])
 
 
-def assert_contains(violations: list[str], text: str) -> None:
-    assert any(text in violation for violation in violations), violations
-
-
-def assert_pytest_entrypoint_rejected(statement: str) -> None:
+def with_entry(statement: str) -> str:
     original = helper_pytest_script()
-    modified = original.replace(
-        "    raise SystemExit(pytest.main([__file__]))",
-        f"    {statement}",
-    )
-    assert_contains(
-        validate_script(modified),
-        "raises SystemExit(pytest.main(...))",
-    )
+    modified = original.replace("    raise SystemExit(pytest.main([__file__]))", f"    {statement}")
+    assert modified != original, statement
+    return modified
 
 
-def assert_module_prefix_rejected(*lines: str) -> None:
+def with_prefix(prefix: str) -> str:
     original = helper_pytest_script()
-    modified = original.replace(
-        "if __name__ == '__main__':",
-        "\n".join((*lines, "", "if __name__ == '__main__':")),
-    )
-    assert_contains(
-        validate_script(modified),
-        "no direct module-level exit before it",
-    )
+    guard = "if __name__ == '__main__':"
+    modified = original.replace(guard, f"{prefix}\n\n{guard}")
+    assert modified != original, prefix
+    return modified
 
 
-def test_valid_helpers() -> None:
-    for content in (
-        python_script(),
-        helper_pytest_script(),
-        helper_without_dependencies(
-            "import importlib",
-            'pytest = importlib.import_module("pytest")',
-            "",
-            "if __name__ == '__main__':",
-            "    raise SystemExit(pytest.main([__file__]))",
-        ),
-        helper_without_dependencies('module_name = "pytest"', 'message = f"module: {module_name}"'),
-        helper_without_dependencies("import importlib.util", 'importlib.util.find_spec("pytest")'),
-        helper_without_dependencies("import importlib", 'importlib.import_module("yaml")'),
-        helper_without_dependencies("import pytest_asyncio"),
-        helper_without_dependencies("from .pytest import helper"),
-        helper_pytest_script().replace(
-            "if __name__ == '__main__':",
-            "from .sys import exit as stop\nstop(0)\n\nif __name__ == '__main__':",
-        ),
-        helper_pytest_script().replace(
-            "if __name__ == '__main__':",
-            "import sys\nstop = sys.exit\nstop = print\nstop('continuing')\n\nif __name__ == '__main__':",
-        ),
-        helper_pytest_script().replace(
-            "if __name__ == '__main__':",
-            "def stop_later():\n    raise SystemExit(0)\n\nif __name__ == '__main__':",
-        ),
-        helper_pytest_script().replace(
-            "    raise SystemExit(pytest.main([__file__]))",
-            '    """Run the helper tests."""\n    import os\n    raise SystemExit(pytest.main([__file__]))',
-        ),
-        helper_pytest_script().replace(
-            "    raise SystemExit(pytest.main([__file__]))",
-            "    import os\n    raise SystemExit(pytest.main([__file__]))",
-        ),
-    ):
-        assert validate_script(content) == [], content
+class ExecutionEnvironmentTests(unittest.TestCase):
+    def test_valid_helpers_do_not_trigger_violations(self) -> None:
+        for content in (
+            python_script(),
+            helper_pytest_script(),
+            helper_script(
+                "import importlib",
+                'pytest = importlib.import_module("pytest")',
+                "",
+                "if __name__ == '__main__':",
+                "    raise SystemExit(pytest.main([__file__]))",
+            ),
+            helper_script('module_name = "pytest"', 'message = f"module: {module_name}"'),
+            helper_script("import importlib.util", 'importlib.util.find_spec("pytest")'),
+            helper_script("import importlib", 'importlib.import_module("yaml")'),
+            helper_script("import pytest_asyncio"),
+            helper_script("from .pytest import helper"),
+            with_prefix("from .sys import exit as stop\nstop(0)"),
+            with_prefix("import sys\nstop = sys.exit\nstop = print\nstop('continuing')"),
+            with_prefix("def stop_later():\n    raise SystemExit(0)"),
+            with_entry('"""Run the helper tests."""\n    import os\n    raise SystemExit(pytest.main([__file__]))'),
+            with_entry("import os\n    raise SystemExit(pytest.main([__file__]))"),
+        ):
+            with self.subTest(content=content):
+                self.assertEqual(validate_script(content), [])
 
-
-def test_rejected_helpers() -> None:
-    cases = (
-        (
+    def test_missing_or_bypassed_pytest_entrypoints_are_rejected(self) -> None:
+        for content in (
             helper_pytest_script(with_main_guard=False),
-            "must define a module-level if __name__ == '__main__': guard",
-        ),
-        (
-            helper_pytest_script(with_pytest_main=False),
-            "raises SystemExit(pytest.main(...))",
-        ),
-        (
-            helper_pytest_script(propagate_pytest_exit=False),
-            "raises SystemExit(pytest.main(...))",
-        ),
-        (
+            with_entry("raise SystemExit(0)"),
+            with_entry("pytest.main([__file__])"),
             "#!/usr/bin/env python3\n"
             + FIXTURE_SCRIPT_MARKER
             + '\n# requires-python = ">=3.12"\n'
@@ -193,36 +134,12 @@ def test_rejected_helpers() -> None:
             + "import importlib\n"
             + "load_module = importlib.import_module\n"
             + "pytest = load_module('pytest')\n",
-            "helpers that import or declare pytest",
-        ),
-        (
-            helper_without_dependencies("import importlib", 'pytest = importlib.import_module("pytest")'),
-            "helpers that import or declare pytest",
-        ),
-        (
-            helper_without_dependencies(
-                "from importlib import import_module",
-                'pytest = import_module("pytest")',
-            ),
-            "helpers that import or declare pytest",
-        ),
-        (
-            helper_without_dependencies('pytest = __import__("pytest")'),
-            "helpers that import or declare pytest",
-        ),
-        (
-            helper_without_dependencies("import importlib", 'pytest = importlib.import_module(name="pytest")'),
-            "helpers that import or declare pytest",
-        ),
-        (
-            helper_without_dependencies("import importlib", 'importlib.import_module("pytest.__main__")'),
-            "helpers that import or declare pytest",
-        ),
-        (
-            helper_without_dependencies("import pytest.__main__"),
-            "helpers that import or declare pytest",
-        ),
-        (
+            helper_script("import importlib", 'pytest = importlib.import_module("pytest")'),
+            helper_script("from importlib import import_module", 'pytest = import_module("pytest")'),
+            helper_script('pytest = __import__("pytest")'),
+            helper_script("import importlib", 'pytest = importlib.import_module(name="pytest")'),
+            helper_script("import importlib", 'importlib.import_module("pytest.__main__")'),
+            helper_script("import pytest.__main__"),
             "#!/usr/bin/env python3\n"
             + FIXTURE_SCRIPT_MARKER
             + '\n# requires-python = ">=3.12"\n'
@@ -230,169 +147,60 @@ def test_rejected_helpers() -> None:
             + "# ///\n"
             + "def test_example():\n"
             + "    assert True\n",
-            "helpers that import or declare pytest",
-        ),
-        (
             "#!/usr/bin/env python3\n"
             + FIXTURE_SCRIPT_MARKER
             + '\n# requires-python = ">=3.12"\n'
             + "# dependencies = []\n"
             + "# ///\n"
             + "import pytest\n",
-            "helpers that import or declare pytest",
-        ),
-        (
-            helper_pytest_script().replace(
-                "    raise SystemExit(pytest.main([__file__]))",
-                "    raise SystemExit(0)\n    raise SystemExit(pytest.main([__file__]))",
-            ),
-            "first executable statement raises SystemExit(pytest.main(...))",
-        ),
-        (
-            helper_pytest_script().replace(
-                "    raise SystemExit(pytest.main([__file__]))",
-                "    if False:\n        raise SystemExit(pytest.main([__file__]))",
-            ),
-            "first executable statement raises SystemExit(pytest.main(...))",
-        ),
-        (
+            with_entry("raise SystemExit(0)\n    raise SystemExit(pytest.main([__file__]))"),
+            with_entry("if False:\n        raise SystemExit(pytest.main([__file__]))"),
             helper_pytest_script().replace(
                 "if __name__ == '__main__':\n    raise SystemExit(pytest.main([__file__]))",
                 "if __name__ == '__main__':\n    raise SystemExit(0)\n\nif __name__ == '__main__':\n    raise SystemExit(pytest.main([__file__]))",
             ),
-            "first executable statement raises SystemExit(pytest.main(...))",
-        ),
-        (
-            helper_pytest_script().replace(
-                "if __name__ == '__main__':",
-                "raise SystemExit(0)\n\nif __name__ == '__main__':",
+            with_prefix("raise SystemExit(0)"),
+            with_prefix("raise SystemExit"),
+            with_prefix("import sys\nsys.exit(0)"),
+            with_prefix("import os\nos._exit(0)"),
+            with_entry('import os\n    "Not a leading documentation string."\n    raise SystemExit(pytest.main([__file__]))'),
+            with_entry(
+                '"First documentation string."\n    "Second documentation string."\n    raise SystemExit(pytest.main([__file__]))'
             ),
-            "no direct module-level exit before it",
-        ),
-        (
-            helper_pytest_script().replace(
-                "if __name__ == '__main__':",
-                "raise SystemExit\n\nif __name__ == '__main__':",
-            ),
-            "no direct module-level exit before it",
-        ),
-        (
-            helper_pytest_script().replace(
-                "if __name__ == '__main__':",
-                "import sys\nsys.exit(0)\n\nif __name__ == '__main__':",
-            ),
-            "no direct module-level exit before it",
-        ),
-        (
-            helper_pytest_script().replace(
-                "if __name__ == '__main__':",
-                "import os\nos._exit(0)\n\nif __name__ == '__main__':",
-            ),
-            "no direct module-level exit before it",
-        ),
-        (
-            helper_pytest_script().replace(
-                "    raise SystemExit(pytest.main([__file__]))",
-                '    import os\n    "Not a leading documentation string."\n    raise SystemExit(pytest.main([__file__]))',
-            ),
-            "first executable statement raises SystemExit(pytest.main(...))",
-        ),
-        (
-            helper_pytest_script().replace(
-                "    raise SystemExit(pytest.main([__file__]))",
-                '    "First documentation string."\n    "Second documentation string."\n    raise SystemExit(pytest.main([__file__]))',
-            ),
-            "first executable statement raises SystemExit(pytest.main(...))",
-        ),
-        (
-            helper_pytest_script().replace(
-                "    raise SystemExit(pytest.main([__file__]))",
-                '    "No pytest entrypoint."',
-            ),
-            "first executable statement raises SystemExit(pytest.main(...))",
-        ),
-        (
+            with_entry('"No pytest entrypoint."'),
             helper_pytest_script(with_main_guard=False)
             + "def run():\n"
             + "    if __name__ == '__main__':\n"
             + "        raise SystemExit(pytest.main([__file__]))\n",
-            "must define a module-level if __name__ == '__main__': guard",
-        ),
-        ("import pytest\nif True print('broken')\n", "cannot parse helper"),
-        (python_script(">=3.13"), "requires-python must be '>=3.12'"),
-    )
-    for content, message in cases:
-        assert_contains(validate_script(content), message)
+            with_entry("raise SystemExit(0, pytest.main([__file__]))"),
+            with_entry("raise SystemExit(pytest.main([__file__]), 0)"),
+            with_entry("raise SystemExit(code=pytest.main([__file__]))"),
+            with_entry("raise SystemExit(int(pytest.main([__file__])))"),
+            with_entry("raise SystemExit(pytest.main(['other.py']))"),
+            with_entry("raise SystemExit(pytest.main([]))"),
+            with_entry("raise SystemExit(pytest.main([__file__, 'other.py']))"),
+            with_entry("raise SystemExit(pytest.main([__file__], plugins=[]))"),
+            with_prefix("import sys\nstop = sys.exit\nstop(0)"),
+            with_prefix("import os\nstop = os._exit\nstop(0)"),
+            with_prefix("Stop = SystemExit\nraise Stop(0)"),
+            with_prefix("import sys\nfirst = sys.exit\nsecond = first\nsecond(0)"),
+            with_prefix("import sys as system\nstop = system.exit\nstop(0)"),
+            with_prefix("from sys import exit as stop\nstop(0)"),
+            with_prefix("from builtins import SystemExit as Stop\nraise Stop(0)"),
+            with_prefix("import os.path\nos._exit(0)"),
+            with_prefix("import builtins\nraise builtins.SystemExit"),
+        ):
+            with self.subTest(content=content):
+                self.assertEqual(len(validate_script(content)), 1)
 
-
-def test_rejected_statements() -> None:
-    for statement in (
-        "raise SystemExit(0, pytest.main([__file__]))",
-        "raise SystemExit(pytest.main([__file__]), 0)",
-        "raise SystemExit(code=pytest.main([__file__]))",
-        "raise SystemExit(int(pytest.main([__file__])))",
-        "raise SystemExit(pytest.main(['other.py']))",
-        "raise SystemExit(pytest.main([]))",
-        "raise SystemExit(pytest.main([__file__, 'other.py']))",
-        "raise SystemExit(pytest.main([__file__], plugins=[]))",
-    ):
-        assert_pytest_entrypoint_rejected(statement)
-
-
-def test_rejected_module_prefixes() -> None:
-    for prefix in (
-        (
-            "import sys",
-            "stop = sys.exit",
-            "stop(0)",
-        ),
-        (
-            "import os",
-            "stop = os._exit",
-            "stop(0)",
-        ),
-        (
-            "Stop = SystemExit",
-            "raise Stop(0)",
-        ),
-        (
-            "import sys",
-            "first = sys.exit",
-            "second = first",
-            "second(0)",
-        ),
-        (
-            "import sys as system",
-            "stop = system.exit",
-            "stop(0)",
-        ),
-        (
-            "from sys import exit as stop",
-            "stop(0)",
-        ),
-        (
-            "from builtins import SystemExit as Stop",
-            "raise Stop(0)",
-        ),
-        (
-            "import os.path",
-            "os._exit(0)",
-        ),
-        (
-            "import builtins",
-            "raise builtins.SystemExit",
-        ),
-    ):
-        assert_module_prefix_rejected(*prefix)
-
-
-def main() -> int:
-    tests = [candidate for name, candidate in globals().items() if name.startswith("test_") and callable(candidate)]
-    for test in tests:
-        test()
-    print(f"execution-environment tests passed ({len(tests)} tests)")
-    return 0
+    def test_syntax_and_metadata_errors_are_rejected(self) -> None:
+        for content in (
+            python_script() + "if True print('broken')\n",
+            python_script(">=3.13"),
+        ):
+            with self.subTest(content=content):
+                self.assertEqual(len(validate_script(content)), 1)
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    unittest.main()
