@@ -82,62 +82,29 @@ def format_ownership(text: str) -> tuple[str, ...]:
 
 
 class ClaimMarkerTests(unittest.TestCase):
-    def test_session_ownership_uses_direct_fields_without_borrowing_dependency_mentions(self) -> None:
+    def test_session_ownership_comes_from_current_identity_records(self) -> None:
         session = OWNER["session"]
-        dependency = f"Ingress on https://github.com/owner/other/issues/1 is independently owned by edge-worker, native {session}."
         status = f"## Current Status\nNext actor: agent:{OTHER['session']}\n{CLAIM.marker(OTHER)}\n"
-        routing = (f"## Lead handoff routing\nNext actor: agent:{session}\nProvider setup is separately owned engineering "
-                   f"on https://github.com/owner/other/issues/872 by infra-worker native {session}. "
-                   "Scope for that separate worker: reuse the existing driver.")
-        for body in (dependency, f"Claimed by another-worker\n\n{dependency}",
-                     f"Next actor: agent:another-session\n\n{dependency}",
-                     CLAIM.marker(OTHER) + "\n\n" + dependency,
-                     CLAIM.marker(OTHER) + f"\nSession: {OTHER['session']}\nNext action: Product apply remains owned by operator {session}.",
-                     status + routing,
-                     status + f"## Lead routing\nProvider setup on https://github.com/owner/other/issues/872 is separately owned by infra-worker native {session}.",
-                     f"The issue is blocked on ingress owner/other#2, which is owned by edge-worker (native {session}).",
-                     f"Claim: none; ingress owner/other#2 is owned by edge-worker, native {session}.",
-                     f"Session: another-session; ingress dependency held by {session}",
-                     f"Ingress [dependency](https://github.com/owner/other/issues/1) is owned by edge-worker, native {session}.",
-                     f"Next actor: event:ingress owner/other#2 finished by edge-worker (native {session})"):
-            with self.subTest(body=body):
-                self.assertFalse(CLAIM.belongs_to_session(body, session, record=("owner/repo", 42)))
         for field in (f"Session: {session}", f"Native session ID: {session}", f"Thread ID: {session}",
-                      f"Claimed by {session}", f"Worker: {session} or another-worker",
-                      f"Next actor: agent:{session}", f"This issue is owned by {session}",
-                      f"Session: another-session\nSession: {session}", CLAIM.marker(OWNER),
-                      f"Claimed by worker-a in native\nsession {session}.",
-                      f"Claimed by worker-a\nOwner: worker-a / {session}",
+                      f"Next actor: agent:{session}", CLAIM.marker(OWNER),
+                      f"Session: another-session\nSession: {session}"):
+            with self.subTest(field=field):
+                self.assertTrue(CLAIM.belongs_to_session(field, session))
+        for prose in (f"This issue is owned by {session}.", f"Worker: {session} or another-worker",
                       f"Claimed by worker-a\n\nWorking from session {session}",
-                      f"The repair is owned by {session}.",
-                      f"State: Active; owned by another-worker. Working from session {session}",
-                      f"State: Active; owned by another-worker while ingress owner/other#2 is independently owned by edge, native {session}.",
                       f"State: Active; owned by another-worker. Waiting on {session} for ingress.",
-                      f"- Claimed by worker-a\n- Working in session {session}",
-                      f"Owned by {session} Session ID: other-session",
-                      CLAIM.marker(OTHER) + f"\nThe repair is owned by {session}.",
-                      CLAIM.marker(OTHER) + f"\nClaimed by {OTHER['worker']}\n\nWorking from session {session}",
-                      status + f"Claimed by {OTHER['worker']}\n\nWorking from session {session}",
-                      status + f"## Evidence\nClaimed by worker-a\nSession: {session}",
-                      status + f"## Evidence\nThe repair is owned by {session}.",
-                      f"Assigned worker: {session}",
-                      f"This issue owner/repo#42 is owned by {session}.",
-                      f"This issue owner/old-name#42 is owned by {session}.",
-                      f"Split from #3550. Session: {session}",
-                      f"Follow-up to owner/other#3550 | Session: {session}",
-                      f"Picked up after owner/other#3550 merged, owned by {session}.",
-                      f"Picked up after owner/other#3550, owned by {session}.",
-                      f"Step #2 owned by {session}",
-                      f"## Current Status\nClaimed by worker-a\n\nWorking from session {session}",
-                      f"Claimed by worker-a\n| Worker | Session |\n|---|---|\n| worker-a | {session} |"):
+                      f"Staffing: native {session} remains closeout-only. State: Active; owned by lead-worker.",
+                      f"Ingress https://github.com/owner/other/issues/1 is independently owned by edge, native {session}."):
+            for body in (prose, status + prose):
+                with self.subTest(body=body):
+                    self.assertFalse(CLAIM.belongs_to_session(body, session))
+        for field in (f"Previous session: {session}", f"Session: prefix-{session}", f"Session: {session}-suffix",
+                      f"> Session: {session}", f"```\nSession: {session}\n```",
+                      f"## Evidence\nSession: {session}", f"## Lead routing\nNext actor: agent:{session}"):
             with self.subTest(field=field):
-                for actor in ("", "Next actor: agent\n", "Next actor: person:owner\n", "Next actor: event:review\n"):
-                    self.assertTrue(CLAIM.belongs_to_session(actor + field + "\n\n" + dependency, session, record=("owner/repo", 42)))
-        for field in (f"Not claimed by {session}", f"Previous session: {session}",
-                      f"Session: prefix-{session}", f"Session: {session}-suffix",
-                      f"> Session: {session}", f"```\nSession: {session}\n```"):
-            with self.subTest(field=field):
-                self.assertFalse(CLAIM.belongs_to_session(field + "\n\n" + dependency, session, record=("owner/repo", 42)))
+                self.assertFalse(CLAIM.belongs_to_session(status + field, session))
+        with self.assertRaises(ValueError):
+            CLAIM.belongs_to_session('<!-- github-plan:claim {} -->', session)
 
     def test_only_a_complete_unquoted_launch_request_distinguishes_the_coordinator(self) -> None:
         actor = "agent:01970242-7941-7f0c-b461-16aa5723fb52"

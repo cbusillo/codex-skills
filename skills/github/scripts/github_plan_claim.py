@@ -17,11 +17,11 @@ from typing import Any, Callable
 try:
     from github_plan_status import next_actor
     from github_plan_status.discussion import MARKER, live_lines, records, without_operation_marker, released_claim_id, exact_released_sources, unquoted_text, section_ranges
-    from github_plan_status.references import ISSUE_REFERENCE, pr_issue_reference as pr_issue_reference
+    from github_plan_status.references import pr_issue_reference as pr_issue_reference
 except ModuleNotFoundError:
     from skills.github.scripts.github_plan_status import next_actor
     from skills.github.scripts.github_plan_status.discussion import MARKER, live_lines, records, without_operation_marker, released_claim_id, exact_released_sources, unquoted_text, section_ranges
-    from skills.github.scripts.github_plan_status.references import ISSUE_REFERENCE, pr_issue_reference as pr_issue_reference
+    from skills.github.scripts.github_plan_status.references import pr_issue_reference as pr_issue_reference
 
 
 LEASE_TAKEOVER_PREFIX = "Lease takeover: claim "
@@ -142,7 +142,7 @@ def references_issue(text: str, number: int) -> bool:
                 or re.search(rf"(?:^|/){number}[-_]", text))
 
 
-def ownership_text(text: str, *, strip_quotes: bool = True, keep_link_targets: bool = False) -> str:
+def ownership_text(text: str, *, strip_quotes: bool = True) -> str:
     """Unwrap human-readable Markdown without changing machine directives."""
     text = "\n".join(text.splitlines())
     # Code content is literal Markdown: protect it while unwrapping other spans.
@@ -203,14 +203,12 @@ def ownership_text(text: str, *, strip_quotes: bool = True, keep_link_targets: b
             block_start = not line.strip()
     text = "\n".join(lines)
     text = re.sub(rf"\[([^][]*)]\(([ \t]*{destination}{title})[ \t]*\)",
-                  (r"\1 \2" if keep_link_targets else r"\1"), text)
+                  r"\1", text)
     text = re.sub(r"\[([^][]+)]\[([^]\n]*)]",
-                  lambda match: (match.group(1) + (" " + references[reference_key(match.group(2) or match.group(1))]
-                                                if keep_link_targets else ""))
+                  lambda match: match.group(1)
                   if reference_key(match.group(2) or match.group(1)) in references else match.group(), text)
     text = re.sub(r"\[([^][]+)]",
-                  lambda match: (match.group(1) + (" " + references[reference_key(match.group(1))] if keep_link_targets else ""))
-                  if reference_key(match.group(1)) in references else match.group(), text)
+                  lambda match: match.group(1) if reference_key(match.group(1)) in references else match.group(), text)
     # Paired delimiters only: underscores inside identity tokens are literal.
     # Repetition handles nested emphasis and links inside emphasized spans.
     emphasis = r"(?<!\w)(\*{1,3}|_{1,3})(?=\S)(.+?)(?<=\S)\1(?!\w)"
@@ -277,7 +275,7 @@ def human_session_reference(text: str, position: int) -> bool:
 
 
 def ownership_assertions(
-    text: str, *, own_claim: dict[str, str] | None = None, include_sessions: bool = True,
+    text: str, *, own_claim: dict[str, str] | None = None,
 ) -> list[tuple[str, str]]:
     """Ignore explicit absence only at the assertion, never a whole status."""
     text = "\n".join(text.splitlines())
@@ -319,8 +317,6 @@ def ownership_assertions(
     for index, match in enumerate(matches):
         if human_session_reference(text, match.start()):
             continue
-        if not include_sessions and match.group().casefold().rstrip(" :") == "session":
-            continue
         raw_prefix = re.split(boundary, text[:match.start()])[-1]
         raw_prefix = raw_prefix.lstrip(" -*+").rstrip()
         prefix = re.sub(r"^[^:]+:\s*", "", raw_prefix)
@@ -359,58 +355,17 @@ def has_ownership_assertion(text: str, *, own_claim: dict[str, str] | None = Non
     return bool(ownership_assertions(text, own_claim=own_claim))
 
 
-def belongs_to_session(body: str, session: str, *, record: tuple[str, int]) -> bool:
+def belongs_to_session(body: str, session: str) -> bool:
     body = unquoted_text(body)
-    if session not in body:
-        return False
-    structured = records(body)
-    if any(owner["session"] == session for owner in structured):
+    if any(owner["session"] == session for owner in records(body)):
+        return True
+    contexts = [body[span] for name, span in section_ranges(body) if name == "Current Status"]
+    status = "\n\n".join(contexts or [body])
+    if any(actor == f"agent:{session}" for _, actor in next_actor.fields(status)):
         return True
     identity = re.compile(rf"(?<![\w-]){re.escape(session)}(?![\w-])")
-    prose = ownership_text(body, keep_link_targets=True)
-
-    def foreign_assertion(prefix: str) -> bool:
-        if re.search(r"\b(?:this|current)\s+(?:issue|task|record)\b", prefix, re.IGNORECASE):
-            return False
-        for target in ISSUE_REFERENCE.finditer(prefix):
-            repo = target[1] or target[2]
-            if not repo or (repo.casefold(), int(target[3])) == (record[0].casefold(), record[1]):
-                continue
-            if re.fullmatch(
-                r"[ \t,()<>]*(?:which\s+)?(?:is|remains)\s+(?:now\s+)?(?:(?:independently|separately)\s+)?(?:owned|claimed) by",
-                prefix[target.end():], re.IGNORECASE,
-            ):
-                return True
-        return False
-
-    def current_context(text: str) -> str:
-        contexts = [text[span] for name, span in section_ranges(text) if name == "Current Status"]
-        return "\n\n".join(contexts or [text])
-
-    actors = next_actor.fields(prose)
-    if any(actor == f"agent:{session}" for _, actor in next_actor.fields(current_context(prose))):
-        return True
-    actor_lines = {index for index, _ in actors}
-    prose = "\n".join(line for index, line in enumerate(prose.splitlines()) if index not in actor_lines)
-    fields = session_fields(prose, include_quotes=False, current_only=True)
-    if any(identity.search(value.split(";", 1)[0]) for value in fields):
-        return True
-    if fields and len(structured) == 1 and all(
-        session_identifiers(value.split(";", 1)[0]) == {structured[0]["session"]} for value in fields
-    ):
-        return False
-    assertions = ownership_assertions(prose, include_sessions=False)
-    if any(not foreign_assertion(prefix) and identity.search(holder) for prefix, holder in assertions):
-        return True
-    if fields:
-        return False
-    local = []
-    for paragraph in re.split(r"\n[ \t]*\n", current_context(prose)):
-        owners = ownership_assertions(paragraph, include_sessions=False)
-        if not owners or not all(foreign_assertion(prefix) for prefix, _ in owners):
-            local.append(paragraph)
-    local_text = "\n\n".join(local)
-    return bool(identity.search(local_text)) and bool(ownership_assertions(local_text, include_sessions=False))
+    return any(identity.search(value.split(";", 1)[0])
+               for value in session_fields(status, include_quotes=False, current_only=True))
 
 
 def released_successor_route(

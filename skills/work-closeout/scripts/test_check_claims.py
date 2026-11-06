@@ -420,9 +420,12 @@ class ClaimCloseoutTests(unittest.TestCase):
 
     def test_status_only_ownership_is_not_nothing_to_release(self):
         self.comments = []
-        self.issue["body"] = helper.claim.marker(SOURCE)
-        with self.assertRaises(ValueError):
-            self.check()
+        for status in (helper.claim.marker(SOURCE), f"Session: {SESSION}", f"Next actor: agent:{SESSION}",
+                       f"Session: other-session\nSession: {SESSION}"):
+            with self.subTest(status=status):
+                self.issue["body"] = status
+                with self.assertRaises(ValueError):
+                    self.check()
         for quote in (f"> Session: {SESSION}", f"```\nSession: {SESSION}\n```",
                       f"<blockquote>\nSession: {SESSION}\n</blockquote>"):
             self.issue["body"] = "## Current Status\nNext actor: agent\n## Diagnosis\n" + quote
@@ -442,6 +445,18 @@ class ClaimCloseoutTests(unittest.TestCase):
             + claim_logic.marker({**SOURCE, "session": "onboarding-session"})
         )
         self.issue["body"] = body
+        self.assertEqual(self.check(), [])
+        self.reader.post_json.assert_not_called()
+
+    def test_staffing_prose_does_not_claim_a_lead_record(self) -> None:
+        self.comments = []
+        self.issue["body"] = (
+            "## Current Status\nNext actor: agent:lead-session\n"
+            + claim_logic.marker({**SOURCE, "session": "lead-session"})
+            + f"\n\nStaffing: worker native {SESSION} remains closeout-only, "
+            "exact claim release and native coverage underway.\n"
+            "State: Active; owned by lead-worker."
+        )
         self.assertEqual(self.check(), [])
         self.reader.post_json.assert_not_called()
 

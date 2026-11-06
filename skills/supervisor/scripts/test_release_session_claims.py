@@ -1925,6 +1925,8 @@ class ReleaseTests(unittest.TestCase):
         )
         self.reader.paged_json.side_effect = lambda path, **_kw: [{"number": 9, "body": body}] if path.endswith("/issues") else []
         self.assertEqual(helper.discover(self.reader, "test", [self.entry], ["test/a"])[0], [])
+        body += "\nStaffing: source-session remains closeout-only. State: Active; owned by lead-worker."
+        self.assertEqual(helper.discover(self.reader, "test", [self.entry], ["test/a"])[0], [])
 
     def test_discovery_refuses_an_unbound_canonical_claim_record(self) -> None:
         self.reader.paged_json.side_effect = lambda path, **_kw: [] if path.endswith("/issues") else [
