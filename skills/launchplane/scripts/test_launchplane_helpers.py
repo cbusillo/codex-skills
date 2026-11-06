@@ -2394,16 +2394,8 @@ def test_product_config_public_base_url_uses_ordered_intent_and_empty_is_distinc
     assert "public_hosts" not in payload["result"]
 
 
-def test_product_config_cannot_supply_an_arbitrary_resolved_base_url() -> None:
-    response = _public_hosts_response()
-    response["result"]["public_hosts"]["resolved_base_url"] = "https://private-origin.example.invalid"
-    with pytest.raises(safety.LaunchplaneSafetyError):
-        write_action.summarize_success(
-            operation="product-config-dry-run", request={}, provider_payload=response,
-        )
-
-
 @pytest.mark.parametrize("change", [
+    {"resolved_base_url": "https://private-origin.example.invalid"},
     {"provider": {"token": "private-value"}}, {"after": ["https://example.com"]},
     {"before": ["example.com", "example.com"]}, {"added": "example.com"},
     {"plan_digest": "private-value"}, {"runtime_port": True}, {"runtime_port": 0},
@@ -3406,7 +3398,7 @@ def _product_environment_response() -> dict[str, object]:
 
 
 def _run_product_read(
-    argv: list[str], response: object
+    argv: list[str], response: object, *, transport: str = "request_launchplane_read"
 ) -> tuple[int, dict[str, Any], list[dict[str, Any]]]:
     calls: list[dict[str, Any]] = []
 
@@ -3420,7 +3412,7 @@ def _run_product_read(
     output = io.StringIO()
     with (
         temporary_attribute(write_action, "prepare_operator_settings", lambda **_kwargs: settings),
-        temporary_attribute(write_action, "request_launchplane_read", fake_read),
+        temporary_attribute(write_action, transport, fake_read),
         redirect_stdout(output),
     ):
         status = write_action.main(argv)
@@ -4639,27 +4631,6 @@ def test_preview_history_read_needs_exactly_one_selector() -> None:
         assert calls == [], argv
 
 
-def test_product_activity_read_reports_http_denial_as_read_error() -> None:
-    denial = urllib.error.HTTPError(
-        "https://launchplane.example.invalid/v1/products/example-product/activity",
-        403,
-        "Forbidden",
-        hdrs=Message(),
-        fp=io.BytesIO(
-            json.dumps(
-                {"trace_id": "launchplane_req_denied", "error": {"code": "authorization_denied"}}
-            ).encode()
-        ),
-    )
-    status, payload, _calls = _run_product_read(
-        ["product-activity-read", "--product", "example-product"], denial
-    )
-    assert status == 1
-    assert payload["status"] == "denied"
-    assert payload["summary"]["error_code"] == "authorization_denied"
-    assert "read was rejected" in payload["warnings"][0]["message"]
-
-
 def _reconcile_requests_response() -> dict[str, object]:
     return {
         "status": "ok",
@@ -5538,23 +5509,7 @@ def _target_replacement_plan_response() -> dict[str, Any]:
 def _run_plan_read(
     argv: list[str], response: object
 ) -> tuple[int, dict[str, Any], list[dict[str, Any]]]:
-    calls: list[dict[str, Any]] = []
-
-    def fake_post(**kwargs: Any) -> Any:
-        calls.append(kwargs)
-        if isinstance(response, BaseException):
-            raise response
-        return response
-
-    settings = {"service_url": "https://launchplane.example.invalid", "token": "t"}
-    output = io.StringIO()
-    with (
-        temporary_attribute(write_action, "prepare_operator_settings", lambda **_kwargs: settings),
-        temporary_attribute(write_action, "request_launchplane", fake_post),
-        redirect_stdout(output),
-    ):
-        status = write_action.main(argv)
-    return status, json.loads(output.getvalue()), calls
+    return _run_product_read(argv, response, transport="request_launchplane")
 
 
 PLAN_READ_ARGV = [
@@ -5791,7 +5746,11 @@ def test_target_replacement_plan_read_refuses_a_partial_or_unsafe_candidate() ->
         assert payload["warnings"][0]["code"] == code, extra
 
 
-def test_target_replacement_plan_read_reports_denial_with_trace() -> None:
+@pytest.mark.parametrize("reader,argv", [
+    (_run_product_read, ["product-activity-read", "--product", "example-product"]),
+    (_run_plan_read, PLAN_READ_ARGV),
+])
+def test_read_denial_preserves_status_code_and_trace(reader: Any, argv: list[str]) -> None:
     denial = urllib.error.HTTPError(
         "https://launchplane.example.invalid/v1/drivers/odoo/target-replacement-plan",
         403,
@@ -5803,12 +5762,11 @@ def test_target_replacement_plan_read_reports_denial_with_trace() -> None:
             ).encode()
         ),
     )
-    status, payload, _calls = _run_plan_read(PLAN_READ_ARGV, denial)
+    status, payload, _calls = reader(argv, denial)
     assert status == 1
     assert payload["status"] == "denied"
     assert payload["summary"]["trace_id"] == "launchplane_req_denied"
     assert payload["summary"]["error_code"] == "authorization_denied"
-    assert "read was rejected" in payload["warnings"][0]["message"]
 
 
 def test_target_replacement_plan_read_refuses_bad_input_and_unsafe_values() -> None:

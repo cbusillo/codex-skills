@@ -126,6 +126,8 @@ class TranscriptTests(unittest.TestCase):
 
             user = {"type": "user", "message": {"content": "Continue working."}}
             for records in (
+                *[prefix + [tail[0], {"type": "user", "message": {"content": f"<command-name>{kind}</command-name>"}}, tail[2]]
+                  for kind in ("/compact", "/clear")],
                 prefix + tail[1:],  # Missing the local-command caveat.
                 prefix + tail[:2],  # Incomplete exit sequence.
                 prefix + [tail[-1]],  # Standalone stdout is still a user turn.
@@ -607,49 +609,6 @@ class LedgerTests(unittest.TestCase):
         )
         self.ledger.write_text(json.dumps([self.entry]))
         os.utime(self.transcript, (1000, 1000))
-
-    def test_claude_local_exit_tail_allows_exited_tab_close(self):
-        self.entry["harness"] = "claude"
-        records = [
-            claude("Safe to exit: yes"),
-            {
-                "type": "user",
-                "isMeta": True,
-                "message": {
-                    "content": "<local-command-caveat>local command</local-command-caveat>"
-                },
-            },
-            {
-                "type": "user",
-                "message": {
-                    "content": "<command-name>/exit</command-name>\n<command-message>exit</command-message>\n<command-args></command-args>"
-                },
-            },
-            {
-                "type": "user",
-                "message": {
-                    "content": "<local-command-stdout>(no content)</local-command-stdout>"
-                },
-            },
-        ]
-        for record in records:
-            record["sessionId"] = self.entry["session_id"]
-        self.write(records)
-        for kind in ("/compact", "/clear"):
-            changed = records.copy()
-            changed[-2] = {
-                "type": "user",
-                "message": {"content": f"<command-name>{kind}</command-name>"},
-            }
-            self.assertFalse(
-                session_record.summarize(changed, "claude")["safe_verdict"]
-            )
-        self.assertFalse(
-            session_record.summarize(
-                records + [{"type": "user", "message": {"content": "continue"}}],
-                "claude",
-            )["safe_verdict"]
-        )
 
     def test_bad_watched_transcript_does_not_hide_healthy_session(self):
         bad = {**self.entry, "session_id": "bad", "transcript": "missing.jsonl"}
@@ -2896,35 +2855,27 @@ class ClaudeTrustTests(unittest.TestCase):
         self.assertIs(data["projects"][str(repository)]["hasTrustDialogAccepted"], True)
         self.assertEqual(sorted(path.name for path in self.homes[0].iterdir()), [".claude.json"])
 
-    def test_session_save_just_before_the_swap_is_kept(self):
+    def test_session_save_on_either_side_of_the_swap_is_kept(self) -> None:
         repository = git_repository(self.developer / "repository")
         exchange = iterm_tab.claude_trust.exchange
-        calls = []
+        for save_before in (True, False):
+            calls = []
 
-        def save_then_exchange(source, target):
-            if not calls and Path(target) == self.configs[0]:
-                self.session_save()
-            calls.append(target)
-            exchange(source, target)
+            def concurrent_save(source: Path, target: Path) -> None:
+                if save_before and not calls and Path(target) == self.configs[0]:
+                    self.session_save()
+                exchange(source, target)
+                if not save_before and not calls and Path(target) == self.configs[0]:
+                    self.session_save()
+                calls.append(target)
 
-        with patch.object(iterm_tab.claude_trust, "exchange", side_effect=save_then_exchange):
-            self.launch(repository)
-        self.assert_both_saves_kept(repository)
-
-    def test_session_save_just_after_the_swap_is_kept(self):
-        repository = git_repository(self.developer / "repository")
-        exchange = iterm_tab.claude_trust.exchange
-        calls = []
-
-        def exchange_then_save(source, target):
-            exchange(source, target)
-            if not calls and Path(target) == self.configs[0]:
-                self.session_save()
-            calls.append(target)
-
-        with patch.object(iterm_tab.claude_trust, "exchange", side_effect=exchange_then_save):
-            self.launch(repository)
-        self.assert_both_saves_kept(repository)
+            data = json.loads(self.configs[0].read_text())
+            data["projects"].pop(str(repository), None)
+            data.pop("oauthAccount", None)
+            self.configs[0].write_text(json.dumps(data))
+            with self.subTest(save_before=save_before), patch.object(iterm_tab.claude_trust, "exchange", side_effect=concurrent_save):
+                self.launch(repository)
+            self.assert_both_saves_kept(repository)
 
     def test_missing_directory_or_home_config_refuses_without_partial_writes(self):
         command = self.root / "command"
