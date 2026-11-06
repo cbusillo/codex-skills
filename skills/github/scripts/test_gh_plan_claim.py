@@ -88,6 +88,11 @@ class ClaimMarkerTests(unittest.TestCase):
         for body in (dependency, f"Claimed by another-worker\n\n{dependency}",
                      f"Next actor: agent:another-session\n\n{dependency}",
                      CLAIM.marker(OTHER) + "\n\n" + dependency,
+                     CLAIM.marker(OTHER) + f"\n\nClaimed by worker-a\n\nWorking from session {session}",
+                     CLAIM.marker(OTHER) + f"\n\nState: Active; owned by edge-worker.\n\n"
+                     f"Provider setup is separately owned engineering on https://github.com/owner/other/issues/872 by infra-worker native {session}.",
+                     f"## Current Status\nNext actor: agent:{OTHER['session']}\n{CLAIM.marker(OTHER)}\n"
+                     f"## Lead handoff routing\nNext actor: agent:{session}",
                      f"The issue is blocked on ingress owner/other#2, which is owned by edge-worker (native {session}).",
                      f"Claim: none; ingress owner/other#2 is owned by edge-worker, native {session}.",
                      f"Session: another-session; ingress dependency held by {session}",
@@ -98,6 +103,10 @@ class ClaimMarkerTests(unittest.TestCase):
         for field in (f"Session: {session}", f"Native session ID: {session}", f"Thread ID: {session}",
                       f"Claimed by {session}", f"Worker: {session} or another-worker",
                       f"Next actor: agent:{session}", f"This issue is owned by {session}",
+                      f"## Current Status\nNext actor: agent:{session}\n{CLAIM.marker(OTHER)}\n"
+                      f"## Lead handoff routing\nNext actor: agent:{OTHER['session']}",
+                      f"## Current Status\nNext actor: agent:{OTHER['session']}\n{CLAIM.marker(OTHER)}\n"
+                      f"## Claim\nClaimed by worker-a\nSession: {session}",
                       f"Session: another-session\nSession: {session}", CLAIM.marker(OWNER),
                       f"Claimed by worker-a in native\nsession {session}.",
                       f"Claimed by worker-a\nOwner: worker-a / {session}",

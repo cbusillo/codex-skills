@@ -435,14 +435,16 @@ class ClaimCloseoutTests(unittest.TestCase):
 
     def test_dependency_owner_does_not_own_the_coordinating_record(self) -> None:
         self.comments = []
-        body = (
-            "## Current Status\nNext actor: agent:onboarding-session\n"
-            "Next action: continue onboarding after the ingress dependency.\n\n"
-            f"Public ingress https://github.com/test/b/issues/2 is independently owned by edge-worker, native {SESSION}.\n\n"
-            + claim_logic.marker({**SOURCE, "session": "onboarding-session"})
-        )
-        self.issue["body"] = body
-        self.assertEqual(self.check(), [])
+        for coordination in (
+            f"Public ingress https://github.com/test/b/issues/2 is independently owned by edge-worker, native {SESSION}.",
+            f"Provider setup is separately owned engineering on https://github.com/test/b/issues/872 by infra-worker native {SESSION}.",
+        ):
+            with self.subTest(coordination=coordination):
+                self.issue["body"] = (
+                    "## Current Status\nNext actor: agent:onboarding-session\nState: Active; owned by onboarding-worker.\n\n"
+                    + coordination + "\n\n" + claim_logic.marker({**SOURCE, "session": "onboarding-session"})
+                )
+                self.assertEqual(self.check(), [])
         self.reader.post_json.assert_not_called()
 
     def receipt_entry(self, session: str = SESSION, records: tuple = ((REPO, 1),)) -> dict:
