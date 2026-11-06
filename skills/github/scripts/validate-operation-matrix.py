@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import ast
-import functools
 import re
 import sys
 import tempfile
@@ -37,8 +36,6 @@ REQUIRED_FIELDS = {
     "retry_eligibility",
     "reconciliation_strategy",
     "retained_graphql_rationale",
-    "source_refs",
-    "test_refs",
     "capabilities",
     "permission_mode",
     "permission_note",
@@ -147,7 +144,6 @@ ENUMS = {
 
 ID_RE = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$")
 PLACEHOLDER_RE = re.compile(r"^(?:todo|tbd|n/?a|none|unknown)$", re.IGNORECASE)
-PYTHON_REF_ALIASES = {"self-test": "run_self_tests"}
 
 
 def main() -> int:
@@ -183,7 +179,7 @@ def validate(matrix_path: Path, repo_root: Path) -> list[str]:
     except (OSError, tomllib.TOMLDecodeError) as exc:
         return [f"unable to read TOML matrix {matrix_path}: {exc}"]
 
-    operations = validate_schema(raw, repo_root, errors)
+    operations = validate_schema(raw, errors)
     if operations:
         validate_static_coverage(operations, repo_root, errors)
     errors.extend(github_capabilities.validate_permissions(raw))
@@ -198,7 +194,7 @@ def load_toml(path: Path) -> dict[str, Any]:
     return data
 
 
-def validate_schema(raw: dict[str, Any], repo_root: Path, errors: list[str]) -> list[dict[str, Any]]:
+def validate_schema(raw: dict[str, Any], errors: list[str]) -> list[dict[str, Any]]:
     if raw.get("schema_version") != SCHEMA_VERSION:
         errors.append(f"schema_version must be {SCHEMA_VERSION}")
 
@@ -233,7 +229,7 @@ def validate_schema(raw: dict[str, Any], repo_root: Path, errors: list[str]) -> 
         else:
             seen[op_id] = index
 
-        for field in sorted(REQUIRED_FIELDS - {"source_refs", "test_refs", "capabilities"}):
+        for field in sorted(REQUIRED_FIELDS - {"capabilities"}):
             value = operation.get(field)
             if not isinstance(value, str) or not value.strip():
                 errors.append(f"{label}.{field} must be a non-empty string")
@@ -304,51 +300,7 @@ def validate_schema(raw: dict[str, Any], repo_root: Path, errors: list[str]) -> 
             ) and "no retained graphql" in rationale.lower():
                 errors.append(f"{label}.retained_graphql_rationale contradicts GraphQL-selected transport")
 
-        for field in ("source_refs", "test_refs"):
-            validate_refs(label, field, operation.get(field), repo_root, errors)
-
     return valid_operations
-
-
-def validate_refs(label: str, field: str, value: Any, repo_root: Path, errors: list[str]) -> None:
-    if not isinstance(value, list) or not value:
-        errors.append(f"{label}.{field} must be a non-empty array")
-        return
-    for item in value:
-        if not isinstance(item, str) or not item.strip():
-            errors.append(f"{label}.{field} entries must be non-empty strings")
-            continue
-        path_text, separator, fragment = item.partition(":")
-        # The catalog sits one level below the repository; repository metadata does not.
-        path = (repo_root.parent if path_text.startswith(".github/") else repo_root) / path_text
-        if path_text and not path.exists():
-            errors.append(f"{label}.{field} references missing path: {item}")
-            continue
-        if not separator or not fragment:
-            continue
-        if fragment.isdigit():
-            line_number = int(fragment)
-            if line_number < 1 or line_number > file_line_count(path):
-                errors.append(f"{label}.{field} references missing line: {item}")
-            continue
-        python_fragment = PYTHON_REF_ALIASES.get(fragment, fragment)
-        if path.suffix == ".py" and python_fragment not in python_symbols(path):
-            errors.append(f"{label}.{field} references missing Python symbol: {item}")
-
-
-@functools.cache
-def file_line_count(path: Path) -> int:
-    return len(path.read_text(encoding="utf-8").splitlines())
-
-
-@functools.cache
-def python_symbols(path: Path) -> frozenset[str]:
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    return frozenset(
-        node.name
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
-    )
 
 
 def validate_static_coverage(
@@ -510,35 +462,35 @@ def run_self_tests() -> int:
 
 def test_schema_accepts_minimal_operation() -> None:
     errors: list[str] = []
-    validate_schema({"schema_version": SCHEMA_VERSION, "operations": [minimal_operation()]}, ROOT, errors)
+    validate_schema({"schema_version": SCHEMA_VERSION, "operations": [minimal_operation()]}, errors)
     assert errors == [], errors
 
 
 def test_duplicate_ids_fail() -> None:
     errors: list[str] = []
     operation = minimal_operation()
-    validate_schema({"schema_version": SCHEMA_VERSION, "operations": [operation, dict(operation)]}, ROOT, errors)
+    validate_schema({"schema_version": SCHEMA_VERSION, "operations": [operation, dict(operation)]}, errors)
     assert any("duplicate operation id" in error for error in errors), errors
 
 
 def test_invalid_enum_fails() -> None:
     errors: list[str] = []
     operation = minimal_operation(retry_eligibility="maybe")
-    validate_schema({"schema_version": SCHEMA_VERSION, "operations": [operation]}, ROOT, errors)
+    validate_schema({"schema_version": SCHEMA_VERSION, "operations": [operation]}, errors)
     assert any("retry_eligibility" in error and "unsupported" in error for error in errors), errors
 
 
 def test_read_operation_requires_read_only_idempotency() -> None:
     errors: list[str] = []
     operation = minimal_operation(idempotency="idempotent")
-    validate_schema({"schema_version": SCHEMA_VERSION, "operations": [operation]}, ROOT, errors)
+    validate_schema({"schema_version": SCHEMA_VERSION, "operations": [operation]}, errors)
     assert any("idempotency must be 'read_only'" in error for error in errors), errors
 
 
 def test_read_only_idempotency_requires_read_operation() -> None:
     errors: list[str] = []
     operation = minimal_operation(mutation_class="create")
-    validate_schema({"schema_version": SCHEMA_VERSION, "operations": [operation]}, ROOT, errors)
+    validate_schema({"schema_version": SCHEMA_VERSION, "operations": [operation]}, errors)
     assert any("requires mutation_class 'read'" in error for error in errors), errors
 
 
@@ -549,7 +501,7 @@ def test_safe_retry_requires_read_only_idempotency() -> None:
         idempotency="idempotent",
         retry_eligibility="safe",
     )
-    validate_schema({"schema_version": SCHEMA_VERSION, "operations": [operation]}, ROOT, errors)
+    validate_schema({"schema_version": SCHEMA_VERSION, "operations": [operation]}, errors)
     assert any("'safe' requires read_only" in error for error in errors), errors
 
 
@@ -561,21 +513,21 @@ def test_conditional_non_idempotent_retry_requires_stable_key() -> None:
         retry_eligibility="conditional",
         reconciliation_strategy="fresh_read",
     )
-    validate_schema({"schema_version": SCHEMA_VERSION, "operations": [operation]}, ROOT, errors)
+    validate_schema({"schema_version": SCHEMA_VERSION, "operations": [operation]}, errors)
     assert any("stable create key" in error for error in errors), errors
 
 
 def test_graphql_rationale_is_required() -> None:
     errors: list[str] = []
     operation = minimal_operation(retained_graphql_rationale="REST only.")
-    validate_schema({"schema_version": SCHEMA_VERSION, "operations": [operation]}, ROOT, errors)
+    validate_schema({"schema_version": SCHEMA_VERSION, "operations": [operation]}, errors)
     assert any("retained_graphql_rationale" in error and "GraphQL" in error for error in errors), errors
 
 
 def test_planned_migration_requires_current_transport_evidence() -> None:
     errors: list[str] = []
     operation = minimal_operation(current_transport="gh_cli_wrapper", selected_transport="rest_api")
-    validate_schema({"schema_version": SCHEMA_VERSION, "operations": [operation]}, ROOT, errors)
+    validate_schema({"schema_version": SCHEMA_VERSION, "operations": [operation]}, errors)
     assert any("migration_status" in error and "required" in error for error in errors), errors
     assert any("current_endpoint_or_command" in error and "required" in error for error in errors), errors
     assert any("current_quota_bucket" in error and "required" in error for error in errors), errors
@@ -592,7 +544,7 @@ def test_same_transport_component_migration_is_allowed() -> None:
         current_endpoint_or_command="gh issue list plus retained Project GraphQL",
         current_quota_bucket="mixed",
     )
-    validate_schema({"schema_version": SCHEMA_VERSION, "operations": [operation]}, ROOT, errors)
+    validate_schema({"schema_version": SCHEMA_VERSION, "operations": [operation]}, errors)
     assert errors == [], errors
 
 
@@ -603,32 +555,8 @@ def test_planned_migration_requires_changed_evidence() -> None:
         current_endpoint_or_command="GET /fixture",
         current_quota_bucket="rest_core",
     )
-    validate_schema({"schema_version": SCHEMA_VERSION, "operations": [operation]}, ROOT, errors)
+    validate_schema({"schema_version": SCHEMA_VERSION, "operations": [operation]}, errors)
     assert any("transport, endpoint, and quota evidence are unchanged" in error for error in errors), errors
-
-
-def test_missing_python_symbol_reference_fails() -> None:
-    errors: list[str] = []
-    validate_refs(
-        "operations[1]",
-        "source_refs",
-        ["github/scripts/gh-pr.py:not_a_real_symbol"],
-        ROOT,
-        errors,
-    )
-    assert any("missing Python symbol" in error for error in errors), errors
-
-
-def test_missing_line_reference_fails() -> None:
-    errors: list[str] = []
-    validate_refs(
-        "operations[1]",
-        "source_refs",
-        ["github/scripts/gh-comment:99999"],
-        ROOT,
-        errors,
-    )
-    assert any("missing line" in error for error in errors), errors
 
 
 def test_argparse_argument_choice_extractor() -> None:
@@ -675,8 +603,6 @@ def minimal_operation(**overrides: Any) -> dict[str, Any]:
         "retry_eligibility": "safe",
         "reconciliation_strategy": "fresh_read",
         "retained_graphql_rationale": "No retained GraphQL transport; fixture rationale.",
-        "source_refs": ["github/scripts/gh-pr.py:1"],
-        "test_refs": ["github/scripts/validate-operation-matrix.py:self-test"],
     }
     operation.update(overrides)
     return operation
