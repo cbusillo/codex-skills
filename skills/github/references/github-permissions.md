@@ -99,9 +99,8 @@ inference or grant merge rights to every installed App.
 ## Keeping the profile current
 
 The normal catalog validation runs `validate-operation-matrix.py`. New public
-commands need operation rows. Validation checks command coverage, source/test
-references, capability declarations, supported safe probes, separate actors and
-profile impact. Review changed API calls against their operation's declared
+commands need operation rows. Validation checks command coverage, capability declarations, supported safe
+probes, separate actors and profile impact. Review changed API calls against their operation's declared
 capabilities, actor, safe probe, degraded behavior and default-profile impact.
 API changes inside an existing command rely on review and fixture tests;
 static declarations alone do not prove an endpoint's runtime behavior.

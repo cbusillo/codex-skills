@@ -14,6 +14,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from summarize_rollout_memory_reviews import split_child_parents
 from validate_rollout_memory_llm_results import NOTE_KEYS, ValidationError, validate
 
 
@@ -468,16 +469,6 @@ def canonical_note_key(note: dict[str, Any]) -> str:
     if isinstance(identity_key, str) and identity_key:
         parts.append(identity_key)
     return "\0".join(parts)
-
-
-def split_child_parents(review_dir: Path) -> set[str]:
-    parents: set[str] = set()
-    for prompt_path in review_dir.glob("batch-*-*.prompt.json"):
-        stem = prompt_path.name.removesuffix(".prompt.json").removeprefix("batch-")
-        parent, _sep, _suffix = stem.partition("-")
-        if parent:
-            parents.add(parent)
-    return parents
 
 
 if __name__ == "__main__":

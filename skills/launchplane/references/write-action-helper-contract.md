@@ -622,7 +622,11 @@ installed local helper bindings.
   including the image digest. The same drop and omit rules apply.
 - `reconcile-requests-read --product` calls
   `GET /v1/product-profiles/{product}/reconcile-requests`. It returns up to 50
-  targets, each with state, times, counts, delivery id, last error and the
+  targets. Use `--target-key <exact-target-key>` to select a testing or preview
+  target from the service response before the helper's output bound. A truncated
+  unselected read cannot prove that testing is absent. An empty selection describes
+  only the returned service list, not records outside it.
+  Each target has state, times, counts, delivery id, last error and the
   plan fields the reconciler is known to write: action, reason, hold, commits,
   artifact ids, digests, operation and plan ids, the preview URL's scheme and
   host only, the Client-review flag, and the names of omitted or missing
@@ -1614,6 +1618,8 @@ try another credential or workflow. Adding a requirement does not apply runtime
 values, activate a mail server, or deploy anything. Additions do not replace
 metadata on an already declared key, and one request cannot add and remove the
 same identity.
+
+## Preview feedback remediation
 
 For stale Launchplane-managed preview comments that cannot be replayed under a
 current workflow identity, use `preview-feedback-remediation`. Run with

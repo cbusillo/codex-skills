@@ -20,7 +20,6 @@ import direction_audit as audit
 import direction_next
 from skills.github.scripts.github_plan_status import next_actor
 from skills.github.scripts.github_plan_status.discussion import status_field
-from skills.direction.scripts.question_id import heading_id
 from skills.github.scripts import github_identity, github_plan_wait, github_plan_trigger, github_read, ready_handoff, github_request_usage
 
 # The existing Supervisor helpers use sibling imports when called as scripts.
