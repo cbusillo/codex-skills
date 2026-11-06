@@ -90,10 +90,9 @@ class ClaimMarkerTests(unittest.TestCase):
                      CLAIM.marker(OTHER) + "\n\n" + dependency,
                      f"The issue is blocked on ingress owner/other#2, which is owned by edge-worker (native {session}).",
                      f"Claim: none; ingress owner/other#2 is owned by edge-worker, native {session}.",
-                     f"State: Active; owned by another-worker. Waiting on {session} for ingress.",
-                     f"State: Active; owned by another-worker while ingress owner/other#2 is independently owned by edge, native {session}.",
                      f"Session: another-session; ingress dependency held by {session}",
-                     f"Ingress [dependency](https://github.com/owner/other/issues/1) is owned by edge-worker, native {session}."):
+                     f"Ingress [dependency](https://github.com/owner/other/issues/1) is owned by edge-worker, native {session}.",
+                     f"Next actor: event:ingress owner/other#2 finished by edge-worker (native {session})"):
             with self.subTest(body=body):
                 self.assertFalse(CLAIM.belongs_to_session(body, session, record=("owner/repo", 42)))
         for field in (f"Session: {session}", f"Native session ID: {session}", f"Thread ID: {session}",
@@ -104,6 +103,11 @@ class ClaimMarkerTests(unittest.TestCase):
                       f"Claimed by worker-a\nOwner: worker-a / {session}",
                       f"Claimed by worker-a\n\nWorking from session {session}",
                       f"The repair is owned by {session}.",
+                      f"State: Active; owned by another-worker. Working from session {session}",
+                      f"State: Active; owned by another-worker while ingress owner/other#2 is independently owned by edge, native {session}.",
+                      f"State: Active; owned by another-worker. Waiting on {session} for ingress.",
+                      f"- Claimed by worker-a\n- Working in session {session}",
+                      f"Owned by {session} Session ID: other-session",
                       CLAIM.marker(OTHER) + f"\nThe repair is owned by {session}.",
                       f"This issue owner/repo#42 is owned by {session}.",
                       f"This issue owner/old-name#42 is owned by {session}.",
@@ -115,7 +119,8 @@ class ClaimMarkerTests(unittest.TestCase):
                       f"## Current Status\nClaimed by worker-a\n\nWorking from session {session}",
                       f"Claimed by worker-a\n| Worker | Session |\n|---|---|\n| worker-a | {session} |"):
             with self.subTest(field=field):
-                self.assertTrue(CLAIM.belongs_to_session(field + "\n\n" + dependency, session, record=("owner/repo", 42)))
+                for actor in ("", "Next actor: agent\n", "Next actor: person:owner\n", "Next actor: event:review\n"):
+                    self.assertTrue(CLAIM.belongs_to_session(actor + field + "\n\n" + dependency, session, record=("owner/repo", 42)))
         for field in (f"Not claimed by {session}", f"Previous session: {session}",
                       f"Session: prefix-{session}", f"Session: {session}-suffix",
                       f"> Session: {session}", f"```\nSession: {session}\n```"):
@@ -5389,7 +5394,7 @@ class ClaimTests(unittest.TestCase):
             "Current status: No work is claimed by the sweep.",
             "Sweep note: No implementation ownership is claimed by this sweep.",
             "* No ownership is claimed by this sweep.",
-            "Worker: nobody\nSession: no one",
+            "Worker: nobody\nSession: no one", "Worker: none Session: none",
             "**Not** claimed by this sweep.",
             "No longer owned by this sweep.",
             "No implementation ownership is claimed by the direction sweep.",

@@ -468,7 +468,7 @@ def discover(
             body = c.get("body") or ""
             if not any(s in body for s in sessions):
                 continue
-            match = re.fullmatch(rf"https://api\.github\.com/repos/{re.escape(repo)}/issues/([1-9]\d*)", c.get("issue_url") or "")
+            match = re.fullmatch(rf"https://api\.github\.com/repos/{re.escape(repo)}/issues/([1-9]\d*)", c.get("issue_url") or "", re.IGNORECASE)
             if not match:
                 raise ValueError(f"claim comment has an unexpected canonical issue URL at {c.get('html_url')}")
             try:

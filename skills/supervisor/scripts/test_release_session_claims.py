@@ -1908,7 +1908,7 @@ class ReleaseTests(unittest.TestCase):
 
     def test_discovery_refuses_an_unbound_canonical_claim_record(self) -> None:
         self.reader.paged_json.side_effect = lambda path, **_kw: [] if path.endswith("/issues") else [
-            {"body": "Claimed by source-session", "issue_url": "https://api.github.com/repos/other/repo/issues/9"}
+            {"body": "Waiting for source-session to finish its separate work", "issue_url": "https://api.github.com/repos/other/repo/issues/9"}
         ]
         with self.assertRaises(ValueError):
             helper.discover(self.reader, "test", [self.entry], ["test/a"])

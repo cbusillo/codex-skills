@@ -276,7 +276,9 @@ def human_session_reference(text: str, position: int) -> bool:
     ))
 
 
-def ownership_assertions(text: str, *, own_claim: dict[str, str] | None = None) -> list[tuple[str, str]]:
+def ownership_assertions(
+    text: str, *, own_claim: dict[str, str] | None = None, include_sessions: bool = True,
+) -> list[tuple[str, str]]:
     """Ignore explicit absence only at the assertion, never a whole status."""
     text = "\n".join(text.splitlines())
     if own_claim:
@@ -316,6 +318,8 @@ def ownership_assertions(text: str, *, own_claim: dict[str, str] | None = None) 
     matches = list(re.finditer(r"owned by|claimed by|\b(?:worker|session)\s*:", text, re.IGNORECASE))
     for index, match in enumerate(matches):
         if human_session_reference(text, match.start()):
+            continue
+        if not include_sessions and match.group().casefold().rstrip(" :") == "session":
             continue
         raw_prefix = re.split(boundary, text[:match.start()])[-1]
         raw_prefix = raw_prefix.lstrip(" -*+").rstrip()
@@ -372,31 +376,32 @@ def belongs_to_session(body: str, session: str, *, record: tuple[str, int]) -> b
             if not repo or (repo.casefold(), int(target[3])) == (record[0].casefold(), record[1]):
                 continue
             if re.fullmatch(
-                r"[ \t,()<>]*(?:which\s+)?(?:is|remains)\s+(?:independently\s+)?(?:owned|claimed) by",
+                r"[ \t,()<>]*(?:which\s+)?(?:is|remains)\s+(?:now\s+)?(?:independently\s+)?(?:owned|claimed) by",
                 prefix[target.end():], re.IGNORECASE,
             ):
                 return True
         return False
 
     actors = next_actor.fields(prose)
-    if any(identity.search(actor.removeprefix("agent:")) for _, actor in actors):
+    if any(actor == f"agent:{session}" for _, actor in actors):
         return True
+    actor_lines = {index for index, _ in actors}
+    prose = "\n".join(line for index, line in enumerate(prose.splitlines()) if index not in actor_lines)
     fields = session_fields(prose, include_quotes=False, current_only=True)
     if any(identity.search(value.split(";", 1)[0]) for value in fields):
         return True
-    assertions = [(prefix, holder) for prefix, holder in ownership_assertions(prose)
-                  if not session_fields(prefix + " " + holder)]
+    assertions = ownership_assertions(prose, include_sessions=False)
     if any(not foreign_assertion(prefix) and identity.search(holder) for prefix, holder in assertions):
         return True
-    if fields or actors or records(body) or not re.search(r"(?im)^Claimed by:?\s+\S+", prose):
+    if fields:
         return False
     local = []
     for paragraph in re.split(r"\n[ \t]*\n", prose):
-        owners = ownership_assertions(paragraph)
+        owners = ownership_assertions(paragraph, include_sessions=False)
         if not owners or not all(foreign_assertion(prefix) for prefix, _ in owners):
             local.append(paragraph)
     local_text = "\n\n".join(local)
-    return bool(identity.search(local_text)) and has_ownership_assertion(local_text)
+    return bool(identity.search(local_text)) and bool(ownership_assertions(local_text, include_sessions=False))
 
 
 def released_successor_route(
