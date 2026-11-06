@@ -37,7 +37,11 @@ decisions, statuses, board contents or narrative; open linked records for action
    seeds full-history radar threads and question sources; fresh source
    readers decide what is still unanswered. Questions and radar share their
    collected discussions and metadata within a run; each new run reads fresh
-   sources. Historical board questions are not
+   sources. The other readers run at the same time. The radar's repository
+   comment scan keeps a watermark beside the ledger (`<ledger>-radar-scan.json`)
+   and reads only comments changed since it; a missing, unreadable or
+   other-identity watermark, or one that no longer covers the window, rereads
+   the whole window. Historical board questions are not
    a second queue.
    A later reply on the same thread by the Director or configured own automation,
    including a merge or closing comment, clears a comment from this digest after
@@ -54,7 +58,7 @@ decisions, statuses, board contents or narrative; open linked records for action
    comments, unacknowledged questions, reviews, missing status, errors and load
    remain visible. NEXT rows currently have no observed claim, so they repeat
    even when unchanged. Use the current ownership read, not a second claim
-   snapshot. No digest state file is needed.
+   snapshot.
    Staffing uses the same global `next` as selection, including open issues
    outside Track trees and both agent families. Its 120-second read budget keeps
    omitted repositories, unread issues and other coverage gaps explicit.

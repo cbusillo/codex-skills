@@ -12,6 +12,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -308,6 +309,27 @@ class RoutineCheckTests(unittest.TestCase):
             output = routine_check.digest(routine_check.collect(readers))
             self.assertIn(str(error), output)
             self.assertIn("watch offline", output)
+
+    def test_readers_overlap_but_comments_reuse_finished_question_reads(self) -> None:
+        next_started = threading.Event()
+        order = []
+
+        def staffing() -> dict:
+            next_started.set()
+            return {"overlapped": True}
+
+        def questions() -> dict:
+            order.append("questions")
+            return {"overlapped": next_started.wait(5)}
+
+        def comments() -> dict:
+            order.append("comments")
+            return {}
+
+        sources = routine_check.collect({"questions": questions, "comments": comments, "next": staffing})
+
+        self.assertTrue(sources["questions"]["overlapped"])
+        self.assertEqual(order, ["questions", "comments"])
 
     def test_staffing_lists_all_five_requests_outside_tracks_and_both_agent_families(self) -> None:
         requests = [("odoo-devkit", 336), ("odoo-tenant-opw", 419), ("shiny-infra-ops", 811),

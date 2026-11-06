@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
@@ -24,7 +26,7 @@ from dataclasses import dataclass, field, replace
 from functools import partial
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 from urllib.parse import urlencode
 
 
@@ -70,6 +72,7 @@ REPOSITORY_COMMENT_PAGE_SIZE = 100
 # Each gh call is bounded, and every thread and reaction read shares one deadline.
 GH_CALL_TIMEOUT_SECONDS = 60
 DISCUSSION_READ_DEADLINE_SECONDS = 600
+SCAN_OVERLAP = timedelta(minutes=10)
 # Set while thread and reaction reads run and copied into their workers, so no
 # gh call outlives the deadline, even in a worker the report stopped waiting for.
 read_deadline: ContextVar[float | None] = ContextVar("read_deadline", default=None)
@@ -664,6 +667,53 @@ def opened_threads(repo: str, since: datetime, until: datetime, *, per_page: int
         page += 1
 
 
+def scan_identity(self_logins: set[str], bot_logins: set[str], automation_logins: dict[str, str]) -> str:
+    identity = json.dumps([sorted(self_logins), sorted(bot_logins), sorted(automation_logins.items())])
+    return hashlib.sha256(identity.encode()).hexdigest()
+
+
+def load_scan_state(path: Path | None, identity: str) -> dict[str, dict[str, Any]]:
+    if path is None:
+        return {}
+    try:
+        state = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(state, dict) or state.get("identity") != identity or not isinstance(state.get("lanes"), dict):
+        return {}
+    return state["lanes"]
+
+
+def save_scan_state(path: Path | None, identity: str, lanes: dict[str, dict[str, Any]]) -> None:
+    if path is None:
+        return
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", dir=path.parent, prefix=f".{path.name}.", delete=False) as stream:
+        json.dump({"identity": identity, "lanes": lanes}, stream, separators=(",", ":"))
+    os.replace(stream.name, path)
+
+
+class LaneScan(NamedTuple):
+    covered_from: datetime
+    read_from: datetime
+    rows: dict[tuple[int, str, int], list[Any]]
+
+
+def resume_lane(previous: Any, since: datetime) -> LaneScan:
+    full_scan = LaneScan(since, since, {})
+    try:
+        covered_from = rollup.parse_timestamp(previous["from"])
+        covered_through = rollup.parse_timestamp(previous["through"])
+        rows = {(number, kind, comment_id): [number, kind, comment_id, activity, bool(candidate), bool(waits)]
+                for number, kind, comment_id, activity, candidate, waits in previous["rows"]
+                if comment_timestamp(activity) >= since}
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return full_scan
+    if covered_from is None or covered_through is None or covered_from > since:
+        return full_scan
+    return LaneScan(covered_from, max(since, covered_through - SCAN_OVERLAP), rows)
+
+
 def repository_activity(
     repo: str,
     since: datetime,
@@ -672,37 +722,42 @@ def repository_activity(
     bot_logins: set[str],
     automation_logins: dict[str, str] | None = None,
     wait_candidates: set[int] | None = None,
+    scans: dict[str, Any] | None = None,
 ) -> tuple[dict[tuple[str, int], set[tuple[str, int]]], list[dict[str, str]]]:
-    query = urlencode(
-        {
-            "since": format_api_timestamp(since),
-            "sort": "updated",
-            "direction": "asc",
-            "per_page": REPOSITORY_COMMENT_PAGE_SIZE,
-        }
-    )
     candidate_ids: dict[tuple[str, int], set[tuple[str, int]]] = {}
     errors: list[dict[str, str]] = []
     lanes = (
-        ("issue_comments", f"repos/{repo}/issues/comments?{query}", normalize_issue_comment),
-        ("review_comments", f"repos/{repo}/pulls/comments?{query}", normalize_review_comment),
+        ("issue_comments", f"repos/{repo}/issues/comments", normalize_issue_comment),
+        ("review_comments", f"repos/{repo}/pulls/comments", normalize_review_comment),
     )
-    for lane, endpoint, normalizer in lanes:
+    for lane, path, normalizer in lanes:
+        covered_from, read_from, rows = resume_lane((scans or {}).get(lane), since)
+        query = urlencode({"since": format_api_timestamp(read_from), "sort": "updated", "direction": "asc",
+                           "per_page": REPOSITORY_COMMENT_PAGE_SIZE})
         try:
-            for item in repository_comment_pages(endpoint):
+            for item in repository_comment_pages(f"{path}?{query}"):
                 comment = normalizer(repo, item)
-                if (wait_candidates is not None and comment is not None and lane == "issue_comments"
-                        and github_plan_wait.PREFIX in comment.body):
-                    wait_candidates.add(comment.number)
-                if (
-                    comment is None
-                    or not comment_in_window(comment, since, until)
-                    or not is_external_comment(comment, self_logins, bot_logins, automation_logins)
-                ):
+                if comment is None:
                     continue
-                candidate_ids.setdefault(comment.thread_key, set()).add(comment.key)
+                waits = lane == "issue_comments" and github_plan_wait.PREFIX in comment.body
+                candidate = (comment_in_window(comment, since, until)
+                             and is_external_comment(comment, self_logins, bot_logins, automation_logins))
+                if waits or candidate:
+                    rows[(comment.number, comment.kind, comment.comment_id)] = [
+                        comment.number, comment.kind, comment.comment_id,
+                        format_api_timestamp(comment_activity_time(comment)), candidate, waits,
+                    ]
         except rollup.RollupError as exc:
             errors.append({"repo": repo, "lane": lane, "error": rollup.trim(str(exc))})
+        else:
+            if scans is not None:
+                scans[lane] = {"from": format_api_timestamp(covered_from), "through": format_api_timestamp(until),
+                               "rows": list(rows.values())}
+        for number, kind, comment_id, _activity, candidate, waits in rows.values():
+            if waits and wait_candidates is not None:
+                wait_candidates.add(number)
+            if candidate:
+                candidate_ids.setdefault((repo, number), set()).add((kind, comment_id))
     try:
         threads = opened_threads(repo, since, until)
     except rollup.RollupError as exc:
@@ -1617,7 +1672,7 @@ def outbound_states_for_thread(
 
 
 def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, ...] = ()) -> dict[str, Any]:
-    settings = {**settings, "discussion_sources": dict(settings.get("discussion_sources", {}))}
+    settings = dict(settings, discussion_sources=dict(settings.get("discussion_sources", {})))
     self_logins = {normalize_login(login) for login in settings["self_logins"] if normalize_login(login)}
     bot_logins = {normalize_login(login) for login in settings["bot_logins"] if normalize_login(login)}
     outbound_self = {normalize_login(login) for login in settings.get("outbound_self_logins", []) if normalize_login(login)}
@@ -1645,6 +1700,10 @@ def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, .
 
     worker_count = min(MAX_WORKERS, max(1, len(repositories)))
     recent_waits: dict[str, set[int]] = {repo: set() for repo in repositories}
+    identity = scan_identity(self_logins, bot_logins, people["automation"])
+    scan_state: Path | None = settings.get("scan_state")
+    scans = load_scan_state(scan_state, identity)
+    repository_scans = {repo: dict(scans.get(repo.casefold()) or {}) for repo in repositories}
     if settings["scan_repository_scope"]:
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
             futures = {
@@ -1659,6 +1718,7 @@ def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, .
                         bot_logins,
                         people["automation"],
                         recent_waits[repo],
+                        repository_scans[repo],
                     ),
                 ): repo
                 for repo in repositories
@@ -1671,6 +1731,11 @@ def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, .
                 repo_candidates, repo_errors = future.result()
                 merge_candidate_ids(candidate_ids, repo_candidates)
                 coverage_errors.extend(repo_errors)
+            try:
+                save_scan_state(scan_state, identity,
+                                {**scans, **{repo.casefold(): lanes for repo, lanes in repository_scans.items()}})
+            except OSError as exc:
+                coverage_errors.append({"repo": "-", "lane": "scan_state", "error": rollup.trim(str(exc))})
             wait_futures = [
                 executor.submit(bounded_discovery,
                     partial(unasked_director_waits, repo, wait_terms, self_logins, bot_logins,
