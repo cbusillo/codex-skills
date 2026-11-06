@@ -82,6 +82,58 @@ def repository_exception_commands() -> list[tuple[str, str]]:
 
 
 class CommandPolicyHookTests(unittest.TestCase):
+    def test_foreign_watch_detachment_is_refused_without_blocking_tracked_starts_or_data(self) -> None:
+        watcher = "uv run skills/supervisor/scripts/foreign_watch.py --persistent"
+        refused = (
+            f"{watcher} &", f"{watcher} & disown", f"true && {watcher} &",
+            f"nohup {watcher}", f"setsid {watcher}", f"env WATCH=1 nohup {watcher}",
+            f"nohup -- {watcher}", f"setsid -- {watcher}",
+            f"bash -c {shlex.quote(watcher + ' &')}", f"nohup bash -c {shlex.quote(watcher)}",
+            f"({watcher})&", f"{watcher} 2>&1 &", f"setsid -f {watcher}",
+            f"caffeinate -i {watcher} &",
+            f"nohup caffeinate -i {watcher}", f"nice -n 5 {watcher} &",
+            f"timeout 1d {watcher} &", f"stdbuf -oL {watcher} &", f"sudo -u x {watcher} &",
+            f"sudo nohup {watcher}", f"timeout 5 setsid {watcher}",
+            f"nohup sudo bash -c {shlex.quote(watcher)}", f"uv run python skills/supervisor/scripts/foreign_watch.py &",
+            f"nohup bash <<'EOF'\n{watcher}\nEOF", f"printf '%s' \"$({watcher})\" &",
+            f"true & {watcher}", f"{watcher}; sleep 1 &",
+            f"for s in a; do while true; do {watcher}; done; done &",
+            f"nohup timeout -k 5 1d {watcher}", f"timeout --foreground 1d {watcher} &",
+            f"timeout -s KILL 1d {watcher} &", f"caffeinate -i env X=1 {watcher} &",
+            "caffeinate -i uv run --extra dev skills/supervisor/scripts/foreign_watch.py &",
+            f"sudo nohup bash -c {shlex.quote(watcher)}",
+            f"timeout 5 setsid bash -c {shlex.quote(watcher)}",
+            f"nohup bash <<< {shlex.quote(watcher)}", f"nohup ssh host {shlex.quote(watcher)}",
+            f"nohup ssh -p 2222 host {shlex.quote(watcher)}",
+        )
+        allowed = (
+            watcher, f"{watcher} 2>&1", f"true && {watcher}",
+            f"echo {shlex.quote(watcher + ' &')}", f"rg {shlex.quote(watcher + ' & disown')} notes.md",
+            f"cat <<'EOF'\n{watcher} &\nEOF", f"{watcher} --state 'a&b.json'",
+            f"{watcher} --state '&'", "nohup sleep 1", "sleep 1 &",
+            f"env -u nohup {watcher}", "kill 123 &",
+            f"echo foreign_watch.py &", f"printf '%s' 'foreign_watch.py' &",
+            f"caffeinate -i {watcher}", f"nice -n 5 {watcher}", f"sudo -u nohup {watcher}",
+            f"{watcher} &>watch.log", f"{watcher} \\&", f"{watcher} # & disown\ntrue",
+            "python -c 'foreign_watch.py' &", "python -m foreign_watch.py &",
+            "echo foreign_watch.py | python - &",
+            f"case x in x) {watcher} ;& y) true ;; esac",
+        )
+        expected = command_policy_hook.blocking_policy(watcher + " &")
+        assert expected is not None
+        for command in refused:
+            with self.subTest(command=command):
+                result = bash(command)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                blocked = command_policy_hook.blocking_policy(command)
+                assert blocked is not None
+                policy, skill, _ = blocked
+                self.assertEqual((skill, policy["id"]), (expected[1], expected[0]["id"]))
+        for command in allowed:
+            with self.subTest(command=command):
+                result = bash(command)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_each_harness_tool_call_renews_its_claim_lease_without_skipping_policy(self) -> None:
         payloads = {
             "codex": {"hook_event_name": "PreToolUse", "session_id": "codex-session", "turn_id": "turn", "model": "gpt",
@@ -1003,6 +1055,7 @@ class CommandPolicyHookTests(unittest.TestCase):
 
     def test_commands_that_run_from_heredocs_quotes_and_wrappers_stay_blocked(self) -> None:
         for line, matched in (
+            ("# comment\n(gh pr merge 1)", "gh pr merge 1"),
             ("bash <<'EOF'\ngit push origin main\nEOF", "git push origin main"),
             ("cat <<'EOF' | sh -e\ngh pr merge 17\nEOF", "gh pr merge 17"),
             ("cat <<EOF\n$(gh pr merge 17)\nEOF", "gh pr merge 17"),

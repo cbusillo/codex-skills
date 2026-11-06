@@ -187,6 +187,16 @@ commands:
     purpose: Close one Supervisor-owned tab after current process and empty-input proof.
 policy:
   command_policies:
+    - id: prefer-tracked-foreign-watch
+      match:
+        shell_regex: "\\A'&'\\s+foreign_watch\\.py(?:\\s|$)"
+      action: require_preferred
+      message: "Run foreign_watch.py as its own shell call with the harness's background option (Claude Code run_in_background: true; Codex background terminal). Shell &, disown, nohup and setsid starts lose the harness's exit notice."
+      preferred:
+        - kind: script
+          path: scripts/foreign_watch.py
+          example_argv: ["uv", "run", "scripts/foreign_watch.py", "--owner", "OWNER", "--state", "<private-state.json>", "--persistent"]
+          purpose: "Start this plain command in its own tool call with Claude Code run_in_background: true or Codex's background terminal."
     - id: prefer-coordinated-codex-resume
       match:
         shell_regex: >-
