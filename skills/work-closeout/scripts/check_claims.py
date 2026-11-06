@@ -88,7 +88,7 @@ def retained_handoff(comments, source, pulls, *, repo, number, is_pr):
     return verified
 
 
-def check_record(reader, repo, number, session, actor, *, pulls_cache=None, data_cache=None, signoffs=None):
+def check_record(reader, repo, number, session, actor, *, pulls_cache=None, data_cache=None, signoffs=None, release_proofs=None):
     if data_cache is None:
         data_cache = {}
     if (repo, number) not in data_cache:
@@ -102,10 +102,10 @@ def check_record(reader, repo, number, session, actor, *, pulls_cache=None, data
     body_records = [r for r in claim.records(issue.get("body") or "") if r["session"] == session]
     if any(r not in [r for c in sources for r in claim.records(c.get("body") or "")] for r in body_records):
         raise ValueError(f"{repo}#{number}: status ownership has no matching source claim")
-    if not sources and claim.belongs_to_session(issue.get("body") or "", session):
-        if signoffs is None or not claim.authored_session_signoff(issue, session, actor):
+    if not body_records and claim.belongs_to_session(issue.get("body") or "", session):
+        if signoffs is None:
             raise ValueError(f"{repo}#{number}: status-only ownership needs reconciliation")
-        signoffs.append((repo, number, session))
+        signoffs[repo, number, session] = issue, actor
     result = []
     for source in sources:
         record = release.source_record(source)
@@ -169,6 +169,8 @@ def check_record(reader, repo, number, session, actor, *, pulls_cache=None, data
                        "release_url": f"https://github.com/{repo}/issues/{number}#issuecomment-{evidence['id']}",
                        "handoff_urls": [f"https://github.com/{repo}/issues/{number}#issuecomment-{h['id']}" for h in handoffs],
                        "retained_prs": [p["html_url"] for p in pulls]})
+        if release_proofs is not None:
+            release_proofs.append({"repo": repo, "number": number, "source": source, "release": evidence})
     return result
 
 
@@ -463,7 +465,7 @@ def check(
             item["finished_at"] = bounds[item["transcript"]]
     running_before = {native: running_writes(native, written[native]) for native in journal_covered}
     released, blocked, readers, pulls_cache, data_cache = [], [], {}, {}, {}
-    signoffs = []
+    signoffs, release_proofs = {}, []
 
     def check_target(native: str, repo: str, number: int) -> None:
         try:
@@ -474,7 +476,7 @@ def check(
                 raise ValueError("repository's configured automation identity is unknown")
             released.extend(
                 check_record(selected, repo, number, native, selected.expected_actor,
-                             pulls_cache=pulls_cache, data_cache=data_cache, signoffs=signoffs)
+                             pulls_cache=pulls_cache, data_cache=data_cache, signoffs=signoffs, release_proofs=release_proofs)
             )
         except (ValueError, OSError, GitHubReadError, GitHubReadShapeError, github_identity.GitHubAppError) as error:
             blocked.append(f"{repo}#{number}: {error}")
@@ -488,9 +490,9 @@ def check(
             check_target(native_session, *target)
     settled, search_errors = settle_from_search(unresolved, targets, released, check_target, search_reader, journal_covered)
     unresolved = [item for item in unresolved if item not in settled]
-    released_sessions = {row["source_session"] for row in released}
     blocked.extend(f"{repo}#{number}: status-only ownership needs reconciliation"
-                   for repo, number, native in signoffs if native not in released_sessions)
+                   for (repo, number, native), (issue, actor) in signoffs.items() if not claim.released_session_signoff(
+                       issue, native, actor, repo=repo, number=number, releases=release_proofs))
     checked_at = time.time()
     for native in sorted(journal_covered):
         blocked.extend(f"session {native}: {reason}" for reason in unsettled_attempts(native, written[native], running_before[native], checked_at))

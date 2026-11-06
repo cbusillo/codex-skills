@@ -373,16 +373,39 @@ def belongs_to_session(body: str, session: str) -> bool:
     return any(identity.search(value.split(";", 1)[0]) for value in fields)
 
 
-def authored_session_signoff(record: dict[str, Any], session: str, actor: str) -> bool:
+def released_session_signoff(
+    record: dict[str, Any], session: str, actor: str, *, repo: str, number: int, releases: list[dict[str, Any]],
+) -> bool:
+    from github_plan_status.references import ISSUE_REFERENCE
     body = ownership_text(unquoted_text(record.get("body") or ""), strip_quotes=False)
-    if (record.get("user") or {}).get("login") != actor or records(body):
+    if (record.get("user") or {}).get("login") != actor:
         return False
     fields = session_fields(body, include_quotes=False, current_only=True)
     if {identifier for field in fields for identifier in session_identifiers(field)} != {session}:
         return False
-    if any(value == f"agent:{session}" for _, value in next_actor.fields(body)):
+    contexts = [body[span].partition("\n")[2] for name, span in section_ranges(body) if name == "Current Status"]
+    if any(legacy_claim_worker(context.strip()) for context in contexts or [body]):
         return False
-    return not has_ownership_assertion(body, own_claim={"worker": "", "session": session})
+    recipient = next_actor.read(body)
+    if recipient is None and record.get("state") != "closed":
+        return False
+    for proof in releases:
+        source = proof["source"]
+        parsed = records(source.get("body") or "")
+        if (len(parsed) != 1 or parsed[0]["session"] != session
+                or (source.get("user") or {}).get("login") != actor
+                or recipient in {f"agent:{session}", f"agent:{parsed[0]['worker']}"}):
+            continue
+        if (proof["repo"].casefold(), proof["number"]) == (repo.casefold(), number):
+            return True
+        handoff = unquoted_text(proof["release"].get("body") or "")
+        if "pull_request" in record:
+            if number in handoff_pr_numbers(handoff, issue_repo=proof["repo"], target_repo=repo):
+                return True
+        elif any((match[1] or match[2] or "").casefold() == repo.casefold() and int(match[3]) == number
+                 for match in ISSUE_REFERENCE.finditer(handoff)):
+            return True
+    return False
 
 
 def released_successor_route(

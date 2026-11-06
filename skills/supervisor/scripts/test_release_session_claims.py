@@ -1163,28 +1163,38 @@ class ReleaseTests(unittest.TestCase):
         self.assertTrue(report["needs_reconciliation"])
 
     def test_finish_accounts_for_authored_signoffs_only_with_verified_releases(self) -> None:
-        signoff = "## Current Status\nNext actor: agent:supervisor\nSession: source-session"
-        entry = {**self.entry, "_finish_scope": "owner-wide scope"}
-        for same_record, is_pr in itertools.product((False, True), (False, True)):
-            for variant in ("signoff", "held", "foreign", "claimed", "routed", "ambiguous"):
-                with self.subTest(same_record=same_record, is_pr=is_pr, variant=variant):
-                    body = signoff
+        session = "11111111-1111-4111-8111-111111111111"
+        source = {**self.source, "body": helper.claim.marker({**SOURCE, "session": session})}
+        entry = {**self.entry, "session_id": session, "_finish_scope": "owner-wide scope"}
+        formats = (f"Session: {session}", f"- **Session:** {session}", f"Session:{session}", f"Native session: {session} (Codex)")
+        for same_record, is_pr, field in itertools.product((False, True), (False, True), formats):
+            for variant in ("signoff", "closed", "unrouted", "held", "foreign", "claimed", "routed", "alias", "ambiguous", "unrelated"):
+                with self.subTest(same_record=same_record, is_pr=is_pr, field=field, variant=variant):
+                    body = f"## Current Status\nNext actor: agent:supervisor\n{field}"
                     if variant == "claimed":
-                        body += "\nClaimed by trial"
+                        body = body.replace("## Current Status\n", "## Current Status\nClaimed by trial\n")
                     if variant == "routed":
-                        body = body.replace("agent:supervisor", "agent:source-session")
+                        body = body.replace("agent:supervisor", f"agent:{session}")
+                    if variant == "alias":
+                        body = body.replace("agent:supervisor", "agent:trial")
+                    if variant in {"closed", "unrouted"}:
+                        body = body.replace("Next actor: agent:supervisor\n", "")
                     if variant == "ambiguous":
                         body += "\nSession: other-session"
                     record = {"body": body, "user": {"login": "foreign[bot]" if variant == "foreign" else ACTOR}}
+                    if variant == "closed":
+                        record["state"] = "closed"
                     if is_pr:
                         record["pull_request"] = {}
-                    comments = [self.source] if variant == "held" else [self.source, self.own_release()]
+                    release = self.own_release(body="Released claim 1\n\nRefs test/a#2." if variant != "unrelated" else "Released claim 1")
+                    comments = [source] if variant == "held" else [source, release]
                     self.reader.get_json.side_effect = lambda path, **_kw: record if same_record or path.endswith("/2") else {"body": ""}
                     self.reader.paged_json.side_effect = lambda path, **_kw: comments if path.endswith("/1/comments") else []
                     issues = [("test/a", 1)] if same_record else [("test/a", 2), ("test/a", 1)]
                     report = helper.finished_claims(self.reader, entry, ACTOR, issues, False)
-                    self.assertEqual(bool(report["issue_refusals"]), variant != "signoff", report)
-                    self.assertEqual(bool(report["retained_status_claims"]), variant != "signoff", report)
+                    expected = variant in {"signoff", "closed"} or same_record and variant == "unrelated"
+                    self.assertEqual(bool(report["issue_refusals"]), not expected, report)
+                    self.assertEqual(bool(report["retained_status_claims"]), not expected, report)
 
     def test_finish_noop_paths_keep_the_unqualified_verdict_gate(self):
         for comments in ([], [self.source, self.own_release()]):

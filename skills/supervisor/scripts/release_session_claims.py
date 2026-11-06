@@ -651,7 +651,7 @@ def release_session(reader, entry, actor, supervisor_session, issues, checkout_r
 def finished_claims(reader, entry, actor, issues, apply):
     """Consume one canonical release proof per source; never manufacture a release."""
     released, refused, retained_status = [], [], []
-    signoffs = []
+    signoffs, release_proofs = [], []
     ended = release.stamp(entry["ended_at"])
     posted = None
     for repo, number in issues:
@@ -669,10 +669,10 @@ def finished_claims(reader, entry, actor, issues, apply):
                 body_records = [r for r in claim.records(issue["body"]) if r["session"] == entry["session_id"]]
                 source_records = [r for c in sources for r in claim.records(c.get("body") or "")]
                 if not body_records or any(r not in source_records for r in body_records):
-                    if not body_records and claim.authored_session_signoff(issue, entry["session_id"], actor):
-                        signoffs.append(identity)
-                    else:
+                    if body_records:
                         retained_status.append(identity)
+                    else:
+                        signoffs.append((identity, issue))
             for source in sources:
                 source_identity = {**identity, "claim_comment": source["id"]}
                 parsed = claim.records(source.get("body") or "")
@@ -727,6 +727,7 @@ def finished_claims(reader, entry, actor, issues, apply):
                     continue
                 released.append({**source_identity,
                     "handoff_url": f"https://github.com/{repo}/issues/{number}#issuecomment-{evidence['id']}"})
+                release_proofs.append({"repo": repo, "number": number, "source": source, "release": evidence})
             # Use the same validated discussion, retaining unresolved follow-ups
             # and foreign ownership. A failed read is never an empty history.
             try:
@@ -745,8 +746,8 @@ def finished_claims(reader, entry, actor, issues, apply):
         except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError,
                 GitHubReadError, GitHubReadShapeError) as error:
             refused.append({**identity, "error": str(error)})
-    if not released:
-        retained_status.extend(signoffs)
+    retained_status.extend(identity for identity, issue in signoffs if not claim.released_session_signoff(
+        issue, entry["session_id"], actor, repo=identity["repository"], number=identity["issue"], releases=release_proofs))
     for identity in retained_status:
         identity["next_action"] = "reconcile the authored Current Status ownership"
         refused.append({**identity, "error": "status-only ownership has no matching canonical structured source"})
