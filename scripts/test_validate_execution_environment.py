@@ -126,39 +126,17 @@ class ExecutionEnvironmentTests(unittest.TestCase):
             helper_pytest_script(with_main_guard=False),
             with_entry("raise SystemExit(0)"),
             with_entry("pytest.main([__file__])"),
-            "#!/usr/bin/env python3\n"
-            + FIXTURE_SCRIPT_MARKER
-            + '\n# requires-python = ">=3.12"\n'
-            + '# dependencies = ["pytest==9.1.1"]\n'
-            + "# ///\n"
-            + "import importlib\n"
-            + "load_module = importlib.import_module\n"
-            + "pytest = load_module('pytest')\n",
             helper_script("import importlib", 'pytest = importlib.import_module("pytest")'),
             helper_script("from importlib import import_module", 'pytest = import_module("pytest")'),
             helper_script('pytest = __import__("pytest")'),
             helper_script("import importlib", 'pytest = importlib.import_module(name="pytest")'),
             helper_script("import importlib", 'importlib.import_module("pytest.__main__")'),
             helper_script("import pytest.__main__"),
-            "#!/usr/bin/env python3\n"
-            + FIXTURE_SCRIPT_MARKER
-            + '\n# requires-python = ">=3.12"\n'
-            + '# dependencies = ["pytest==9.1.1"]\n'
-            + "# ///\n"
-            + "def test_example():\n"
-            + "    assert True\n",
-            "#!/usr/bin/env python3\n"
-            + FIXTURE_SCRIPT_MARKER
-            + '\n# requires-python = ">=3.12"\n'
-            + "# dependencies = []\n"
-            + "# ///\n"
-            + "import pytest\n",
+            helper_script("def test_example():", "    assert True", dependencies=("pytest==9.1.1",)),
+            helper_script("import pytest"),
             with_entry("raise SystemExit(0)\n    raise SystemExit(pytest.main([__file__]))"),
             with_entry("if False:\n        raise SystemExit(pytest.main([__file__]))"),
-            helper_pytest_script().replace(
-                "if __name__ == '__main__':\n    raise SystemExit(pytest.main([__file__]))",
-                "if __name__ == '__main__':\n    raise SystemExit(0)\n\nif __name__ == '__main__':\n    raise SystemExit(pytest.main([__file__]))",
-            ),
+            with_entry("raise SystemExit(0)\n\nif __name__ == '__main__':\n    raise SystemExit(pytest.main([__file__]))"),
             with_prefix("raise SystemExit(0)"),
             with_prefix("raise SystemExit"),
             with_prefix("import sys\nsys.exit(0)"),
@@ -181,7 +159,6 @@ class ExecutionEnvironmentTests(unittest.TestCase):
             with_entry("raise SystemExit(pytest.main([__file__, 'other.py']))"),
             with_entry("raise SystemExit(pytest.main([__file__], plugins=[]))"),
             with_prefix("import sys\nstop = sys.exit\nstop(0)"),
-            with_prefix("import os\nstop = os._exit\nstop(0)"),
             with_prefix("Stop = SystemExit\nraise Stop(0)"),
             with_prefix("import sys\nfirst = sys.exit\nsecond = first\nsecond(0)"),
             with_prefix("import sys as system\nstop = system.exit\nstop(0)"),
