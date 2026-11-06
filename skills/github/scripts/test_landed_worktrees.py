@@ -365,7 +365,8 @@ class RepositoryTests(Fixture):
 
     def test_portable_retirement_keeps_private_or_unpublished_work_and_live_use(self) -> None:
         run = subprocess.run
-        for cause in ("dirty", "ignored", "unpublished", "in_use", "proof_unavailable", "pull_only", "eligible"):
+        eligible = ("eligible", "pull_only", "amended", "retained_reflog")
+        for cause in (*eligible, "dirty", "ignored", "unpublished", "unique_reflog", "branch_reflog", "in_use", "proof_unavailable"):
             path = self.worktree(cause, lock=None)
             if cause == "dirty":
                 (path / "notes").write_text("private work")
@@ -380,6 +381,26 @@ class RepositoryTests(Fixture):
             elif cause == "pull_only":
                 self.commit(path, "Squashed source")
                 self.git(path, "push", "origin", "HEAD:refs/pull/7/head")
+            elif cause in {"amended", "unique_reflog", "retained_reflog", "branch_reflog"}:
+                base = self.git(path, "rev-parse", "HEAD")
+                (path / cause).write_text(cause)
+                self.git(path, "add", cause)
+                if cause == "branch_reflog":
+                    tree = self.git(path, "write-tree")
+                    orphan = self.git(path, *IDENTITY, "commit-tree", tree, "-p", base, "-m", "Branch reflog content")
+                    orphan = self.git(path, *IDENTITY, "commit-tree", f"{base}^{{tree}}", "-p", orphan, "-m", "Reverted content")
+                    self.git(path, "reset", "--hard", base)
+                    self.git(path, "update-ref", f"refs/heads/work/{cause}", orphan)
+                    self.git(path, "update-ref", f"refs/heads/work/{cause}", base)
+                else:
+                    self.commit(path, "Before amendment")
+                if cause == "amended":
+                    self.git(path, *IDENTITY, "commit", "--amend", "-m", "After amendment")
+                    self.git(path, "push", "origin", f"HEAD:work/{cause}")
+                else:
+                    if cause == "retained_reflog":
+                        self.git(path, "branch", "recovery/content")
+                    self.git(path, "reset", "--hard", base)
 
             def dispatch(
                 args: list[str], *, case: str = cause, target: Path = path, **options: object
@@ -395,11 +416,11 @@ class RepositoryTests(Fixture):
 
             with self.subTest(cause=cause), mock.patch.object(landed_worktrees.subprocess, "run", side_effect=dispatch) as calls:
                 result = landed_worktrees.portable_retire(path, dry_run=False)
-            self.assertEqual(result.returncode == 0, cause in {"eligible", "pull_only"}, result)
+            self.assertEqual(result.returncode == 0, cause in eligible, f"{cause}: {result}")
             removals = [call.args[0] for call in calls.call_args_list if "remove-worktree" in call.args[0]]
-            self.assertEqual(len(removals), int(cause in {"eligible", "pull_only"}))
+            self.assertEqual(len(removals), int(cause in eligible))
             branches = self.git(self.repo, "for-each-ref", "--format=%(refname)", f"refs/heads/work/{cause}")
-            self.assertEqual(bool(branches), cause != "eligible")
+            self.assertEqual(bool(branches), cause not in {"eligible", "retained_reflog"})
 
 
 class StrayTests(Fixture):

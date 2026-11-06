@@ -176,20 +176,26 @@ def portable_retire(path: Path, *, dry_run: bool) -> subprocess.CompletedProcess
     status = git(path, "status", "--porcelain", "--ignored", "--untracked-files=all")
     if status.returncode or status.stdout.strip():
         return kept("uncommitted, untracked or ignored files remain")
+    head = git(path, "rev-parse", "HEAD").stdout.strip()
+    branch = git(path, "symbolic-ref", "--short", "-q", "HEAD").stdout.strip() or None
     try:
-        history = git(path, "reflog", "show", "--format=%H", "HEAD")
+        history = git(path, "log", "-g", "--format=%H", "HEAD", *([f"refs/heads/{branch}"] if branch else []))
         remote = git(path, "ls-remote", "origin", "refs/heads/*", "refs/tags/*", "refs/pull/*/head")
     except subprocess.TimeoutExpired:
         return kept("live publication or reflog read timed out")
     if history.returncode or remote.returncode or not remote.stdout.strip():
         return kept("live publication or reflog evidence unavailable")
     tips = [line.split()[0] for line in remote.stdout.splitlines()]
-    heads = {git(path, "rev-parse", "HEAD").stdout.strip(), *history.stdout.split()}
     objects = git(path, "cat-file", "--batch-check=%(objectname) %(objecttype)", input_text="\n".join(tips) + "\n")
     available = [line.split()[0] for line in objects.stdout.splitlines() if line.split()[-1] in {"commit", "tag"}]
-    unpublished = git(path, "rev-list", "--stdin", input_text="\n".join([*heads, *(f"^{tip}" for tip in available)]) + "\n")
+    exclusions = [f"^{tip}" for tip in available]
+    unpublished = git(path, "--no-replace-objects", "rev-list", "--stdin", input_text="\n".join([head, *exclusions]) + "\n")
     if objects.returncode or unpublished.returncode or unpublished.stdout.strip():
-        return kept("HEAD or reflog history is unpublished")
+        return kept("HEAD history is unpublished")
+    snapshots = git(path, "--no-replace-objects", "log", "--format=%T", "--stdin", input_text=history.stdout)
+    preserved = git(path, "--no-replace-objects", "log", "--format=%T", head, "--branches", "--tags", *available)
+    if snapshots.returncode or preserved.returncode or set(snapshots.stdout.split()) - set(preserved.stdout.split()):
+        return kept("unique reflog content is unpublished; preserve it on a branch first")
     try:
         if not has_no_live_users(path, directory=True):
             return kept("worktree is in use or live-use proof is incomplete")
@@ -199,8 +205,6 @@ def portable_retire(path: Path, *, dry_run: bool) -> subprocess.CompletedProcess
     common = Path(metadata.stdout.strip())
     if metadata.returncode or not common.is_absolute() or common.name != ".git":
         return kept("repository identity unavailable")
-    head = git(path, "rev-parse", "HEAD").stdout.strip()
-    branch = git(path, "symbolic-ref", "--short", "-q", "HEAD").stdout.strip() or None
     inspector = Path(__file__).parents[2] / "jetbrains-inspection/scripts/jb-inspect.py"
     result = subprocess.run(
         [
