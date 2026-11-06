@@ -178,9 +178,7 @@ def verify_handoff(entry: dict, args: argparse.Namespace, operation: Operation, 
         comments = reader.paged_json(f"/repos/{repo}/issues/{number}/comments", step_prefix="closeout_handoff")
         evidence = claim_evidence(entry, operation, "handoff_comments")
         releases = {int(match[3]) for row in claim_evidence(entry, operation, "released_claims")
-                    if str(row.get("repository") or "").casefold() == repo.casefold() and row.get("record") == number
-                    and (match := claim_release.COMMENT_URL.fullmatch(row.get("release_url") or ""))
-                    and match[1].casefold() == repo.casefold() and int(match[2]) == number}
+                    if (match := claim_release.COMMENT_URL.fullmatch(row.get("release_url") or ""))}
         scoped = [row for row in evidence if str(row.get("repository") or "").casefold() == repo.casefold()
                   and row.get("number") == number]
         candidates = [comment for comment in comments

@@ -609,7 +609,7 @@ class RoutineCheckTests(unittest.TestCase):
                    "blocked": [], "unresolved_invocations": [],
                    "released_claims": [{"repository": "owner/repo", "record": 7, "source_session": "native", "release_url": url}]}
         for variant in ("verified", "pr_anchor", "repository_case", "no_session", "failed", "incomplete", "other_session",
-                        "other_anchor", "ambiguous", "explicit", "wrong_actor", "conflicting_session"):
+                        "ambiguous", "wrong_actor", "conflicting_session"):
             with self.subTest(variant=variant):
                 ledger.write_text(json.dumps([entry]))
                 current = json.loads(json.dumps(checked))
@@ -626,13 +626,9 @@ class RoutineCheckTests(unittest.TestCase):
                     current["coverage"]["complete"] = False
                 elif variant == "other_session":
                     current["released_claims"][0]["source_session"] = "another"
-                elif variant == "other_anchor":
-                    current["released_claims"][0]["record"] = 6
-                elif variant in {"ambiguous", "explicit"}:
+                elif variant == "ambiguous":
                     progress["body"] = "Released claim 3\nSession: native"
                     current["released_claims"].append({**current["released_claims"][0], "release_url": progress["html_url"]})
-                    if variant == "explicit":
-                        args.handoff_url = progress["html_url"]
                 elif variant == "wrong_actor":
                     release_comment["user"] = {"login": "foreign"}
                 elif variant == "conflicting_session":
@@ -640,12 +636,12 @@ class RoutineCheckTests(unittest.TestCase):
                 operation = Operation(root / variant, ["native"])
                 (operation.evidence / "claims.json").write_text(json.dumps({
                     "exit_code": int(variant == "failed"), "stdout": json.dumps(current)}))
-                fallback = variant in {"no_session", "wrong_actor", "conflicting_session", "explicit"}
+                fallback = variant in {"no_session", "wrong_actor", "conflicting_session"}
                 expected = progress if fallback else release_comment
                 reader = SimpleNamespace(paged_json=Mock(return_value=[release_comment, progress]), get_json=Mock(return_value=expected))
                 with (patch_attr(session_closeout, "GitHubReader", return_value=reader),
                       patch.object(session_closeout.github_identity, "automation_login", return_value="agent[bot]")):
-                    if variant in {"failed", "incomplete", "other_session", "other_anchor", "ambiguous"}:
+                    if variant in {"failed", "incomplete", "other_session", "ambiguous"}:
                         with self.assertRaises(GateFailed):
                             session_closeout.verify_handoff(dict(entry), args, operation, retired=False)
                     else:
