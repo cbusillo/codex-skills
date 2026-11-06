@@ -172,7 +172,7 @@ def ambiguous_bare_ref_evidence() -> dict[str, object]:
         ),
         pytest.param(
             evidence,
-            "example-org/example-repo#42 is next. There are no source limitations.",
+            "example-org/example-repo#42 is next. Workflow counts may be incomplete, but there are no source limitations.",
             False,
             id="rejects_contradicted_source_note",
         ),
@@ -222,7 +222,11 @@ def test_derived_context_counts_do_not_authorize_bare_refs() -> None:
     assert len(errors) == 1 and "#2" in errors[0]
 
 
-def test_ignores_workflow_run_natural_language_reference() -> None:
+@pytest.mark.parametrize("brief", [
+    "Workflow run #123456 failed. Confidence caveat: workflow counts may be incomplete.",
+    "Validation run [#123456](https://github.com/example-org/example-repo/actions/runs/123456) failed. Confidence caveat: workflow counts may be incomplete.",
+], ids=["natural-language", "markdown-label"])
+def test_grounded_workflow_run_is_not_an_issue_reference(brief: str) -> None:
     workflow_evidence = evidence()
     workflow_evidence["workflow_runs"] = [
         {
@@ -234,25 +238,7 @@ def test_ignores_workflow_run_natural_language_reference() -> None:
 
     errors = verify_work_brief.verify_brief(
         workflow_evidence,
-        "Workflow run #123456 failed. Confidence caveat: workflow counts may be incomplete.",
-    )
-
-    assert errors == []
-
-
-def test_ignores_actions_run_markdown_link_label() -> None:
-    workflow_evidence = evidence()
-    workflow_evidence["workflow_runs"] = [
-        {
-            "repo": "example-org/example-repo",
-            "databaseId": 123456,
-            "url": "https://github.com/example-org/example-repo/actions/runs/123456",
-        }
-    ]
-
-    errors = verify_work_brief.verify_brief(
-        workflow_evidence,
-        "Validation run [#123456](https://github.com/example-org/example-repo/actions/runs/123456) failed. Confidence caveat: workflow counts may be incomplete.",
+        brief,
     )
 
     assert errors == []
