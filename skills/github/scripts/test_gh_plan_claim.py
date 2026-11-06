@@ -88,9 +88,9 @@ class ClaimMarkerTests(unittest.TestCase):
         for body in (dependency, f"Claimed by another-worker\n\n{dependency}",
                      f"Next actor: agent:another-session\n\n{dependency}",
                      CLAIM.marker(OTHER) + "\n\n" + dependency,
-                     CLAIM.marker(OTHER) + f"\n\nClaimed by worker-a\n\nWorking from session {session}",
-                     CLAIM.marker(OTHER) + f"\n\nState: Active; owned by edge-worker.\n\n"
+                     CLAIM.marker(OTHER) + f"\n\nState: Active; owned by {OTHER['worker']}.\n\n"
                      f"Provider setup is separately owned engineering on https://github.com/owner/other/issues/872 by infra-worker native {session}.",
+                     f"Provider setup for that separate worker: reuse the driver after native {session} finishes.",
                      f"## Current Status\nNext actor: agent:{OTHER['session']}\n{CLAIM.marker(OTHER)}\n"
                      f"## Lead handoff routing\nNext actor: agent:{session}",
                      f"The issue is blocked on ingress owner/other#2, which is owned by edge-worker (native {session}).",
@@ -118,6 +118,10 @@ class ClaimMarkerTests(unittest.TestCase):
                       f"- Claimed by worker-a\n- Working in session {session}",
                       f"Owned by {session} Session ID: other-session",
                       CLAIM.marker(OTHER) + f"\nThe repair is owned by {session}.",
+                      CLAIM.marker(OTHER) + f"\n\nClaimed by worker-a\n\nWorking from session {session}",
+                      CLAIM.marker(OTHER) + f"\nWorker: {OTHER['worker']} or another-worker\n\nWorking from session {session}",
+                      CLAIM.marker(OTHER) + f"\n## Evidence\nClaimed by worker-a\n\nWorking from session {session}",
+                      f"Worker: {session}", f"- Worker: {session}", f"No ownership is claimed by this sweep. Worker: {session}",
                       f"This issue owner/repo#42 is owned by {session}.",
                       f"This issue owner/old-name#42 is owned by {session}.",
                       f"Split from #3550. Session: {session}",

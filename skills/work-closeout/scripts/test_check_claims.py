@@ -437,11 +437,11 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.comments = []
         for coordination in (
             f"Public ingress https://github.com/test/b/issues/2 is independently owned by edge-worker, native {SESSION}.",
-            f"Provider setup is separately owned engineering on https://github.com/test/b/issues/872 by infra-worker native {SESSION}.",
+            f"Provider setup is separately owned engineering on https://github.com/test/b/issues/872 by infra-worker native {SESSION}. Scope for that separate worker: reuse the driver.",
         ):
             with self.subTest(coordination=coordination):
                 self.issue["body"] = (
-                    "## Current Status\nNext actor: agent:onboarding-session\nState: Active; owned by onboarding-worker.\n\n"
+                    f"## Current Status\nNext actor: agent:onboarding-session\nState: Active; owned by {SOURCE['worker']}.\n\n"
                     + coordination + "\n\n" + claim_logic.marker({**SOURCE, "session": "onboarding-session"})
                 )
                 self.assertEqual(self.check(), [])

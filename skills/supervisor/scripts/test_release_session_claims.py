@@ -1895,11 +1895,11 @@ class ReleaseTests(unittest.TestCase):
     def test_discovery_attributes_sessions_to_owning_records(self) -> None:
         for coordination in (
             "Ingress https://github.com/test/b/issues/2 is independently owned by edge-worker, native source-session.",
-            "Provider setup is separately owned engineering on https://github.com/test/b/issues/872 by infra-worker native source-session.",
+            "Provider setup is separately owned engineering on https://github.com/test/b/issues/872 by infra-worker native source-session. Scope for that separate worker: reuse the driver.",
         ):
             with self.subTest(coordination=coordination):
                 body = (
-                    "## Current Status\nNext actor: agent:onboarding-session\nState: Active; owned by onboarding-worker.\n\n"
+                    f"## Current Status\nNext actor: agent:onboarding-session\nState: Active; owned by {SOURCE['worker']}.\n\n"
                     + coordination + "\n\n" + github_plan_claim.marker({**SOURCE, "session": "onboarding-session"})
                 )
                 self.reader.paged_json.side_effect = lambda path, **_kw: [{"number": 9, "body": body}] if path.endswith("/issues") else []
