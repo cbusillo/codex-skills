@@ -47,6 +47,7 @@ import os
 import re
 import shlex
 import sys
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -61,7 +62,7 @@ CODE_HOME_SKILLS = "$CODE_HOME/skills/"
 OPERATORS = re.compile(r"^[;&|()\n]+$")
 REDIRECTION = re.compile(r"[<>][<>&|]*|&>>?")
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")
-TRANSPARENT = {"command", "exec", "time", "nohup"}
+TRANSPARENT = {"command", "exec", "time", "nohup", "setsid"}
 SHELL_KEYWORDS = {"{", "!", "if", "then", "elif", "else", "do", "while", "until"}
 SHELLS = {"sh", "bash", "zsh"}
 SCRIPT_INTERPRETERS = re.compile(r"^(?:osascript|python[\d.]*|node|swift|xdotool|xte|cliclick)$")
@@ -100,21 +101,51 @@ class ShellStream(io.StringIO):
         return line
 
 
-def shell_tokens(shell: str) -> list[str]:
+def shell_tokens(shell: str, operator_positions: set[int] | None = None) -> list[str]:
     lexer = shlex.shlex(ShellStream(shell), posix=True, punctuation_chars="();<>|&\n")
     lexer.whitespace = " \t\r"
     lexer.whitespace_split = True
-    return list(lexer)
+    tokens: list[str] = []
+    cursor = 0
+    for token in lexer:
+        end = lexer.instream.tell() - len(lexer._pushback_chars)
+        raw = shell[cursor:end].strip(" \t\r")
+        if operator_positions is not None and OPERATORS.fullmatch(token) and (raw == token or token.endswith("\n") and raw.endswith(token)):
+            operator_positions.add(len(tokens))
+        tokens.append(token)
+        cursor = end
+    return tokens
 
 
-def shell_commands(shell: str) -> list[list[str]]:
+@dataclass
+class ShellCommand:
+    argv: list[str]
+    detached: bool = False
+
+
+def shell_commands(shell: str, detached: list[list[str]] | None = None) -> list[list[str]]:
     """Split with shell operators and comments using one shared lexer."""
     commands: list[list[str]] = [[]]
-    for token in shell_tokens(shell):
-        if OPERATORS.match(token):
-            commands.append([])
+    operators: set[int] = set()
+    list_start = 0
+    groups: list[int] = []
+    closed_group: int | None = None
+    for index, token in enumerate(shell_tokens(shell, operators)):
+        if index in operators:
+            for operator in re.findall(r"&&|\|\||\|&|[();&\n|]", token):
+                if operator == "(":
+                    groups.append(len(commands))
+                elif operator == ")" and groups:
+                    closed_group = groups.pop()
+                elif operator == "&" and detached is not None:
+                    detached.extend(commands[closed_group if closed_group is not None else list_start:])
+                commands.append([])
+                if operator in {";", "\n", "&"}:
+                    list_start = len(commands) - 1
+                    closed_group = None
         else:
             commands[-1].append(token)
+            closed_group = None
     return [argv for argv in commands if argv]
 
 
@@ -265,7 +296,7 @@ class ShellScript:
 
 def reads_script_from_input(argv: list[str]) -> bool:
     """A shell without `-c`, even behind a wrapper such as `sudo`, or ssh may run heredoc text."""
-    argv = executable_arguments(without_redirections(argv))
+    argv = executable_arguments(without_redirections(argv)).argv
     if not argv:
         return False
     if Path(argv[0]).name == "ssh":
@@ -356,7 +387,8 @@ def script_readers(commands: list[list[str]]) -> list[list[str]]:
     """Normalize known interpreter wrappers and check which command consumes a stdin program."""
     readers: list[list[str]] = []
     for command in commands:
-        for argv in unwrap(command):
+        for parsed in unwrap(command):
+            argv = parsed.argv
             for index, token in enumerate(argv):
                 if (index != 0 and argv[0] not in SCRIPT_WRAPPERS) or not SCRIPT_INTERPRETERS.fullmatch(Path(token).name):
                     continue
@@ -384,17 +416,17 @@ def literal_pipeline_programs(shell: str) -> list[list[str]]:
         for stage in pipeline[1:-1]:
             normalized = unwrap(stage)
             if len(normalized) != 1 or not (
-                normalized[0] in [["cat"], ["cat", "-"]]
-                or normalized[0][0] == "tee" and not {"--help", "--version"} & set(normalized[0])
+                normalized[0].argv in [["cat"], ["cat", "-"]]
+                or normalized[0].argv[0] == "tee" and not {"--help", "--version"} & set(normalized[0].argv)
             ):
                 passthrough = False
                 break
         if not passthrough:
             continue
         producers = unwrap(pipeline[0])
-        if len(producers) != 1 or producers[0][0] not in {"echo", "printf"}:
+        if len(producers) != 1 or producers[0].argv[0] not in {"echo", "printf"}:
             continue
-        producer = producers[0]
+        producer = producers[0].argv
         if writes_shell_variable(producer):
             continue  # This writes a shell variable, not stdout.
         payload = "\n".join(producer[1:]).replace("\\n", "\n").replace("\\t", "\t")
@@ -402,21 +434,23 @@ def literal_pipeline_programs(shell: str) -> list[list[str]]:
     return programs
 
 
-def simple_commands(shell: str) -> list[list[str]]:
+def simple_commands(shell: str) -> list[ShellCommand]:
     """Return the argv of each simple command a shell line runs, per the module docstring."""
     script = ShellScript(shell)
-    unwrapped: list[list[str]] = []
-    raw_commands = shell_commands(script.text)
+    unwrapped: list[ShellCommand] = []
+    detached: list[list[str]] = []
+    raw_commands = shell_commands(script.text, detached)
     for argv in raw_commands:
-        unwrapped.extend(unwrap(argv))
+        unwrapped.extend(replace(command, detached=command.detached or any(argv is item for item in detached))
+                         for command in unwrap(argv))
     unwrapped.extend(nested_commands(script.substitutions))
-    unwrapped.extend(literal_pipeline_programs(script.text))
-    shell_reads_bodies = any(reads_script_from_input(argv) for argv in [*raw_commands, *unwrapped])
+    unwrapped.extend(ShellCommand(argv) for argv in literal_pipeline_programs(script.text))
+    shell_reads_bodies = any(reads_script_from_input(argv) for argv in [*raw_commands, *(command.argv for command in unwrapped)])
     for body, expands, header, delimiter, occurrence in script.bodies:
         # Language payloads are arguments to their interpreter, not shell
         # commands. Preserve them for regex policies (also for a cat pipeline).
         script_readers = heredoc_script_readers(header, delimiter, occurrence)
-        unwrapped.extend([*argv, body] for argv in script_readers)
+        unwrapped.extend(ShellCommand([*argv, body]) for argv in script_readers)
         if shell_reads_bodies:
             unwrapped.extend(nested_commands([body]))
         elif expands:
@@ -424,9 +458,9 @@ def simple_commands(shell: str) -> list[list[str]]:
     return unwrapped
 
 
-def nested_commands(sources: list[str]) -> list[list[str]]:
+def nested_commands(sources: list[str]) -> list[ShellCommand]:
     """Each nested script is shorter than the text holding it, so recursion ends."""
-    commands: list[list[str]] = []
+    commands: list[ShellCommand] = []
     for source in sources:
         try:
             commands.extend(simple_commands(source))
@@ -444,10 +478,14 @@ def drop_flags(argv: list[str], value_flags: set[str] | None = None) -> list[str
     return argv
 
 
-def executable_arguments(argv: list[str]) -> list[str]:
+def executable_arguments(argv: list[str]) -> ShellCommand:
+    detached = False
     while argv:
         head = Path(argv[0]).name
-        if ASSIGNMENT.match(argv[0]) or head in TRANSPARENT | SHELL_KEYWORDS:
+        if head in {"nohup", "setsid"}:
+            detached = True
+            argv = drop_flags(argv[1:])
+        elif ASSIGNMENT.match(argv[0]) or head in TRANSPARENT | SHELL_KEYWORDS:
             argv = argv[1:]
         elif head == "env":
             argv = drop_flags(argv[1:], ENV_VALUE_FLAGS)
@@ -455,7 +493,7 @@ def executable_arguments(argv: list[str]) -> list[str]:
             argv = drop_flags(argv[2:], UV_VALUE_FLAGS)
         else:
             break
-    return argv
+    return ShellCommand(argv, detached)
 
 
 def writes_shell_variable(argv: list[str]) -> bool:
@@ -464,14 +502,16 @@ def writes_shell_variable(argv: list[str]) -> bool:
 
 def execution_spans(argv: list[str]) -> list[list[str]]:
     arguments = without_redirections(argv)
-    executable = executable_arguments(arguments)
+    executable = executable_arguments(arguments).argv
     if executable[:1] == ["launchplane"]:
         return [arguments[: len(arguments) - len(executable) + 1]]
     return [arguments]
 
 
-def unwrap(argv: list[str]) -> list[list[str]]:
-    argv = executable_arguments(argv)
+def unwrap(argv: list[str]) -> list[ShellCommand]:
+    executable = executable_arguments(argv)
+    argv = executable.argv
+    detached = executable.detached
     if not argv:
         return []
     if Path(argv[0]).name == "gh-with-env-token":
@@ -479,16 +519,16 @@ def unwrap(argv: list[str]) -> list[list[str]]:
         while arguments and arguments[0] in GH_WRAPPER_FLAGS:
             arguments = arguments[1:]
         if arguments[:1] != ["--check"]:
-            return [["gh-with-env-token", *arguments]]
+            return [ShellCommand(["gh-with-env-token", *arguments], detached)]
     if Path(argv[0]).name == "eval":
-        return nested_commands([" ".join(argv[1:])])
+        return [replace(command, detached=command.detached or detached) for command in nested_commands([" ".join(argv[1:])])]
     executable_argv = argv
     argv = [Path(argv[0]).name, *argv[1:]]
     if argv[0] in SHELLS:
         for index, token in enumerate(argv[1:-1], start=1):
             if SHELL_COMMAND_FLAG.match(token):  # -c, -lc, -ec ...
-                return nested_commands([argv[index + 1]])
-    commands = [argv]
+                return [replace(command, detached=command.detached or detached) for command in nested_commands([argv[index + 1]])]
+    commands = [ShellCommand(argv, detached)]
     for span in execution_spans(executable_argv):
         shells = [index for index, token in enumerate(span[:-1]) if Path(token).name in SHELLS]
         if shells:
@@ -621,9 +661,9 @@ def exception_cwd(shell: str, cwd: Path) -> Path | None:
         if writes_shell_variable(argv):
             return None
         normalized = unwrap(raw_argv)
-        if not normalized or normalized[0][:1] != ["launchplane"]:
+        if not normalized or normalized[0].argv[:1] != ["launchplane"]:
             continue
-        executable_position = len(raw_argv) - len(normalized[0])
+        executable_position = len(raw_argv) - len(normalized[0].argv)
         for token in raw_argv[:executable_position + 1]:
             if (
                 token in {"--active", "--no-project"}
@@ -637,7 +677,7 @@ def exception_cwd(shell: str, cwd: Path) -> Path | None:
                 and token != "launchplane"
             ):
                 return None
-        if normalized[0][:3] == POSTGRES_GATE and not names_loopback_database(raw_argv):
+        if normalized[0].argv[:3] == POSTGRES_GATE and not names_loopback_database(raw_argv):
             return None
         if argv[:2] != ["uv", "run"]:
             return None
@@ -648,11 +688,15 @@ def blocking_policy(shell: str, cwd: Path | None = None) -> tuple[dict[str, Any]
     simulator = load_simulator()
     catalog = {(entry["skill"], entry["id"]): entry for entry in simulator.policy_catalog()}
     context = exception_cwd(shell, cwd or Path.cwd())
-    for argv in simple_commands(shell):
+    for command in simple_commands(shell):
+        argv = command.argv
         wrapped_gh = argv[0] == "gh-with-env-token"
         matched_argv = ["gh", *argv[1:]] if wrapped_gh else argv
         # Regex policies see the command as written, wrapper included, from command position only.
-        for match in simulator.simulate(matched_argv, cwd=context, command_argv=argv):
+        matches = simulator.simulate(matched_argv, cwd=context, command_argv=argv)
+        if command.detached:
+            matches += simulator.simulate(matched_argv, cwd=context, command_argv=["&", *argv])
+        for match in matches:
             policy = catalog[(match.skill, match.policy_id)]
             if wrapped_gh and policy.get("action") == "require_preferred" and any(
                 Path(preferred.get("path", "")).name == "gh-with-env-token"

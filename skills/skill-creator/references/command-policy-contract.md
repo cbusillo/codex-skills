@@ -76,6 +76,13 @@ For the shared hook's command-position checks, any `\A` in a pattern opts that
 entire pattern into matching only the whole simple command. Other regexes retain token-suffix matching, including
 the existing meaning of `^` at each token start.
 
+The shared hook also checks detached commands with an `&` token before their
+normalized argv, rendered by `shlex.join` as `'&' command ...`. This preserves
+shell `&`, `nohup` and `setsid` context through wrapper parsing, including nested
+shells, without changing the ordinary argv check. A regex can opt into that
+context with `\A'&'\s+command`. Quoted arguments and heredoc data do not create
+detachment context. Both harnesses use this shared hook.
+
 When multiple policies match, the primary policy is selected deterministically:
 
 1. `argv_exact`

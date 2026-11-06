@@ -82,6 +82,32 @@ def repository_exception_commands() -> list[tuple[str, str]]:
 
 
 class CommandPolicyHookTests(unittest.TestCase):
+    def test_foreign_watch_detachment_is_refused_without_blocking_tracked_starts_or_data(self) -> None:
+        watcher = "uv run skills/supervisor/scripts/foreign_watch.py --persistent"
+        refused = (
+            f"{watcher} &", f"{watcher} & disown", f"true && {watcher} &",
+            f"nohup {watcher}", f"setsid {watcher}", f"env WATCH=1 nohup {watcher}",
+            f"bash -c {shlex.quote(watcher + ' &')}", f"nohup bash -c {shlex.quote(watcher)}",
+            f"({watcher}) &", f"{watcher} 2>&1 &",
+            f"{watcher} && true &", f"({watcher}; true) &", f"setsid -f {watcher}",
+        )
+        allowed = (
+            watcher, f"{watcher} 2>&1", f"true && {watcher}", f"true & {watcher}",
+            f"echo {shlex.quote(watcher + ' &')}", f"rg {shlex.quote(watcher + ' & disown')} notes.md",
+            f"cat <<'EOF'\n{watcher} &\nEOF", f"{watcher} --state 'a&b.json'",
+            f"{watcher} --state '&'", "nohup sleep 1", "sleep 1 &",
+            f"env -u nohup {watcher}", f"{watcher}; sleep 1 &", "kill 123 &",
+            f"echo foreign_watch.py &", f"printf '%s' 'foreign_watch.py' &",
+        )
+        for command in refused:
+            with self.subTest(command=command):
+                result = bash(command)
+                self.assertEqual(result.returncode, 2, result.stderr)
+        for command in allowed:
+            with self.subTest(command=command):
+                result = bash(command)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_each_harness_tool_call_renews_its_claim_lease_without_skipping_policy(self) -> None:
         payloads = {
             "codex": {"hook_event_name": "PreToolUse", "session_id": "codex-session", "turn_id": "turn", "model": "gpt",
