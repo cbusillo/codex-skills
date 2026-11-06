@@ -216,6 +216,7 @@ def test_status_reader_changes_require_a_matching_landed_copy(tmp_path: Path) ->
     git(fixture.landing, "push", "origin", "main")
     proc, receipt = fixture.run()
     assert proc.returncode == 1
+    assert receipt["status"] == "failed"
     assert receipt["reason_code"] == "helper_tip_source_mismatch"
     assert receipt["helper_source_verified"] is False
     assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
@@ -744,10 +745,16 @@ def test_a_behind_install_catches_up_by_running_its_own_copy(tmp_path: Path) -> 
     assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.landing_sha
 
 
-def test_an_install_whose_helper_changed_upstream_names_the_copy_to_run(tmp_path: Path) -> None:
+@pytest.mark.parametrize("changed_name", [SCRIPT.name, "git_status.py", "moved_reader"])
+def test_an_install_waits_for_the_landed_source_then_recovers(tmp_path: Path, changed_name: str) -> None:
     fixture = build_runtime_fixture(tmp_path)
-    changed = fixture.landing / "github" / "scripts" / SCRIPT.name
-    changed.write_text(changed.read_text() + "\n# changed upstream\n")
+    if changed_name == "moved_reader":
+        changed = fixture.landing / fixture.helper_relative_path
+        changed.write_text(changed.read_text().replace('with_name("git_status.py")', 'with_name("status_reader.py")'))
+        git(fixture.landing, "mv", "github/scripts/git_status.py", "github/scripts/status_reader.py")
+    else:
+        changed = fixture.landing / "github" / "scripts" / changed_name
+        changed.write_text(changed.read_text() + "\n")
     git(fixture.landing, "commit", "-am", "change helper")
     tip = git(fixture.landing, "rev-parse", "HEAD")
     git(fixture.landing, "push", "origin", "main")
@@ -755,10 +762,28 @@ def test_an_install_whose_helper_changed_upstream_names_the_copy_to_run(tmp_path
     proc, receipt = run_helper(fixture, fixture.runtime / "github" / "scripts" / SCRIPT.name)
 
     assert proc.returncode == 1
-    assert receipt["reason_code"] == "helper_landing_source_mismatch"
+    assert receipt["status"] == "retryable"
+    mismatch_reason = "helper_landing_source_mismatch"
+    assert receipt["reason_code"] == mismatch_reason
     detail = receipt["detail"]
     assert isinstance(detail, str) and tip in detail
+    assert receipt["runtime_mutated"] is False
     assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
+
+    git(fixture.merged, "checkout", "--detach", tip)
+    proc, receipt = run_helper(fixture, fixture.script, "--landing-sha", tip)
+    assert proc.returncode == 0
+    assert receipt["status"] == "synchronized"
+    proc, receipt = run_helper(fixture, fixture.runtime / fixture.helper_relative_path)
+    assert proc.returncode == 0
+    assert receipt["status"] == "already_current"
+    assert git(fixture.runtime, "rev-parse", "HEAD") == tip
+
+    proc, receipt = run_helper(fixture, fixture.runtime / fixture.helper_relative_path, "--landing-sha", fixture.landing_sha)
+    assert proc.returncode == 1
+    assert receipt["status"] == "failed"
+    assert receipt["reason_code"] == mismatch_reason
+    assert receipt["runtime_mutated"] is False
 
 
 def test_a_helper_outside_the_merged_worktree_says_which_copy_to_run(tmp_path: Path) -> None:
@@ -797,6 +822,64 @@ def host_environment(fixture: RuntimeFixture) -> dict[str, str]:
         "CODEX_HOME": str(fixture.code_home.parent / "unused"),
         "CLAUDE_CONFIG_DIR": str(fixture.code_home.parent / "unused-claude"),
     }
+
+
+def test_poll_keeps_its_pending_identity_after_the_runtime_helper_changes(tmp_path: Path) -> None:
+    fixture = session_fixture(tmp_path)
+    helper = fixture.landing / fixture.helper_relative_path
+    helper.write_text(helper.read_text() + "\n")
+    ignored = fixture.landing / ".gitignore"
+    ignored.write_text(ignored.read_text() + "__pycache__/\n")
+    git(fixture.landing, "commit", "-am", "update helper after pending landing")
+    tip = git(fixture.landing, "rev-parse", "HEAD")
+    git(fixture.landing, "push", "origin", "main")
+    git(fixture.runtime, "fetch", "origin", "main")
+    git(fixture.runtime, "merge", "--ff-only", tip)
+    with mock.patch.object(sys, "path", [str(SCRIPT.parents[3]), str(SCRIPT.parents[2] / "supervisor/scripts"), *sys.path]):
+        from skills.supervisor.scripts import catalog_landing
+
+        evidence = tmp_path / "poll"
+        evidence.mkdir()
+        attempt = fixture.landing_sha
+        state = {"repo": fixture.repo, "last_sha": fixture.initial_sha, "pending": [fixture.landing_sha], "attempt": attempt}
+        catalog_landing.save_state(evidence / "cursor.json", state)
+        config = {"repo": fixture.repo, "issue": 1, "source_worktree": str(fixture.runtime),
+                  "runtime_worktree": str(fixture.runtime), "supervisor_session": "fixture"}
+        env = {**host_environment(fixture), "UV_NO_CONFIG": "1", "UV_PYTHON": sys.executable}
+        with (mock.patch.dict(os.environ, env), mock.patch.object(catalog_landing, "landing_pull"),
+              mock.patch.object(catalog_landing, "verify", return_value={"ok": True}) as verify,
+              mock.patch.object(catalog_landing, "post_result", return_value="fixture-report")):
+            with pytest.raises(catalog_landing.GateFailed):
+                catalog_landing.reconcile_runtime(config | {"landing_sha": fixture.landing_sha},
+                                                  catalog_landing.Operation(tmp_path / "bounded", [fixture.repo]))
+            with pytest.raises(catalog_landing.GateFailed):
+                catalog_landing.reconcile_runtime(config | {"landing_sha": fixture.head_sha},
+                                                  catalog_landing.Operation(tmp_path / "side-parent", [fixture.repo]), bind_landing=False)
+            assert catalog_landing.poll(config, evidence)["landings"] == [fixture.landing_sha]
+        assert verify.call_args.args[0]["landing_sha"] == fixture.landing_sha
+        assert verify.call_args.args[3] == tip
+        assert json.loads((evidence / "cursor.json").read_text())["last_sha"] == fixture.landing_sha
+        assert (evidence / attempt / "result.json").is_file()
+
+
+def test_blob_read_failure_does_not_retry_when_the_source_path_exists(tmp_path: Path) -> None:
+    fixture = build_runtime_fixture(tmp_path)
+    namespace = runpy.run_path(str(SCRIPT))
+    namespace_globals = namespace["reconcile_checkout"].__globals__
+    actual_run = namespace["run_git"]
+
+    def fail_blob_read(repo: Path, *args: str, **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        if args[:2] == ("cat-file", "blob"):
+            raise namespace["GitCommandError"]("cat-file", "fixture object read failed")
+        return actual_run(repo, *args, **kwargs)
+
+    state = namespace["base_receipt"](None) | {"base_branch": "main", "expected_repo": fixture.repo}
+    with mock.patch.dict(namespace_globals, {"run_git": fail_blob_read}):
+        result = namespace["reconcile_checkout"](fixture.runtime, fixture.runtime, fixture.runtime, state,
+                                                 fixture.helper_relative_path)
+    assert (result["status"], result["reason_code"]) == ("failed", "unexpected_git_error")
+    assert result["runtime_mutated"] is False
+    assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
 
 
 def stall_git_command(marker: str) -> Callable[..., subprocess.CompletedProcess[bytes]]:
@@ -946,7 +1029,7 @@ def test_session_start_reports_changed_helper_without_moving_runtime(tmp_path: P
     git(fixture.landing, "push", "origin", "main")
     result = start_session(fixture)
     assert result.returncode == 0
-    assert "Catalog catch-up failed" in result.stdout and tip in result.stdout
+    assert tip in result.stdout
     assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
 
 

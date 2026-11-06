@@ -306,6 +306,7 @@ def reconcile_checkout(
             fetched_sha = git_text(runtime_root, "rev-parse", remote_ref)
             current_sha = git_text(runtime_root, "rev-parse", "HEAD")
             receipt["fetched_sha"] = fetched_sha
+            can_fast_forward = git_is_ancestor(runtime_root, current_sha, fetched_sha)
             if runtime_path is not None:
                 if landing_sha is None:
                     landing_sha = receipt["landing_sha"] = fetched_sha
@@ -329,35 +330,13 @@ def reconcile_checkout(
                 receipt["helper_sha256"] = hashlib.sha256(executing_helper).hexdigest()
                 reader_path = helper_relative_path.with_name("git_status.py")
                 executing_reader = canonical_script_bytes(STATUS_READER.read_bytes())
-                try:
-                    landing_reader = canonical_script_bytes(git_blob_bytes(source_root, landing_sha, reader_path))
-                    tip_reader = canonical_script_bytes(git_blob_bytes(source_root, fetched_sha, reader_path))
-                    landing_helper = git_blob_bytes(
-                        source_root,
-                        landing_sha,
-                        helper_relative_path,
-                    )
-                    tip_helper = git_blob_bytes(
-                        source_root,
-                        fetched_sha,
-                        helper_relative_path,
-                    )
-                    landing_helper_oid = git_text(
-                        source_root,
-                        "rev-parse",
-                        f"{landing_sha}:{helper_relative_path.as_posix()}",
-                    )
-                    tip_helper_oid = git_text(
-                        source_root,
-                        "rev-parse",
-                        f"{fetched_sha}:{helper_relative_path.as_posix()}",
-                    )
-                except GitCommandError:
-                    receipt["after_sha"] = current_sha
-                    return finish(receipt, "failed", "landed_helper_missing")
-
-                receipt["helper_blob_oid"] = landing_helper_oid
-                receipt["helper_tip_blob_oid"] = tip_helper_oid
+                source_mismatch_status = (
+                    "retryable" if source_root == runtime_root and current_sha != fetched_sha and can_fast_forward else "failed"
+                )
+                landing_reader = canonical_script_bytes(git_blob_bytes(source_root, landing_sha, reader_path))
+                tip_reader = canonical_script_bytes(git_blob_bytes(source_root, fetched_sha, reader_path))
+                landing_helper = git_blob_bytes(source_root, landing_sha, helper_relative_path)
+                tip_helper = git_blob_bytes(source_root, fetched_sha, helper_relative_path)
                 canonical_executing_helper = canonical_script_bytes(executing_helper)
                 receipt["helper_landing_verified"] = (
                     canonical_executing_helper == canonical_script_bytes(landing_helper) and executing_reader == landing_reader
@@ -372,10 +351,10 @@ def reconcile_checkout(
                         f"checked out at {fetched_sha}."
                     )
                     if not receipt["helper_landing_verified"]:
-                        return finish(receipt, "failed", "helper_landing_source_mismatch")
-                    return finish(receipt, "failed", "helper_tip_source_mismatch")
+                        return finish(receipt, source_mismatch_status, "helper_landing_source_mismatch")
+                    return finish(receipt, source_mismatch_status, "helper_tip_source_mismatch")
                 receipt["helper_source_verified"] = True
-            if not git_is_ancestor(runtime_root, current_sha, fetched_sha):
+            if not can_fast_forward:
                 receipt["after_sha"] = current_sha
                 if git_is_ancestor(runtime_root, fetched_sha, current_sha):
                     return finish(receipt, "blocked", "runtime_ahead")
@@ -492,8 +471,6 @@ def base_receipt(landing_sha: str | None) -> dict[str, Any]:
         "after_sha": None,
         "helper_path": None,
         "helper_sha256": None,
-        "helper_blob_oid": None,
-        "helper_tip_blob_oid": None,
         "helper_landing_verified": False,
         "helper_tip_verified": False,
         "helper_source_verified": False,
@@ -736,12 +713,17 @@ def git_is_first_parent(repo: Path, commit: str, tip: str) -> bool:
     return commit in first_parent_history.splitlines()
 
 
-def git_blob_bytes(repo: Path, revision: str, path: Path) -> bytes:
-    return run_git(repo, "cat-file", "blob", f"{revision}:{path.as_posix()}").stdout
+def git_blob_bytes(repo: Path, revision: str, path: Path) -> bytes | None:
+    try:
+        return run_git(repo, "cat-file", "blob", f"{revision}:{path.as_posix()}").stdout
+    except GitCommandError:
+        if path.as_posix() not in git_text(repo, "ls-tree", "--name-only", revision, "--", path.as_posix()).splitlines():
+            return None
+        raise
 
 
-def canonical_script_bytes(content: bytes) -> bytes:
-    return content.replace(b"\r\n", b"\n")
+def canonical_script_bytes(content: bytes | None) -> bytes | None:
+    return content.replace(b"\r\n", b"\n") if content is not None else None
 
 
 def runtime_binding_matches(runtime_path: Path, expected_common_dir: Path) -> bool:
