@@ -598,6 +598,57 @@ class RoutineCheckTests(unittest.TestCase):
                             retired=False,
                         )
 
+    def test_verified_claim_release_disambiguates_session_progress_comments(self) -> None:
+        root = Path(os.environ["CODE_HOME"])
+        entry = {"repository": "owner/repo", "issue": 7, "session_id": "native"}
+        ledger = root / "ledger.json"
+        url = "https://github.com/owner/repo/issues/7#issuecomment-8"
+        handoff = {"id": 8, "html_url": url, "body": "Released claim 2\nSession: native",
+                   "issue_url": "https://api.github.com/repos/owner/repo/issues/7", "user": {"login": "agent[bot]"}}
+        checked = {"ok": True, "claims_clear": True, "coverage": {"complete": True}, "session_ids": ["native"],
+                   "blocked": [], "unresolved_invocations": [],
+                   "released_claims": [{"repository": "owner/repo", "record": 7, "source_session": "native", "release_url": url}]}
+        for variant in ("verified", "pr_anchor", "repository_case", "no_session", "failed", "incomplete", "other_session",
+                        "ambiguous", "wrong_actor", "conflicting_session"):
+            with self.subTest(variant=variant):
+                ledger.write_text(json.dumps([entry]))
+                current = json.loads(json.dumps(checked))
+                release_comment = dict(handoff)
+                progress = {**handoff, "id": 9, "html_url": url.replace("-8", "-9"), "body": "Session: native\nReview started"}
+                args = argparse.Namespace(ledger=ledger, session_id="native", handoff_url=None)
+                if variant == "pr_anchor":
+                    release_comment["html_url"] = url.replace("/issues/", "/pull/")
+                elif variant == "repository_case":
+                    current["released_claims"][0].update(repository="OWNER/REPO", release_url=url.replace("owner/repo", "OWNER/REPO"))
+                elif variant == "no_session":
+                    release_comment["body"] = "Released claim 2"
+                elif variant == "incomplete":
+                    current["coverage"]["complete"] = False
+                elif variant == "other_session":
+                    current["released_claims"][0]["source_session"] = "another"
+                elif variant == "ambiguous":
+                    progress["body"] = "Released claim 3\nSession: native"
+                    current["released_claims"].append({**current["released_claims"][0], "release_url": progress["html_url"]})
+                elif variant == "wrong_actor":
+                    release_comment["user"] = {"login": "foreign"}
+                elif variant == "conflicting_session":
+                    release_comment["body"] = "Released claim 2\nSession: another"
+                operation = Operation(root / variant, ["native"])
+                (operation.evidence / "claims.json").write_text(json.dumps({
+                    "exit_code": int(variant == "failed"), "stdout": json.dumps(current)}))
+                fallback = variant in {"no_session", "wrong_actor", "conflicting_session"}
+                expected = progress if fallback else release_comment
+                reader = SimpleNamespace(paged_json=Mock(return_value=[release_comment, progress]), get_json=Mock(return_value=expected))
+                with (patch_attr(session_closeout, "GitHubReader", return_value=reader),
+                      patch.object(session_closeout.github_identity, "automation_login", return_value="agent[bot]")):
+                    if variant in {"failed", "incomplete", "other_session", "ambiguous"}:
+                        with self.assertRaises(GateFailed):
+                            session_closeout.verify_handoff(dict(entry), args, operation, retired=False)
+                    else:
+                        session_closeout.verify_handoff(dict(entry), args, operation, retired=False)
+                        self.assertEqual(operation.state["handoff"]["url"], expected["html_url"])
+                        self.assertEqual(reader.get_json.call_args.args[0], f"/repos/owner/repo/issues/comments/{expected['id']}")
+
     def test_explicit_handoff_supports_another_work_issue_and_partial_legacy_pointer(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
