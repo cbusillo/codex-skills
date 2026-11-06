@@ -27,10 +27,6 @@ Evidence: [DIRECTION.md](DIRECTION.md).
   behavior, and command-policy validators. Do not add tests that merely duplicate
   wording or run unrelated runtime suites without an affected behavior.
 - For test changes, read the [shared test rules](instructions/global.md#tests).
-- New Python comments and docstrings follow
-  [Names Instead Of Comments](skills/references/python-odoo-style.md#names-instead-of-comments);
-  Review docstring purpose; `uv run scripts/check_new_comments.py --base origin/main`
-  runs the comment CI check locally.
 
 ## Runtime Checkout Discipline
 

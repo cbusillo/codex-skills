@@ -1,10 +1,14 @@
 # Python And Odoo Style
 
-Use this style when you write Python, or Odoo JavaScript, in a repository
-whose agent instructions point here. It exists because code that is easy to
+Use this style when you write Python or Odoo XML/JavaScript. Framework-specific
+rules apply only to that framework; repository-specific style and supported
+Python versions remain authoritative. It exists because code that is easy to
 understand and has one source of truth is easier to maintain and change, for
 people and for agents. Names carry the meaning, functions are small, and
 nothing is said twice.
+
+For extending existing paths and proving a regression, follow the
+[executing loop](executing-loop.md).
 
 Prefer a rule a tool enforces: Ruff, PyCharm inspections, Odoo's own lint, or
 a test. Where this style departs from a standard tool or convention, the rule
@@ -215,16 +219,19 @@ unclear code stand by explaining it.
 
 ## Tooling
 
+- Check your diff against this style before handoff. Review whether a docstring
+  is rendered by a tool. Where CI uses the catalog's comment checker, run
+  `uv run <catalog>/scripts/check_new_comments.py --repo <repository> --base origin/main`.
 - Run `uv run ruff format` and `uv run ruff check --fix`. Where a repository
   sets no Ruff configuration, use line length 133, select `ANN`, `UP`, `B`,
   `I`, `G`, `BLE`, and `S608`, and ignore `D`, `UP037`, which would strip the
   quotes from the PyCharm types, and `ANN401`, which rejects the `Any` that
   `**kwargs` and Odoo overrides need. House rule: the repositories already
   format at 133.
-- Target the Python version our Odoo images run (today 3.13; Ruff
-  `target-version` matches it). Upgrade the images first, then raise the
-  target in one change, and let Ruff's `UP` rules and `ruff check --fix`
-  modernize the code.
+- Target the repository's supported Python versions. For Odoo, target the
+  Python version its images run (today 3.13; Ruff `target-version` matches it).
+  Upgrade the images first, then raise the target in one change, and let Ruff's
+  `UP` rules and `ruff check --fix` modernize the code.
 - PyCharm inspection is the cleanup list. Leave touched files with no
   actionable warnings. Fix the cause before you add a `noinspection`.
 - Follow the [shared test rules](../../instructions/global.md#tests).
