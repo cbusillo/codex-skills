@@ -2068,6 +2068,8 @@ def cmd_show(args: argparse.Namespace) -> None:
     ]
     seed_decision_discussion(issue["repo"], issue["number"],
         github_direction_next.discussion_snapshot(issue, comments, complete=True))
+    if not args.full and "Current Status" in result["sections"] and not issue_body_is_fully_managed(issue):
+        result["sections"]["Current Status"] = effective_current_status(issue, comments)
     try:
         wait = current_wait(issue, comments, issue["repo"])
     except (PlanError, ValueError) as exc:
@@ -2251,13 +2253,17 @@ def claim_current_status(issue: dict[str, Any], sections: dict[str, str], commen
                                            preserve_markers=True, preserve_content=preserve_content)
 
 
+def effective_current_status(issue: dict[str, Any], comments: list[dict[str, Any]]) -> str:
+    status = claim_current_status(issue, issue_plan_sections(issue), comments)
+    return re.sub(r"<!--.*?-->", "", status, flags=re.S).strip()
+
+
 def comment_current_status(issue: dict[str, Any]) -> str:
     _, comments = collect_paged_rest_items(
         f"/repos/{issue['repo']}/issues/{issue['number']}/comments",
         query={}, bucket="rest_core", step_prefix="status_comments",
     )
-    status = claim_current_status(issue, issue_plan_sections(issue), comments)
-    return re.sub(r"<!--.*?-->", "", status, flags=re.S).strip()
+    return effective_current_status(issue, comments)
 
 
 def claim_snapshot(ref: str, repo: str, *, allow_closed: bool = False,

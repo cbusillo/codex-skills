@@ -183,13 +183,15 @@ class SectionTests(unittest.TestCase):
                 self.assertEqual(post.call_args.kwargs["expected_actor"], "fixture-bot[bot]")
                 self.assertEqual(self.issue["body"], original)
 
-    def run_show(self, full: bool = False) -> tuple[int, dict]:
+    def run_show(self, full: bool = False, section: str = "Finish Line",
+                 comments: list[dict[str, Any]] | None = None) -> tuple[int, dict]:
         output, errors = io.StringIO(), io.StringIO()
         with patch.multiple(PLAN,
                             default_repo=Mock(return_value="owner/repo"),
-                            load_config=Mock(return_value={"default_sections": ["Finish Line"]}),
+                            load_config=Mock(return_value={"default_sections": [section]}),
                             get_issue=Mock(return_value=("fixture-bot[bot]", self.issue)),
-                            collect_paged_rest_items=Mock(return_value=("fixture-bot[bot]", []))), \
+                            next_status_body_time=Mock(return_value="2026-01-01T00:00:00+00:00"),
+                            collect_paged_rest_items=Mock(return_value=("fixture-bot[bot]", comments or []))), \
                 patch.object(github_identity, "configured_bot_logins", return_value=["fixture-bot[bot]"]), \
                 patch.object(sys, "argv", [str(SCRIPT), "show", "42", *(["--full"] if full else [])]), \
                 contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
@@ -237,6 +239,20 @@ class SectionTests(unittest.TestCase):
                 self.assertEqual(result["issue"]["body"], body)
                 self.assertEqual(result["issue"]["provenance"]["ownership"], "unknown")
                 self.assertFalse(result["issue"]["provenance"]["section_updates_allowed"])
+
+    def test_show_reads_back_the_status_comment_written_for_a_reporter_issue(self) -> None:
+        self.issue["user"] = {"login": "outside-contributor"}
+        self.issue["body"] = PLAN.github_plan_body.wrap_contributor_plan(
+            {"body": "Original report"}, "## Current Status\n\nNext actor: agent\nNext action: Old step.")
+        code, _, _, post, errors = self.run_comment_update(
+            "--body", "Next actor: agent:supervisor\nNext action: New step.", section="Current Status")
+        self.assertEqual(code, 0, errors)
+        posted = {"id": 7, "user": {"login": "fixture-bot[bot]"}, "body": post.call_args.args[2],
+                  "created_at": "2026-02-01T00:00:00Z", "updated_at": "2026-02-01T00:00:00Z"}
+        code, result = self.run_show(section="Current Status", comments=[posted])
+        self.assertEqual(code, 0)
+        self.assertIn("Next action: New step.", result["issue"]["recorded_current_status"])
+        self.assertNotIn("Old step", result["issue"]["recorded_current_status"])
 
     def assert_prewrite_failure(self, args: tuple[str, ...], step: str | None = None, **overrides: Any) -> None:
         code, result, edit, errors = self.run_update(*args, **overrides)
