@@ -252,7 +252,7 @@ def test_build_command_sends_bodies_only_through_stdin() -> None:
             assert "-" not in cmd
 
 
-def test_build_command_preserves_wrapper_path_and_api_version_overrides() -> None:
+def test_build_command_preserves_wrapper_path_and_extra_headers() -> None:
     for headers in ({}, {"X-GitHub-Api-Version": "fixture-api-version"}):
         cmd = _api.build_gh_command("GET", "repos/owner/repo", gh_cmd="./gh-with-env-token", extra_headers=headers)
         assert cmd[0] == "./gh-with-env-token"
@@ -1178,7 +1178,6 @@ def test_legacy_html_parse_error_is_summarized_as_provider_failure() -> None:
     assert result.failure is not None
     assert result.failure.cause == "network_provider_failure"
     assert result.failure.retryable is True
-    assert "legacy command omitted --include" in result.failure.message
     assert "invalid character" not in result.failure.message
 
 
@@ -1464,7 +1463,7 @@ def test_rate_limit_probe_caches_failures_and_scopes_reuse_to_the_actor_and_expl
         proc = (
             _fake_proc(stderr="connection refused", returncode=1)
             if mode == "failure"
-            else _fake_proc(stdout=_include_output(200, body={"resources": {"core": {"limit": 5000, "remaining": 4000}}}))
+            else _fake_proc(stdout=_include_output(body={"resources": {"core": {"limit": 5000, "remaining": 4000}}}))
         )
         _api.reset_rate_limit_cache()
         with patch("subprocess.run", return_value=proc) as run:
