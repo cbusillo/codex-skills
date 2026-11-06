@@ -1945,7 +1945,6 @@ def cmd_search(args: argparse.Namespace) -> None:
     query_parts = [query]
     if args.repo or not has_scope:
         query_parts.append(f"repo:{repo}")
-    query_parts.append("is:issue")
     if args.state != "all":
         query_parts.append(f"is:{args.state}")
     page_metadata: list[dict[str, Any]] = []
@@ -1958,7 +1957,6 @@ def cmd_search(args: argparse.Namespace) -> None:
         include_archived=getattr(args, "include_archived", False),
         limit=args.limit,
         collection_key="items",
-        issue_only=True,
         page_metadata=page_metadata,
     )
     items = []
@@ -1966,7 +1964,12 @@ def cmd_search(args: argparse.Namespace) -> None:
         item_repo = issue_repository_name(item)
         if item_repo is None:
             raise PlanError("GitHub search response omitted the issue repository")
-        items.append(compact_list_issue(item_repo, item))
+        items.append(
+            {
+                **compact_list_issue(item_repo, item),
+                "record_type": "pull_request" if item.get("pull_request") is not None else "issue",
+            }
+        )
     totals: list[int] = []
     for page in page_metadata:
         value = page.get("total_count")
@@ -7748,7 +7751,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--label")
     p.set_defaults(func=cmd_index)
 
-    p = sub.add_parser("search", help="Compact issue search, no bodies")
+    p = sub.add_parser("search", help="Compact issue and pull request search, no bodies")
     repository_scope.add_include_archived_argument(p)
     p.add_argument("query")
     p.add_argument("--state", default="all", choices=["open", "closed", "all"])

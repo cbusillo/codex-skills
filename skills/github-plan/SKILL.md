@@ -35,7 +35,7 @@ commands:
   - name: github-plan-search
     source: repo
     example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "search", "<query>"]
-    purpose: Searches planning issues with normalized compact output.
+    purpose: Searches issues and pull requests with normalized compact output.
   - name: github-plan-create
     source: repo
     example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "create", "<title>", "--body-file", "<file>", "--wait-clear", "--wait-evidence", "<reviewed-evidence>"]
@@ -97,7 +97,7 @@ policy:
         - kind: script
           path: ../github/scripts/gh-plan.py
           example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "search", "<query>"]
-          purpose: Searches planning issues with compact normalized output and state handling.
+          purpose: Searches issues and pull requests with compact normalized output and state handling.
     - id: prefer-gh-plan-helper-for-project-commands
       match:
         argv_prefix: ["gh", "project"]
