@@ -37,8 +37,8 @@ class SearchTests(unittest.TestCase):
     def search(self, query: str, results: list[dict], *options: str, current_repo: str | None = "owner/current") -> tuple[str, dict]:
         args = PLAN.build_parser().parse_args([*options, "search", query])
 
-        def search_response(_method: str, path: str, **_kwargs: Any) -> tuple[str, dict]:
-            qualifiers = urllib.parse.parse_qs(urllib.parse.urlsplit(path).query)["q"][0].split()
+        def search_response(_method: str, request_path: str, **_kwargs: Any) -> tuple[str, dict]:
+            qualifiers = urllib.parse.parse_qs(urllib.parse.urlsplit(request_path).query)["q"][0].split()
             items = [
                 item
                 for item in results
