@@ -88,8 +88,8 @@ decisions, statuses, board contents or narrative; open linked records for action
    ```
 
    The helper selects the session's verified claim-release comment on the ledger's
-   issue, journals it and keeps the existing handoff validators. Multiple releases
-   need explicit selection. Without a verified release there, it finds a unique
+   issue, journals it and keeps the existing handoff validators. Multiple qualifying
+   releases need explicit selection. When no release qualifies, it finds a unique
    automation-authored handoff naming the exact native session, or uses the fresh
    complete claim check's
    [source-bound comment projection](../../work-closeout/SKILL.md#claim-disposition)

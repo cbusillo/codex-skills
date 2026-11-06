@@ -177,17 +177,19 @@ def verify_handoff(entry: dict, args: argparse.Namespace, operation: Operation, 
             raise GateFailed("handoff", "discovery needs the ledger's exact repository and issue")
         comments = reader.paged_json(f"/repos/{repo}/issues/{number}/comments", step_prefix="closeout_handoff")
         evidence = claim_evidence(entry, operation, "handoff_comments")
-        releases = {row.get("release_url") for row in claim_evidence(entry, operation, "released_claims")
-                    if str(row.get("repository") or "").casefold() == repo.casefold() and row.get("record") == number}
+        releases = {int(match[3]) for row in claim_evidence(entry, operation, "released_claims")
+                    if str(row.get("repository") or "").casefold() == repo.casefold() and row.get("record") == number
+                    and (match := claim_release.COMMENT_URL.fullmatch(row.get("release_url") or ""))
+                    and match[1].casefold() == repo.casefold() and int(match[2]) == number}
         scoped = [row for row in evidence if str(row.get("repository") or "").casefold() == repo.casefold()
                   and row.get("number") == number]
         candidates = [comment for comment in comments
-                      if (not releases or comment.get("html_url") in releases)
-                      and (comment.get("user") or {}).get("login") == actor
+                      if (comment.get("user") or {}).get("login") == actor
                       and not live_lines(comment.get("body") or "")
                       and not re.match(r"(?i)^Claimed by\b", (comment.get("body") or "").strip())
                       and (explicit_session(comment.get("body") or "", args.session_id)
                            or projected_handoff(comment, scoped, actor, args.session_id))]
+        candidates = [comment for comment in candidates if comment.get("id") in releases] or candidates
         require(len(candidates) == 1, "handoff",
                 f"requires one posted handoff; found {len(candidates)} candidates: {[row.get('html_url') for row in candidates]}; "
                 f"examined: {[handoff_refusal(row, scoped, args.session_id, actor) for row in [comment for comment in comments if (comment.get("user") or {}).get("login") == actor][-10:]]}; "
