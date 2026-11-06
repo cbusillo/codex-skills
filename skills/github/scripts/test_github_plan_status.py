@@ -9,7 +9,6 @@ from __future__ import annotations
 import copy
 import unittest
 
-import github_direction_next
 import github_plan_status
 from github_plan_status import waits
 import github_plan_wait

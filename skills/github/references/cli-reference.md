@@ -409,14 +409,10 @@ is a nonretryable `validation_error` with an `unknown` write outcome: other
 fields can change concurrently. The diagnostic supplies readback and repair
 guidance. Other diagnostics retain conservative failure handling.
 
-Schema version 2 of `references/operation-matrix.toml` is the machine-readable source of truth for
-each public helper operation's live and selected transport, quota bucket, actor
-policy, idempotency/retry posture, reconciliation strategy, and retained
-GraphQL rationale. A row with a pending transport or internal component change
-must set `migration_status = "planned"` plus its current command and quota
-bucket, even when both the current and selected top-level transports are
-`composite`. This prevents automation from mistaking an approved target for
-checked-in behavior. Validate the matrix with
+Schema version 2 of `references/operation-matrix.toml` records each public
+helper operation's checked-in transport, quota bucket, actor policy,
+idempotency/retry posture, reconciliation strategy, and retained GraphQL
+rationale. Track pending migrations in issues. Validate the matrix with
 `uv run scripts/validate-operation-matrix.py`.
 
 ## Common Commands
