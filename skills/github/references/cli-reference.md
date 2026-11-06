@@ -2107,7 +2107,10 @@ malformed rather than ignoring its additional field.
   `--unanswered-decision COMMENT_URL` names a repository owner comment on
   this issue after the newest such comment, or an unedited `Director decision:`
   record there that the repository owner approved with `+1`. `gh-issue close`
-  runs the same check and takes the same flag. Already-closed issues, including
+  runs the same check and takes the same flag. An unapproved decision record's
+  refusal names the repository owner, the exact comment to react to and the
+  retry argument; a reaction on a neighboring comment does not approve it.
+  Already-closed issues, including
   landing reconciliation, skip it. `--reason not_planned`
   requires the Director's approval, given as the repository owner, for Director-opened
   or Director-admitted work in a milestone listed in merged `DIRECTION.md`. An
