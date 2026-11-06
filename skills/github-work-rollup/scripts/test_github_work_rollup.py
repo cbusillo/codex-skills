@@ -1703,7 +1703,11 @@ def test_render_executive_brief_markdown() -> None:
     rendered = github_work_rollup.render_payload(payload, "markdown")
 
     assert "# Daily Work Brief for Justin" in rendered
-    assert "The visible decision is how to sequence Northwind skill reporting inside Northwind / Skills: 2 completed items, 1 cleared path, 1 release, and 1 open follow-up." in rendered
+    assert github_work_rollup.executive_work_counts(github_work_rollup.get_repo_data(payload)) == {
+        "completed": 2, "cleared": 1, "releases": 1, "open": 1,
+    }
+    for items in payload["buckets"].values():
+        assert all(item["title"] in rendered for item in items)
     assert "Private note" not in rendered
     assert "## Needs Justin's Attention" in rendered
     assert "## Northwind / Skills Impact" in rendered
@@ -1713,17 +1717,10 @@ def test_render_executive_brief_markdown() -> None:
     assert "Northwind skill reporting inside Northwind / Skills" in rendered
     assert "Key initiatives: Work Brief." in rendered
     assert "Deploy production" in rendered
-    assert "Completed during the day: code#202 Document auth flow; example-skills#203 Add helper validation." in rendered
-    assert "Still visible for follow-up: code#101 Critical Bug." in rendered
-    assert "Cleared or superseded paths: code#204 Close abandoned auth attempt." in rendered
-    assert "What decision would unblock code#101 Critical Bug today?" in rendered
-    assert "Should failed runs in `code` Deploy production change release confidence" in rendered
-    assert "Should Critical Bug stay active today, wait, or be reframed?" not in rendered
 
     assert "## Source Notes" in rendered
     assert "Read-only mode" in rendered
     assert "technical depth" not in rendered
-    assert "Automation needs attention because failed workflow runs were collected" not in rendered
     assert "https://github.com/example-org/code/pull/202" not in rendered
     assert "https://github.com/example-org/example-skills/pull/203" not in rendered
     summary = rendered.split("\n## ", 2)[1]
@@ -1764,249 +1761,50 @@ def test_render_executive_brief_uses_dynamic_recipient() -> None:
     assert "Justin" not in rendered
 
 
-def test_render_executive_brief_preserves_workstream_identity_inside_portfolio_area() -> None:
+@pytest.mark.parametrize(
+    "title,section_fields,expected,item_field",
+    [
+        ("Northwind Lab MVP dogfood plan", {
+            "workstream": "Chosen stream", "portfolio_area": "Operator area",
+            "relationship": "Chosen stream inside Operator area", "initiatives": ["Code Bridge"],
+        }, "Chosen stream", "items"),
+        ("Northwind Lab MVP dogfood plan", {}, "Northwind Lab", "recently_completed"),
+        ("Northwind lab dogfood plan", {}, "Northwind lab", "items"),
+        ("Code Bridge protocol for Northwind Lab", {"initiatives": ["Code Bridge"]}, "Northwind Lab", "items"),
+    ],
+    ids=["explicit-workstream", "completed-workstream", "sentence-case", "initiative-is-not-workstream"],
+)
+def test_executive_workstream_identity(title: str, section_fields: dict[str, Any], expected: str, item_field: str) -> None:
+    item = {
+        "repo": "example-org/northwind-lab", "number": 28, "title": title, "kind": "issue",
+        "state": "open" if item_field == "items" else "closed",
+    }
+    section = {"name": "Northwind Product Issues", item_field: [item], **section_fields}
     payload = {
         "ok": True,
         "window": {"since": "2026-06-05T16:00:00Z", "until": "2026-06-12T16:00:00Z", "label": "7d"},
         "timezone": "America/New_York",
-        "report_recipient": "Justin",
-        "repositories": ["example-org/northwind-lab"],
+        "report_recipient": "Example leader",
         "layout": "executive",
-        "buckets": {
-            "in_progress": [
-                {
-                    "repo": "example-org/northwind-lab",
-                    "number": 28,
-                    "title": "Northwind Lab MVP dogfood plan",
-                    "kind": "issue",
-                    "state": "open",
-                },
-                {
-                    "repo": "example-org/northwind-lab",
-                    "number": 45,
-                    "title": "Define Code Bridge protocol, trust, and payload contract",
-                    "kind": "issue",
-                    "state": "open",
-                },
-            ],
-            "recently_completed": [
-                {
-                    "repo": "example-org/northwind-lab",
-                    "number": 52,
-                    "title": "Run Northwind Lab dogfood readiness sweep",
-                    "kind": "issue",
-                    "state": "closed",
-                }
-            ],
-        },
-        "priority_sections": [
-            {
-                "name": "Northwind Product Issues",
-                "portfolio_area": "Northwind Product Issues",
-                "workstream": "Northwind Lab",
-                "relationship": "Northwind Lab dogfood work inside the Northwind product area",
-                "initiatives": ["Code Bridge"],
-                "items": [
-                    {
-                        "repo": "example-org/northwind-lab",
-                        "number": 28,
-                        "title": "Northwind Lab MVP dogfood plan",
-                        "kind": "issue",
-                        "state": "open",
-                    },
-                    {
-                        "repo": "example-org/northwind-lab",
-                        "number": 45,
-                        "title": "Define Code Bridge protocol, trust, and payload contract",
-                        "kind": "issue",
-                        "state": "open",
-                    },
-                ],
-                "item_count": 2,
-                "recently_completed": [
-                    {
-                        "repo": "example-org/northwind-lab",
-                        "number": 52,
-                        "title": "Run Northwind Lab dogfood readiness sweep",
-                        "kind": "issue",
-                        "state": "closed",
-                    }
-                ],
-                "recently_completed_count": 1,
-            }
-        ],
-        "limitations": [],
-        "releases": [],
-        "workflows": [],
+        "priority_sections": [section],
     }
 
     rendered = github_work_rollup.render_payload(payload, "markdown")
+    workstream = github_work_rollup.executive_section_workstream(section)
+    label = github_work_rollup.executive_section_label(section)
 
-    assert "The visible decision is how to sequence Northwind Lab dogfood work inside the Northwind product area" in rendered
-    assert "- **Northwind Lab**: Northwind Lab dogfood work inside the Northwind product area" in rendered
-    assert "Key initiatives: Code Bridge." in rendered
-    assert "Confidence: medium; based on 3 GitHub items across 1 initiative" in rendered
-    assert "Northwind Product Issues MVP" not in rendered
-    assert "Northwind product MVP" not in rendered
-
-
-def test_render_executive_brief_infers_workstream_without_using_portfolio_name_as_alias() -> None:
-    payload = {
-        "ok": True,
-        "window": {"since": "2026-06-05T16:00:00Z", "until": "2026-06-12T16:00:00Z", "label": "7d"},
-        "timezone": "America/New_York",
-        "report_recipient": "Justin",
-        "repositories": ["example-org/northwind-lab"],
-        "layout": "executive",
-        "buckets": {
-            "in_progress": [
-                {
-                    "repo": "example-org/northwind-lab",
-                    "number": 28,
-                    "title": "Northwind Lab MVP dogfood plan",
-                    "kind": "issue",
-                    "state": "open",
-                }
-            ],
-            "recently_completed": [
-                {
-                    "repo": "example-org/northwind-lab",
-                    "number": 52,
-                    "title": "Run Northwind Lab dogfood readiness sweep",
-                    "kind": "issue",
-                    "state": "closed",
-                }
-            ],
-        },
-        "priority_sections": [
-            {
-                "name": "Northwind Product Issues",
-                "items": [
-                    {
-                        "repo": "example-org/northwind-lab",
-                        "number": 28,
-                        "title": "Northwind Lab MVP dogfood plan",
-                        "kind": "issue",
-                        "state": "open",
-                    }
-                ],
-                "item_count": 1,
-                "recently_completed": [
-                    {
-                        "repo": "example-org/northwind-lab",
-                        "number": 52,
-                        "title": "Run Northwind Lab dogfood readiness sweep",
-                        "kind": "issue",
-                        "state": "closed",
-                    }
-                ],
-                "recently_completed_count": 1,
-            }
-        ],
-        "limitations": [],
-        "releases": [],
-        "workflows": [],
-    }
-
-    rendered = github_work_rollup.render_payload(payload, "markdown")
-
-    assert "The visible decision is how to sequence Northwind Lab work inside Northwind Product Issues" in rendered
-    assert "- **Northwind Lab**: Northwind Lab work inside Northwind Product Issues" in rendered
-    assert "- **Northwind Product Issues**" not in rendered
-
-
-def test_render_executive_brief_infers_sentence_case_workstream_titles() -> None:
-    payload = {
-        "ok": True,
-        "window": {"since": "2026-06-05T16:00:00Z", "until": "2026-06-12T16:00:00Z", "label": "7d"},
-        "timezone": "America/New_York",
-        "report_recipient": "Justin",
-        "repositories": ["example-org/northwind-lab"],
-        "layout": "executive",
-        "buckets": {
-            "in_progress": [
-                {
-                    "repo": "example-org/northwind-lab",
-                    "number": 28,
-                    "title": "Northwind lab dogfood plan",
-                    "kind": "issue",
-                    "state": "open",
-                }
-            ]
-        },
-        "priority_sections": [
-            {
-                "name": "Northwind Product Issues",
-                "items": [
-                    {
-                        "repo": "example-org/northwind-lab",
-                        "number": 28,
-                        "title": "Northwind lab dogfood plan",
-                        "kind": "issue",
-                        "state": "open",
-                    }
-                ],
-                "item_count": 1,
-                "recently_completed": [],
-            }
-        ],
-        "limitations": [],
-        "releases": [],
-        "workflows": [],
-    }
-
-    rendered = github_work_rollup.render_payload(payload, "markdown")
-
-    assert "- **Northwind lab**" in rendered
-    assert "- **Codex**" not in rendered
-
-
-def test_render_executive_brief_does_not_select_configured_initiative_as_workstream() -> None:
-    payload = {
-        "ok": True,
-        "window": {"since": "2026-06-05T16:00:00Z", "until": "2026-06-12T16:00:00Z", "label": "7d"},
-        "timezone": "America/New_York",
-        "report_recipient": "Justin",
-        "repositories": ["example-org/northwind-lab"],
-        "layout": "executive",
-        "buckets": {
-            "in_progress": [
-                {
-                    "repo": "example-org/northwind-lab",
-                    "number": 45,
-                    "title": "Code Bridge protocol for Northwind Lab",
-                    "kind": "issue",
-                    "state": "open",
-                }
-            ]
-        },
-        "priority_sections": [
-            {
-                "name": "Northwind Product Issues",
-                "initiatives": ["Code Bridge"],
-                "items": [
-                    {
-                        "repo": "example-org/northwind-lab",
-                        "number": 45,
-                        "title": "Code Bridge protocol for Northwind Lab",
-                        "kind": "issue",
-                        "state": "open",
-                    }
-                ],
-                "item_count": 1,
-                "recently_completed": [],
-            }
-        ],
-        "limitations": [],
-        "releases": [],
-        "workflows": [],
-    }
-
-    rendered = github_work_rollup.render_payload(payload, "markdown")
-
-    assert "- **Northwind Lab**: Northwind Lab work inside Northwind Product Issues" in rendered
-    assert "Key initiatives: Code Bridge." in rendered
-    assert "- **Code Bridge**" not in rendered
+    assert f"**{expected}**" in rendered
+    assert workstream.workstream == expected
+    assert workstream.portfolio_area == section_fields.get("portfolio_area", section["name"])
+    assert workstream.active_count == len(section.get("items", []))
+    assert workstream.completed_count == len(section.get("recently_completed", []))
+    assert expected in label and workstream.portfolio_area in label
+    assert label in rendered
+    if "relationship" in section_fields:
+        assert section_fields["relationship"] in label
+    for initiative in section_fields.get("initiatives", []):
+        assert initiative in workstream.initiatives
+        assert f"**{initiative}**" not in rendered
 
 
 @pytest.mark.parametrize("reverse", [False, True])

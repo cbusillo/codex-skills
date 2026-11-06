@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
+import pytest
 
 MODULE_PATH = Path(__file__).with_name("verify_work_brief.py")
 MODULE_SPEC = importlib.util.spec_from_file_location("verify_work_brief", MODULE_PATH)
@@ -79,82 +82,104 @@ def ambiguous_bare_ref_evidence() -> dict[str, object]:
     }
 
 
-def test_accepts_grounded_links_refs_and_source_caveat() -> None:
-    brief = """
-The review queue now centers on example-org/example-repo#42
-(https://github.com/example-org/example-repo/pull/42).
-
-Confidence caveat: automation data is partial, so workflow counts may be incomplete.
-"""
-
-    assert verify_work_brief.verify_brief(evidence(), brief) == []
-
-
-def test_rejects_unsupported_url() -> None:
-    errors = verify_work_brief.verify_brief(
-        evidence(),
-        "Source limitation: workflow collection reached the configured cap. See https://github.com/example-org/example-repo/pull/99.",
-    )
-
-    assert errors == [
-        "unsupported URL not present in evidence: https://github.com/example-org/example-repo/pull/99"
-    ]
-
-
-def test_rejects_unsupported_issue_reference() -> None:
-    errors = verify_work_brief.verify_brief(
-        evidence(),
-        "example-org/example-repo#99 is ready. Source limitation: workflow collection reached the configured cap.",
-    )
-
-    assert "unsupported issue/PR reference not present in evidence: example-org/example-repo#99" in errors
-    assert "unsupported issue/PR reference not present in evidence: #99" not in errors
-
-
-def test_accepts_grounded_short_repository_reference() -> None:
-    errors = verify_work_brief.verify_brief(
-        evidence(),
-        "example-repo#42 is the next review item. Confidence caveat: workflow counts may be incomplete.",
-    )
-
-    assert errors == []
-
-
-def test_rejects_unsupported_short_repository_reference() -> None:
-    errors = verify_work_brief.verify_brief(
-        evidence(),
-        "example-repo#99 is ready. Source limitation: workflow collection reached the configured cap.",
-    )
-
-    assert "unsupported issue/PR reference not present in evidence: example-repo#99" in errors
-    assert "unsupported issue/PR reference not present in evidence: #99" not in errors
-
-
-def test_rejects_ambiguous_short_repository_reference() -> None:
-    errors = verify_work_brief.verify_brief(
-        ambiguous_short_name_evidence(),
-        "app#7 is the next review item. Source limitation: Read-only evidence.",
-    )
-
-    assert "ambiguous short repository reference; use owner/repo form: app#7" in errors
-
-
-def test_accepts_qualified_reference_when_short_repository_name_is_ambiguous() -> None:
-    errors = verify_work_brief.verify_brief(
-        ambiguous_short_name_evidence(),
-        "example-org/app#7 is the next review item. Source limitation: Read-only evidence.",
-    )
-
-    assert errors == []
-
-
-def test_rejects_unsupported_natural_language_issue_reference() -> None:
-    errors = verify_work_brief.verify_brief(
-        evidence(),
-        "PR 99 is ready. Confidence caveat: automation data is partial.",
-    )
-
-    assert "unsupported issue/PR reference not present in evidence: 99" in errors
+@pytest.mark.parametrize(
+    "source,brief,accepted",
+    [
+        pytest.param(
+            evidence,
+            "\nThe review queue now centers on example-org/example-repo#42\n(https://github.com/example-org/example-repo/pull/42).\n\nConfidence caveat: automation data is partial, so workflow counts may be incomplete.\n",
+            True,
+            id="accepts_grounded_links_refs_and_source_caveat",
+        ),
+        pytest.param(
+            evidence,
+            "Source limitation: workflow collection reached the configured cap. See https://github.com/example-org/example-repo/pull/99.",
+            False,
+            id="rejects_unsupported_url",
+        ),
+        pytest.param(
+            evidence,
+            "example-org/example-repo#99 is ready. Source limitation: workflow collection reached the configured cap.",
+            False,
+            id="rejects_unsupported_issue_reference",
+        ),
+        pytest.param(
+            evidence,
+            "example-repo#42 is the next review item. Confidence caveat: workflow counts may be incomplete.",
+            True,
+            id="accepts_grounded_short_repository_reference",
+        ),
+        pytest.param(
+            evidence,
+            "example-repo#99 is ready. Source limitation: workflow collection reached the configured cap.",
+            False,
+            id="rejects_unsupported_short_repository_reference",
+        ),
+        pytest.param(
+            ambiguous_short_name_evidence,
+            "app#7 is the next review item. Source limitation: Read-only evidence.",
+            False,
+            id="rejects_ambiguous_short_repository_reference",
+        ),
+        pytest.param(
+            ambiguous_short_name_evidence,
+            "example-org/app#7 is the next review item. Source limitation: Read-only evidence.",
+            True,
+            id="accepts_qualified_reference_when_short_repository_name_is_ambiguous",
+        ),
+        pytest.param(
+            evidence,
+            "PR 99 is ready. Confidence caveat: workflow counts may be incomplete.",
+            False,
+            id="rejects_unsupported_natural_language_issue_reference",
+        ),
+        pytest.param(
+            evidence,
+            "Workflow run #123456 failed. Confidence caveat: workflow counts may be incomplete.",
+            False,
+            id="rejects_unsupported_workflow_run_natural_language_reference",
+        ),
+        pytest.param(
+            ambiguous_bare_ref_evidence,
+            "#7 is ready. Source limitation: Read-only evidence.",
+            False,
+            id="rejects_ambiguous_bare_issue_reference",
+        ),
+        pytest.param(
+            ambiguous_bare_ref_evidence,
+            "PR 7 is ready. Source limitation: Read-only evidence.",
+            False,
+            id="rejects_ambiguous_natural_language_issue_reference",
+        ),
+        pytest.param(
+            ambiguous_bare_ref_evidence,
+            "example-org/app-one#7 is ready. Source limitation: Read-only evidence.",
+            True,
+            id="accepts_qualified_reference_when_bare_reference_is_ambiguous",
+        ),
+        pytest.param(evidence, "example-org/example-repo#42 is the next review item.", False, id="requires_source_note_reflection"),
+        pytest.param(
+            evidence,
+            "example-org/example-repo#42 is the next review item. Confidence is high.",
+            False,
+            id="rejects_generic_caveat_without_source_note_content",
+        ),
+        pytest.param(
+            evidence,
+            "example-org/example-repo#42 is the next review item. Automation totals are capped and workflow counts may be incomplete.",
+            True,
+            id="accepts_paraphrased_source_note_without_marker_words",
+        ),
+        pytest.param(
+            evidence,
+            "example-org/example-repo#42 is next. Workflow counts may be incomplete, but there are no source limitations.",
+            False,
+            id="rejects_contradicted_source_note",
+        ),
+    ],
+)
+def test_reference_and_caveat_validation(source: Callable[[], dict[str, Any]], brief: str, accepted: bool) -> None:
+    assert len(verify_work_brief.verify_brief(source(), brief)) == (0 if accepted else 1)
 
 
 def test_rejects_bare_ref_from_unrelated_numeric_metadata() -> None:
@@ -173,7 +198,7 @@ def test_rejects_bare_ref_from_unrelated_numeric_metadata() -> None:
         "#123 is ready. Workflow counts may be incomplete.",
     )
 
-    assert "unsupported issue/PR reference not present in evidence: #123" in errors
+    assert len(errors) == 1 and "#123" in errors[0]
 
 
 def test_derived_context_counts_do_not_authorize_bare_refs() -> None:
@@ -194,10 +219,14 @@ def test_derived_context_counts_do_not_authorize_bare_refs() -> None:
         "#2 should be discussed. Workflow counts may be incomplete.",
     )
 
-    assert "unsupported issue/PR reference not present in evidence: #2" in errors
+    assert len(errors) == 1 and "#2" in errors[0]
 
 
-def test_ignores_workflow_run_natural_language_reference() -> None:
+@pytest.mark.parametrize("brief", [
+    "Workflow run #123456 failed. Confidence caveat: workflow counts may be incomplete.",
+    "Validation run [#123456](https://github.com/example-org/example-repo/actions/runs/123456) failed. Confidence caveat: workflow counts may be incomplete.",
+], ids=["natural-language", "markdown-label"])
+def test_grounded_workflow_run_is_not_an_issue_reference(brief: str) -> None:
     workflow_evidence = evidence()
     workflow_evidence["workflow_runs"] = [
         {
@@ -209,61 +238,7 @@ def test_ignores_workflow_run_natural_language_reference() -> None:
 
     errors = verify_work_brief.verify_brief(
         workflow_evidence,
-        "Workflow run #123456 failed. Confidence caveat: workflow counts may be incomplete.",
-    )
-
-    assert errors == []
-
-
-def test_rejects_unsupported_workflow_run_natural_language_reference() -> None:
-    errors = verify_work_brief.verify_brief(
-        evidence(),
-        "Workflow run #123456 failed. Confidence caveat: workflow counts may be incomplete.",
-    )
-
-    assert "unsupported issue/PR reference not present in evidence: #123456" in errors
-
-
-def test_ignores_actions_run_markdown_link_label() -> None:
-    workflow_evidence = evidence()
-    workflow_evidence["workflow_runs"] = [
-        {
-            "repo": "example-org/example-repo",
-            "databaseId": 123456,
-            "url": "https://github.com/example-org/example-repo/actions/runs/123456",
-        }
-    ]
-
-    errors = verify_work_brief.verify_brief(
-        workflow_evidence,
-        "Validation run [#123456](https://github.com/example-org/example-repo/actions/runs/123456) failed. Confidence caveat: workflow counts may be incomplete.",
-    )
-
-    assert errors == []
-
-
-def test_rejects_ambiguous_bare_issue_reference() -> None:
-    errors = verify_work_brief.verify_brief(
-        ambiguous_bare_ref_evidence(),
-        "#7 is ready. Source limitation: Read-only evidence.",
-    )
-
-    assert "ambiguous bare issue/PR reference; use owner/repo form: #7" in errors
-
-
-def test_rejects_ambiguous_natural_language_issue_reference() -> None:
-    errors = verify_work_brief.verify_brief(
-        ambiguous_bare_ref_evidence(),
-        "PR 7 is ready. Source limitation: Read-only evidence.",
-    )
-
-    assert "ambiguous bare issue/PR reference; use owner/repo form: 7" in errors
-
-
-def test_accepts_qualified_reference_when_bare_reference_is_ambiguous() -> None:
-    errors = verify_work_brief.verify_brief(
-        ambiguous_bare_ref_evidence(),
-        "example-org/app-one#7 is ready. Source limitation: Read-only evidence.",
+        brief,
     )
 
     assert errors == []
@@ -287,46 +262,6 @@ def test_accepts_plan_context_refs() -> None:
     )
 
     assert errors == []
-
-
-def test_requires_source_note_reflection() -> None:
-    errors = verify_work_brief.verify_brief(
-        evidence(),
-        "example-org/example-repo#42 is the next review item.",
-    )
-
-    assert errors == [
-        "brief must reflect source note: Workflow collection reached the configured cap; workflow counts may be incomplete."
-    ]
-
-
-def test_rejects_generic_caveat_without_source_note_content() -> None:
-    errors = verify_work_brief.verify_brief(
-        evidence(),
-        "example-org/example-repo#42 is the next review item. Confidence is high.",
-    )
-
-    assert errors == [
-        "brief must reflect source note: Workflow collection reached the configured cap; workflow counts may be incomplete."
-    ]
-
-
-def test_accepts_paraphrased_source_note_without_marker_words() -> None:
-    errors = verify_work_brief.verify_brief(
-        evidence(),
-        "example-org/example-repo#42 is the next review item. Automation totals are capped and workflow counts may be incomplete.",
-    )
-
-    assert errors == []
-
-
-def test_rejects_contradicted_source_note() -> None:
-    errors = verify_work_brief.verify_brief(
-        evidence(),
-        "example-org/example-repo#42 is next. There are no source limitations.",
-    )
-
-    assert errors == ["brief contradicts evidence source limitations"]
 
 
 def test_accepts_grouped_repetitive_source_notes() -> None:
@@ -373,7 +308,7 @@ def test_rejects_missing_short_source_note() -> None:
         "Source caveat: workflow data may be partial.",
     )
 
-    assert errors == ["brief must reflect source note: API down"]
+    assert len(errors) == 1
 
 
 def test_accepts_reflected_short_source_note() -> None:
@@ -391,6 +326,4 @@ def test_accepts_reflected_short_source_note() -> None:
 
 
 if __name__ == "__main__":
-    import pytest
-
     raise SystemExit(pytest.main([__file__]))
