@@ -934,8 +934,8 @@ selection is unchanged.
   `unknown`), also attached to each plan row. Archived repositories return no plan
   rows by default; `--include-archived` restores their frozen history.
   Unavailable or missing archive metadata preserves the rows with unknown context.
-- `search <query>`: Search issues through the REST search endpoint with an
-  `is:issue` constraint. Archived repositories are excluded by default;
+- `search <query>`: Search issues and PRs, including drafts; each row in `issues`
+  carries `record_type: issue|pull_request`. Use `is:issue` or `is:pr` to narrow the query. Archived repositories are excluded by default;
   `--include-archived` preserves the caller's archive qualifiers instead.
   Add the current repository only when the query has no
   positive `repo:`, `org:`, or `user:` scope; an explicit global `--repo` always

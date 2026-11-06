@@ -193,7 +193,7 @@ across the Director's repositories with one search through the existing
 planning helper (load `github-plan` first):
 
 ```bash
-uv run <skill-dir>/../github/scripts/gh-plan.py search "user:OWNER label:direction" --state open --limit 1000
+uv run <skill-dir>/../github/scripts/gh-plan.py search "user:OWNER label:direction is:issue" --state open --limit 1000
 ```
 
 Also read the full Director-wait list, including issues without a `direction`
