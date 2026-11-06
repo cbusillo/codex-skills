@@ -1398,7 +1398,11 @@ Save and review the dry-run output, then apply the exact private payload using
 `--dry-run-evidence-file` and a stable `--idempotency-key`. The helper digest
 binds the private payload and tracked compose id. Before apply, inspect must
 still identify that compose consistently across the tracked and provider-target
-records. This is a helper check, not server compare-and-swap.
+records. For reconcile, the helper sends that inspected, review-matching target
+id as `target_id`; callers still cannot supply one in their private payload.
+The first-empty-testing service continuation checks that exact id under its
+existing lane and authority locks. Other setup operations retain their own
+producer comparison rules.
 
 Output shows operation, scope, counts, port and digests only; domain names,
 provider ids and warnings, and the reason stay private. Apply inspects again to

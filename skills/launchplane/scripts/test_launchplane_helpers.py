@@ -9792,6 +9792,8 @@ def test_compose_domain_review_apply_and_read_back() -> None:
             assert status == 0 and result["result"]["read_back_matches"] is True, result
             assert len(posts) == 1 and len(reads) == 2
             assert posts[0]["body"]["confirmation"] == write_action.DOKPLOY_TARGET_SETUP_CONFIRMATION
+            if operation == "reconcile-compose-domain":
+                assert posts[0]["body"]["target_id"] == _domain_inspect(operation)["inspect"]["provider"]["id"]
             for hidden in ("public.example.invalid", "private.example.invalid", "compose-private-9", "private-route-id"):
                 assert hidden not in json.dumps(evidence) and hidden not in json.dumps(result)
             for invalid_id in ({"private": "PRIVATE_SENTINEL"}, ["PRIVATE_SENTINEL"]):
