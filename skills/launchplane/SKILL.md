@@ -1189,52 +1189,15 @@ reviewed-inspect procedure and verify the situation.
 ## Tools
 
 Use `scripts/launchplane-write-action.py --help` for the installed command list.
-Before selecting an operation, read the matching section of the
-[write-action helper contract](references/write-action-helper-contract.md).
-It owns request fields, reviewed evidence, idempotency, output bounds and
-readback requirements. The producer contract remains the operation authority
-under [Agent/Admin Contract](#agentadmin-contract).
-
-| Task | Read before using the helper |
-| --- | --- |
-| Testing ingress | [Application testing private ingress](references/write-action-helper-contract.md#application-testing-private-ingress) |
-| Disposable lane observations and rebuild preparation | [Disposable lane observations](references/write-action-helper-contract.md#disposable-lane-observations) |
-| Replacement allocation and qualification | [Empty testing replacement resources](references/write-action-helper-contract.md#empty-testing-replacement-resources) |
-| Product configuration and intent preflight | [Product Config](references/write-action-helper-contract.md#product-config) |
-| Expected configuration metadata | [Product expected configuration](references/write-action-helper-contract.md#product-expected-configuration) |
-| Odoo addon settings | [Odoo addon settings](references/write-action-helper-contract.md#odoo-addon-settings) |
-| Odoo website intent | [Odoo website settings](references/write-action-helper-contract.md#odoo-website-settings) |
-| Integration allowances | [Integration allowances](references/write-action-helper-contract.md#integration-allowances) |
-| Testing holds | [Testing hold](references/write-action-helper-contract.md#testing-hold) |
-| Product profile, environment, activity, protected artifacts, previews, reconciliation, secret bindings, testing state and rebuild | [Product environment, activity and preview reads](references/write-action-helper-contract.md#product-environment-activity-and-preview-reads) |
-| Odoo target replacement operation and plan evidence | [Product environment, activity and preview reads](references/write-action-helper-contract.md#product-environment-activity-and-preview-reads) |
-| Dokploy inventory | [Dokploy inventory read](references/write-action-helper-contract.md#dokploy-inventory-read) |
-| Names of runtime settings and secrets | [Names-only settings and secret reads](references/write-action-helper-contract.md#names-only-settings-and-secret-reads) |
-| Product repository identity | [Product repository identity](references/write-action-helper-contract.md#product-repository-identity) |
-| Launchplane's own service settings | [Service settings](references/write-action-helper-contract.md#service-settings) |
-| Product Client | [Client](references/write-action-helper-contract.md#client) |
-| Image repository | [Image repository](references/write-action-helper-contract.md#image-repository) |
-| Provider target creation and source completion | [Provider target](references/write-action-helper-contract.md#provider-target) |
-| Domain and ingress planning | [Inert domain and ingress planning](references/write-action-helper-contract.md#inert-domain-and-ingress-planning) |
-| Reviewed domain, ingress and route-binding repairs | [Reviewed route-authority record repairs](references/write-action-helper-contract.md#reviewed-route-authority-record-repairs) |
-| Compose web host routes | [Compose web host routes](references/write-action-helper-contract.md#compose-web-host-routes) |
-| Production backup authority | [Production backup authority](references/write-action-helper-contract.md#production-backup-authority) |
-| Backup worker setup and qualification | [Backup worker references and capture-free preflight](references/write-action-helper-contract.md#backup-worker-references-and-capture-free-preflight) |
-| Private health endpoints | [Private health endpoints](references/write-action-helper-contract.md#private-health-endpoints) |
-| Health checks and dependency policy | [Health monitoring](references/write-action-helper-contract.md#health-monitoring) |
-| Production promotion status and dry-run | [Product promotion status and dry-run](references/write-action-helper-contract.md#product-promotion-status-and-dry-run) |
-| Odoo business hours | [Odoo business-hours policy](references/write-action-helper-contract.md#odoo-business-hours-policy) |
-| Managed secret copies | [Copying a managed runtime secret](references/write-action-helper-contract.md#copying-a-managed-runtime-secret) |
-| Managed runtime sync | [Managed runtime sync](references/write-action-helper-contract.md#managed-runtime-sync) |
-| Generic-web deploy recovery | [Generic-Web Deploy Recovery](references/write-action-helper-contract.md#generic-web-deploy-recovery) |
-| Workflow authorization retirement inspection | [Workflow-rule retirement inspection](references/write-action-helper-contract.md#workflow-rule-retirement-inspection) |
-| Runtime-setting removal review | [Runtime-setting removal review](references/write-action-helper-contract.md#runtime-setting-removal-review) |
-| Policy proposals | [Policy Proposals](references/write-action-helper-contract.md#policy-proposals) |
-| Merge-train policy import | [Merge-Train Policy Import](references/write-action-helper-contract.md#merge-train-policy-import) |
-| Repository inventory | [Repository Inventory](references/write-action-helper-contract.md#repository-inventory) |
-| Product path prerequisites | [Product Path Check](references/write-action-helper-contract.md#product-path-check) |
-| Pending Client review withdrawal | [Pending Client review withdrawal](references/write-action-helper-contract.md#pending-client-review-withdrawal) |
-| Governance evidence | [Governance projection read](references/write-action-helper-contract.md#governance-projection-read) |
+Before selecting an operation, read its section of the
+[write-action helper contract](references/write-action-helper-contract.md),
+which owns request fields, reviewed evidence, idempotency, output bounds and
+readback requirements. For a new lane, follow
+[the setup order and lane-record step](references/write-action-helper-contract.md#setting-up-a-lane-for-promotion).
+For stale preview comments, read
+[preview feedback remediation](references/write-action-helper-contract.md#preview-feedback-remediation).
+The producer contract remains the operation authority under
+[Agent/Admin Contract](#agentadmin-contract).
 
 Use `scripts/launchplane-context.py` for optional structural context,
 `scripts/launchplane-owner-review.py` for saved Client feedback and
