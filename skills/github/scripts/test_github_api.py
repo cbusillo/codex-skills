@@ -744,6 +744,9 @@ def test_merge_refusal_only_proves_rejection_for_the_exact_required_check_messag
         assert failure.disposition == "stop"
         assert failure.failed_step == f"http_{status}"
         assert failure.request_id == "AABB:1234:CCDD"
+        assert failure.rate_limit == result.rate_limit.as_dict()
+        if cause == "required_status_checks_expected":
+            assert message in failure.message
 
 
 def test_comments_only_rejection_is_narrow() -> None:
