@@ -12,6 +12,7 @@ import json
 import os
 import re
 import sys
+import tomllib
 from collections import deque
 from datetime import datetime
 from pathlib import Path
@@ -79,21 +80,35 @@ def eastern(timestamp: str | None) -> str | None:
     return local.strftime("%Y-%m-%d %I:%M:%S %p ET").replace(" 0", " ")
 
 
-def candidate_files(root: Path):
-    if root.is_file():
-        yield root
-        return
-    # Stable traversal within each root; one candidate per root per round keeps
-    # an older, large account from consuming every provider's search allowance.
+def candidate_files(root: Path, since: float | None) -> list[Path]:
+    """Transcripts under root, newest first, so a file limit drops the oldest."""
     def failed_walk(error: OSError):
         raise error
 
-    for directory, directories, filenames in os.walk(root, onerror=failed_walk):
-        directories.sort()
-        for filename in sorted(filenames):
+    found: list[tuple[float, Path]] = []
+    walk = [(str(root.parent), [], [root.name])] if root.is_file() else os.walk(root, onerror=failed_walk)
+    for directory, _, filenames in walk:
+        for filename in filenames:
             path = Path(directory) / filename
             if transcript_suffix(path) in {".jsonl", ".json"} and path.is_file():
-                yield path
+                mtime = path.stat().st_mtime
+                if since is None or mtime >= since:
+                    found.append((-mtime, path.resolve()))
+    return [path for _, path in sorted(found)]
+
+
+def extra_roots(environ: dict[str, str], home: Path) -> list[Path]:
+    """Optional private roots from [history] extra_roots in local-context.toml."""
+    homes = [environ[name] for name in ("CODE_HOME", "CODEX_HOME") if environ.get(name, "").strip()]
+    for base in [*homes, str(home / ".code")]:
+        try:
+            with (Path(base).expanduser() / "local-context.toml").open("rb") as handle:
+                configured = tomllib.load(handle).get("history", {}).get("extra_roots")
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError, AttributeError):
+            continue
+        if isinstance(configured, list) and configured:
+            return [Path(str(root)).expanduser() for root in configured]
+    return []
 
 
 def scan(roots: list[Path], *, queries: list[str], signals: list[str], since: float | None = None,
@@ -101,7 +116,7 @@ def scan(roots: list[Path], *, queries: list[str], signals: list[str], since: fl
          max_hits: int = 200) -> dict:
     limitations: list[dict] = []
     files: dict[Path, None] = {}
-    pending = deque()
+    pending: deque[tuple[Path, deque[Path]]] = deque()
     for root in roots:
         root = root.expanduser().resolve()
         if not root.exists():
@@ -110,22 +125,27 @@ def scan(roots: list[Path], *, queries: list[str], signals: list[str], since: fl
         if root.is_file() and transcript_suffix(root) not in {".jsonl", ".json"}:
             limitations.append({"kind": "unsupported_file", "source": str(root)})
             continue
-        pending.append((root, iter(candidate_files(root))))
-    while pending:
-        root, paths = pending.popleft()
         try:
-            for path in paths:
-                path = path.resolve()
-                if path in files or (since is not None and path.stat().st_mtime < since):
-                    continue
-                if len(files) >= max_files:
-                    limitations.append({"kind": "file_limit", "source": str(root)})
-                    break
-                files[path] = None
-                pending.append((root, paths))
-                break
+            pending.append((root, deque(candidate_files(root, since))))
         except OSError as exc:
             limitations.append({"kind": "root_io_error", "source": str(root), "error": str(exc)})
+    # One file per root per round keeps an older, large account from consuming
+    # every provider's allowance.
+    while pending and len(files) < max_files:
+        root, paths = pending.popleft()
+        while paths:
+            path = paths.popleft()
+            if path not in files:
+                files[path] = None
+                break
+        if paths:
+            pending.append((root, paths))
+    skipped: set[Path] = set()
+    for root, paths in pending:
+        unscanned = set(paths).difference(files)
+        if unscanned:
+            limitations.append({"kind": "file_limit", "source": str(root), "files_skipped": len(unscanned)})
+            skipped |= unscanned
 
     hits: list[dict] = []
     mirrors = 0
@@ -213,6 +233,7 @@ def scan(roots: list[Path], *, queries: list[str], signals: list[str], since: fl
     if total_hits > max_hits:
         limitations.append({"kind": "hit_limit", "omitted": total_hits - max_hits})
     return {"roots": [str(root) for root in roots], "files_scanned": len(files),
+            "files_skipped": len(skipped),
             "matched_messages": total_hits, "mirrored_messages_omitted": mirrors,
             "hits": hits[:max_hits], "limitations": limitations,
             "coverage_complete": not limitations, "privacy": "private local evidence; do not publish"}
@@ -221,6 +242,8 @@ def scan(roots: list[Path], *, queries: list[str], signals: list[str], since: fl
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, action="append", help="Explicit source root; repeatable; replaces discovery")
+    parser.add_argument("--extra-roots", action="store_true",
+                        help="Also search [history] extra_roots from the private local-context.toml")
     parser.add_argument("--query", action="append", default=[], help="Literal case-insensitive topic; repeated queries match any")
     parser.add_argument("--signal", choices=sorted(SIGNALS), action="append", default=[])
     parser.add_argument("--since", type=bound)
@@ -234,8 +257,18 @@ def main() -> int:
     if args.since is not None and args.until is not None and args.since > args.until:
         parser.error("--since must precede --until")
     roots = args.root or discover_roots(Path.home(), dict(os.environ))
-    print(json.dumps(scan(roots, queries=args.query, signals=args.signal, since=args.since, until=args.until,
-                          max_files=args.max_files, max_bytes=args.max_bytes, max_hits=args.max_hits), indent=2))
+    if args.extra_roots:
+        configured = extra_roots(dict(os.environ), Path.home())
+        if not configured:
+            parser.error("--extra-roots: no [history] extra_roots in local-context.toml")
+        roots = [*roots, *configured]
+    result = scan(roots, queries=args.query, signals=args.signal, since=args.since, until=args.until,
+                  max_files=args.max_files, max_bytes=args.max_bytes, max_hits=args.max_hits)
+    gaps = sorted({str(item["kind"]) for item in result["limitations"]})
+    print(f"history: scanned {result['files_scanned']} files, skipped {result['files_skipped']}, "
+          f"{result['matched_messages']} matches; "
+          + (f"INCOMPLETE ({', '.join(gaps)})" if gaps else "coverage complete"), file=sys.stderr)
+    print(json.dumps(result, indent=2))
     return 0
 
 
