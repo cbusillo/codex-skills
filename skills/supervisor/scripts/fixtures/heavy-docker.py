@@ -21,6 +21,8 @@ with (root / "lock").open("w") as lock:
         calls.write(json.dumps(args) + "\n")
     if args[0] == "context":
         print(os.environ["HEAVY_ENDPOINT"])
+    elif args[:2] == ["image", "inspect"]:
+        print(json.dumps({"Entrypoint": ["fixture-bootstrap"], "Cmd": ["fixture-default"]}))
     elif args[0] == "create":
         cpus = Decimal(args[args.index("--cpus") + 1]) * 10**9
         if cpus != int(cpus):

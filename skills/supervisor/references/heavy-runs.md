@@ -25,6 +25,15 @@ the tools needed for the run and be cached locally; `--pull never` prevents an
 implicit image pull under the slot. Prepare images through the repository's
 supported image path first. The internal network has no external route.
 
+The job image must include `python3`; include it through that same image
+preparation path. The helper runs the image's complete entrypoint and selected
+command as a child of a small exit normalizer, with the same environment,
+working directory and streams. Services retain their ordinary image startup.
+Success stays 0, workload exits 1..127 stay unchanged, and ordinary exits
+128..255 become 127. A child killed by a signal or a canceled runner remains
+outside that workload range. Exit 255 means runner failure and is never
+reclassified from Docker state. No extra receipt or origin witness is needed.
+
 ```json
 {
   "containers": [
