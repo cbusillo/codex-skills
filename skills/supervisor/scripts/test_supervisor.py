@@ -1674,8 +1674,13 @@ class AccountChoiceTests(unittest.TestCase):
         # Other providers' rows do not make the one Google login ambiguous.
         snapshot["accounts"].append(account_row("main", .9, []))
         self.assertEqual(account_choice.choose("google", config, snapshot, None)["account_id"], choice["account_id"])
+        # Naming the one configured login reports it, still bound to the existing login (#3736).
+        named = account_choice.choose("google", config, snapshot, None, name=choice["name"])
+        self.assertEqual((named["account_id"], named["source"]), (choice["account_id"], "named"))
+        self.assertEqual(account_choice.public(named)["account_binding"], account_choice.GOOGLE_ACCOUNT_BINDING)
+        self.assertEqual(account_choice.public(named)["env_keys"], [])
         with self.assertRaises(ValueError):
-            account_choice.choose("google", config, snapshot, None, name=choice["name"])
+            account_choice.choose("google", config, snapshot, None, name="other-login")
         snapshot["answers"]["useNext"] = []
         with self.assertRaises(ValueError):
             account_choice.choose("google", config, snapshot, None)

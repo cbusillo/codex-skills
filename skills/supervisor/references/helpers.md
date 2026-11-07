@@ -2095,10 +2095,10 @@ Google requires the explicit `single_login = true` and `env = {}` form. AGY 1.3.
 provide no account/home override; this row identifies the existing AGY login,
 without switching or independently verifying it. Configure exactly one Google
 row matching the existing login, and confirm that login in the launched AGY
-session. Multiple configured Google rows or multiple Google snapshot rows refuse,
-as does `--account` for Google. Google follows Context Panel's Use next or
-eligible published launch order and writes the same count-only receipts as the
-other providers. Output includes `account_binding: existing-agy-login` and empty
+session. Multiple configured Google rows or multiple Google snapshot rows refuse.
+`--account` may name only that one row and never switches the AGY login.
+Otherwise Google follows Context Panel's Use next or eligible published launch
+order. It writes the same count-only receipts as the other providers. Output includes `account_binding: existing-agy-login` and empty
 `env_keys`, so it does not claim an account was pinned by an environment variable.
 Google launch files must invoke `agy` directly and keep `HOME` unchanged; remove
 `HOME`, `CODEX_HOME` and `CLAUDE_CONFIG_DIR` settings from the file to use the mapped existing login. A launch
