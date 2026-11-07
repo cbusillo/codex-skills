@@ -288,7 +288,7 @@ async def require_loaded_thread(request, session, home):
     thread = await read_thread(request, session)
     if thread["state"] == "notLoaded":
         raise ValueError(f"thread {session} is not loaded by the CODEX_HOME={home} daemon; "
-                         "queue through the home whose daemon runs it, or resume it first")
+                         "use the home whose daemon runs it; resume a stopped session before future queueing")
     return thread
 
 

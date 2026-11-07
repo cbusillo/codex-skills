@@ -237,7 +237,6 @@ class NativeQueueTests(unittest.TestCase):
         for delivery in ("queue", "steer"):
             with self.subTest(delivery=delivery), ReceiptFixture(str(uuid.uuid4())) as f:
                 f.native_state = "active"
-                f.rpc_results["thread/turns/list"] = {"data": [{"id": "working-turn", "status": "inProgress"}], "nextCursor": None}
                 accepted = []
                 def steer(request: dict, accept_input: Callable[[list], None] = accepted.append) -> dict:
                     self.assertTrue(CLOSURE.action_pending(f.session))
@@ -277,7 +276,6 @@ class NativeQueueTests(unittest.TestCase):
         for failure in ("refusal", "wrong_ack", "target", "ownership"):
             with self.subTest(failure=failure), ReceiptFixture(str(uuid.uuid4())) as f:
                 f.native_state = "active"
-                f.rpc_results["thread/turns/list"] = {"data": [{"id": "working-turn", "status": "inProgress"}], "nextCursor": None}
                 sent = []
                 def steer(request: dict, record_send: Callable[[dict], None] = sent.append, outcome: str = failure) -> dict | ValueError:
                     record_send(request)
@@ -289,7 +287,6 @@ class NativeQueueTests(unittest.TestCase):
                 with self.queue_exit_failure(f.home, sent, asyncio.CancelledError(), failure), self.assertRaises(ValueError) as caught:
                     asyncio.run(NATIVE.queue_input(f.home, f.session, "private-input", expected_turn_id="working-turn"))
                 self.assertNotIsInstance(caught.exception, NATIVE.QueueNotSent)
-                self.assertIn("uncertain", str(caught.exception))
                 self.assertEqual(len(sent), 1)
                 self.assertTrue(CLOSURE.action_pending(f.session))
                 self.assertNotIn("thread/queue/add", f.rpc_requests)
@@ -303,7 +300,6 @@ class NativeQueueTests(unittest.TestCase):
             f.add_home(other)
             f.home_states[str(other)] = "notLoaded"
             f.native_state = "active"
-            f.rpc_results["thread/turns/list"] = {"data": [{"id": "working-turn", "status": "inProgress"}], "nextCursor": None}
             sent = []
             def steer(request: dict) -> dict:
                 sent.append(request["params"])

@@ -1591,7 +1591,7 @@ before queueing to it.
 Queue and steer report success only after their acknowledgement and connection
 and ownership cleanup complete. Once submission may have started, any failure,
 including timeout or cancellation during cleanup, reports uncertainty with
-no-replay guidance. Inspect fresh queue state before further action; never resend
+no-replay guidance. Inspect the native thread, turn transcript and queue before further action; never resend
 the message automatically. Pre-send cancellation still propagates normally.
 
 Use the canonical lowercase, hyphenated UUID from the native thread record.
