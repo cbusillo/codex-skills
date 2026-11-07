@@ -498,7 +498,6 @@ def github_team(login: str, people: list[dict[str, Any]]) -> list[str]:
     def company(entry: dict[str, Any]) -> str:
         return (first_string(nested_value(entry, "organization", "company")) or "").strip().casefold()
     team = [person for person in people if person is holder or company(holder) == company(person) != ""]
-    # A login another person also holds is ambiguous, so it never joins a team.
     return sorted({item for person in team for item in sum(github_logins(person), []) if len(holders[item]) == 1})
 
 

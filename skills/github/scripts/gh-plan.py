@@ -6829,7 +6829,6 @@ def cmd_close(args: argparse.Namespace) -> None:
     actor = issue_actor
     completed_steps: list[str] = []
     comment_result: dict[str, Any] = {}
-    # A close comment that answers a confirmation is a fresh reply posted before the close, never a reused one.
     answers_comments = bool(close_attention.get("answered_by_close_comment"))
     if trigger is not None:
         # Persist and read back the trigger before closing: failed publication

@@ -2394,7 +2394,6 @@ def test_close_delegates_comment_to_shared_rest_helper() -> None:
 
 
 def test_close_posts_a_fresh_reply_before_closing_when_it_answers_a_confirmation() -> None:
-    # cbusillo/odoo-tenant-cm#335: the close comment is the reply to the Client's confirmation.
     for comment_fails in (False, True):
         plan = load_plan_module()
         allow_close_relationships(plan)

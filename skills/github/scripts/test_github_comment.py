@@ -1656,7 +1656,6 @@ def test_client_reply_refuses_outside_participants_and_mentions_before_writing()
 
 
 def test_client_reply_reads_the_client_team_and_names_who_it_refuses() -> None:
-    # cbusillo/odoo-tenant-cm#335: the Client's agent App opened it and a teammate commented.
     teams = {"client": ["client", "client-agent[bot]", "teammate"]}
     for logins, expected in ((["client"], None), (["app/client-agent", "teammate"], None),
                              (["client-agent", "teammate"], "client-agent[bot]"), (["teammate"], "client-agent[bot]")):

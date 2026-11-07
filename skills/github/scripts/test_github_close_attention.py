@@ -118,7 +118,6 @@ class CloseAttentionTests(unittest.TestCase):
             gate.check(REPO, 7, reader=fake_reader(), radar=radar(row(author="client-agent", author_class="automation")))
 
     def test_the_close_comment_answers_known_people_on_this_issue_only(self) -> None:
-        # cbusillo/odoo-tenant-cm#335: the Client's teammate confirmed the work was done.
         confirmed = row(known=True)
         passed = gate.check(REPO, 7, reader=fake_reader(), radar=radar(confirmed), close_comment="Thanks, closing.")
         self.assertEqual(passed["result"], "passed")
