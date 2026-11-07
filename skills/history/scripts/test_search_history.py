@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 
 import zstandard
 
-from search_history import bound, discover_roots, eastern, scan
+from search_history import bound, discover_roots, eastern, extra_roots, scan
 from session_events import events_from_record
 
 
@@ -204,6 +204,22 @@ class SearchHistoryTests(unittest.TestCase):
                        ".claude-accounts/one/projects", "custom/sessions", "custom/projects"):
             self.assertIn(self.root / suffix, roots)
 
+    def test_file_limit_keeps_newest_and_counts_the_rest(self):
+        for index, name in enumerate(("a-newest.jsonl", "b-old.jsonl", "c-oldest.jsonl")):
+            stamp = bound("2026-10-01T00:00:00Z") - index * 86400
+            os.utime(self.write(name, [codex(f"preview {name}")]), (stamp, stamp))
+        result = self.search(max_files=1)
+        self.assertEqual([hit["text"] for hit in result["hits"]], ["preview a-newest.jsonl"])
+        self.assertEqual(result["files_skipped"], 2)
+
+    def test_extra_roots_come_only_from_private_setting(self):
+        self.assertEqual(extra_roots({}, self.root), [])
+        settings = self.root / "custom-home" / "local-context.toml"
+        settings.parent.mkdir()
+        settings.write_text('[history]\nextra_roots = ["~/retained/sessions"]\n')
+        self.assertEqual(extra_roots({"CODEX_HOME": str(settings.parent)}, self.root),
+                         [Path("~/retained/sessions").expanduser()])
+
     def test_file_allowance_samples_each_provider_before_filling_first_root(self):
         for index in range(3):
             self.write(f"codex/{index}.jsonl", [codex("preview")])
@@ -228,6 +244,11 @@ class SearchHistoryTests(unittest.TestCase):
         cli = Path(__file__).with_name("search_history.py")
         result = subprocess.run([sys.executable, str(cli), "--root", str(path), "--query", "preview"], capture_output=True, text=True, check=True)
         self.assertEqual(json.loads(result.stdout)["hits"][0]["text"], "preview")
+        self.assertIn("coverage complete", result.stderr.splitlines()[0])
+        self.write("second.jsonl", [codex("preview")])
+        result = subprocess.run([sys.executable, str(cli), "--root", str(self.root), "--query", "preview",
+                                 "--max-files", "1"], capture_output=True, text=True, check=True)
+        self.assertIn("skipped 1, 1 matches; INCOMPLETE (file_limit)", result.stderr.splitlines()[0])
         self.assertEqual(path.read_bytes(), original)
         for flags in (["--since", "2026-10-01"], ["--max-bytes", "0"],
                       ["--since", "2026-10-03T00:00:00Z", "--until", "2026-10-01T00:00:00Z"]):

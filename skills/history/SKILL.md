@@ -41,8 +41,10 @@ omit sensitive spans and mark omissions rather than calling a redaction exact.
    For changes to `DIRECTION.md`, read its commit history and the corresponding
    diff and PR discussion through the GitHub skill. Search indexes can miss
    comment wording: read likely threads, not just matching titles/bodies.
-3. Load `python-uv-workflow` before running the local helper. Run it from this
-   skill directory, redirecting its private JSON to an ignored local artifact:
+3. Load `python-uv-workflow` before running the local helper. Search the
+   issue titles first and reuse their words as `--query` values; records rarely
+   use the question's own phrasing. Run it from this skill directory,
+   redirecting its private JSON to an ignored local artifact:
 
    ```sh
    uv run scripts/search_history.py --query '<topic>' \
@@ -52,10 +54,13 @@ omit sensitive spans and mark omissions rather than calling a redaction exact.
 
    Create an ignored local output directory first; the example output path is a
    placeholder. The helper discovers current/default Codex and Claude homes and
-   account homes under the user's home. Read `roots` and `limitations` in the
-   result. Add repeatable `--root /exact/session/directory` for other account
-   layouts or harness transcript roots present on the machine; explicit roots
-   replace discovery. JSON/JSONL, plain or zstd-compressed (`.jsonl.zst`), is
+   account homes under the user's home, and takes files newest first. Its first
+   stderr line reports files scanned and skipped and names any coverage gap.
+   Add repeatable `--root /exact/session/directory` for other layouts; explicit
+   roots replace discovery. `--extra-roots` also searches the Director's
+   private `[history] extra_roots` list in `local-context.toml`, such as
+   retained sessions from retired harnesses. JSON/JSONL, plain or
+   zstd-compressed (`.jsonl.zst`), is
    supported through rollout-friction's shared readers; unrecognized records
    are reported as a coverage gap, not evidence of absence. Use `rg --files`
    to locate other transcript layouts, then inspect their source format
