@@ -9,12 +9,12 @@ import io
 import json
 import multiprocessing
 import os
-import signal
 import shutil
+import signal
 import subprocess
 import sys
-import tempfile
 import tarfile
+import tempfile
 import time
 import unittest
 from decimal import Decimal
@@ -38,7 +38,7 @@ class WorkloadExitTests(unittest.TestCase):
                 with self.subTest(command=command), patch.object(docker, "call", side_effect=[json.dumps(config), "job"]) as call:
                     docker.create({"name": "job", "image": "fixture", "command": command}, "run", "1", "1024", root, workload=True)
                     arguments = call.call_args.args
-                    result = subprocess.run([sys.executable, *arguments[arguments.index("fixture") + 1:]], timeout=10)
+                    result = subprocess.run([sys.executable, *arguments[arguments.index("fixture") + 1 :]], timeout=10)
                     self.assertEqual(result.returncode, 23 if command else 127)
 
     def test_actual_child_exits_preserve_success_and_normalize_high_failures(self) -> None:
@@ -46,7 +46,8 @@ class WorkloadExitTests(unittest.TestCase):
             with self.subTest(status=status):
                 result = subprocess.run(
                     [sys.executable, "-c", heavy_run.WORKLOAD_ENTRYPOINT, sys.executable, "-c", f"raise SystemExit({status})"],
-                    capture_output=True, timeout=10,
+                    capture_output=True,
+                    timeout=10,
                 )
                 if status < 128:
                     self.assertEqual(result.returncode, status)
@@ -57,8 +58,9 @@ class WorkloadExitTests(unittest.TestCase):
         child = "import os,signal; signal.signal(signal.SIGTERM, signal.SIG_DFL); os.kill(os.getpid(), signal.SIGTERM)"
         signaled = subprocess.run([sys.executable, "-c", heavy_run.WORKLOAD_ENTRYPOINT, sys.executable, "-c", child], timeout=10)
         self.assertEqual(signaled.returncode, 128 + signal.SIGTERM)
-        missing = subprocess.run([sys.executable, "-c", heavy_run.WORKLOAD_ENTRYPOINT, "/no-such-heavy-workload"],
-                                 capture_output=True, timeout=10)
+        missing = subprocess.run(
+            [sys.executable, "-c", heavy_run.WORKLOAD_ENTRYPOINT, "/no-such-heavy-workload"], capture_output=True, timeout=10
+        )
         self.assertEqual(missing.returncode, 255)
 
     def test_bootstrap_argv_environment_and_streams_reach_child(self) -> None:
@@ -68,8 +70,22 @@ class WorkloadExitTests(unittest.TestCase):
             child = 'import json,os,sys; print(json.dumps([sys.argv[1:],os.environ["BOOTSTRAPPED"],os.environ["VALUE"],sys.stdin.read()])); print("stderr",file=sys.stderr)'
             arguments = ["space value", "", "$(exit 255)"]
             result = subprocess.run(
-                [sys.executable, "-c", heavy_run.WORKLOAD_ENTRYPOINT, sys.executable, str(bootstrap), sys.executable, "-c", child, *arguments],
-                env={**os.environ, "VALUE": "inherited"}, input="stdin", capture_output=True, text=True, timeout=10,
+                [
+                    sys.executable,
+                    "-c",
+                    heavy_run.WORKLOAD_ENTRYPOINT,
+                    sys.executable,
+                    str(bootstrap),
+                    sys.executable,
+                    "-c",
+                    child,
+                    *arguments,
+                ],
+                env={**os.environ, "VALUE": "inherited"},
+                input="stdin",
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(result.stdout), [arguments, "yes", "inherited", "stdin"])
@@ -77,9 +93,11 @@ class WorkloadExitTests(unittest.TestCase):
 
     def test_forwarded_cancellation_cannot_become_success(self) -> None:
         child = 'import signal,time; signal.signal(signal.SIGTERM,lambda *_:exit(0)); print("ready",flush=True); time.sleep(30)'
-        with subprocess.Popen([sys.executable, "-c", heavy_run.WORKLOAD_ENTRYPOINT, sys.executable, "-c", child],
-                              stdout=subprocess.PIPE, text=True) as process:
+        with subprocess.Popen(
+            [sys.executable, "-c", heavy_run.WORKLOAD_ENTRYPOINT, sys.executable, "-c", child], stdout=subprocess.PIPE, text=True
+        ) as process:
             try:
+                assert process.stdout is not None
                 self.assertEqual(process.stdout.readline(), "ready\n")
                 process.send_signal(signal.SIGTERM)
                 self.assertEqual(process.wait(timeout=10), 128 + signal.SIGTERM)
