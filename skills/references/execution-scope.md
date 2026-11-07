@@ -6,9 +6,10 @@ For chat and durable reports, read [talking with the Director](talking-with-the-
 - Follow the user's explicit instructions over skill guidelines. Infer routine
   implementation choices within the requested task and carry authorized work
   through its applicable checks.
-- Before changing files in another repository, read its `AGENTS.md` (and
-  `CLAUDE.md`, if present), including any instructions specific to the paths
-  being changed.
+- Before relying on another repository's hosts, credentials, workflows or
+  releases, load the [owning skill](using-skills.md); before changing its files,
+  read its `AGENTS.md` (and `CLAUDE.md`, if present), including path-specific
+  instructions. Its `AGENTS.md` is not automatically loaded.
 - Also read its `DIRECTION.md` first when it has one; when it has none, keep
   working and say in the final message that it has no `DIRECTION.md` and that
   the Director's overall direction in `OWNER/direction` applies, if one exists,

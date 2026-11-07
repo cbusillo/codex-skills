@@ -262,9 +262,7 @@ negative/ambiguity case when practical. Judge observable actions/outputs.
 Current Codex or Claude Code execution, direct local-model responses and source
 reviews have different scopes: report the one performed.
 
-For approval, safety or destructive changes, read
-[reviews by another model](../references/model-review.md) before merging and
-weigh the review there.
+Before merging, read [when to get a review](../references/model-review.md#when-to-ask-for-one).
 
 ### 6. Iterate And Forward-Test
 
