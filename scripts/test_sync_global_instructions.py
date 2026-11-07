@@ -26,8 +26,9 @@ sync = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(sync)
 sys.path.insert(0, str(sync.ROOT))
 sys.path.insert(0, str(sync.ROOT / "skills/github/scripts"))
-with mock.patch("github_identity.automation_login", return_value=None):
-    from skills.github.scripts import github_read
+with tempfile.TemporaryDirectory() as configuration:
+    with mock.patch.dict(os.environ, {"CODEX_SKILLS_ENV_FILE": str(Path(configuration) / "absent.env")}, clear=True):
+        from skills.github.scripts import github_read
 
 
 def setUpModule() -> None:
