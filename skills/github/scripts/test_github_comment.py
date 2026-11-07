@@ -1650,7 +1650,39 @@ def test_client_reply_refuses_outside_participants_and_mentions_before_writing()
                 assert sum(call["method"] == "POST" for call in calls) == 1
 
         with (patch.object(github_comment.github_identity, "acts_as_own_user", return_value=source == "personal"),
-              patch.object(github_comment.github_identity, "configured_bot_logins", return_value=("own-app[bot]",))):
+              patch.object(github_comment.github_identity, "configured_bot_logins", return_value=("own-app[bot]",)),
+              patch.object(github_comment, "people_team", return_value=[])):
+            with_call_stub(callback, run)
+
+
+def test_client_reply_reads_the_client_team_and_names_who_it_refuses() -> None:
+    teams = {"client": ["client", "client-agent[bot]", "teammate"]}
+    for logins, expected in ((["client"], None), (["app/client-agent", "teammate"], None),
+                             (["client-agent", "teammate"], "client-agent[bot]"), (["teammate"], "client-agent[bot]")):
+        def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
+            if path == "/user":
+                return success({"login": "fixture-automation"})
+            if method == "POST":
+                return success(comment_body(1001))
+            if path.endswith("/issues/42"):
+                return success({"user": {"login": "client-agent[bot]"}, "body": "Please add Abel."})
+            if "/issues/42/comments?" in path:
+                return success([comment_body(2, actor="teammate", body="verified, he is in")])
+            raise AssertionError(path)
+
+        def run(calls: list[dict[str, Any]]) -> None:
+            try:
+                github_comment.comment("issue", 42, "Thanks, closing.", repo="owner/repo", gh_cmd="fake-gh",
+                                       client_logins=logins)
+            except github_comment.CommentError as error:
+                assert expected and expected in str(error), (logins, error)
+                assert all(call["method"] == "GET" for call in calls), calls
+            else:
+                assert expected is None, logins
+
+        with (patch.object(github_comment.github_identity, "acts_as_own_user", return_value=False),
+              patch.object(github_comment.github_identity, "configured_bot_logins", return_value=("own-app[bot]",)),
+              patch.object(github_comment, "people_team", side_effect=lambda login: teams.get(login, []))):
             with_call_stub(callback, run)
 
 

@@ -1527,6 +1527,17 @@ def test_people_index_classifies_automation_accounts(tmp_path: Path) -> None:
     assert github_unanswered_comments.author_class("casey-client", automation) == ("person", None)
 
 
+def test_rows_say_whether_the_people_index_records_the_author() -> None:
+    known = comment(comment_id=7, author="Casey-Client", body="Verified, it works.", created_at="2026-07-21T00:00:00Z")
+    stranger = comment(comment_id=8, author="outside-user", body="Me too?", created_at="2026-07-21T01:00:00Z")
+    rows = github_unanswered_comments.comment_states_for_thread(
+        thread(), [known, stranger], {known.key, stranger.key}, {"cbusillo"}, {"fixture-automation"},
+        {known.key: [], stranger.key: []}, address_names={"casey-client": ["Casey"]},
+    )
+
+    assert {row["author"]: row["known_person"] for row in rows} == {"Casey-Client": True, "outside-user": False}
+
+
 @pytest.mark.parametrize("author_type", ["User", "Bot"])
 @pytest.mark.parametrize("notice", ["Preview is ready.", "@casey-client preview is ready."])
 def test_own_automation_is_excluded_without_answering_people(
