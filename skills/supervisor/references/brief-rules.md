@@ -23,11 +23,8 @@ and keep it with the brief through compaction.
 Rules for this brief (every Supervisor brief carries them):
 
 - On Claude Code, use the Read tool for your own session's `tool-results` files and pass this instruction to subagents you start to avoid sensitive-path prompts from shell reads.
-- A command-policy "Run instead" message is the supported route, not a
-  refusal: follow it. Correct your own command mistakes and retry. Only a real
-  denial (a permission, sandbox or authorization refusal of the action itself)
-  means stop that action, report its exact text, and continue other work;
-  never redo it another way ([task scope](../../references/execution-scope.md)).
+- Follow [task scope](../../references/execution-scope.md) for command-policy
+  routes and real denials; correct command mistakes and retry.
 - Keep working through compaction
   ([codex-skills#1064](https://github.com/cbusillo/codex-skills/issues/1064)),
   keeping the brief, the item and your current step.
@@ -54,119 +51,57 @@ Rules for this brief (every Supervisor brief carries them):
   Accessibility and Screen Recording permissions remain the Director's.
   If already on that GUI route, report the exact missing-tool state to the
   Supervisor for diagnosis instead of repeating the relaunch.
-- Read the item in full first, every comment and linked issue, then re-check
-  it against current code before starting (overall DIRECTION.md Issue trial,
-  [direction#96](https://github.com/cbusillo/direction/issues/96)). If the
-  code or a later comment already settles it, record why and continue independent items.
-  At your next review of the item, triage new reports on it or routed to you under
-  [planning intake](../../github-plan/SKILL.md#triage-incoming-reports); keep
-  acknowledged requests open and surfaced until their next action is done.
-  Follow the repository's
-  [executing loop](../../references/executing-loop.md), opening each step's
-  owning SKILL.md before the step.
-- Recheck ownership, then claim with `gh-plan.py --repo OWNER/REPO claim` (admission: the kind
-  named in the brief's [admission line](../SKILL.md#the-pattern)) before any worktree. The installed
-  `gh-plan.py claim --help` and
-  [Planning: Claim](../../github/references/cli-reference.md#planning-claim)
-  decide the flags; flags a brief suggests are hints. If the item is claimed,
-  already done, or waiting, record why, skip it and continue independent items. A wait
-  does not block read-only work that answers it.
-- Work in your own linked worktree from
-  `<catalog>/skills/github/scripts/dev-worktree /absolute/repository <slug> origin/main`
-  ([task worktrees](../../github/references/worktrees.md)), allowing at least
-  the documented command time where the harness sets a timeout. Never edit a
-  primary checkout. Commit and push with
-  `<catalog>/skills/github/scripts/git-commit-as-bot`
-  and `git-push-as-bot`, with `--worktree /absolute/task/path` first on both.
-  Name your intended task path, never the result of `pwd` or Git discovery
-  ([bot helpers](../../github/SKILL.md#helpers-and-identity)). Never
-  force-push or use `git stash`.
-- Keep task output (review prompts/results, checks, logs and handoffs) under the
-  task-evidence path printed by worktree creation, including shell redirections.
-  Do not write it inside a worktree or beside worktree folders. Temporary
-  model-review input scratch is helper-owned and removed when the run ends.
-- Land through the GitHub skill's Merging procedure. Launchplane is optional
-  unless this Director's direction or active policy requires its train. A missing
-  or unreadable configured route stays unknown. For train-routed PRs, when green and reviewed,
-  hand off with `uv run <catalog>/skills/github/scripts/gh-pr.py --repo OWNER/REPO ready <pr>`
-  under the [ready handoff contract](../../github/references/cli-reference.md#ready-handoffs);
-  a later push needs a fresh `ready`. A PR that needs the Client's acceptance
-  hands off with `--waiting-for-client` ("Engineering ready; waiting for the
-  Client's acceptance") until the Client accepts its current head. When the
-  brief holds a PR for anyone else before the train (the Director, the Supervisor, a
-  landing decision), never post plain `ready`: the train enqueues it within
-  minutes ([codex-skills#2428](https://github.com/cbusillo/codex-skills/issues/2428)).
-  Post the waiting handoff instead, a `gh-pr.py comment <pr> --body-file <file>`
-  whose first line is `Engineering ready; waiting for <named reason>`, and run
-  `ready` once the hold ends. A brief that holds a PR names that wait in one
-  line. That contract owns the `## Client test notes` requirement.
+- Read the item, every comment and linked issue in full, then re-check current
+  code under [Choose Work](../../github-plan/SKILL.md#choose-work). Follow
+  [planning intake](../../github-plan/SKILL.md#triage-incoming-reports) for new
+  reports and the [executing loop](../../references/executing-loop.md) for steps.
+- Follow [Planning: Claim](../../github/references/cli-reference.md#planning-claim)
+  before any worktree, using the brief's [admission](../SKILL.md#the-pattern).
+- Use your own [task worktree](../../github/references/worktrees.md) and
+  [bot commit/push helpers](../../github/SKILL.md#helpers-and-identity), allowing
+  the documented creation timeout. Never edit a primary checkout, force-push
+  or use `git stash`.
+- Keep task output, including redirections, under the printed
+  [task-evidence path](../../github/references/worktrees.md#task-evidence-and-retained-items).
+  Temporary model-review input scratch stays helper-owned.
+- Land through [GitHub Merging](../../github/SKILL.md#merging) and use the
+  [ready handoff contract](../../github/references/cli-reference.md#ready-handoffs)
+  for train entry, Client acceptance and `## Client test notes`. If the brief
+  holds a PR for the Director, Supervisor or a landing decision, never post
+  plain `ready`: post `gh-pr.py comment <pr> --body-file <file>` with first line
+  `Engineering ready; waiting for <named reason>`, then run `ready` when the
+  hold ends. A brief that holds a PR names that wait in one line.
 - Briefs state the goal and observable finish line, not a mechanism to build.
   A named mechanism is a suggestion unless it records a Director decision.
-- Scope ([approved scope rule](https://github.com/cbusillo/codex-skills/issues/1043#issuecomment-6091977127)):
-  small fixes in the same file or area that share the change's reason go in
-  the same PR; different behavior, its own risk, security, access or
-  authority, Client-visible, or large work gets its own issue (search first).
-- New issues
-  ([Q586](https://github.com/cbusillo/codex-skills/issues/1043#issuecomment-6300583500)):
-  before opening one, search open and closed issues across the Director's
-  repositories, and add to the existing issue when one fits. Open a new issue
-  only when nothing fits; link it to its parent, and name the next actor and
-  the finish line. A slice of ongoing work goes on its parent. Close the issue
-  with the PR that finishes it (`Closes #N`); a partial PR keeps the linked
-  issue open with its next actor and action
-  ([ready handoff](../../github/references/cli-reference.md#ready-handoffs)).
-- Never grant, copy or invent access or credentials, and never switch
-  identity or use a workflow to carry a call Launchplane denied. Record a
-  denial with its trace on the item and the owning authorization issue.
-  Reading is never a stop ([launchplane](../../launchplane/SKILL.md),
-  [task scope](../../references/execution-scope.md)).
+- Scope follows the [approved scope rule](https://github.com/cbusillo/codex-skills/issues/1043#issuecomment-6091977127).
+- For issues and slices, follow
+  [Create Or Update A Plan](../../github-plan/SKILL.md#create-or-update-a-plan)
+  and [Close Or Hand Off](../../github-plan/SKILL.md#close-or-hand-off).
+- Follow [Launchplane](../../launchplane/SKILL.md) and
+  [task scope](../../references/execution-scope.md) for access and denials.
+  Record a denial's trace on the item and the owning authorization issue.
 - Never copy, export or move any license or credential file
   ([codex-skills#2232](https://github.com/cbusillo/codex-skills/issues/2232)).
-- Reviews: run your own review of record through the
-  [model-review](../../model-review/SKILL.md) skill
-  (`review_with_model.py run`), from the provider other than your own (Q267),
-  then weigh it and post the disposition with
-  `gh-pr.py comment --reviewed-head`. Do not ask the Supervisor to run it. If
-  the helper refuses with EPERM or
-  another receipt error, stop that action, report its exact text, and only
-  then fall back to the [worker review request](helpers.md#worker-review-request)
-  ([codex-skills#2069](https://github.com/cbusillo/codex-skills/issues/2069)).
-- Weigh findings under
-  [Weighing Findings](../../references/model-review.md#weighing-findings)
-  (Q486, [codex-skills#2219](https://github.com/cbusillo/codex-skills/issues/2219)):
-  fix every reproduced defect, proven by the cheapest check that would catch
-  it again; decline only non-defects, with one line each. After two review
-  rounds on the same PR, stop patching and redesign with a fresh look.
-- Tests ([Q375](https://github.com/cbusillo/codex-skills/issues/1884#issuecomment-6215129557)):
-  run focused tests plus the full test modules for the safety areas you touch
-  locally ([gate selection](../../repo-readiness/SKILL.md#gate-selection));
-  never run the complete multi-shard suite locally. CI runs it; Ready and merge
-  evidence follow the [test command contract](../../github/references/config-schema.md#workflow-metadata).
-- Inspection: run it through the
-  [jetbrains-inspection](../../jetbrains-inspection/SKILL.md) skill's
-  supported route for the repository; the skill owns which backend applies.
-  Never open the Director's desktop IDE or their normal PyCharm profile. If no
-  supported route can run, record UNKNOWN with the helper's exact reason
-  ([gate selection](../../repo-readiness/SKILL.md#gate-selection)); never
-  report it as passed.
+- Run and record your own [model review](../../model-review/SKILL.md); do not
+  ask the Supervisor to run it. On EPERM or another receipt error, stop that
+  action, report its exact text, then use the
+  [worker review request](helpers.md#worker-review-request).
+- Follow [Weighing Findings](../../references/model-review.md#weighing-findings).
+  After two review rounds on the same PR, stop patching and redesign with a
+  fresh look.
+- Follow [gate selection](../../repo-readiness/SKILL.md#gate-selection) and the
+  [test command contract](../../github/references/config-schema.md#workflow-metadata).
+- Use [jetbrains-inspection](../../jetbrains-inspection/SKILL.md) and report
+  its verdict and coverage.
 - Reply to the product's own Client, team and agents under the
   [Client-reply rule](../../references/talking-with-the-director.md#client-replies),
   using its guarded comment flow. While owning a PR, read new comments at
   each work check and before handoff through the existing watcher or radar.
-- When you need the Director, create every new Director question on the item with
-  [`oq.py create`](../../references/talking-with-the-director.md#director-questions),
-  rather than authoring a prose question comment. Re-present existing questions
-  with their original Q and source link; do not create them again. Leave presentation
-  to the Supervisor; never use a
-  native question UI (`request_user_input`, `request_user_input_async` or
-  `AskUserQuestion`) in a Supervisor-launched worker. Use one short line in
-  `basis` saying why this needs the Director, without pasting the stop boundary,
-  then continue with what you can. Write no Q number
-  yourself: the comment helpers number it from the
-  [shared counter](../../references/talking-with-the-director.md#decisions-holds-and-work-state)
-  and keep any number already there. Only a reply from
-  this Director or a recorded "Director decision" counts
-  ([talking with the Director](../../references/talking-with-the-director.md)).
+- Use [Director Questions](../../references/talking-with-the-director.md#director-questions)
+  on the item; leave presentation to the Supervisor and continue independent
+  work. Never use a native question UI (`request_user_input`,
+  `request_user_input_async` or `AskUserQuestion`) in a Supervisor-launched
+  worker. Only this Director's reply or a recorded "Director decision" counts.
 - Post progress and run results only on your own child issue. Track parents hold
   proof, decisions and their finish line; do not copy per-slice progress,
   acknowledgements or heavy-window requests there. Keep private logs and data
