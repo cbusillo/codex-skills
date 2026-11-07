@@ -145,6 +145,8 @@ unknown), next actor and review requirement:
   threshold. The root comes from `--worktree-root`, or else from the host's
   configured `hostHelper` root; without one the check is skipped. The configured
   host owns lock interpretation at retirement; portable locked trees are held.
+  An absent portable root in an existing parent directory is an empty inventory;
+  missing managed roots, missing parents and broken root links remain errors.
   These are Git completion candidates; ownership and continuing operational use
   remain unproved.
   The next catalog worktree creation qualifies them through `landed_worktrees.py`,
