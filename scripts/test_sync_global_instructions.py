@@ -24,6 +24,9 @@ SPEC = importlib.util.spec_from_file_location("sync_global_instructions", Path(_
 assert SPEC and SPEC.loader
 sync = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(sync)
+sys.path.insert(0, str(sync.ROOT / "skills/github/scripts"))
+import github_identity
+import github_read
 
 
 def setUpModule() -> None:
@@ -44,7 +47,12 @@ class GlobalInstructionsTests(unittest.TestCase):
             stamp = "2026-10-23T12:00:00Z"
             absent = "owner/retired"
             marker.write_text(json.dumps({"turn": stamp, "turn_repo": "owner/direction",
-                                          "audits": dict.fromkeys((*sources, "other/product", absent), stamp)}))
+                                          "audits": dict.fromkeys(("owner/direction", "other/product", "owner/archived"), stamp)}))
+            reader = self.enterContext(mock.patch.object(github_read, "GitHubReader")).return_value
+            self.enterContext(mock.patch.object(github_identity, "github_app_config", return_value={}))
+            reader.paged_json.return_value = [
+                {"full_name": repo, "archived": False} for repo in (*sources, "other/product", absent)
+            ] + [{"full_name": "owner/archived", "archived": True}]
             calls = []
 
             def read(*args: str) -> subprocess.CompletedProcess[str]:
@@ -52,7 +60,7 @@ class GlobalInstructionsTests(unittest.TestCase):
                 repo = args[1].removeprefix("repos/").removesuffix("/contents/DIRECTION.md")
                 if repo == absent:
                     return subprocess.CompletedProcess(args, 1, 'HTTP/2.0 404 Not Found\n\n{"message":"Not Found"}', "")
-                return subprocess.CompletedProcess(args, 0, "HTTP/2.0 200 OK\ncontent-type: text/plain\n\n" + sources[repo], "")
+                return subprocess.CompletedProcess(args, 0, "HTTP/2.0 200 OK\ncontent-type: text/plain\n\n" + sources.get(repo, "# Archived fixture\n"), "")
 
             hook = runpy.run_path(str(sync.ROOT / "hooks/direction_check_hook.py"))
             with (
@@ -77,6 +85,7 @@ class GlobalInstructionsTests(unittest.TestCase):
                 self.assertIn(source, content)
                 self.assertIn(repo, content)
             self.assertNotIn("other/product", content)
+            self.assertNotIn("owner/archived", content)
             self.assertEqual({call[1] for call in calls}, {f"repos/{repo}/contents/DIRECTION.md" for repo in (*sources, absent)})
             self.assertLess(
                 content.index(sources["owner/direction"]),
@@ -84,6 +93,30 @@ class GlobalInstructionsTests(unittest.TestCase):
             )
             with mock.patch.dict(os.environ, {"DIRECTION_MARKER": str(home / "missing")}):
                 self.assertEqual(sync.direction_content(home), "")
+
+    def test_direction_inventory_failure_preserves_existing_instructions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            marker = root / "marker.json"
+            marker.write_text(json.dumps({"turn_repo": "owner/direction"}))
+            destination = root / "AGENTS.md"
+            destination.write_text("Existing instructions.\n")
+            source, local = root / "shared.md", root / "private.md"
+            source.write_text("Shared fixture instructions.\n")
+            local.write_text("")
+            reader = self.enterContext(mock.patch.object(github_read, "GitHubReader")).return_value
+            self.enterContext(mock.patch.object(github_identity, "github_app_config", return_value=None))
+            reader.paged_json.side_effect = github_read.GitHubReadShapeError("incomplete inventory")
+            hook = runpy.run_path(str(sync.ROOT / "hooks/direction_check_hook.py"))
+            with (
+                mock.patch.dict(os.environ, {"DIRECTION_MARKER": str(marker)}),
+                mock.patch.object(sys, "argv", [str(sync.__file__), "--source", str(source), "--local-source", str(local),
+                                               "--destination", str(destination), "--write"]),
+                mock.patch.object(sync.runpy, "run_path", return_value={**hook, "run_reader": mock.Mock(
+                    return_value=subprocess.CompletedProcess([], 0, "HTTP/2.0 200 OK\n\n# Overall fixture\n", ""))}),
+            ):
+                self.assertEqual(sync.main(), 1)
+            self.assertEqual(destination.read_text(), "Existing instructions.\n")
 
     def test_explicit_upgrade_adopts_legacy_catalog_hook_and_preserves_other_handlers(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

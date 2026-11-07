@@ -697,7 +697,7 @@ title the file does not list, and `milestone-update` refuses a rename to one.
 The existing global-instruction renderer includes the full merged overall
 DIRECTION in each selected Claude config home's `CLAUDE.md` and Codex home's
 `AGENTS.md`. It uses the account in the local direction marker and includes
-that account's audited repository directions as explicitly scoped sections.
+that account's visible, non-archived repository directions as explicitly scoped sections.
 Each repository section applies only to work in that repository; the overall
 direction wins. Text comes from GitHub's merged default branch. A repository
 file reported absent or not visible to the reader (HTTP 404) is omitted. Other
