@@ -472,7 +472,7 @@ class CloseConfigTests(unittest.TestCase):
 
     def test_dispatch_names_the_coordinator_and_keeps_claim_and_wait_checks(self) -> None:
         actor = "agent:01970242-7941-7f0c-b461-16aa5723fb52"
-        request = {"id": 2, "user": {"login": "fixture"}, "created_at": "2026-10-25T00:00:00Z", "body": (
+        request: dict[str, Any] = {"id": 2, "user": {"login": "fixture"}, "created_at": "2026-10-25T00:00:00Z", "body": (
             f"## Current Status\nNext actor: {actor}\nNext action: Launch the worker.\n"
             "Brief:\n```text\nImplement the export in a new worktree.\n```\n"
         )}

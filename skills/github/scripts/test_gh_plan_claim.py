@@ -119,9 +119,7 @@ class ClaimMarkerTests(unittest.TestCase):
                 found = CLAIM.recipient_evidence(status, [], repo="owner/repo", number=42, trusted={"owner"},
                                                 dispatch_recipient=recipient)
                 assert found is not None
-                recovery = found["next_action"].split()
-                self.assertIsNone(CLAIM.recipient_evidence(status, [], repo="owner/repo", number=42, trusted={"owner"},
-                    dispatch_recipient=recovery[recovery.index("--dispatch-recipient") + 1]))
+                self.assertEqual(found["worker"], actor.removeprefix("agent:"))
 
     def test_fenced_claim_examples_never_become_holders_or_recorded_branches(self) -> None:
         for opening, closing in (("~~~text", "~~~"), ("```text", "```"), ("````text", "````")):

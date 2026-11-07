@@ -1328,8 +1328,7 @@ and puts only the standard Supervisor header in `--brief-file`: trial token,
 uses the shared brief rules' Current Status format, naming the launching lead
 as next actor when `--lead-session-id` is supplied, otherwise the Supervisor.
 The launcher passes that exact lead as `--dispatch-recipient` to the planning
-preflight and adds the same claim argument to the worker's header. It applies
-only to this issue's complete fenced request; custody and wait checks still run.
+preflight and adds the same claim argument to the worker's header.
 The launcher reads it
 through the planning helper and appends its brief verbatim under the header,
 normalizing CRLF line endings to LF for terminal transport. The header owns
