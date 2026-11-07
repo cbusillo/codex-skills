@@ -372,14 +372,15 @@ ask the Director only when every provider account including use-last is empty.
 Relay expiry notices within 24 hours without treating them as early reset
 authority. Fill productive capacity, soonest expiry first.
 
-A tier is a model and its effort. Start each kind of work at the cheapest tier
-that has worked for it, step up one tier when a run fails, and now and then try
-one tier cheaper on work that keeps passing. With no record yet, start one model
-above the provider's cheapest, at medium effort
-([field report](https://github.com/cbusillo/codex-skills/issues/3727#issuecomment-6714483880)),
-raise effort to high for policy, guidance and hard debugging, and use the
-strongest tier for leads, authorization, credentials, security, migration and
-reviews of safety changes. This is a default a Director may raise, not a cap.
+Start each kind of work on the cheapest model that has worked for it, step up
+to the provider's next stronger model when a run fails, and now and then try
+one model cheaper on work that keeps passing. With no record yet, start one
+model above the provider's cheapest
+([field report](https://github.com/cbusillo/codex-skills/issues/3727#issuecomment-6714483880)).
+Effort follows the kind of work: medium, high for policy, guidance and hard
+debugging. Leads, authorization, credentials, security, migration and reviews
+of safety changes start on the provider's strongest model at high effort. This
+is a default, not a cap; a Director's recorded tier decisions take precedence.
 Account and quota lessons go to
 [account selection](references/helpers.md#choosing-the-account).
 
