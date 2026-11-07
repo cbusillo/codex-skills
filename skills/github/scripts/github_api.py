@@ -1173,8 +1173,7 @@ def classify_error(
         # Exceeded" while quota remains. A remaining count decides when present.
         if not permission_message and (
             rl.remaining == 0
-            if rl.remaining is not None
-            else "rate limit exceeded" in msg_lower or "api rate limit" in msg_lower
+            or (rl.remaining is None and ("rate limit exceeded" in msg_lower or "api rate limit" in msg_lower))
         ):
             cause = (
                 "graphql_primary_rate_limited"
@@ -1531,16 +1530,9 @@ def classify_legacy_failure(
         retryable = True
         fallback_eligible = False
         write_outcome = rejected
-    elif ("rate limit" in lowered or "rate_limited" in lowered) and not (
-        "http 403" in lowered and _probe_shows_quota(rate_limit_result)
+    elif ("rate limit" in lowered or "rate_limited" in lowered) and "http 403" in lowered and _probe_shows_quota(
+        rate_limit_result
     ):
-        probed_cause, rate_limit = _rate_limit_from_probe(rate_limit_result)
-        cause = probed_cause or "rate_limited_unknown_bucket"
-        disposition = "retry"
-        retryable = True
-        fallback_eligible = False
-        write_outcome = rejected
-    elif "http 403" in lowered and "rate limit" in lowered:
         # A 403 that names a rate limit while every quota bucket has requests
         # left is a refusal of this identity, not throttling.
         cause = "permission_denied"
@@ -1549,6 +1541,13 @@ def classify_legacy_failure(
         fallback_eligible = False
         write_outcome = rejected
         message = f"Permission denied: {message} (GitHub's rate-limit quota was not exhausted)"
+    elif "rate limit" in lowered or "rate_limited" in lowered:
+        probed_cause, rate_limit = _rate_limit_from_probe(rate_limit_result)
+        cause = probed_cause or "rate_limited_unknown_bucket"
+        disposition = "retry"
+        retryable = True
+        fallback_eligible = False
+        write_outcome = rejected
     elif any(text in lowered for text in ("resource not accessible", "forbidden", "permission denied")):
         cause = "permission_denied"
         disposition = "requires_authorization"
