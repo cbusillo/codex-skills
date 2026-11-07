@@ -24,6 +24,7 @@ from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime
 from itertools import product
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import Mock, patch
 
@@ -1183,10 +1184,10 @@ class ClaimTests(unittest.TestCase):
             self.assertEqual(cwd, planning_path)
             return "https://github.com/other/plans.git" if argv[1] == "remote" else ""
         with patch.object(CLAIM, "run_read", side_effect=git_read):
-            inventory = CLAIM.local_inventory("other/plans", 42, cwd=planning_path)
+            inventory = CLAIM.local_inventory("other/plans", 42, read=Mock(return_value=("bot", [])), cwd=planning_path)
         self.assertEqual(inventory["issue"], 42)
         with patch.object(CLAIM, "run_read", return_value="https://github.com/wrong/repo.git"):
-            with self.assertRaises(ValueError): CLAIM.local_inventory("other/plans", 42, cwd=planning_path)
+            with self.assertRaises(ValueError): CLAIM.local_inventory("other/plans", 42, read=Mock(), cwd=planning_path)
 
     def test_mixed_case_issue_url_remains_competing_ownership(self):
         self.pulls = [{"number": 101, "body": "Fixes https://github.com/Owner/Repo/issues/42", "head": {"ref": "work/unrelated"}}]
@@ -6335,22 +6336,42 @@ class ClaimTests(unittest.TestCase):
                 "commit", "--allow-empty", "-m", "Fixture source")
             git("switch", "-c", OTHER["branch"])
             git("remote", "add", "origin", "https://github.com/owner/repo.git")
-            head, original = git("rev-parse", "HEAD"), CLAIM.run_read
-            def read(argv: list[str], **kwargs: Any) -> str:
-                return "" if argv[1] == "ls-remote" else original(argv, **kwargs)
-            with patch.object(CLAIM, "run_read", side_effect=read):
-                inventory = CLAIM.local_inventory("owner/repo", 42, cwd=root)
+            head = git("rev-parse", "HEAD")
+            inventory = CLAIM.local_inventory("owner/repo", 42, read=Mock(return_value=("bot", [])), cwd=root)
             self.assertEqual(inventory["branch_heads"][OTHER["branch"]], head)
             self.assertEqual(inventory["worktrees"], [{"branch": OTHER["branch"], "path": str(root.resolve())}])
             self.assertFalse(inventory["remote_branches"])
 
-    def test_local_inventory_uses_live_remote_heads(self):
-        replies = ["git@github.com:owner/repo.git\n", "worktree /fixture/repo\nbranch refs/heads/main\n",
-                   "main\n", "abc\trefs/heads/work/go42-repair\n"]
-        with patch.object(CLAIM, "run_read", side_effect=replies) as read:
-            inventory = CLAIM.local_inventory("owner/repo", 42)
-        self.assertEqual(inventory["remote_branches"], ["work/go42-repair"])
-        self.assertIn(["git", "ls-remote", "--heads", "origin"], [c.args[0] for c in read.call_args_list])
+    def test_private_https_inventory_reads_all_api_pages_without_git_credentials(self) -> None:
+        branches = [{"name": f"branch-{i}"} for i in range(100)] + [{"name": OTHER["branch"]}]
+        def api(_method: str, path: str, **_: Any) -> tuple[str, list[dict[str, str]]]:
+            return TEST_BOT, branches[:100] if path.endswith("&page=1") else branches[100:]
+        replies = ["https://github.com/owner/repo.git\n", "worktree /fixture/repo\nbranch refs/heads/main\n", "main abc\n"]
+        with patch.object(CLAIM, "run_read", side_effect=replies), patch.object(PLAN, "api_json", side_effect=api):
+            inventory = CLAIM.local_inventory("owner/repo", 42, read=PLAN.collect_paged_rest_items)
+        self.assertEqual(inventory["remote_branches"], [branch["name"] for branch in branches])
+
+    def test_remote_inventory_failure_never_publishes_a_claim(self) -> None:
+        inventory = CLAIM.local_inventory
+        self.inventory_for = lambda repo, number, **options: inventory(repo, number, **options)
+        pages = self.read_pages
+        def read(path: str, **options: Any) -> Any:
+            if path.endswith("/branches"):
+                raise PLAN.PlanError("Remote branch read denied")
+            return pages(path, **options)
+        self.read_pages = read
+        with patch.object(CLAIM, "run_read", return_value="https://github.com/owner/repo.git"):
+            with self.assertRaises(PLAN.PlanError):
+                self.run_claim()
+        self.assert_no_writes()
+
+    def test_git_inventory_error_includes_bounded_stderr(self) -> None:
+        stderr = "fatal: could not read Username for https://github.com: Device not configured\n" + "x" * 2000
+        with patch.object(subprocess, "run", return_value=SimpleNamespace(returncode=128, stdout="", stderr=stderr)):
+            with self.assertRaises(ValueError) as caught:
+                CLAIM.run_read(["git", "ls-remote", "origin"])
+        self.assertIn(stderr.splitlines()[0], str(caught.exception))
+        self.assertLess(len(str(caught.exception)), 1100)
 
     def test_reclaim_after_exact_release_posts_a_new_claim(self):
         self.comments = [{"id": 1, "body": CLAIM.marker(OWNER), "user": {"login": "bot"}},
@@ -6400,7 +6421,7 @@ class ClaimTests(unittest.TestCase):
     def test_origin_case_does_not_change_repository_identity(self):
         replies = ["git@github.com:OWNER/Repo.git\n", "worktree /fixture/repo\nbranch refs/heads/main\n", "main\n", ""]
         with patch.object(CLAIM, "run_read", side_effect=replies):
-            self.assertEqual(CLAIM.local_inventory("owner/repo", 42)["local_branches"], ["main"])
+            self.assertEqual(CLAIM.local_inventory("owner/repo", 42, read=Mock(return_value=("bot", [])))["local_branches"], ["main"])
 
     def test_explicit_no_wait_status_allows_claim_without_resolution(self):
         statuses = (

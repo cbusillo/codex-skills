@@ -434,7 +434,7 @@ def test_local_ownership_commands_share_one_total_deadline() -> None:
     with patch.object(claim.time, "time", lambda: clock["now"]), patch.object(claim.subprocess, "run", command):
         deadline = clock["now"] + 1.5
         try:
-            claim.local_inventory("someone/project", 1, deadline_at=deadline)
+            claim.local_inventory("someone/project", 1, read=lambda *args, **kwargs: ("bot", []), deadline_at=deadline)
         except claim.subprocess.TimeoutExpired:
             pass
         else:

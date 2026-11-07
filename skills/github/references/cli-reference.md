@@ -1178,6 +1178,10 @@ Agent routing and the session override are defined in
 explicit Director exception. Both creation helpers accept `--agent` as an
 assignment.
 
+Ownership inventory reads live remote branches through the existing paged App API
+reader, so private HTTPS remotes need no interactive Git credential. Local Git
+read failures include bounded stderr in the existing redacted diagnostic envelope.
+
 Claim the exact branch that the worktree helper will create. For
 `<catalog>/skills/github/scripts/dev-worktree <repo> <task-slug> <start>`,
 that is `work/<task-slug>`. Read [task worktrees](worktrees.md) before creation:
