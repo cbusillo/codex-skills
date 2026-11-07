@@ -1168,10 +1168,10 @@ def classify_error(
                 request_id=request_id,
                 rate_limit=rl_dict,
             )
+        # https://github.com/cbusillo/codex-skills/issues/1580
         if not permission_message and (
-            (rl.remaining is not None and rl.remaining == 0)
-            or "rate limit exceeded" in msg_lower
-            or "api rate limit" in msg_lower
+            rl.remaining == 0
+            or (rl.remaining is None and ("rate limit exceeded" in msg_lower or "api rate limit" in msg_lower))
         ):
             cause = (
                 "graphql_primary_rate_limited"
@@ -1343,6 +1343,14 @@ def _rate_limit_from_probe(
         "resource": name,
         **{key: value.get(key) for key in ("limit", "remaining", "reset", "used") if value.get(key) is not None},
     }
+
+
+def _probe_shows_quota(result: Optional[ApiResult]) -> bool:
+    """True when a successful rate-limit read shows no exhausted bucket."""
+    if result is None or not result.ok or not isinstance(result.body, dict):
+        return False
+    resources = result.body.get("resources")
+    return isinstance(resources, dict) and bool(resources) and _rate_limit_from_probe(result) == (None, None)
 
 
 def _failure_from_terminal_envelope(payload: Any, *, is_write: bool) -> Optional[FailureDetail]:
@@ -1520,6 +1528,15 @@ def classify_legacy_failure(
         retryable = True
         fallback_eligible = False
         write_outcome = rejected
+    elif ("rate limit" in lowered or "rate_limited" in lowered) and "http 403" in lowered and _probe_shows_quota(
+        rate_limit_result
+    ):
+        cause = "permission_denied"
+        disposition = "requires_authorization"
+        retryable = False
+        fallback_eligible = False
+        write_outcome = rejected
+        message = f"Permission denied: {message} (GitHub's rate-limit quota was not exhausted)"
     elif "rate limit" in lowered or "rate_limited" in lowered:
         probed_cause, rate_limit = _rate_limit_from_probe(rate_limit_result)
         cause = probed_cause or "rate_limited_unknown_bucket"
