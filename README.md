@@ -664,9 +664,7 @@ through the desktop IDE's Inspection API plugin. The
 
 ## Reviews By Another Model
 
-Use the canonical [`model-review` skill](skills/model-review/SKILL.md) for the
-complete read-only review procedure with OpenAI's `codex`, Anthropic's `claude`,
-or Google's `agy` CLI and its linked standing provider decisions.
+Follow the [`model-review` skill](skills/model-review/SKILL.md).
 
 ## Direction
 
@@ -810,16 +808,9 @@ See the [Codex hook contract](https://learn.chatgpt.com/docs/hooks) and
 
 ## Instruction scope
 
-Execution skills share [task scope and authorization](skills/references/execution-scope.md).
-The [shared global instructions](instructions/global.md) tell agents on both
-hosts to read repository `AGENTS.md` and relevant nested files explicitly when
-the host has not already supplied them.
-They name people and permissions with the shared [role words](skills/references/role-words.md):
-Director, Client, and admin.
-Existing authorization is reused within its scope; exact-action approvals and
-configured review, quality, delegation, and output requirements remain in force.
-Detailed lifecycle and handoff procedures load only through the relevant skill's
-reference links. Command-policy frontmatter remains in the owning entrypoint.
+Follow [task scope and authorization](skills/references/execution-scope.md),
+the [shared global instructions](instructions/global.md), and
+[role words](skills/references/role-words.md).
 Install the shared top-level `skills/references/` directory with these skills; copying
 one skill folder alone does not preserve its cross-skill reference dependencies.
 

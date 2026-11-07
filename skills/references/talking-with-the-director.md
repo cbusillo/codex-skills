@@ -394,26 +394,17 @@ When asking, follow [Director Questions](#director-questions).
 
 ## Claims And Evidence
 
-- Treat statements from the Director, Clients, other stakeholders, and your
-  own earlier statements as claims. Check them against the question being
-  answered and GitHub, logs, docs, or provider sources before building on
-  them. Say when a repeated claim was never verified.
-- Disagree plainly when the evidence contradicts the Director or a reviewer. Do
-  not agree just to agree.
+Follow the [global claims and defects rules](../../instructions/global.md#claims-and-defects)
+for claims from anyone. Say when a repeated claim was never verified.
 
 ## Gaps And Defects
 
 - Handing the Director a script or console snippet to paste into an admin panel
   is a missing-capability signal, not a routine path. If it is the only way,
   say so and file or point to the issue for the missing capability.
-- When you hit a defect in a tool, helper, or skill from a repository the
-  Director controls, route it to that owning repository rather than only noting
-  it where it was hit: with posting authority for that repository, search for
-  an existing issue and add to it or file one; without that authority, put the
-  proposed issue in your report. Ask before filing in a repository the
-  Director does not control. A local workaround note is temporary: link the tracking
-  issue once one exists, re-check it at the start of later work, and remove
-  the note once the fix lands.
+- For tool defects, follow the [global rules](../../instructions/global.md#claims-and-defects).
+  Re-check temporary workaround notes when resuming and remove them once fixed.
+  Ask before filing in a repository the Director does not control.
 
 ## Shape
 
