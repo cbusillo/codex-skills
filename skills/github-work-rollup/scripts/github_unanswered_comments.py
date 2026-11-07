@@ -444,26 +444,6 @@ def normalize_login(value: object) -> str:
     return str(value or "").strip().casefold().removeprefix("@")
 
 
-def github_logins(person: dict[str, Any]) -> tuple[list[str], list[str]]:
-    """Return a person's own GitHub logins and the automation logins that act for them."""
-    own: list[str] = []
-    automation: list[str] = []
-    entries = [person.get("github")]
-    contacts = person.get("contacts")
-    if isinstance(contacts, dict):
-        entries.append(contacts.get("github"))
-    for entry in entries:
-        if isinstance(entry, str):
-            own.append(entry)
-        elif isinstance(entry, dict):
-            own.extend(rollup.as_str_list(entry.get("username")) + rollup.as_str_list(entry.get("handle")))
-            automation.extend(rollup.as_str_list(entry.get("bot_usernames")) + rollup.as_str_list(entry.get("bot_handles")))
-    return (
-        [login for login in map(normalize_login, own) if login],
-        [login for login in map(normalize_login, automation) if login],
-    )
-
-
 def people_identities(self_logins: set[str], index_path: Path | None) -> dict[str, Any]:
     empty = {"director_names": [], "director_ambiguous": False, "automation": {}, "address_names": {}, "own_automation": []}
     if index_path is not None and not index_path.expanduser().is_file():
@@ -476,12 +456,12 @@ def people_identities(self_logins: set[str], index_path: Path | None) -> dict[st
             status, people, _sources = resolve_person.load_scoped_people()
     except resolve_person.PeopleConfigError as exc:
         return {**empty, "status": "error", "error": str(exc)}
-    directors = [person for person in people if set(github_logins(person)[0]) & self_logins]
+    directors = [person for person in people if set(resolve_person.github_logins(person)[0]) & self_logins]
     automation: dict[str, str] = {}
     named_people: dict[str, set[str]] = {}
     login_people: dict[str, set[str]] = {}
     for person in people:
-        own, agents = github_logins(person)
+        own, agents = resolve_person.github_logins(person)
         for login in [*own, *agents]:
             login_people.setdefault(login, set()).add(str(person.get("id")))
         label = str(person.get("preferred_reference") or person.get("display_name") or person.get("id") or "")
@@ -494,7 +474,7 @@ def people_identities(self_logins: set[str], index_path: Path | None) -> dict[st
     address_names: dict[str, list[str]] = {}
     for person in people:
         names = [name for name, identities in named_people.items() if identities == {str(person.get("id"))}]
-        own, agents = github_logins(person)
+        own, agents = resolve_person.github_logins(person)
         for login in [*own, *agents]:
             if len(login_people[login]) == 1:
                 address_names[login] = names
@@ -506,7 +486,7 @@ def people_identities(self_logins: set[str], index_path: Path | None) -> dict[st
         # names rather than guess which match is the Director.
         return {**empty, "status": status, "director_ambiguous": len(directors) > 1, "automation": automation}
     [director] = directors
-    own_automation = [login for login in github_logins(director)[1] if len(login_people[login]) == 1]
+    own_automation = [login for login in resolve_person.github_logins(director)[1] if len(login_people[login]) == 1]
     empty["own_automation"] = own_automation
     for login in own_automation:
         automation.pop(login)
@@ -552,6 +532,12 @@ def comment_timestamp(value: str) -> datetime:
 
 def comment_activity_time(comment: Comment) -> datetime:
     return max(comment_timestamp(comment.created_at), comment_timestamp(comment.updated_at))
+
+
+def written_before_close(thread: dict[str, Any], comment: Comment) -> bool:
+    """A closed or merged thread settled what was said before it; a later comment can be a reopen request."""
+    closed_at = rollup.parse_timestamp(str(thread.get("closed_at") or ""))
+    return thread.get("state") == "closed" and closed_at is not None and comment_activity_time(comment) <= closed_at
 
 
 def in_window(created: str, updated: str, since: datetime, until: datetime) -> bool:
@@ -1194,7 +1180,7 @@ def comment_states_for_thread(
     ]
     results = []
     for comment in sorted(external_comments, key=event_sort_key):
-        if comment.key not in candidate_ids:
+        if comment.key not in candidate_ids or written_before_close(thread, comment):
             continue
         owner_response = targeted_response_for(
             comment,
@@ -1282,6 +1268,7 @@ def comment_states_for_thread(
                 "author": comment.author,
                 "author_class": author_kind,
                 "automation_for": automation_for,
+                "known_person": normalize_login(comment.author) in (address_names or {}),
                 "created_at": comment.created_at,
                 "updated_at": comment.updated_at,
                 "body_excerpt": compact_body(comment.body),
@@ -1677,6 +1664,7 @@ def outbound_states_for_thread(
     for comment in sorted(comments, key=event_sort_key):
         if (
             not is_external_comment(comment, self_logins, bot_logins, automation, own_automation)
+            or written_before_close(thread, comment)
             or not comment_in_window(comment, settings["since"], settings["until"])
             or comment_activity_through(comment, settings["until"]) <= latest
         ):
@@ -1991,7 +1979,7 @@ def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, .
             "Configured own automation and People-index bots uniquely assigned to the Director are excluded. Other people's People-index agents (contacts.github.bot_usernames) remain eligible even as GitHub Bot accounts and are labeled with who they act for. Other GitHub bots stay filtered on comments, but their opening posts remain eligible; unlisted human-account logins ending in bot or automation are marked possible_automation.",
             "Waits on the Director are open issues whose current wait (the trusted structured record when one is readable, otherwise the Current Status prose marked for review) names the Director's login, a people-index name, or the Director role, with no Director or Owner question still open; an unreadable trusted record is listed as an unresolved wait for review, whether or not a question is open; negated mentions are left out, and waits worded as the Director's own hold (resume, park, hold, select, revisit) are listed as director_hold without raising attention; repository scans only.",
             "A targeted public reply from the Director or configured automation handles a comment after its latest edit. Exact comment links, an inline-review thread with one eligible external comment, or a salutation using an unambiguous people-index name target a reply; automation may also use an unambiguous single-author mention.",
-            "Director reactions and question/decision records are diagnostic awareness evidence, not public replies or requirements for clearing attention. Unanswered comments remain flagged even on closed threads; edits and new comments reopen attention.",
+            "Director reactions and question/decision records are diagnostic awareness evidence, not public replies or requirements for clearing attention. Unanswered comments remain flagged, except on closed or merged threads, where only comments whose latest version follows the close stay flagged; edits and new comments reopen attention.",
             "Opt-in --outbound searches involvement in repositories not owned by the configured human logins, verifies authorship or comment participation, and lists external messages in the window after their latest human activity, including review bodies and inline comments. Only edits with a verified human editor advance that cutoff; automation and maintainer edits do not. Explicit thread and portfolio scopes retain their normal rules when outbound discovery overlaps them. GitHub search indexing, visibility and its 1,000-result cap limit discovery; detected partial results degrade coverage.",
             "With --outbound, visible open threads naming or mentioning the Director outside the scanned repositories are untrusted links, including old questions. An explicit --mention-approval retains the optional personal-login search under its approval, login and report-window bounds.",
             "External comments outside the configured lookback window are not included.",

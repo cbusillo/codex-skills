@@ -2393,6 +2393,43 @@ def test_close_delegates_comment_to_shared_rest_helper() -> None:
     assert close_call["gh_cmd"] == "fake-gh", close_call
 
 
+def test_close_posts_a_fresh_reply_before_closing_when_it_answers_a_confirmation() -> None:
+    for comment_fails in (False, True):
+        plan = load_plan_module()
+        allow_close_relationships(plan)
+        plan.close_attention_preflight = lambda *_args, **_kwargs: {
+            "result": "passed", "answered_by_close_comment": [{"author": "teammate"}]}
+        plan.load_config = lambda repo, **_: {"labels": {}, "projects": {}}
+        plan.get_issue = lambda ref, repo: ("automation-gh", close_plan_issue())
+        plan.comment_route = lambda: ("automation-gh", "fake-gh", "shiny-code-bot")
+        events: list[tuple[str, Any]] = []
+
+        def fake_comment(_kind: str, _number: int, _body: str, **kwargs: Any) -> dict[str, Any]:
+            events.append(("comment", kwargs.get("dedupe_body", False)))
+            if comment_fails:
+                raise plan.github_comment_core.CommentError("post failed", failure=plan.github_api_core.FailureDetail(
+                    cause="http_error", message="post failed", retryable=False, fallback_eligible=False, disposition="stop",
+                    write_outcome="not_started"))
+            return {"actor": "shiny-code-bot", "comment_action": "created", "completed_steps": [],
+                    "comment": {"id": 1, "url": "https://github.com/owner/repo/issues/10#issuecomment-1"}}
+
+        def fake_set_issue_state(_number: int, **_kwargs: Any) -> dict[str, Any]:
+            events.append(("close", None))
+            return {"actor": "automation-gh", "expected_actor": "shiny-code-bot"}
+
+        original_comment = plan.github_comment_core.comment
+        plan.github_comment_core.comment = fake_comment
+        try:
+            with patched_issue_core(plan, set_issue_state=fake_set_issue_state), redirect_stdout(StringIO()):
+                try:
+                    plan.cmd_close(close_args(body="Thanks, closing."))
+                except plan.PlanError:
+                    assert comment_fails
+        finally:
+            plan.github_comment_core.comment = original_comment
+        assert events == ([("comment", False)] if comment_fails else [("comment", False), ("close", None)]), events
+
+
 def test_comment_route_matches_explicit_auth_policy() -> None:
     plan = load_plan_module()
     previous = os.environ.pop("GH_PLAN_SKIP_BOT", None)

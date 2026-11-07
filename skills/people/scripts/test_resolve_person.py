@@ -100,6 +100,24 @@ class ResolvePersonTest(TestCase):
         self.assertEqual(result["match"]["id"], "example-manager")
         self.assertEqual(result["match"]["github"], "example-manager")
 
+    def test_github_team_is_the_person_their_agents_and_their_company(self) -> None:
+        people = [
+            {"id": "client", "contacts": {"github": {"username": "Client-Owner",
+                                                     "bot_usernames": ["client-agent[bot]"]}},
+             "organization": {"company": "Shop"}},
+            {"id": "teammate", "github": "teammate-gh", "organization": {"company": "shop"}},
+            {"id": "elsewhere", "github": "other-gh", "organization": {"company": "Other"}},
+            {"id": "loner", "github": "loner-gh"},
+        ]
+        team = ["client-agent[bot]", "client-owner", "teammate-gh"]
+        self.assertEqual(resolve_person.github_team("@client-owner", people), team)
+        self.assertEqual(resolve_person.github_team("client-agent[bot]", people), team)
+        self.assertEqual(resolve_person.github_team("loner-gh", people), ["loner-gh"])
+        self.assertEqual(resolve_person.github_team("stranger", people), [])
+        shared = [*people, {"id": "contractor", "github": "teammate-gh", "organization": {"company": "Other"}}]
+        self.assertEqual(resolve_person.github_team("client-owner", shared), ["client-agent[bot]", "client-owner"])
+        self.assertEqual(resolve_person.github_team("teammate-gh", shared), [])
+
     def test_resolves_explicit_misspelling_alias(self) -> None:
         result = resolve_person.resolve("exmaple", self.people())
         self.assertEqual(result["status"], "matched")

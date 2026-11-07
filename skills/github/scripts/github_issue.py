@@ -1632,10 +1632,11 @@ def _close_reason(value: str) -> str:
 
 
 def _close_attention(
-    repo: str, number: int, decision_url: Optional[str], *, expected_actor: Optional[str],
+    repo: str, number: int, decision_url: Optional[str], *, expected_actor: Optional[str], close_comment: str = "",
 ) -> dict[str, Any]:
     try:
-        return github_close_attention.check(repo, number, decision_url=decision_url, gh_cmd=DEFAULT_GH)
+        return github_close_attention.check(repo, number, decision_url=decision_url, close_comment=close_comment,
+                                            gh_cmd=DEFAULT_GH)
     except github_close_attention.CloseAttentionError as exc:
         raise _local_error(
             str(exc),
@@ -1723,7 +1724,7 @@ def main() -> int:
             if args.command == "close":
                 reason = _close_reason("duplicate" if args.duplicate_of else args.reason)
                 close_attention = _close_attention(target_repo, target_number, args.unanswered_decision,
-                                                   expected_actor=expected_actor)
+                                                   expected_actor=expected_actor, close_comment=comment_body or "")
                 payload = set_issue_state(
                     target_number,
                     state="closed",

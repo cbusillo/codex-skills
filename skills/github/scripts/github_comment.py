@@ -31,6 +31,7 @@ sys.path.insert(0, str(SCRIPT_DIR.parents[2]))
 from skills.direction.scripts import question_id
 
 DEFAULT_GH = os.environ.get("GH_COMMENT_GH") or str(SCRIPT_DIR / "gh-with-env-token")
+PEOPLE_RESOLVER = SCRIPT_DIR.parents[1] / "people/scripts/resolve_person.py"
 EXPECTED_ACTOR = github_identity.automation_login()
 PER_PAGE = 100
 MAX_PAGES = 1000
@@ -519,6 +520,28 @@ def list_comments(
     )
 
 
+def people_team(login: str) -> list[str]:
+    """Logins the people index records for this login's person, their agents and their company; empty if unknown."""
+    try:
+        result = subprocess.run(["uv", "run", "--quiet", str(PEOPLE_RESOLVER), login, "--github-team"],
+                                capture_output=True, text=True, timeout=30)
+        logins = json.loads(result.stdout).get("logins") if result.returncode == 0 else []
+    except (OSError, subprocess.TimeoutExpired, ValueError, AttributeError):
+        return []
+    return [item for item in logins or [] if isinstance(item, str)]
+
+
+def client_team(client_logins: list[str]) -> set[str]:
+    """Each named Client login (`app/NAME` means the App NAME[bot]) and its team from the people index."""
+    team: set[str] = set()
+    for login in client_logins:
+        login = login.strip().casefold().removeprefix("@")
+        login = f"{login.removeprefix('app/')}[bot]" if login.startswith("app/") else login
+        team.add(login)
+        team.update(item.casefold() for item in people_team(login))
+    return team
+
+
 def validate_client_reply(
     repo: str, number: int, body: str, client_logins: list[str], *, actor: str,
     gh_cmd: str, operation: str, retry_summaries: list[github_api_core.RetrySummary],
@@ -531,7 +554,7 @@ def validate_client_reply(
     own = bots | ({own_login.casefold()} if own_login else set())
     if actor.casefold() not in bots or github_identity.acts_as_own_user(repo):
         raise ValueError("Client replies require the configured automation identity")
-    allowed = own | {login.casefold() for login in client_logins}
+    allowed = own | client_team(client_logins)
     mention_logins = allowed | {login.removesuffix("[bot]") for login in allowed}
     context = dict(
         gh_cmd=gh_cmd, operation=operation, actor=actor, expected_actor=actor,
@@ -554,10 +577,13 @@ def validate_client_reply(
         user = record.get("user")
         author = user.get("login") if isinstance(user, dict) else None
         if not isinstance(author, str) or author.casefold() not in allowed:
-            raise ValueError("Client reply refused: outside or unknown participant; obtain exact-text approval")
+            raise ValueError(f"Client reply refused: outside or unknown participant {author or '(no login)'}; "
+                             "add --client-login for it only if verified as the Client's, otherwise obtain "
+                             "exact-text approval")
     for text in [body, *(str(record.get("body") or "") + " " + str(record.get("title") or "") for record in records)]:
-        if any(match["login"].casefold() not in mention_logins for match in MENTION_RE.finditer(html.unescape(text))):
-            raise ValueError("Client reply refused: outside mention; obtain exact-text approval")
+        for match in MENTION_RE.finditer(html.unescape(text)):
+            if match["login"].casefold() not in mention_logins:
+                raise ValueError(f"Client reply refused: outside mention @{match['login']}; obtain exact-text approval")
 
 
 def _latest_actor_comment(comments: list[dict[str, Any]], actor: str) -> Optional[dict[str, Any]]:
@@ -1590,7 +1616,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--attach", action="append", help="Attach FILE[#alt] through GitHub CLI; repeatable (images/videos only).")
     parser.add_argument(
         "--client-login", action="append",
-        help="Client-flow reply: verified Client/team/agent login; repeat for each. Refuses outside participants or mentions.",
+        help="Client-flow reply: the Client's login; the people index adds their agents and company. "
+             "Repeat for anyone else verified. Refuses outside participants or mentions.",
     )
     parser.add_argument("--edit-last", action="store_true")
     parser.add_argument("--edit-comment", type=int, help="Edit this exact timeline comment ID, after checking its thread and author.")
