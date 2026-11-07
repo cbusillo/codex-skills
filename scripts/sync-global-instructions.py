@@ -33,6 +33,7 @@ import shlex
 import sys
 import tempfile
 import tomllib
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 
@@ -70,19 +71,34 @@ def direction_content(home: Path) -> str:
     marker_path = hook["marker_path"]({**os.environ, "HOME": str(home)})
     if not marker_path.is_file():
         return ""
+    sys.path.insert(0, str(ROOT))
     sys.path.insert(0, str(ROOT / "skills/github/scripts"))
-    from github_api import parse_gh_include_output
+    from skills.direction.scripts.direction_audit import AuditError, owner_repositories, repository_listing_gaps
+    from skills.github.scripts.github_api import parse_gh_include_output
+    from skills.github.scripts.github_read import GitHubReader, GitHubReadError, GitHubReadShapeError
 
     marker = hook["read_marker"](marker_path)
     owner = hook["marker_account"](marker)
     if not owner:
         return ""
     overall = f"{owner}/direction"
+    reader = GitHubReader()
+    def fetch(args: list[str]) -> object:
+        try:
+            return reader.get_json(args[1], step="direction_repositories")
+        except (GitHubReadError, GitHubReadShapeError) as read_error:
+            raise AuditError(str(read_error)) from read_error
+    try:
+        inventory, cut = owner_repositories(owner, fetch=fetch)
+        if not inventory or repository_listing_gaps(cut, fetch=fetch):
+            raise AuditError("owner repository coverage is incomplete")
+    except AuditError as error:
+        raise ValueError("Could not discover all repository DIRECTION sources; installed instructions are preserved. Restore the owner inventory read, then rerun the refresh.") from error
     repositories = [
         overall,
         *sorted(
             repo
-            for repo in marker.get("audits", {})
+            for repo in (entry["full_name"] for entry in inventory.values())
             if re.fullmatch(r"[\w.-]+/[\w.-]+", repo)
             and repo.casefold().startswith(f"{owner.casefold()}/")
             and repo.casefold() != overall.casefold()
@@ -95,7 +111,7 @@ def direction_content(home: Path) -> str:
             "The overall direction wins."
         ),
     ]
-    for repo in repositories:
+    def merged_direction(repo: str) -> str | None:
         failure = f"Could not read merged {repo}/DIRECTION.md; installed instructions are preserved. Restore the read, then rerun the refresh."
         try:
             result = hook["run_reader"](
@@ -111,13 +127,15 @@ def direction_content(home: Path) -> str:
             raise ValueError(failure) from error
         status, _, content = parse_gh_include_output(result.stdout)
         if status == 404 and repo != overall:
-            continue
+            return None
         if result.returncode or status != 200 or not isinstance(content, str) or not content.strip():
             raise ValueError(failure)
-        sections.append(
+        return (
             f"## {'Overall' if repo == overall else 'Repository'} DIRECTION: {repo}\n\n"
             f"Source: https://github.com/{repo}/blob/HEAD/DIRECTION.md (merged default branch).\n\n{content.rstrip()}"
         )
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        sections.extend(content for content in pool.map(merged_direction, repositories) if content)
     sections.append(
         "Keep this through compaction. A brief's goal binds; a mechanism it names is a suggestion unless it is a recorded Director "
         "decision. Prefer removing to adding, and report `Removed:` and `Net lines:` in every tooling fix."
