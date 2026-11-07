@@ -44,13 +44,6 @@ def comment(number, body, author=ACTOR):
             "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z"}
 
 
-class GitHubPages(Mock):
-    def _execute_mock_call(self, path: str, **kwargs: Any) -> Any:
-        if path.endswith("/branches"):
-            return []
-        return super()._execute_mock_call(path, **kwargs)
-
-
 class ReleaseTests(unittest.TestCase):
     def test_closeout_preserves_native_model_and_weekly_outcomes(self) -> None:
         for harness in ("codex", "claude"):
@@ -138,7 +131,8 @@ class ReleaseTests(unittest.TestCase):
         self.addCleanup(started.stop)
         self.source = comment(1, "Claimed by trial\n\n" + helper.claim.marker(SOURCE))
         self.reader = Mock()
-        self.reader.paged_json = GitHubPages()
+        self.pages = Mock()
+        self.reader.paged_json.side_effect = lambda path, **kwargs: [] if path.endswith("/branches") else self.pages(path, **kwargs)
         self.reader.batch_diagnostic = {}
         self.reader.get_json.return_value = {**comment(99, "Handoff"),
             "issue_url": "https://api.github.com/repos/test/a/issues/1"}
@@ -168,7 +162,7 @@ class ReleaseTests(unittest.TestCase):
     def test_bulk_release_reports_active_pr_claim_with_supported_manual_route(self):
         handoff = dict(self.reader.get_json.return_value)
         self.reader.get_json.side_effect = lambda path, **_kw: handoff if "/issues/comments/" in path else {"number": 1, "pull_request": {}, "body": "Bump dependencies"}
-        self.reader.paged_json.return_value = [self.source]
+        self.pages.return_value = [self.source]
         report = helper.release_session(self.reader, self.entry, ACTOR, "supervisor", [("test/a", 1)], self.root, False)
         self.assertEqual(report["pr_claim_handoffs"][0]["claim_comments"], [self.source["id"]])
         route = report["pr_claim_handoffs"][0]["release_argv"]
@@ -180,7 +174,7 @@ class ReleaseTests(unittest.TestCase):
     def test_bulk_release_does_not_report_a_pr_claim_already_authored_released(self):
         handoff = dict(self.reader.get_json.return_value)
         self.reader.get_json.side_effect = lambda path, **_kw: handoff if "/issues/comments/" in path else {"number": 1, "pull_request": {}, "body": "Bump dependencies"}
-        self.reader.paged_json.return_value = [self.source, comment(2, "Released claim 1")]
+        self.pages.return_value = [self.source, comment(2, "Released claim 1")]
         report = helper.release_session(self.reader, self.entry, ACTOR, "supervisor", [("test/a", 1)], self.root, False)
         self.assertEqual(report["pr_claim_handoffs"], [])
 
@@ -330,7 +324,7 @@ class ReleaseTests(unittest.TestCase):
     def test_pr_release_handoff_refuses_a_checkout_for_another_repository(self):
         handoff = dict(self.reader.get_json.return_value)
         self.reader.get_json.side_effect = lambda path, **_kw: handoff if "/issues/comments/" in path else {"pull_request": {}, "body": "Bump dependencies"}
-        self.reader.paged_json.return_value = [self.source]
+        self.pages.return_value = [self.source]
         with patch.object(helper.claim, "run_read", return_value="https://github.com/other/a.git"):
             report = helper.release_session(self.reader, self.entry, ACTOR, "supervisor", [("test/a", 1)], self.root, False)
         self.assertFalse(report["pr_claim_handoffs"])
@@ -402,7 +396,7 @@ class ReleaseTests(unittest.TestCase):
                 return source
             return {"number": 1, "body": ""}
         self.reader.get_json.side_effect = read
-        self.reader.paged_json.side_effect = lambda path, **_kw: [] if path.endswith("/pulls") else [source]
+        self.pages.side_effect = lambda path, **_kw: [] if path.endswith("/pulls") else [source]
         with patch.object(helper, "comment") as write, patch.object(helper, "run_release") as command:
             report = helper.release_session(self.reader, {**entries[0], "_backfill": True}, ACTOR,
                 "supervisor", [("test/a", 1)], self.root, False)
@@ -439,7 +433,7 @@ class ReleaseTests(unittest.TestCase):
             return
         self.source["issue_url"] = "https://api.github.com/repos/test/a/issues/1"
         self.reader.get_json.return_value = self.source
-        self.reader.paged_json.side_effect = lambda path, **_kw: [] if path.endswith("/pulls") else [self.source]
+        self.pages.side_effect = lambda path, **_kw: [] if path.endswith("/pulls") else [self.source]
         with self.assertRaises(ValueError):
             helper.release_session(self.reader, {**entries[0], "_backfill": True}, ACTOR,
                 "supervisor", [("test/a", 1)], self.root, False)
@@ -475,7 +469,7 @@ class ReleaseTests(unittest.TestCase):
         records = helper.session_record.read_jsonl(self.transcript)
         records[1]["payload"]["message"] = "Finished.\n" + verdict
         self.transcript.write_text("\n".join(json.dumps(r) for r in records) + "\n")
-        self.reader.paged_json.side_effect = lambda path, **_kw: comments if path.endswith("/issues/1/comments") else []
+        self.pages.side_effect = lambda path, **_kw: comments if path.endswith("/issues/1/comments") else []
         self.reader.get_json.side_effect = lambda path, **_kw: evidence if evidence and path.endswith("/issues/comments/99") else {"body": body, "number": 1}
         argv = ["helper", "finish", "--ledger", str(ledger), "--closed-log", str(log),
                 "--session-id", SOURCE["session"], "--supervisor-session", "supervisor",
@@ -833,7 +827,7 @@ class ReleaseTests(unittest.TestCase):
                 return [case.source, case.own_release()]
             handoff = case.reader.get_json.return_value
             case.reader.get_json.side_effect = lambda path, **_kw: handoff if "/issues/comments/" in path else {"body": "", "number": 1}
-            case.reader.paged_json.side_effect = history
+            case.pages.side_effect = history
             argv = ["helper", mode, "--closed-log", str(private), "--session-id", entry["session_id"],
                     "--supervisor-session", "supervisor", "--owner", "test", "--confirm-session-ended",
                     "--transcript-root", str(case.root)]
@@ -932,7 +926,7 @@ class ReleaseTests(unittest.TestCase):
         owner = github_plan_claim.records(source["body"])[0]
         self.reader.get_json.side_effect = None
         self.reader.get_json.return_value = {"body": ""}
-        self.reader.paged_json.side_effect = None
+        self.pages.side_effect = None
         for change in (None, "conflicting_field", "conflicting_marker"):
             with self.subTest(change=change):
                 original = {**source}
@@ -940,7 +934,7 @@ class ReleaseTests(unittest.TestCase):
                     original["body"] += f"\nSession: {fixture['operator_session']}"
                 elif change == "conflicting_marker":
                     original["body"] += "\n" + github_plan_claim.marker({**owner, "session": fixture["operator_session"]})
-                self.reader.paged_json.return_value = [original, released]
+                self.pages.return_value = [original, released]
                 entry = {"session_id": fixture["operator_session"], "ended_at": fixture["ended_at"],
                          "_finish_scope": "accessible repositories under the requested owner"}
                 with patch_attribute(helper, "comment") as write, patch_attribute(helper, "run_release") as run:
@@ -1003,8 +997,8 @@ class ReleaseTests(unittest.TestCase):
                             entry["transcript"] = str(self.root / "missing.jsonl")
                         self.reader.get_json.side_effect = None
                         self.reader.get_json.return_value = {"body": ""}
-                        self.reader.paged_json.side_effect = None
-                        self.reader.paged_json.return_value = [incident["comments"][0], candidate]
+                        self.pages.side_effect = None
+                        self.pages.return_value = [incident["comments"][0], candidate]
                         with patch_attribute(helper, "comment") as write, patch_attribute(helper, "run_release") as run:
                             report = helper.finished_claims(self.reader, entry, candidate["user"]["login"],
                                                            [(incident["repository"], incident["issue"])], False)
@@ -1127,8 +1121,8 @@ class ReleaseTests(unittest.TestCase):
         self.reader.get_json.return_value = {"body": ""}
         for failure in failures:
             with self.subTest(failure=failure), patch.object(helper, "comment") as write, patch.object(helper, "run_release") as run:
-                self.reader.paged_json.side_effect = failure if isinstance(failure, Exception) else None
-                self.reader.paged_json.return_value = failure
+                self.pages.side_effect = failure if isinstance(failure, Exception) else None
+                self.pages.return_value = failure
                 report = helper.release_session(self.reader, entry, ACTOR, "supervisor", [("test/a", 1)], self.root, True)
                 self.assertTrue(report["issue_refusals"])
                 self.assertFalse(report["claims"])
@@ -1142,7 +1136,7 @@ class ReleaseTests(unittest.TestCase):
                 raise helper.GitHubReadError("temporarily unavailable", result=SimpleNamespace(status=503), diagnostics={})
             return {"body": ""}
         self.reader.get_json.side_effect = read
-        self.reader.paged_json.return_value = [self.source, self.own_release()]
+        self.pages.return_value = [self.source, self.own_release()]
         entry = {**self.entry, "_finish": True, "_finish_scope": "explicit scope"}
         with patch.object(helper, "preview_guards", return_value={"status": "passed_read_only"}), \
                 patch.object(helper, "comment") as write, patch.object(helper, "run_release") as run:
@@ -1155,7 +1149,7 @@ class ReleaseTests(unittest.TestCase):
 
     def test_finish_held_source_reports_exact_id_without_planning_a_release(self):
         self.reader.get_json.return_value = {"body": ""}
-        self.reader.paged_json.return_value = [self.source]
+        self.pages.return_value = [self.source]
         entry = {**self.entry, "_finish": True, "_finish_scope": "explicit scope"}
         with patch.object(helper, "comment") as write, patch.object(helper, "run_release") as run:
             report = helper.release_session(self.reader, entry, ACTOR, "supervisor", [("test/a", 1)], self.root, False)
@@ -1222,7 +1216,7 @@ class ReleaseTests(unittest.TestCase):
                         release["body"] = "Released claim 1\n\nOpened follow-up #2."
                     comments = [source] if variant == "held" else [source, release]
                     self.reader.get_json.side_effect = lambda path, **_kw: record if same_record or path.endswith("/2") else {"body": ""}
-                    self.reader.paged_json.side_effect = lambda path, **_kw: comments if path.endswith("/1/comments") else []
+                    self.pages.side_effect = lambda path, **_kw: comments if path.endswith("/1/comments") else []
                     issues = [("test/a", 1)] if same_record else [("test/a", 2), ("test/a", 1)]
                     report = helper.finished_claims(self.reader, entry, ACTOR, issues, False)
                     expected = variant in {"signoff", "local", "closed", "historical"} or same_record and variant in {"unrelated", "foreign"}
@@ -1240,7 +1234,7 @@ class ReleaseTests(unittest.TestCase):
     def test_unplanned_active_inventory_followup_is_not_an_all_clear(self):
         entry = {**self.entry, "_inventory": True, "safe_exit_yes": True, "still_running": False,
                  "_inventory_claims": [self.inventory_row(claim_comment_id=2)]}
-        self.reader.paged_json.return_value = [self.source, comment(2, "Claimed by trial\nSession: source-session")]
+        self.pages.return_value = [self.source, comment(2, "Claimed by trial\nSession: source-session")]
         report = helper.release_session(self.reader, entry, ACTOR, "supervisor", [("test/a", 1)], self.root, False)
         self.assertFalse(report["claims"])
         self.assertTrue(report["issue_refusals"])
@@ -1251,7 +1245,7 @@ class ReleaseTests(unittest.TestCase):
         handoff = dict(self.reader.get_json.return_value)
         for issue in ({"body": ""}, {"body": "", "pull_request": {}}):
             self.reader.get_json.side_effect = lambda path, **_kw: issue if path.endswith("/issues/1") else handoff
-            self.reader.paged_json.return_value = []
+            self.pages.return_value = []
             report = helper.release_session(self.reader, entry, ACTOR, "supervisor", [("test/a", 1)], self.root, False)
             self.assertFalse(report["claims"])
             self.assertTrue(report["issue_refusals"])
@@ -1260,7 +1254,7 @@ class ReleaseTests(unittest.TestCase):
         entry = {**self.entry, "handoff_url": None, "_backfill": True, "_inventory": True,
                  "_inventory_claims": [self.inventory_row()]}
         self.source["issue_url"] = "https://api.github.com/repos/test/a/issues/1"
-        self.reader.paged_json.return_value = [self.source]
+        self.pages.return_value = [self.source]
         self.reader.get_json.return_value = dict(self.source)
         found, _ = helper.inventory_source_context(self.reader, entry, ACTOR)
         self.assertEqual(found["handoff_url"], "https://github.com/test/a/issues/1#issuecomment-1")
@@ -1273,7 +1267,7 @@ class ReleaseTests(unittest.TestCase):
         source = {**self.source, "issue_url": "https://api.github.com/repos/test/a/issues/1"}
         entry = {**self.entry, "handoff_url": None, "_backfill": True, "_inventory": True,
                  "_inventory_claims": [self.inventory_row()]}
-        self.reader.paged_json.return_value = [source]
+        self.pages.return_value = [source]
         self.reader.get_json.return_value = source
         for field in ("_backfill", "_inventory"):
             with self.subTest(field=field), self.assertRaises(ValueError):
@@ -1283,9 +1277,9 @@ class ReleaseTests(unittest.TestCase):
                  [{**source, "updated_at": "2026-01-01T00:03:00Z"}]]
         for comments in cases:
             with self.subTest(comments=comments), self.assertRaises(ValueError):
-                self.reader.paged_json.return_value = comments
+                self.pages.return_value = comments
                 helper.inventory_source_context(self.reader, entry, ACTOR)
-        self.reader.paged_json.return_value = [source]
+        self.pages.return_value = [source]
         for observed in ({**source, "issue_url": "https://api.github.com/repos/test/a/issues/2"},
                          {**source, "body": source["body"] + " changed"}):
             with self.subTest(observed=observed), self.assertRaises(ValueError):
@@ -1314,7 +1308,7 @@ class ReleaseTests(unittest.TestCase):
         named["body"] = "Part of #1"
         handoff = dict(self.reader.get_json.return_value)
         self.reader.get_json.side_effect = lambda path, **_kw: self.head_commit() if "/commits/" in path else named if "/pulls/" in path else handoff
-        self.reader.paged_json.side_effect = lambda path, **_kw: [] if path.endswith("/pulls") else [self.source]
+        self.pages.side_effect = lambda path, **_kw: [] if path.endswith("/pulls") else [self.source]
         report = helper.release_session(self.reader, entry, ACTOR, "supervisor", [("test/a", 1)], self.root, False)
         self.assertEqual(report["claims"][0]["retained_prs"], [named["html_url"]])
         self.assertEqual(report["claims"][0]["release_preflight"]["status"], "refused")
@@ -1328,7 +1322,7 @@ class ReleaseTests(unittest.TestCase):
         handoff = dict(self.reader.get_json.return_value)
         commit = self.head_commit()
         self.reader.get_json.side_effect = lambda path, **_kw: commit if "/commits/" in path else named if "/pulls/" in path else handoff
-        self.reader.paged_json.side_effect = lambda path, **_kw: [] if path.endswith("/pulls") else [self.source]
+        self.pages.side_effect = lambda path, **_kw: [] if path.endswith("/pulls") else [self.source]
         with patch.object(helper, "comment") as write, patch.object(helper, "run_release") as command:
             report = helper.release_session(self.reader, entry, ACTOR, "supervisor", [("test/a", 1)], self.root, False)
             self.assertEqual(report["claims"][0]["retained_prs"], [named["html_url"]])
@@ -1487,7 +1481,7 @@ class ReleaseTests(unittest.TestCase):
                 return []
             repo = path.split("/")[3]
             return [{**self.source, "issue_url": f"https://api.github.com/repos/test/{repo}/issues/1"}]
-        self.reader.paged_json.side_effect = paged
+        self.pages.side_effect = paged
         issues, repos = helper.discover(self.reader, "test", [self.entry])
         self.assertEqual(issues, [("test/a", 1), ("test/b", 1)])
         self.assertEqual(repos, ["test/a", "test/b"])
@@ -1603,19 +1597,19 @@ class ReleaseTests(unittest.TestCase):
                 self.assertEqual(helper.discover(reader, "test", [self.entry], ["test/a", "test/b"])[0], expected)
 
     def test_complete_inventory_failure_does_not_become_empty(self):
-        self.reader.paged_json.side_effect = helper.GitHubReadShapeError("partial page")
+        self.pages.side_effect = helper.GitHubReadShapeError("partial page")
         with self.assertRaises(helper.GitHubReadShapeError):
             helper.discover(self.reader, "test", [self.entry])
 
     def test_empty_owner_inventory_is_not_success(self):
-        self.reader.paged_json.return_value = [{"full_name": "other/repo"}]
+        self.pages.return_value = [{"full_name": "other/repo"}]
         with self.assertRaisesRegex(ValueError, "no repositories"):
             helper.discover(self.reader, "test", [self.entry])
 
     def test_unrelated_malformed_marker_does_not_block_discovery(self):
-        self.reader.paged_json.return_value = [{"body": "<!-- github-plan:claim invalid -->"}]
+        self.pages.return_value = [{"body": "<!-- github-plan:claim invalid -->"}]
         self.assertEqual(helper.discover(self.reader, "test", [self.entry], ["test/a"])[0], [])
-        self.reader.paged_json.return_value = [{"body": "source-session\n<!-- github-plan:claim invalid -->", "html_url": "trial-comment"}]
+        self.pages.return_value = [{"body": "source-session\n<!-- github-plan:claim invalid -->", "html_url": "trial-comment"}]
         with self.assertRaisesRegex(ValueError, "trial-comment"):
             helper.discover(self.reader, "test", [self.entry], ["test/a"])
 
@@ -1651,25 +1645,25 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(result["reports"][1]["session_id"], "source-session")
 
     def test_only_exact_authored_release_is_respected(self):
-        self.reader.paged_json.return_value = [self.source, comment(2, "Released claim 1")]
+        self.pages.return_value = [self.source, comment(2, "Released claim 1")]
         self.assertEqual(helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR), [])
         for body, author in (("Released by trial", ACTOR), ("Released claim 1 if done", ACTOR), ("Released claim 1", "other")):
-            self.reader.paged_json.return_value = [self.source, comment(2, body, author)]
+            self.pages.return_value = [self.source, comment(2, body, author)]
             self.assertEqual(len(helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR)), 1)
 
     def test_foreign_claim_and_unstructured_source_report_without_release(self):
-        self.reader.paged_json.return_value = [{**self.source, "user": {"login": "human"}}]
+        self.pages.return_value = [{**self.source, "user": {"login": "human"}}]
         with self.assertRaisesRegex(ValueError, "another identity"):
             helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR)
 
     def test_released_source_with_unreleased_followup_requires_reconciliation(self):
-        self.reader.paged_json.return_value = [self.source,
+        self.pages.return_value = [self.source,
             comment(2, "Claimed by trial\nSession: source-session"), comment(3, "Released claim 1")]
         with self.assertRaisesRegex(ValueError, "hand-written claim 2"):
             helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR)
-        self.reader.paged_json.return_value.append(comment(4, "Released claim 2"))
+        self.pages.return_value.append(comment(4, "Released claim 2"))
         self.assertEqual(helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR), [])
-        self.reader.paged_json.return_value = [comment(2, "Claimed by trial\nSession: source-session")]
+        self.pages.return_value = [comment(2, "Claimed by trial\nSession: source-session")]
         with self.assertRaisesRegex(ValueError, "hand-written"):
             helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR)
 
@@ -1679,25 +1673,25 @@ class ReleaseTests(unittest.TestCase):
         for header, field in itertools.product(("Claimed by trial", "**Claimed by** trial", "Claimed by **trial**"),
                                               (f"Session: {session}", f"- Session: Claude Code CLI `{session}`")):
             with self.subTest(header=header, field=field):
-                self.reader.paged_json.return_value = [source, comment(2, header + "\n" + field)]
+                self.pages.return_value = [source, comment(2, header + "\n" + field)]
                 found = helper.active_claims(self.reader, "test/a", 1, session, ACTOR)
                 self.assertEqual(found[0][1], [2])
                 github_plan_release.check_related(github_plan_claim.records(source["body"])[0],
-                                                 self.reader.paged_json.return_value[1], ACTOR,
+                                                 self.pages.return_value[1], ACTOR,
                                                  github_plan_release.stamp(self.entry["ended_at"]))
 
     def test_related_alias_without_exact_session_is_not_released(self):
         for body in ("Claimed by trial", "Claimed by trial\nSession: another-session",
                      "Claimed by trial\nPrevious session: source-session", "Claimed by trial\n> Session: source-session",
                      "Claimed by trial\nPrevious Codex session: source-session"):
-            self.reader.paged_json.return_value = [self.source, comment(2, body)]
+            self.pages.return_value = [self.source, comment(2, body)]
             self.assertEqual(helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR)[0][1], [])
 
     def test_formatted_other_session_followup_is_not_unresolved_for_this_source(self) -> None:
-        self.reader.paged_json.return_value = [self.source, comment(2, "Claimed by trial\n- **Session:** Claude Code `other-session`")]
+        self.pages.return_value = [self.source, comment(2, "Claimed by trial\n- **Session:** Claude Code `other-session`")]
         found = helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR)
         self.assertEqual(found[0][2], [])
-        self.reader.paged_json.return_value = [self.source, comment(2, "Claimed by trial\nPrevious session: another-session")]
+        self.pages.return_value = [self.source, comment(2, "Claimed by trial\nPrevious session: another-session")]
         self.assertEqual(helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR)[0][2], [2])
 
     def test_earlier_exact_native_hand_claim_uses_issue_and_pr_backfill_release_gate(self):
@@ -1705,7 +1699,7 @@ class ReleaseTests(unittest.TestCase):
         hand = {**comment(3, "Claimed by trial\nSession: source-session"),
                 "created_at": "2026-01-01T00:00:10Z", "updated_at": "2026-01-01T00:00:10Z"}
         comments = [hand, source]
-        self.reader.paged_json.side_effect = lambda path, **_kw: [] if path.endswith("/pulls") else comments
+        self.pages.side_effect = lambda path, **_kw: [] if path.endswith("/pulls") else comments
         found = helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR)
         self.assertEqual([(c["id"], related, unresolved) for c, related, unresolved in found], [(1, [3], [])])
         rows = [self.inventory_row(handoff_url=self.entry["handoff_url"]),
@@ -1737,7 +1731,7 @@ class ReleaseTests(unittest.TestCase):
                  comment(3, helper.claim.marker(SOURCE))]
         for hand in cases:
             with self.subTest(hand=hand):
-                self.reader.paged_json.return_value = [hand, self.source]
+                self.pages.return_value = [hand, self.source]
                 try:
                     found = helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR)
                 except ValueError:
@@ -1766,7 +1760,7 @@ class ReleaseTests(unittest.TestCase):
         return {"commit": {"committer": {"date": "2026-01-01T00:01:00Z"}}}
 
     def test_dry_run_finds_retained_pr_without_writes(self):
-        self.reader.paged_json.side_effect = self.plan_reader
+        self.pages.side_effect = self.plan_reader
         handoff = dict(self.reader.get_json.return_value)
         self.reader.get_json.side_effect = lambda path, **_kw: self.head_commit() if "/commits/" in path else self.pull(5, SOURCE["branch"]) if "/pulls/" in path else handoff
         with patch.object(helper, "comment") as write, patch.object(helper, "run_release") as run:
@@ -1783,7 +1777,7 @@ class ReleaseTests(unittest.TestCase):
         self.reader.get_json.side_effect = lambda path, **_kw: self.head_commit() if "/commits/" in path else named if path.endswith("/pulls/12") else handoff
         def paged(path, **_kwargs):
             return [{"html_url": "https://github.com/test/a/pull/1", "head": {"ref": "other-branch"}}] if path.endswith("/pulls") else [self.source]
-        self.reader.paged_json.side_effect = paged
+        self.pages.side_effect = paged
         with patch.object(helper.claim, "pr_issue_reference", return_value=True):
             report = helper.release_session(self.reader, self.entry, ACTOR, "supervisor", [("test/a", 1)], self.root, False)
         self.assertEqual(report["claims"][0]["retained_prs"], [named["html_url"]])
@@ -1835,7 +1829,7 @@ class ReleaseTests(unittest.TestCase):
                     "created_at": "2026-01-01T00:04:00Z", "updated_at": "2026-01-01T00:04:00Z"}
         body = helper.release.prepare_release(self.source, evidence, [self.source], {"worktrees": []},
              actor=ACTOR, role="supervisor", releaser_session="supervisor", evidence_url=self.entry["handoff_url"], retained_prs=[], related=[])
-        self.reader.paged_json.return_value = [self.source, comment(2, body)]
+        self.pages.return_value = [self.source, comment(2, body)]
         self.reader.get_json.side_effect = helper.GitHubReadError("deleted", result=SimpleNamespace(status=404), diagnostics={})
         self.assertEqual(len(helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR)), 1)
         self.assertEqual(helper.active_claims(self.reader, "test/a", 1, "independent-session", ACTOR), [])
@@ -1847,7 +1841,7 @@ class ReleaseTests(unittest.TestCase):
                    {"user": {"login": ACTOR}, "state": "closed", "merged_at": None}):
             named = {"html_url": "https://github.com/test/a/pull/12", "head": {"ref": "other-branch"}, **pr}
             self.reader.get_json.side_effect = lambda path, **_kw: named if path.endswith("/pulls/12") else handoff
-            self.reader.paged_json.side_effect = lambda path, **_kw: [] if path.endswith("/pulls") else [self.source]
+            self.pages.side_effect = lambda path, **_kw: [] if path.endswith("/pulls") else [self.source]
             with patch.object(helper.claim, "pr_issue_reference", return_value=True):
                 report = helper.release_session(self.reader, self.entry, ACTOR, "supervisor", [("test/a", 1)], self.root, False)
             self.assertEqual(report["claims"][0]["retained_prs"], [])
@@ -1885,7 +1879,7 @@ class ReleaseTests(unittest.TestCase):
             self.assertEqual(run.call_count, 2)
 
     def test_issue_refused_in_preflight_gets_no_attestation(self):
-        self.reader.paged_json.side_effect = lambda path, **_kw: [] if path.endswith("/pulls") else [self.source]
+        self.pages.side_effect = lambda path, **_kw: [] if path.endswith("/pulls") else [self.source]
         with patch.object(helper.claim, "run_read", return_value="https://github.com/test/a.git"), \
                 patch.object(helper, "preview_guards", side_effect=helper.release.IssueReleaseRefusal("wrong issue")), \
                 patch.object(helper, "comment") as write, patch.object(helper, "run_release") as run:
@@ -1895,7 +1889,7 @@ class ReleaseTests(unittest.TestCase):
         run.assert_not_called()
 
     def test_session_wide_preflight_checks_every_plan_before_first_write(self):
-        self.reader.paged_json.side_effect = lambda path, **_kw: [] if path.endswith("/pulls") else [self.source]
+        self.pages.side_effect = lambda path, **_kw: [] if path.endswith("/pulls") else [self.source]
         with patch.object(helper.claim, "run_read", side_effect=lambda _args, *, cwd: f"https://github.com/test/{cwd.name}.git"), \
                 patch.object(helper, "preview_guards", side_effect=[{"status": "passed_read_only"}, ValueError("later retained head is newer")]), \
                 patch.object(helper, "comment") as write, patch.object(helper, "run_release") as run:
@@ -1905,7 +1899,7 @@ class ReleaseTests(unittest.TestCase):
         run.assert_not_called()
 
     def test_apply_posts_attestation_previews_then_releases(self):
-        self.reader.paged_json.side_effect = self.plan_reader
+        self.pages.side_effect = self.plan_reader
         handoff = dict(self.reader.get_json.return_value)
         self.reader.get_json.side_effect = lambda path, **_kw: self.head_commit() if "/commits/" in path else self.pull(5, SOURCE["branch"]) if "/pulls/" in path else handoff
         calls = []
@@ -1922,7 +1916,7 @@ class ReleaseTests(unittest.TestCase):
         self.assertTrue(report["claims"][0]["release"]["ok"])
 
     def test_partial_preview_failure_retains_attestation_and_stops(self):
-        self.reader.paged_json.side_effect = lambda path, **_kw: [] if path.endswith("/pulls") else [self.source]
+        self.pages.side_effect = lambda path, **_kw: [] if path.endswith("/pulls") else [self.source]
         handoff = dict(self.reader.get_json.return_value)
         self.reader.get_json.side_effect = lambda path, **_kw: self.head_commit() if "/commits/" in path else self.pull(5, SOURCE["branch"]) if "/pulls/" in path else handoff
         with patch.object(helper.claim, "run_read", side_effect=lambda _args, *, cwd: f"https://github.com/test/{cwd.name}.git"), \
@@ -1934,7 +1928,7 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(run.call_count, 1)
 
     def test_confirmed_issue_preview_refusal_continues_independent_claim(self):
-        self.reader.paged_json.side_effect = lambda path, **_kw: [] if path.endswith("/pulls") else [self.source]
+        self.pages.side_effect = lambda path, **_kw: [] if path.endswith("/pulls") else [self.source]
         def remote(_args, *, cwd):
             return f"https://github.com/test/{cwd.name}.git"
         def run(*args):
@@ -1949,7 +1943,7 @@ class ReleaseTests(unittest.TestCase):
         self.assertTrue(report["claims"][1]["release"]["ok"])
 
     def test_live_process_after_attestation_prevents_release(self):
-        self.reader.paged_json.side_effect = self.plan_reader
+        self.pages.side_effect = self.plan_reader
         def write(*_args, **_kwargs):
             self.transcript.write_text(self.transcript.read_text() + json.dumps({"payload": {"type": "task_started"}}) + "\n")
             return {"comment": {"url": self.entry["handoff_url"]}}
@@ -1960,29 +1954,29 @@ class ReleaseTests(unittest.TestCase):
         run.assert_not_called()
 
     def test_wrong_checkout_refuses_before_attestation(self):
-        self.reader.paged_json.side_effect = self.plan_reader
+        self.pages.side_effect = self.plan_reader
         with patch.object(helper.claim, "run_read", return_value="https://github.com/other/a.git"), patch.object(helper, "comment") as write:
             report = helper.release_session(self.reader, self.entry, ACTOR, "supervisor", [("test/a", 1)], self.root, True)
             self.assertIn("checkout", report["issue_refusals"][0]["error"])
         write.assert_not_called()
 
     def test_discovery_finds_status_only_native_ownership(self):
-        self.reader.paged_json.side_effect = lambda path, **_kw: [{"number": 9, "body": "Claimed by trial\nSession: source-session"}] if path.endswith("/issues") else []
+        self.pages.side_effect = lambda path, **_kw: [{"number": 9, "body": "Claimed by trial\nSession: source-session"}] if path.endswith("/issues") else []
         self.assertEqual(helper.discover(self.reader, "test", [self.entry], ["test/a"])[0], [("test/a", 9)])
         for quoted in ("> Session: source-session", "```\nSession: source-session\n```",
                        "<blockquote>\nSession: source-session\n</blockquote>", "> Previous worker:\nSession: source-session"):
             for body in ("## Diagnosis\n" + quoted, "## Current Status\nNext actor: agent\n## Diagnosis\n" + quoted):
                 with self.subTest(body=body):
-                    self.reader.paged_json.side_effect = lambda path, **_kw: [{"number": 9, "body": body}] if path.endswith("/issues") else []
+                    self.pages.side_effect = lambda path, **_kw: [{"number": 9, "body": body}] if path.endswith("/issues") else []
                     self.assertEqual(helper.discover(self.reader, "test", [self.entry], ["test/a"])[0], [])
 
     def test_legacy_and_status_only_sources_are_reported_instead_of_skipped(self):
         for field in ("Session: source-session", "Session ID: source-session"):
-            self.reader.paged_json.return_value = [comment(2, "Claimed by trial\n" + field)]
+            self.pages.return_value = [comment(2, "Claimed by trial\n" + field)]
             report = helper.release_session(self.reader, self.entry, ACTOR, "supervisor", [("test/a", 1)], self.root, False)
             self.assertEqual(len(report["issue_refusals"]), 1)
             self.assertEqual(report["claims"], [])
-        self.reader.paged_json.return_value = []
+        self.pages.return_value = []
         self.reader.get_json.return_value["body"] = "Claimed by trial\nSession: source-session"
         report = helper.release_session(self.reader, self.entry, ACTOR, "supervisor", [("test/a", 1)], self.root, False)
         self.assertIn("status-only", report["issue_refusals"][0]["error"])
@@ -1993,11 +1987,11 @@ class ReleaseTests(unittest.TestCase):
             "Ingress https://github.com/test/b/issues/2 is independently owned by edge-worker, native source-session.\n\n"
             + github_plan_claim.marker({**SOURCE, "session": "onboarding-session"})
         )
-        self.reader.paged_json.side_effect = lambda path, **_kw: [{"number": 9, "body": body}] if path.endswith("/issues") else []
+        self.pages.side_effect = lambda path, **_kw: [{"number": 9, "body": body}] if path.endswith("/issues") else []
         self.assertEqual(helper.discover(self.reader, "test", [self.entry], ["test/a"])[0], [])
 
     def test_discovery_refuses_an_unbound_canonical_claim_record(self) -> None:
-        self.reader.paged_json.side_effect = lambda path, **_kw: [] if path.endswith("/issues") else [
+        self.pages.side_effect = lambda path, **_kw: [] if path.endswith("/issues") else [
             {"body": "Waiting for source-session to finish its separate work", "issue_url": "https://api.github.com/repos/other/repo/issues/9"}
         ]
         with self.assertRaises(ValueError):
@@ -2009,7 +2003,7 @@ class ReleaseTests(unittest.TestCase):
             if path.endswith("/pulls"):
                 return []
             return [foreign] if "/test/a/" in path else [self.source]
-        self.reader.paged_json.side_effect = paged
+        self.pages.side_effect = paged
         with patch.object(helper.claim, "run_read", return_value="https://github.com/test/b.git"), \
                 patch.object(helper, "comment", return_value={"comment": {"url": self.entry["handoff_url"]}}) as write, \
                 patch.object(helper, "run_release", return_value={"release_body": "Released claim 1", "ok": True}):
