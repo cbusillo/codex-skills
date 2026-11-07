@@ -98,7 +98,7 @@ def direction_content(home: Path) -> str:
         overall,
         *sorted(
             repo
-            for repo in inventory
+            for repo in (entry["full_name"] for entry in inventory.values())
             if re.fullmatch(r"[\w.-]+/[\w.-]+", repo)
             and repo.casefold().startswith(f"{owner.casefold()}/")
             and repo.casefold() != overall.casefold()

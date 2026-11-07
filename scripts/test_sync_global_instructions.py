@@ -44,7 +44,7 @@ class GlobalInstructionsTests(unittest.TestCase):
             marker = home / ".code/direction-last-check.json"
             marker.parent.mkdir()
             sources = {"owner/direction": "# Overall fixture\n\nComplete purpose and boundaries.\n",
-                       "owner/product": "# Product fixture\n\nComplete journey.\n"}
+                       "owner/Product": "# Product fixture\n\nComplete journey.\n"}
             stamp = "2026-10-23T12:00:00Z"
             absent = "owner/retired"
             marker.write_text(json.dumps({"turn": stamp, "turn_repo": "owner/direction",
@@ -100,7 +100,7 @@ class GlobalInstructionsTests(unittest.TestCase):
             self.assertEqual({call[1] for call in calls}, {f"repos/{repo}/contents/DIRECTION.md" for repo in (*sources, absent)})
             self.assertLess(
                 content.index(sources["owner/direction"]),
-                content.index(sources["owner/product"]),
+                content.index(sources["owner/Product"]),
             )
             with mock.patch.dict(os.environ, {"DIRECTION_MARKER": str(home / "missing")}):
                 self.assertEqual(sync.direction_content(home), "")
