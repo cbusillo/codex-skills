@@ -87,6 +87,10 @@ class CapacityTests(unittest.TestCase):
             async def request(method, params):
                 if method == "thread/read":
                     return {"thread": {"id": params["threadId"], "path": str(self.transcript), "status": {"type": "idle"}}}
+                if method == "thread/queue/list":
+                    return {"data": [], "nextCursor": None}
+                if method == "thread/queue/start":
+                    return {"turn": {"id": "continue-turn"}}
                 self.assertEqual(method, "thread/queue/add")
                 self.queue_hook()
                 self.queue_requests.append(params)

@@ -1412,6 +1412,10 @@ class ClaimTests(unittest.TestCase):
             async def request(method: str, params: dict[str, Any]) -> dict[str, Any]:
                 if method == "thread/read":
                     return {"thread": {"id": OTHER["session"], "path": str(Path.home() / "source.jsonl"), "status": {"type": "idle"}}}
+                if method == "thread/queue/list":
+                    return {"data": [], "nextCursor": None}
+                if method == "thread/queue/start":
+                    return {"turn": {"id": "queued-turn"}}
                 sent.append(params)
                 return {"queuedSubmission": {"id": "queued", **params}}
 

@@ -119,6 +119,7 @@ class ResumeTests(unittest.TestCase):
         self.queue_requests = []
         self.queue_hook = lambda: None
         self.thread_state = "notLoaded"
+        self.pending = []
         @contextlib.asynccontextmanager
         async def connection(home, **_kwargs):
             async def request(method, params):
@@ -128,6 +129,10 @@ class ResumeTests(unittest.TestCase):
                     return {"queuedSubmission": {"id": "queued", **{key: params[key] for key in ("clientUserMessageId", "input")}}}
                 if method == "thread/read":
                     return {"thread": {"id": self.native, "path": str(path), "status": {"type": self.thread_state}}}
+                if method == "thread/queue/start":
+                    return {"turn": {"id": "queue-started-turn"}}
+                if method == "thread/queue/list":
+                    return {"data": self.pending, "nextCursor": None}
                 return {"data": [], "nextCursor": None}
             request.codex_home = str(home.resolve())
             yield request
@@ -249,6 +254,18 @@ class ResumeTests(unittest.TestCase):
         self.assertEqual(closed["pid"], worker["pid"])
         self.assertEqual(closed["tty"], worker["tty"])
 
+
+    def test_status_of_a_fresh_launch_reports_its_queue_instead_of_failing(self):
+        self.thread_state = "idle"
+        self.pending = [{"id": "held", "clientUserMessageId": "client", "input": []}]
+        output = io.StringIO()
+        with patch.object(sys, "argv", ["codex-session.py", "status", "--session-id", self.native,
+                "--codex-home", str(self.home)]), contextlib.redirect_stdout(output):
+            self.assertEqual(SESSION.main(), 0)
+        status = json.loads(output.getvalue())
+        self.assertFalse(self.log.exists())
+        self.assertEqual(status["thread_state"], "idle")
+        self.assertEqual([entry["queuedSubmissionId"] for entry in status["queue"]], ["held"])
 
     def test_handed_off_generation_never_starts_a_native_client(self):
         self.log.parent.mkdir()

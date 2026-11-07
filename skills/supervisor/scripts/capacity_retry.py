@@ -150,7 +150,7 @@ def readback_continue(entry: dict, before_size: int, timeout: float = 10) -> boo
             if any(record.get("type") == "response_item"
                    and record.get("payload", {}).get("type") == "message"
                    and record["payload"].get("role") == "user"
-                   and record["payload"].get("content") == [{"type": "input_text", "text": "continue"}]
+                   and {"type": "input_text", "text": "continue"} in (record["payload"].get("content") or [])
                    for record in records):
                 return True
         except (OSError, ValueError, TypeError, AttributeError):
