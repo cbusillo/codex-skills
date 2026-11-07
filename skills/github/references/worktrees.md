@@ -176,6 +176,8 @@ locks. Portable foreign locks remain holds. Physical publication, contents,
 live-use and IDE checks still apply.
 
 Creation checks each registered linked worktree through `landed_worktrees.py`.
+The finished-worktree inventory is empty before a portable worktree root is
+created. A missing managed-host root still needs its host/storage verification.
 The same pass previews or removes empty unregistered folders and moves recognizable
 stray result files older than two hours into task evidence, including loose results
 beside worktrees. Existing evidence expiry owns their eventual deletion.

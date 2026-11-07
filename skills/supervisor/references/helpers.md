@@ -61,6 +61,10 @@ Everything else is read from GitHub when needed. The session registry is the
 private JSON file every helper takes as `--ledger`; it identifies sessions and
 holds no status.
 
+Before the first launch, an absent ledger is an empty inventory. A targeted
+close or notice still needs its exact registered session. Unreadable or malformed
+ledgers and broken ledger links remain errors.
+
 Retire a narrative log once: mark/archive it as historical, stop writing it,
 and keep one overwritten recovery note for pending local actions. Neither is
 status, decision or lesson authority.

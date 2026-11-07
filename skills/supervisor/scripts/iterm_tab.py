@@ -2106,7 +2106,7 @@ def register_file_launch(launch: dict, native: dict, ledger: Path) -> dict:
             raise ValueError("exact fresh AGY conversation is unavailable; preserve its terminal and log")
         time.sleep(0.2)
     terminal = "tmux_session_id" if launch.get("backend") == "tmux" else "iterm_session_id"
-    existing = [row for row in (session_record.load_ledger(ledger) if ledger.exists() else []) if row["session_id"] == native["session_id"]]
+    existing = [row for row in session_record.load_ledger(ledger) if row["session_id"] == native["session_id"]]
     if existing:
         entry = session_record.terminal_entry(ledger, terminal, launch["session_id"])
         if (len(existing) != 1 or entry["session_id"] != native["session_id"] or entry["harness"] != harness

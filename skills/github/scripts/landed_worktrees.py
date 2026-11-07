@@ -473,7 +473,13 @@ def finished(root: Path, pulls_for, include=lambda slug: True) -> tuple[list[dic
     found: list[dict] = []
     gaps: list[dict] = []
     seen: set[Path] = set()
-    for folder in sorted(p for p in root.iterdir() if p.is_dir() and not p.is_symlink()):
+    try:
+        folders = sorted(p for p in root.iterdir() if p.is_dir() and not p.is_symlink())
+    except FileNotFoundError:
+        if helper is not None or root.is_symlink():
+            raise
+        return [], []
+    for folder in folders:
         commons = {}
         for task in sorted(p for p in folder.iterdir() if p.is_dir() and not p.is_symlink()):
             try:

@@ -652,6 +652,29 @@ class LedgerTests(unittest.TestCase):
                     self.assertEqual(results[1]["session_id"], self.entry["session_id"])
                     self.assertEqual(results[1]["turn_end"], "task_complete")
 
+    def test_inventory_before_first_launch_is_empty_without_creating_a_ledger(self) -> None:
+        self.ledger.unlink()
+        for consumer in (session_record.load_ledger, status.snapshot, finished_map.candidates,
+                         lambda ledger: codex_idle_watch.poll(ledger, {}, 90, 1200)):
+            with self.subTest(consumer=consumer):
+                self.assertEqual(consumer(self.ledger), [])
+                self.assertFalse(self.ledger.exists())
+        with self.assertRaises(finished_map.SessionAbsent):
+            finished_map.candidates(self.ledger, self.entry["session_id"])
+        with self.assertRaises(FileNotFoundError):
+            session_record.terminal_entry(self.ledger, "iterm_session_id", "term1")
+
+    def test_unreadable_ledger_does_not_become_an_empty_inventory(self) -> None:
+        with patch.object(Path, "read_text", side_effect=PermissionError("fixture denied")):
+            with self.assertRaises(PermissionError):
+                session_record.load_ledger(self.ledger)
+
+    def test_broken_ledger_link_does_not_become_an_empty_inventory(self) -> None:
+        self.ledger.unlink()
+        self.ledger.symlink_to(self.root / "missing-target")
+        with self.assertRaises(FileNotFoundError):
+            session_record.load_ledger(self.ledger)
+
     def test_malformed_ledger_remains_a_top_level_error(self):
         self.ledger.write_text(json.dumps({"sessions": [self.entry]}))
         for consumer in (status.snapshot, finished_map.candidates,

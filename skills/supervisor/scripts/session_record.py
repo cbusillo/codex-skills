@@ -166,7 +166,12 @@ def load_ledger(path: Path, *, harness: str | None = None,
     """
     if harness is not None and harness not in {"claude", "codex", "agy"}:
         raise ValueError("selected harness must be claude, codex or agy")
-    entries = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        entries = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        if path.is_symlink():
+            raise
+        return []
     if not isinstance(entries, list):
         raise TypeError("ledger must be an array of session objects")
     seen = set()
