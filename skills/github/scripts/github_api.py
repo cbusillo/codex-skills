@@ -1168,10 +1168,13 @@ def classify_error(
                 request_id=request_id,
                 rate_limit=rl_dict,
             )
+        # GitHub's wording alone is not evidence: account-only writes such as
+        # POST /user/repos answer an installation token with "Rate Limit
+        # Exceeded" while quota remains. A remaining count decides when present.
         if not permission_message and (
-            (rl.remaining is not None and rl.remaining == 0)
-            or "rate limit exceeded" in msg_lower
-            or "api rate limit" in msg_lower
+            rl.remaining == 0
+            if rl.remaining is not None
+            else "rate limit exceeded" in msg_lower or "api rate limit" in msg_lower
         ):
             cause = (
                 "graphql_primary_rate_limited"
@@ -1343,6 +1346,14 @@ def _rate_limit_from_probe(
         "resource": name,
         **{key: value.get(key) for key in ("limit", "remaining", "reset", "used") if value.get(key) is not None},
     }
+
+
+def _probe_shows_quota(result: Optional[ApiResult]) -> bool:
+    """True when a successful rate-limit read shows no exhausted bucket."""
+    if result is None or not result.ok or not isinstance(result.body, dict):
+        return False
+    resources = result.body.get("resources")
+    return isinstance(resources, dict) and bool(resources) and _rate_limit_from_probe(result) == (None, None)
 
 
 def _failure_from_terminal_envelope(payload: Any, *, is_write: bool) -> Optional[FailureDetail]:
@@ -1520,13 +1531,24 @@ def classify_legacy_failure(
         retryable = True
         fallback_eligible = False
         write_outcome = rejected
-    elif "rate limit" in lowered or "rate_limited" in lowered:
+    elif ("rate limit" in lowered or "rate_limited" in lowered) and not (
+        "http 403" in lowered and _probe_shows_quota(rate_limit_result)
+    ):
         probed_cause, rate_limit = _rate_limit_from_probe(rate_limit_result)
         cause = probed_cause or "rate_limited_unknown_bucket"
         disposition = "retry"
         retryable = True
         fallback_eligible = False
         write_outcome = rejected
+    elif "http 403" in lowered and "rate limit" in lowered:
+        # A 403 that names a rate limit while every quota bucket has requests
+        # left is a refusal of this identity, not throttling.
+        cause = "permission_denied"
+        disposition = "requires_authorization"
+        retryable = False
+        fallback_eligible = False
+        write_outcome = rejected
+        message = f"Permission denied: {message} (GitHub's rate-limit quota was not exhausted)"
     elif any(text in lowered for text in ("resource not accessible", "forbidden", "permission denied")):
         cause = "permission_denied"
         disposition = "requires_authorization"

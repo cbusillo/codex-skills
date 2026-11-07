@@ -540,6 +540,10 @@ def test_repository_creation_permission_refusals_do_not_offer_actor_fallback() -
         ))
     # A headerless non-throttling 403 also represents an authorization refusal.
     failures.append(_api.classify_error(403, {}, {"message": "Repository creation denied"}, is_write=True))
+    # GitHub's "Rate Limit Exceeded" wording with quota left is a refusal too.
+    failures.append(_api.classify_error(
+        403, {"x-ratelimit-remaining": "6366"}, {"message": "Rate Limit Exceeded"}, is_write=True,
+    ))
     for failure in failures:
         assert failure.cause == "permission_denied", failure
         assert failure.disposition == "requires_authorization", failure
@@ -1327,6 +1331,33 @@ def test_rate_limit_cli_uses_public_operation_id() -> None:
     assert exit_code == 0
     assert payload["operation"] == "github.api.rate_limit"
     assert stderr.getvalue() == ""
+
+
+def test_classify_legacy_403_rate_limit_text_follows_probed_quota() -> None:
+    # The wrapper's own path for `gh repo create` under an installation token
+    # (codex-skills#1580): only the /rate_limit probe can tell a refusal apart.
+    for core_remaining, cause, retryable in ((6366, "permission_denied", False), (0, "rest_primary_rate_limited", True)):
+        probe = _fake_proc(stdout=_include_output(body={"resources": {"core": {"remaining": core_remaining}}}))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "stdout").write_text("", encoding="utf-8")
+            (root / "stderr").write_text(
+                "HTTP 403: Rate Limit Exceeded (https://api.github.com/user/repos)\n", encoding="utf-8",
+            )
+            argv = [
+                "github_api.py", "--gh", "fake-gh", "classify-legacy", "--returncode", "1",
+                "--stdout-file", str(root / "stdout"), "--stderr-file", str(root / "stderr"),
+                "--operation", "github.gh_with_env_token", "--probe-unknown-rate-limit", "--write",
+            ]
+            stdout = StringIO()
+            _api.reset_rate_limit_cache()
+            with patch.object(sys, "argv", argv), patch("subprocess.run", return_value=probe), \
+                    redirect_stdout(stdout), redirect_stderr(StringIO()):
+                _api.main()
+        failure = json.loads(stdout.getvalue())["failure"]
+        assert failure["cause"] == cause, failure
+        assert failure["retryable"] is retryable, failure
+        assert failure["fallback_eligible"] is False, failure
 
 
 def test_classify_legacy_rejects_malformed_payload_file() -> None:
