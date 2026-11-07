@@ -63,7 +63,7 @@ resources:
     description: Record verified closure and report canonical claim releases across Director repositories; includes explicit closed-log release backfill.
   - path: scripts/codex-session.py
     kind: script
-    description: Launch, resume, queue future input or steer an exact active turn under the ownership lease; read launch metadata or cancel one guarded NotLoaded queue entry.
+    description: Launch, resume, queue input, steer or interrupt an exact active turn under the ownership lease; read launch metadata and the queue, or cancel one guarded NotLoaded queue entry.
   - path: scripts/codex_session_proxy.py
     kind: script
     description: Private per-client native RPC ingress that holds source ownership for attachments and actions; imported by codex-session.py.
@@ -164,12 +164,17 @@ commands:
     source: skill
     resource_path: scripts/codex-session.py
     example_argv: ["uv", "run", "scripts/codex-session.py", "queue", "--session-id", "<native-id>", "--codex-home", "<source-home>", "--message", "<text>"]
-    purpose: Queue future exact-thread input under the ownership lease; acknowledgement does not prove active-turn delivery.
+    purpose: Queue exact-thread input under the ownership lease, joined with pending input, and start an idle thread.
   - name: supervisor-codex-session-steer
     source: skill
     resource_path: scripts/codex-session.py
     example_argv: ["uv", "run", "scripts/codex-session.py", "steer", "--session-id", "<native-id>", "--codex-home", "<source-home>", "--expected-turn-id", "<active-turn-id>", "--message", "<text>"]
     purpose: Steer the exact observed active turn through native turn/steer; report acceptance without claiming worker adoption.
+  - name: supervisor-codex-session-interrupt
+    source: skill
+    resource_path: scripts/codex-session.py
+    example_argv: ["uv", "run", "scripts/codex-session.py", "interrupt", "--session-id", "<native-id>", "--codex-home", "<source-home>", "--expected-turn-id", "<active-turn-id>", "--message", "<text>"]
+    purpose: Interrupt the exact observed active turn through native turn/interrupt, then queue and start the optional message.
   - name: supervisor-codex-session-launch
     source: skill
     resource_path: scripts/codex-session.py
@@ -184,7 +189,7 @@ commands:
     source: skill
     resource_path: scripts/codex-session.py
     example_argv: ["uv", "run", "scripts/codex-session.py", "status", "--session-id", "<native-id>"]
-    purpose: Read the resumed generation's launch metadata for the native ledger.
+    purpose: Read the resumed generation's launch metadata, and the thread's state and pending queue.
   - name: supervisor-iterm-close
     source: skill
     resource_path: scripts/iterm_tab.py
@@ -348,8 +353,9 @@ Use [tmux](references/helpers.md#tmux-launches) for new workers; existing iTerm
 sessions retain their backend. Detaching does not stop workers; never kill the
 server to disconnect. Tell the Director when the view is read-only and relay
 answers to verified idle exact sessions. Codex uses managed ingress and guarded
-`codex-session.py queue` with its source home for future input, or `steer` with
-the exact active turn ID for current direction (see [delivery](references/helpers.md#launching-and-nudging)). Stale queued input uses explicit
+`codex-session.py queue` with its source home for input (it starts an idle
+thread), `steer` with the exact active turn ID for current direction, or
+`interrupt` with that ID to stop the turn (see [delivery](references/helpers.md#launching-and-nudging)). Stale queued input uses explicit
 ID/digest cancellation under the recovery procedure, never a completion proof.
 Refusal never permits account switching. Claim Codex Supervisor verification
 only after a recorded run. Preserve brief, issue and current step through compaction.
