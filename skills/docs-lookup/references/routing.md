@@ -74,7 +74,7 @@ Repo documentation that mentions a token location does not replace this index.
 Read a value only from the location the index names, never print it, and pass
 it to a command through standard input rather than an argument. If the index
 has no entry, say so before searching, search narrowly by key name, and follow
-the [same-task credential-card rule](../../infra-ops/SKILL.md#core-rule).
+the [same-task credentials-index rule](../../infra-ops/SKILL.md#core-rule).
 
 If the file or key is missing and local infrastructure context is required, say
 that the local docs source is not configured instead of guessing. Do not fall
