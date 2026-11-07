@@ -83,9 +83,9 @@ def handoff_command(text: str) -> argparse.Namespace | None:
     if command is None or command.type != "command" or shell_generated(command):
         return None
     argv = command_argv(command)
-    if (len(statements) == 1 and last.type == "command" and len(argv) == 3
-            and Path(argv[0]).name in {"sh", "bash", "zsh"} and argv[1] in {"-c", "-lc"}):
-        return handoff_command(argv[2])
+    if (len(statements) == 1 and last.type == "command" and (payload := shell_wrapper_payload(argv)) is not None
+            and Path(argv[0]).name in {"sh", "bash", "zsh"}):
+        return handoff_command(payload)
     if any(not handoff_body_preparation(node) for node in statements[:-1]):
         return None
     if last.type == "redirected_statement" and any(
@@ -539,7 +539,8 @@ def shell_output_is_data(text: str) -> bool:
     if root.has_error or shell_generated(root) or not variables_keep_assigned_values(root):
         return False
     nodes = list(shell_code_nodes(root))
-    if any(node.type == "variable_assignment" and environment_executes(node) for node in nodes):
+    assignments = [node for node in nodes if node.type == "variable_assignment"]
+    if any(environment_executes(node) for node in assignments):
         return False
     commands = [command_argv(node) for node in nodes if node.type == "command"]
     for argv in commands:
@@ -547,6 +548,9 @@ def shell_output_is_data(text: str) -> bool:
         if position is None or position.index >= len(argv):
             return False
         name, arguments = Path(argv[position.index]).name, argv[position.index + 1:]
+        payload = shell_wrapper_payload(argv[position.index:])
+        if payload is not None and not assignments and not position.python_script and shell_output_is_data(payload):
+            continue
         if name in OUTPUT_DATA_COMMANDS and not data_command_executes(argv):
             continue
         if name in {"gh", "gh-with-env-token"} and gh_is_data(arguments):
@@ -565,6 +569,13 @@ def command_text(command: object) -> str:
     if isinstance(command, list) and all(isinstance(argument, str) for argument in command):
         return shlex.join(command)
     raise ValueError("native shell command is neither text nor argv")
+
+
+def shell_wrapper_payload(command: object) -> str | None:
+    if (isinstance(command, list) and len(command) == 3 and all(isinstance(argument, str) for argument in command)
+            and Path(command[0]).name in SHELL_NAMES and command[1] in {"-c", "-lc"}):
+        return command[2]
+    return None
 
 
 def execution_item(row: dict) -> dict:
@@ -845,14 +856,7 @@ def ordered_polls(identifier: str, inputs: dict, outputs: dict) -> list[str]:
 
 def terminal_command(item: dict, text: str) -> bool:
     command = item.get("command")
-    return command == text or (
-        isinstance(command, list)
-        and len(command) == 3
-        and all(isinstance(argument, str) for argument in command)
-        and Path(command[0]).name in SHELL_NAMES
-        and command[1] in {"-c", "-lc"}
-        and command[2] == text
-    )
+    return command == text or shell_wrapper_payload(command) == text
 
 
 def response_positions(records: list[dict]) -> dict[str, int]:

@@ -1962,14 +1962,14 @@ class ClaimCloseoutTests(unittest.TestCase):
 
     def test_quoted_historical_receipts_do_not_force_computed_reads_through_reconstruction(self) -> None:
         for session, rendering in ((session, rendering) for session in (SESSION, "historical-session")
-                                   for rendering in ("document", "body", "file", "poll", "pipeline")):
+                                   for rendering in ("document", "body", "file", "poll", "pipeline", "native_argv", "native_text", "local_shell")):
             with self.subTest(session=session, rendering=rendering):
                 self.setUp()
                 receipt = {"claim": {**SOURCE, "session": session}, "issue": {"repo": "historical/repo", "number": 8}}
                 quoted = {"body": json.dumps(receipt), "comments": [{"body": json.dumps(receipt)}]}
                 command = {"document": "gh issue view 8 --json body,comments",
                            "body": "gh issue view 8 --json body --jq .body",
-                           "file": "cat historical-receipt.json", "poll": "cat historical-receipt.json",
+                           **dict.fromkeys(("file", "poll", "native_argv", "native_text", "local_shell"), "cat historical-receipt.json"),
                            "pipeline": "gh issue view 8 --json comments | jq -r '.comments[].body'"}[rendering]
                 output = json.dumps(quoted) if rendering == "document" else json.dumps(receipt)
                 rows: list[dict[str, Any]] = [
@@ -1983,6 +1983,14 @@ class ClaimCloseoutTests(unittest.TestCase):
                                  "input": 'text(await tools.exec_command({cmd:"cat "+load("references").join(" ")}));'}},
                     native_terminal_result("read", javascript=True),
                 ]
+                wrapped = ["/bin/zsh", "-lc", command]
+                if rendering.startswith("native_"):
+                    rows[:2] = [{"type": "event_msg", "payload": {"type": "item_completed", "item": {
+                        "type": "CommandExecution", "id": "history", "status": "completed", "exit_code": 0,
+                        "command": wrapped if rendering == "native_argv" else shlex.join(wrapped), "aggregated_output": output,
+                    }}}]
+                elif rendering == "local_shell":
+                    rows[0]["payload"] = {"type": "local_shell_call", "call_id": "history", "action": {"command": wrapped}}
                 if rendering == "poll":
                     rows[1:2] = [
                         {"payload": {"type": "function_call_output", "call_id": "history",
@@ -2008,9 +2016,10 @@ class ClaimCloseoutTests(unittest.TestCase):
                 self.assertTrue(report["blocked"], report)
                 self.comments.append(self.release)
                 legacy = self.entry()
-                rows[0]["payload"]["arguments"] = json.dumps({"cmd": "uv run gh-plan.py claim 8"})
+                legacy_call = {"payload": {"type": "function_call", "name": "exec_command", "call_id": "history",
+                                           "arguments": json.dumps({"cmd": "uv run gh-plan.py claim 8"})}}
                 with Path(legacy["transcript"]).open("a") as stream:
-                    for row in (rows[0], native_terminal_result("history", json.dumps(quoted))):
+                    for row in (legacy_call, native_terminal_result("history", json.dumps(quoted))):
                         stream.write(json.dumps(row) + "\n")
                 uncertain = helper.check([legacy])
                 self.assertFalse(uncertain["claims_clear"], uncertain)
@@ -2018,7 +2027,9 @@ class ClaimCloseoutTests(unittest.TestCase):
                 self.assertTrue(uncertain["unresolved_invocations"], uncertain)
         for source in (*(f'text(await tools.exec_command({{cmd:{json.dumps(command)}}}));' for command in (
                            "uv run legacy-worker.py", "git commit -m message", "gh issue edit 8 --editor",
-                           "rg --pre ./legacy-worker.py receipt.json")),
+                           "rg --pre ./legacy-worker.py receipt.json", "zsh -lc 'uv run legacy-worker.py'",
+                           "zsh -c '$1' _ 'uv run gh-plan.py claim 8'", "zsh -lc 'cat receipt.json; uv run legacy-worker.py'",
+                           "ZDOTDIR=./cfg zsh -lc 'cat receipt.json'", "HOME=./cfg; bash -lc 'cat receipt.json'")),
                        'text(await tools.write_stdin({session_id:41,chars:""}));'
                        'text(await tools.exec_command({cmd:"uv run legacy-worker.py"}));'):
             with self.subTest(genuine_receipt=source):
