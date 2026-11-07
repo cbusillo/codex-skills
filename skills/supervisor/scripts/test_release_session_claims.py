@@ -29,7 +29,9 @@ closure = importlib.import_module("github_plan_closure")
 identity = importlib.import_module("github_identity")
 
 ACTOR = "test-automation[bot]"
-LOCAL_INVENTORY = helper.claim.local_inventory
+claim_module = importlib.import_module("github_plan_claim")
+release_module = importlib.import_module("github_plan_release")
+LOCAL_INVENTORY = getattr(claim_module, "local_inventory")
 
 SOURCE = {"worker": "trial", "session": "source-session", "branch": "work/trial",
           "claimed_at": "2026-01-01T00:00:00Z"}
@@ -143,7 +145,7 @@ class ReleaseTests(unittest.TestCase):
     def test_private_https_preview_reads_remote_heads_without_git_credentials(self) -> None:
         replies = ["https://github.com/test/a.git", "", ""]
         self.reader.paged_json = Mock(side_effect=lambda path, **_kwargs: [{"name": SOURCE["branch"]}] if path.endswith("/branches") else [self.source])
-        with patch_attribute(helper.claim, "local_inventory", side_effect=LOCAL_INVENTORY), patch_attribute(helper.claim, "run_read", side_effect=replies), patch_attribute(helper.release, "prepare_release") as prepare:
+        with patch_attribute(claim_module, "local_inventory", side_effect=LOCAL_INVENTORY), patch_attribute(claim_module, "run_read", side_effect=replies), patch_attribute(release_module, "prepare_release") as prepare:
             result = helper.preview_guards(self.entry, reader=self.reader, repo="test/a", number=1,
                 source_id=self.source["id"], related=[], prs=[], body="Preview", actor=ACTOR,
                 supervisor_session="supervisor", checkout_root=self.root)
