@@ -6347,7 +6347,7 @@ class ClaimTests(unittest.TestCase):
         def api(_method: str, path: str, **_: Any) -> tuple[str, list[dict[str, str]]]:
             return TEST_BOT, branches[:100] if path.endswith("&page=1") else branches[100:]
         replies = ["https://github.com/owner/repo.git\n", "worktree /fixture/repo\nbranch refs/heads/main\n", "main abc\n"]
-        with patch.object(CLAIM, "run_read", side_effect=replies), patch.object(PLAN, "api_json", side_effect=api):
+        with patch.object(CLAIM, "run_read", side_effect=replies), patch.multiple(PLAN, api_json=api):
             inventory = CLAIM.local_inventory("owner/repo", 42, read=PLAN.collect_paged_rest_items)
         self.assertEqual(inventory["remote_branches"], [branch["name"] for branch in branches])
 
