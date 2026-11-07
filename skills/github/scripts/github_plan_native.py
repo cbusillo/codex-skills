@@ -15,7 +15,7 @@ from pathlib import Path
 import stat
 import time
 import uuid
-from typing import NamedTuple
+from typing import Any, NamedTuple
 from collections.abc import Callable, Iterable
 from datetime import datetime
 
@@ -43,7 +43,7 @@ async def connection(home: Path, *, max_msg_size: int = 64 * 1024 * 1024, deadli
         async with asyncio.timeout(read_timeout(deadline_at)):
             async with aiohttp.ClientSession(connector=aiohttp.UnixConnector(path=str(endpoint))) as client:
                 async with client.ws_connect("http://localhost/", max_msg_size=max_msg_size) as ws:
-                    async def request(method, params):
+                    async def request(method: str, params: dict) -> Any:
                         nonlocal sequence
                         sequence += 1
                         await ws.send_json({"id": sequence, "method": method, "params": params})
@@ -285,37 +285,53 @@ class QueueNotSent(ValueError):
 
 
 async def require_loaded_thread(request, session, home):
-    if (await read_thread(request, session))["state"] == "notLoaded":
+    thread = await read_thread(request, session)
+    if thread["state"] == "notLoaded":
         raise ValueError(f"thread {session} is not loaded by the CODEX_HOME={home} daemon; "
-                         "queue through the home whose daemon runs it, or resume it first")
+                         "use the home whose daemon runs it; resume a stopped session before future queueing")
+    return thread
 
 
-async def queue_input(home: Path, session: str, text: str, *, transcript: Path | None = None):
+async def queue_input(home: Path, session: str, text: str, *, transcript: Path | None = None,
+                      expected_turn_id: str | None = None) -> dict:
     """Submit once; normalize post-send cancellation at the top-level CLI boundary."""
     from github_plan_sessions import native_helpers
     native_helpers()
     from codex_session_proxy import source_endpoint
     client_id = str(uuid.uuid4())
-    params = {"threadId": session, "clientUserMessageId": client_id,
+    steering = expected_turn_id is not None
+    if steering and (not isinstance(expected_turn_id, str) or not expected_turn_id.strip()):
+        raise QueueNotSent("steer requires the exact active turn ID")
+    method = "turn/steer" if steering else "thread/queue/add"
+    params: dict[str, object] = {"threadId": session, "clientUserMessageId": client_id,
               "input": [{"type": "text", "text": text, "text_elements": []}]}
+    if steering:
+        params["expectedTurnId"] = expected_turn_id
     # Native echoes the full input. Escaped/multibyte valid text can exceed the
     # observer's fixed cap; bound this acknowledgement to the actual request.
     allowance = max(1024 * 1024, len(json.dumps(params, ensure_ascii=True).encode()) + 65536)
     leased = False
     try:
         await asyncio.to_thread(lambda: source_endpoint(session, home, transcript=transcript))
-        with _queue_outcome("submission") as mark_sent:
+        with _queue_outcome("steering" if steering else "submission") as mark_sent:
             async with connection(home, max_msg_size=allowance) as request:
-                await require_loaded_thread(request, session, home)
+                thread = await require_loaded_thread(request, session, home)
+                if steering and thread["state"] != "active":
+                    raise ValueError("steer requires an active turn; preserve state and do not queue a fallback")
                 leased = True
-                async with closure.async_resume_guard(session, method="thread/queue/add", home=home):
+                async with closure.async_resume_guard(session, method=method, home=home):
                     mark_sent()
-                    result = await request("thread/queue/add", params)
-                    entry = result.get("queuedSubmission") if isinstance(result, dict) else None
-                    if (not isinstance(entry, dict) or not isinstance(entry.get("id"), str) or not entry["id"]
-                            or entry.get("clientUserMessageId") != client_id or entry.get("input") != params["input"]):
-                        raise ValueError("native queue acknowledgement is unavailable")
-                    receipt = {"queuedSubmissionId": entry["id"], "clientUserMessageId": client_id}
+                    result = await request(method, params)
+                    if steering:
+                        if not isinstance(result, dict) or result.get("turnId") != expected_turn_id:
+                            raise ValueError("native steering acknowledgement is unavailable")
+                        receipt = {"delivery": "active_turn_accepted", "turnId": expected_turn_id, "clientUserMessageId": client_id}
+                    else:
+                        entry = result.get("queuedSubmission") if isinstance(result, dict) else None
+                        if (not isinstance(entry, dict) or not isinstance(entry.get("id"), str) or not entry["id"]
+                                or entry.get("clientUserMessageId") != client_id or entry.get("input") != params["input"]):
+                            raise ValueError("native queue acknowledgement is unavailable")
+                        receipt = {"delivery": "future_queued", "queuedSubmissionId": entry["id"], "clientUserMessageId": client_id}
     except (OSError, ValueError) as error:
         if leased:
             raise

@@ -1537,8 +1537,8 @@ visible hook-review prompt as `launch_blocked` with
 It does not answer the prompt or prove readiness; a later prompt still needs
 first-screen/transcript verification. Do not launch
 a duplicate after a blocked result. Record the new native thread and exact transcript in the
-ledger. Use `codex-session.py queue` for Codex nudges with the verified thread id and
-its configured home; never queue exit commands. The terminal helper suppresses
+ledger. For Codex, choose deliberate future `queue` or active-turn `steer` below
+with the verified thread ID and configured home; never queue exit commands. The terminal helper suppresses
 broadcast input, uses bracketed paste for multiline messages, and sends text
 and Return separately. Verify input and prompt
 before `--verified-target`, then read back once; do not replay an uncertain send.
@@ -1554,18 +1554,33 @@ missing or mismatched ledger identity fields from `codex-session.py status`
 before `finish`; status reads the recorded generation even after the client
 exits. Already-running clients from an older catalog keep their in-memory
 generation recorder until they exit and may need that same refresh.
-Resume and queue mutations use the source account's
+Resume, queue and steer mutations use the source account's
 existing daemon and the same per-thread lease as closure and successor admission:
 
 ```sh
 uv run skills/supervisor/scripts/codex-session.py queue --session-id <native-id> --codex-home <source-home> --message <text>
+uv run skills/supervisor/scripts/codex-session.py steer --session-id <native-id> --codex-home <source-home> --expected-turn-id <active-turn-id> --message <text>
 uv run skills/supervisor/scripts/codex-session.py resume --session-id <native-id> --codex-home <source-home>
 uv run skills/supervisor/scripts/codex-session.py status --session-id <native-id>
 ```
 
-Native resume and queue mutations are routed through these helpers by command policy.
+Use `queue` for work that should wait until the current turn finishes. Its
+`delivery: future_queued` receipt proves storage, not delivery to the active
+turn. Queued input can survive a restart; a newer steer does not cancel it.
+Inspect stale input through the existing guarded `queue-cancel` route.
 
-Before it takes the lease, queue asks the `--codex-home` daemon to read the
+Use `steer` for a correction needed by the current turn. Read the worker's
+`turn_id` with `status.py --ledger <ledger.json>` or the native thread reader
+first. The helper requires that home's thread to be active before taking the
+ownership lease, then sends the harness built-in
+[`turn/steer`](https://learn.chatgpt.com/docs/app-server#steer-an-active-turn)
+with `expectedTurnId`. An idle, NotLoaded, changed or refused target never
+falls back to future queueing or starts a turn. `delivery: active_turn_accepted`
+and `turnId` prove native acceptance for that turn, not model consumption or
+adoption. Check its user transcript and subsequent worker response before
+claiming the correction took effect. Both receipts omit message contents.
+
+Before it takes the lease, input delivery asks the `--codex-home` daemon to read the
 thread and refuses, with nothing written, unless that daemon has it loaded.
 The submission uses that same connection.
 Account homes can share one sessions directory, so a transcript does not show
@@ -1573,10 +1588,10 @@ which home runs the thread; only the running home's daemon delivers queued
 input. Take the home from the ledger's `codex_home`. Resume a stopped session
 before queueing to it.
 
-Queue submission reports success only after its acknowledgement and connection
+Queue and steer report success only after their acknowledgement and connection
 and ownership cleanup complete. Once submission may have started, any failure,
 including timeout or cancellation during cleanup, reports uncertainty with
-no-replay guidance. Inspect fresh queue state before further action; never resend
+no-replay guidance. Inspect the native thread, turn transcript and queue before further action; never resend
 the message automatically. Pre-send cancellation still propagates normally.
 
 Use the canonical lowercase, hyphenated UUID from the native thread record.
