@@ -138,6 +138,21 @@ def project_plan(h: Any, response: dict[str, Any], body: dict[str, object], *, s
         if type(restore_applicable) is not bool:
             raise h.LaunchplaneSafetyError("invalid_response")
         projected["restore_applicable"] = restore_applicable
+    if "steps" in result:
+        steps = result["steps"]
+        if not isinstance(steps, list) or len(steps) > 32:
+            raise h.LaunchplaneSafetyError("invalid_response")
+        projected["steps"] = h._public_code_list(steps)
+    if "blockers" in result:
+        blockers = result["blockers"]
+        if not isinstance(blockers, list) or len(blockers) > 32 or blockers and result["status"] != "pending":
+            raise h.LaunchplaneSafetyError("invalid_response")
+        projected["blockers"] = [{
+            "code": h.public_code(h._require_dict(blocker).get("code")),
+            "message": h.public_service_text(h._require_dict(blocker).get("message")),
+        } for blocker in blockers]
+    if result.get("message"):
+        projected["message"] = h.public_service_text(result["message"])
     h.assert_public_safe_shape(projected)
     projected["mode"] = "dry-run"
     projected["plan_sha256"] = h.metadata_review_digest({"body": body, "preflight": projected})
@@ -172,7 +187,7 @@ def execute_plan(h: Any, args: argparse.Namespace, request: dict[str, object], b
         output = h.base_payload(status="ok", operation=PLAN_COMMAND, request=request)
         output["result"] = project_plan(h, response, body, service_url=settings["service_url"])
         output["summary"] = {**h.service_response_diagnostics(response),
-            "recommendation": ("The deployed service does not support this lane's rebuild configuration yet. Wait for supported execution; do not submit."
+            "recommendation": ("Resolve the reported blockers and run the dry run again before submitting."
                 if output["result"]["status"] == "pending" else
                 "Inspect this admission evidence and save it for submit. The worker must still verify the new copy before cutover.")}
         h.emit(output)
