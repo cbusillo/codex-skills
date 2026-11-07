@@ -1566,11 +1566,13 @@ uv run skills/supervisor/scripts/codex-session.py status --session-id <native-id
 ```
 
 Use `queue` for work that should wait until the current turn finishes. Native
-Codex starts one queued entry per turn, so `queue` appends to the last pending
-entry when there is one (`joined_pending: true`); everything queued reaches the
-worker at the next turn boundary together. On an idle thread, including one
-left idle by an interrupt with input still held, it starts that entry at once
-and reports `delivery: turn_started`. `delivery: future_queued` proves storage
+Codex starts one queued entry per turn, so `queue` joins every pending entry,
+in order, into the first one and appends the new text (`joined_pending: true`);
+everything queued reaches the worker at the next turn boundary together. It
+removes the joined entries only after the first holds them, so a failure there
+can duplicate input but never lose it. On an idle thread, including one left
+idle by an interrupt with input still held, it starts that entry at once and
+reports `delivery: turn_started`. `delivery: future_queued` proves storage
 only: the thread is busy and the entry runs when its turn ends. Queued input
 can survive a restart; a newer steer does not cancel it. Inspect stale input
 through the existing guarded `queue-cancel` route.
@@ -1580,8 +1582,9 @@ terminal, with no keystrokes. It refuses a thread that is not active. Native
 interrupt keeps the queue and does not start it; `--message` queues and starts
 that text through the `queue` route above once the thread is idle, and without
 it the receipt counts what is still `pending`. `interrupt_requested` means the
-turn had not stopped within three seconds; check `status`, then `queue` once
-it is idle.
+turn had not stopped within three seconds; the message is then not sent
+(`message_sent: false`), because native would hold it unstarted. Check
+`status`, then `queue` it once the thread is idle.
 
 `status` reads the closed-session log's resumed generation when there is one; a
 fresh launch has none, and its generation is in the launch ledger. With

@@ -298,17 +298,18 @@ async def require_loaded_thread(request, session, home):
 
 
 async def _deliver(request, session, params, state) -> dict:
-    """Join pending input so one turn boundary delivers it all; start an idle thread."""
+    """Join all pending input into the head entry, in order, so one turn
+    boundary delivers it all; start an idle thread."""
     pending = await queued_entries(request, session)
     result = joined = None
     if pending:
-        last = pending[-1]
-        joined = {**last, "input": last["input"] + params["input"]}
+        head = pending[0]
+        joined = {**head, "input": [part for entry in pending for part in entry["input"]] + params["input"]}
         try:
-            result = await request("thread/queue/update", {"threadId": session, "queuedSubmissionId": last["id"],
+            result = await request("thread/queue/update", {"threadId": session, "queuedSubmissionId": head["id"],
                                                            "input": joined["input"]})
         except NativeRequestRejected:
-            joined = None  # The entry left the queue first; nothing changed, so add instead.
+            joined = None  # The head left the queue first; nothing changed, so add instead.
     expected = joined or {"clientUserMessageId": params["clientUserMessageId"], "input": params["input"]}
     if joined is None:
         result = await request("thread/queue/add", params)
@@ -317,6 +318,16 @@ async def _deliver(request, session, params, state) -> dict:
             or joined and entry["id"] != joined["id"]
             or entry.get("clientUserMessageId") != expected["clientUserMessageId"] or entry.get("input") != expected["input"]):
         raise ValueError("native queue acknowledgement is unavailable")
+    if joined:
+        # Remove the entries now inside the head only after the head holds
+        # them, so a failure can duplicate input but never lose it.
+        for later in pending[1:]:
+            try:
+                deleted = await request("thread/queue/delete", {"threadId": session, "queuedSubmissionId": later["id"]})
+            except NativeRequestRejected:
+                deleted = None
+            if not isinstance(deleted, dict) or deleted.get("deleted") is not True:
+                raise ValueError("joined queue input may now be duplicated; inspect the queue and do not replay")
     receipt = {"delivery": "future_queued", "queuedSubmissionId": entry["id"],
                "clientUserMessageId": entry["clientUserMessageId"], "joined_pending": joined is not None}
     if state != "idle":
@@ -384,9 +395,13 @@ async def queue_input(home: Path, session: str, text: str | None, *, transcript:
                             await asyncio.sleep(.1)
                         receipt = {"delivery": "interrupted" if state != "active" else "interrupt_requested",
                                    "turnId": expected_turn_id, "state": state}
-                        if text is not None:
+                        if text is not None and state != "active":
                             receipt["message"] = await _deliver(request, session, params, state)
                         else:
+                            if text is not None:
+                                # Native holds a queue across an interrupt, so input
+                                # queued before the turn stops would wait unstarted.
+                                receipt["message_sent"] = False
                             receipt["pending"] = len(await queued_entries(request, session))
                     else:
                         receipt = await _deliver(request, session, params, thread["state"])
