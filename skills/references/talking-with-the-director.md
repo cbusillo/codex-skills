@@ -104,6 +104,7 @@ Create a structured question with
 The JSON record has `version: 1`, `issue` (exact owning issue URL), `decision`,
 `basis`, `options`, `recommendation`, `comparison` (what an experienced developer
 would do and why), and `manual` (the Director's work, including "answer only").
+Set `checked` to the DIRECTION section, earlier Q, repository document or record read before asking (shown as "Checked before asking:"); declare `agent_criterion: true` for an agent- or reviewer-added criterion, finish line or child issue beyond the agreed outcome, which the validator refuses.
 Each option has `answer`, `changes`, `cost` (ongoing cost; explicit zero is valid),
 and `next` (the agent's action after that answer). Recommendation names one answer.
 Use one short line in `basis` saying why this needs the Director; do not paste

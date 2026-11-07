@@ -24,23 +24,30 @@ VERSION = 1
 COMMENT_LIMIT = 65536
 ISSUE_URL = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issues/([1-9][0-9]*)")
 RECORD = re.compile(r"<!-- director-question:record (\{[^\n]*}) -->")
-TEXT_FIELDS = ("issue", "decision", "basis", "recommendation", "comparison", "manual")
+TEXT_FIELDS = ("issue", "decision", "basis", "checked", "recommendation", "comparison", "manual")
 OPTION_FIELDS = ("answer", "changes", "cost", "next")
 DiscussionReader = Callable[[str], list[dict[str, Any]]]
 
 
-def validation_errors(record: Any) -> list[str]:
+def validation_errors(record: Any, *, require_checked: bool = True) -> list[str]:
     if not isinstance(record, dict):
         return ["record must be an object"]
     errors = []
+    if record.get("agent_criterion", False) is not False:
+        errors.append(
+            'DIRECTION: "any agent may cut or close it without asking" for an agent- or reviewer-added criterion, '
+            "finish line or child issue beyond the agreed outcome; cutting never removes a protection DIRECTION names."
+        )
     if type(record.get("version")) is not int or record["version"] != VERSION:
         errors.append(f"version must be {VERSION}")
     for field in TEXT_FIELDS:
+        if field == "checked" and not require_checked and field not in record:
+            continue
         if not isinstance(record.get(field), str) or not record[field].strip():
             errors.append(f"{field} must be nonempty text")
     if isinstance(record.get("issue"), str) and not ISSUE_URL.fullmatch(record["issue"]):
         errors.append("issue must be an exact GitHub issue URL")
-    unknown = set(record) - {"version", "options", *TEXT_FIELDS}
+    unknown = set(record) - {"version", "options", "agent_criterion", *TEXT_FIELDS}
     if unknown:
         errors.append(f"unknown fields: {', '.join(sorted(unknown))}")
     options = record.get("options")
@@ -119,6 +126,8 @@ def render(record: dict[str, Any], *, legacy: bool = False) -> str:
             "",
         ]
     )
+    if "checked" in record:
+        lines.append(f"Checked before asking: {' '.join(text(record['checked']).split())}")
     lines.append(f"Owning issue: {record['issue']}")
     encoded = json.dumps(record, sort_keys=True).replace("<", "\\u003c").replace(">", "\\u003e")
     return "\n".join(lines) + f"\n\n<!-- director-question:record {encoded} -->\n"
@@ -130,7 +139,7 @@ def read_record(source: dict[str, Any]) -> dict[str, Any]:
     if len(markers) != 1:
         raise ValueError("source must contain exactly one structured question record")
     record = json.loads(markers[0])
-    errors = validation_errors(record)
+    errors = validation_errors(record, require_checked=False)
     if errors:
         raise ValueError("\n".join(errors))
     number = question_id.heading_id(body)
