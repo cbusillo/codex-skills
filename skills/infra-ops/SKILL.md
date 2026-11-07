@@ -65,6 +65,8 @@ provider dashboards, browser sessions, shell history, or `.env` files. Do not
 copy private path values, hostnames, tokens, customer/site names, or topology
 into this repo.
 
+If a task introduces or relies on a credential missing from the private operations repository's credentials index, document it there by name only in the same task before closing it.
+
 ## Safety Tiers
 
 Apply [task scope and authorization](../references/execution-scope.md) and the
