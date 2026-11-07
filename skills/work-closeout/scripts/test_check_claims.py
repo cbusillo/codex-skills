@@ -2028,7 +2028,8 @@ class ClaimCloseoutTests(unittest.TestCase):
         for source in (*(f'text(await tools.exec_command({{cmd:{json.dumps(command)}}}));' for command in (
                            "uv run legacy-worker.py", "git commit -m message", "gh issue edit 8 --editor",
                            "rg --pre ./legacy-worker.py receipt.json", "zsh -lc 'uv run legacy-worker.py'",
-                           "zsh -c 'cat $1' _ receipt.json", "zsh -lc 'cat receipt.json; uv run legacy-worker.py'")),
+                           "zsh -c '$1' _ 'uv run gh-plan.py claim 8'", "zsh -lc 'cat receipt.json; uv run legacy-worker.py'",
+                           "ZDOTDIR=./cfg zsh -lc 'cat receipt.json'", "HOME=./cfg; bash -lc 'cat receipt.json'")),
                        'text(await tools.write_stdin({session_id:41,chars:""}));'
                        'text(await tools.exec_command({cmd:"uv run legacy-worker.py"}));'):
             with self.subTest(genuine_receipt=source):

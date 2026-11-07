@@ -42,7 +42,8 @@ Receipt JSON in tool inputs, conversation prose, or quoted issue and comment
 fields is data. Receipt discovery unwraps native output and text blocks, not
 arbitrary fields inside returned documents. Output from proven data readers is
 data too, including raw issue bodies, saved receipts and their matching empty
-polls. Exact three-argument shell `-c`/`-lc` wrappers use the same payload proof.
+polls. Exact three-argument shell `-c`/`-lc` wrappers without shell assignments
+use the same payload proof.
 Unknown scripts, opaque commands and typed interactive input retain their
 receipt evidence. Bounded code-mode cells without shell sites also return data,
 including stored snapshots; an empty process poll remains a shell site.

@@ -539,7 +539,8 @@ def shell_output_is_data(text: str) -> bool:
     if root.has_error or shell_generated(root) or not variables_keep_assigned_values(root):
         return False
     nodes = list(shell_code_nodes(root))
-    if any(node.type == "variable_assignment" and environment_executes(node) for node in nodes):
+    assignments = [node for node in nodes if node.type == "variable_assignment"]
+    if any(environment_executes(node) for node in assignments):
         return False
     commands = [command_argv(node) for node in nodes if node.type == "command"]
     for argv in commands:
@@ -548,7 +549,7 @@ def shell_output_is_data(text: str) -> bool:
             return False
         name, arguments = Path(argv[position.index]).name, argv[position.index + 1:]
         payload = shell_wrapper_payload(argv[position.index:])
-        if payload is not None and not position.python_script and shell_output_is_data(payload):
+        if payload is not None and not assignments and not position.python_script and shell_output_is_data(payload):
             continue
         if name in OUTPUT_DATA_COMMANDS and not data_command_executes(argv):
             continue
