@@ -146,9 +146,18 @@ def normalize_ledger_entry(path: Path, entry: dict) -> dict:
     return entry
 
 
+def read_ledger(path: Path) -> object:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        if path.is_symlink() or not path.parent.is_dir():
+            raise
+        return []
+
+
 def terminal_entry(path: Path, key: str, identity: str) -> dict:
     """Select one owned launch without requiring native fields not yet bound."""
-    entries = json.loads(path.read_text(encoding="utf-8"))
+    entries = read_ledger(path)
     if not isinstance(entries, list) or not all(isinstance(entry, dict) for entry in entries):
         raise ValueError("ledger must contain session objects")
     matches = [entry for entry in entries if entry.get(key) == identity]
@@ -166,12 +175,7 @@ def load_ledger(path: Path, *, harness: str | None = None,
     """
     if harness is not None and harness not in {"claude", "codex", "agy"}:
         raise ValueError("selected harness must be claude, codex or agy")
-    try:
-        entries = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        if path.is_symlink():
-            raise
-        return []
+    entries = read_ledger(path)
     if not isinstance(entries, list):
         raise TypeError("ledger must be an array of session objects")
     seen = set()

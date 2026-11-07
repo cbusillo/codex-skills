@@ -476,7 +476,7 @@ def finished(root: Path, pulls_for, include=lambda slug: True) -> tuple[list[dic
     try:
         folders = sorted(p for p in root.iterdir() if p.is_dir() and not p.is_symlink())
     except FileNotFoundError:
-        if helper is not None or root.is_symlink():
+        if helper is not None or root.is_symlink() or not root.parent.is_dir():
             raise
         return [], []
     for folder in folders:

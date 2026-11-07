@@ -1104,14 +1104,26 @@ class MainTests(Fixture):
 class FinishedScanTests(Fixture):
     def test_scan_before_first_worktree_is_empty_without_creating_the_root(self) -> None:
         missing = self.base / "never-created"
-        pulls = mock.Mock(side_effect=AssertionError("no worktree needs a PR read"))
         with mock.patch.object(dev_worktree, "configuration", return_value=(missing, None)):
-            self.assertEqual(landed_worktrees.finished(missing, pulls), ([], []))
+            self.assertEqual(landed_worktrees.finished(missing, lambda *_: []), ([], []))
         self.assertFalse(missing.exists())
 
     def test_missing_managed_root_remains_an_error(self) -> None:
         with self.assertRaises(FileNotFoundError):
             landed_worktrees.finished(self.base / "unavailable-volume", lambda *_: [])
+
+    def test_missing_portable_root_location_remains_an_error(self) -> None:
+        missing = self.base / "unavailable-volume" / "worktrees"
+        with mock.patch.object(dev_worktree, "configuration", return_value=(missing, None)):
+            with self.assertRaises(FileNotFoundError):
+                landed_worktrees.finished(missing, lambda *_: [])
+
+    def test_broken_portable_root_link_remains_an_error(self) -> None:
+        broken = self.base / "worktree-link"
+        broken.symlink_to(self.base / "missing-root")
+        with mock.patch.object(dev_worktree, "configuration", return_value=(broken, None)):
+            with self.assertRaises(FileNotFoundError):
+                landed_worktrees.finished(broken, lambda *_: [])
 
     def test_unreadable_root_does_not_become_an_empty_scan(self) -> None:
         with mock.patch.object(Path, "iterdir", side_effect=PermissionError("fixture denied")):

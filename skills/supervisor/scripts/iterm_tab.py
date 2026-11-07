@@ -37,6 +37,7 @@ import claude_trust
 import agent_tools
 import gui_launch
 import claim_history
+from session_record import read_ledger
 
 CLAUDE_SUGGESTION_SETTING = "promptSuggestionEnabled"
 CLAUDE_AUTO_MEMORY_SETTING = "autoMemoryEnabled"
@@ -1748,7 +1749,7 @@ def source_launch_metadata(result, choice):
 
 
 def read_launch_ledger(path: Path) -> list[dict]:
-    entries = json.loads(path.read_text()) if path.exists() else []
+    entries = read_ledger(path)
     if not isinstance(entries, list) or not all(isinstance(row, dict) for row in entries):
         raise ValueError("launch ledger must contain session objects")
     return entries

@@ -125,7 +125,12 @@ def check(ledger: Path, state: Path, capacity_state: Path | None = None) -> dict
     if state.resolve() in sources:
         raise ValueError("check state must be separate from its sources")
     result = report(ledger, capacity_state)
-    return {**result, "sessions": changes(result["sessions"], state, [str(ledger.resolve()), str(capacity_state)],
+    scope = [str(ledger.resolve()), str(capacity_state)]
+    if not ledger.exists() and state.exists():
+        previous = json.loads(state.read_text())
+        if isinstance(previous, dict) and previous.get("scope") == scope and previous.get("fingerprints"):
+            raise FileNotFoundError(f"Previously observed session ledger is missing: {ledger}")
+    return {**result, "sessions": changes(result["sessions"], state, scope,
                                          key="session_id", complete=result["coverage"]["complete"])}
 
 
