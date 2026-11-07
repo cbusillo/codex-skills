@@ -11,7 +11,7 @@ import io
 import importlib
 from contextlib import asynccontextmanager, contextmanager, redirect_stdout
 from concurrent.futures import ThreadPoolExecutor
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from datetime import datetime, timedelta, timezone
 import unittest
 from unittest.mock import patch
@@ -232,6 +232,92 @@ class NativeFactsTests(unittest.IsolatedAsyncioTestCase):
 
 
 class NativeQueueTests(unittest.TestCase):
+    def test_active_steer_reaches_current_turn_without_consuming_future_queue(self) -> None:
+        import uuid
+        for delivery in ("queue", "steer"):
+            with self.subTest(delivery=delivery), ReceiptFixture(str(uuid.uuid4())) as f:
+                f.native_state = "active"
+                f.rpc_results["thread/turns/list"] = {"data": [{"id": "working-turn", "status": "inProgress"}], "nextCursor": None}
+                f.queue_items = [{"id": "future", "clientUserMessageId": "future-client", "input": []}]
+                accepted = []
+                def steer(request: dict, accept_input: Callable[[list], None] = accepted.append) -> dict:
+                    self.assertTrue(CLOSURE.action_pending(f.session))
+                    self.assertEqual(request["params"]["threadId"], f.session)
+                    self.assertEqual(request["params"]["expectedTurnId"], "working-turn")
+                    accept_input(request["params"]["input"])
+                    return {"turnId": "working-turn"}
+                f.rpc_results["turn/steer"] = steer
+                if delivery == "steer":
+                    result = asyncio.run(NATIVE.queue_input(f.home, f.session, "focus here", expected_turn_id="working-turn"))
+                    self.assertEqual(accepted[0][0]["text"], "focus here")
+                    self.assertEqual(result["delivery"], "active_turn_accepted")
+                    self.assertEqual(result["turnId"], "working-turn")
+                    self.assertNotIn("thread/queue/add", f.rpc_requests)
+                else:
+                    result = asyncio.run(NATIVE.queue_input(f.home, f.session, "later task"))
+                    self.assertEqual(result["delivery"], "future_queued")
+                    self.assertFalse(accepted)
+                self.assertEqual(f.queue_items[0]["id"], "future")
+                self.assertNotIn("input", result)
+
+    def test_steer_rejects_inactive_or_changed_turn_without_fallback(self) -> None:
+        import uuid
+        for state, turns in (("notLoaded", []), ("idle", []), ("systemError", []),
+                             ("active", []), ("active", [{"id": "different", "status": "inProgress"}])):
+            with self.subTest(state=state, turns=turns), ReceiptFixture(str(uuid.uuid4())) as f:
+                f.native_state = state
+                f.rpc_results["thread/turns/list"] = {"data": turns, "nextCursor": None}
+                with self.assertRaises(ValueError):
+                    asyncio.run(NATIVE.queue_input(f.home, f.session, "focus here", expected_turn_id="working-turn"))
+                self.assertNotIn("turn/steer", f.rpc_requests)
+                self.assertNotIn("thread/queue/add", f.rpc_requests)
+
+    def test_steer_uncertainty_and_refusal_never_replay_or_queue(self) -> None:
+        import uuid
+        for failure in ("refusal", "wrong_ack", "target", "ownership"):
+            with self.subTest(failure=failure), ReceiptFixture(str(uuid.uuid4())) as f:
+                f.native_state = "active"
+                f.rpc_results["thread/turns/list"] = {"data": [{"id": "working-turn", "status": "inProgress"}], "nextCursor": None}
+                sent = []
+                def steer(request: dict, record_send: Callable[[dict], None] = sent.append, outcome: str = failure) -> dict | ValueError:
+                    record_send(request)
+                    self.assertEqual(request["params"]["expectedTurnId"], "working-turn")
+                    if outcome == "refusal":
+                        return ValueError("synthetic turn changed before send")
+                    return {"turnId": "different" if outcome == "wrong_ack" else "working-turn"}
+                f.rpc_results["turn/steer"] = steer
+                with self.queue_exit_failure(f.home, sent, asyncio.CancelledError(), failure), self.assertRaises(ValueError):
+                    asyncio.run(NATIVE.queue_input(f.home, f.session, "private-input", expected_turn_id="working-turn"))
+                self.assertEqual(len(sent), 1)
+                self.assertTrue(CLOSURE.action_pending(f.session))
+                self.assertNotIn("thread/queue/add", f.rpc_requests)
+
+    def test_steer_cli_uses_exact_home_and_turn(self) -> None:
+        import sys
+        import uuid
+        session_cli = importlib.import_module("test_codex_session")
+        with ReceiptFixture(str(uuid.uuid4())) as f:
+            other = f.root / "other-home"
+            f.add_home(other)
+            f.home_states[str(other)] = "notLoaded"
+            f.native_state = "active"
+            f.rpc_results["thread/turns/list"] = {"data": [{"id": "working-turn", "status": "inProgress"}], "nextCursor": None}
+            sent = []
+            def steer(request: dict) -> dict:
+                sent.append(request["params"])
+                return {"turnId": request["params"]["expectedTurnId"]}
+            f.rpc_results["turn/steer"] = steer
+            for home in (other, f.home):
+                output = io.StringIO()
+                with patch.object(sys, "argv", ["codex-session.py", "steer", "--session-id", f.session,
+                        "--codex-home", str(home), "--expected-turn-id", "working-turn", "--message", "private-input"]), redirect_stdout(output):
+                    self.assertEqual(session_cli.SESSION.main(), 0 if home == f.home else 1)
+                self.assertNotIn("private-input", output.getvalue())
+                self.assertEqual(json.loads(output.getvalue())["ok"], home == f.home)
+            self.assertEqual(len(sent), 1)
+            self.assertEqual([home for home, method in f.home_requests if method == "turn/steer"], [str(f.home)])
+            self.assertNotIn("thread/queue/add", f.rpc_requests)
+
     def test_native_refusal_before_queue_is_distinct_from_a_thread_that_is_not_loaded(self) -> None:
         import sys
         import uuid

@@ -3,7 +3,7 @@
 # requires-python = ">=3.12"
 # dependencies = ["websockets==17.3", "aiohttp==3.14.5"]
 # ///
-"""Exact-thread Codex resume and queue operations under the ownership lease."""
+"""Exact-thread Codex resume, future queue and active-turn steer under the ownership lease."""
 from __future__ import annotations
 
 import argparse
@@ -69,9 +69,10 @@ def run(args) -> int:
             queued_submission_id=args.queued_submission_id, entry_sha256=args.entry_sha256))
         print(json.dumps(result))
         return 0
-    if args.command == "queue":
+    if args.command in {"queue", "steer"}:
         message = args.message_file.read_text() if args.message_file else args.message
-        receipt = asyncio.run(queue_input(home, args.session_id, message))
+        steering = {"expected_turn_id": args.expected_turn_id} if args.command == "steer" else {}
+        receipt = asyncio.run(queue_input(home, args.session_id, message, **steering))
         print(json.dumps({"ok": True, **receipt}))
         return 0
     endpoint = source_endpoint(args.session_id, home, for_resume=True)
@@ -81,10 +82,11 @@ def run(args) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("launch", "native", "resume", "queue", "queue-cancel", "status"))
+    parser.add_argument("command", choices=("launch", "native", "resume", "queue", "steer", "queue-cancel", "status"))
     parser.add_argument("--session-id")
     parser.add_argument("--launch-receipt", type=Path)
     parser.add_argument("--codex-home", type=Path)
+    parser.add_argument("--expected-turn-id", help="Exact observed active turn ID; required for steer")
     parser.add_argument("--proxy", type=Path)
     parser.add_argument("--proxy-parent", type=int)
     group = parser.add_mutually_exclusive_group()
@@ -101,13 +103,17 @@ def main() -> int:
     if args.launch_receipt and (args.command not in {"launch", "status"} or args.session_id):
         parser.error("--launch-receipt belongs to launch or status, without --session-id")
     if args.command not in {"launch", "native"} and (native or not (args.session_id or args.launch_receipt)):
-        parser.error("use --session-id with resume, queue or status; native argv belongs to launch")
+        parser.error("use --session-id with resume, queue, steer or status; native argv belongs to launch")
     if args.command != "status" and args.codex_home is None:
-        parser.error("resume and queue require --codex-home")
+        parser.error("resume, queue and steer require --codex-home")
     if args.command == "native" and (args.proxy is None or args.proxy_parent is None):
         parser.error("native is the internal guarded child bootstrap")
-    if args.command == "queue" and args.message is None and args.message_file is None:
-        parser.error("queue requires --message or --message-file")
+    if args.command in {"queue", "steer"} and args.message is None and args.message_file is None:
+        parser.error("queue and steer require --message or --message-file")
+    if args.command == "steer" and not (args.expected_turn_id and args.expected_turn_id.strip()):
+        parser.error("steer requires --expected-turn-id")
+    if args.command != "steer" and args.expected_turn_id is not None:
+        parser.error("--expected-turn-id belongs to steer")
     if args.command == "queue-cancel" and args.ledger is None and args.termination_record is None:
         parser.error("queue-cancel requires --ledger or --termination-record")
     if args.command != "queue-cancel" and (args.ledger or args.termination_record or args.apply or args.queued_submission_id or args.entry_sha256):
