@@ -204,7 +204,9 @@ unambiguous people-index name and a comma or colon also addresses their earlier
 comments on that thread, including comments from their indexed agents. This
 includes addressed status replies; unfinished requests still stay in planning.
 Shared logins have no inferred addressee. Comments without a targeted reply
-stay flagged, including on closed threads. Director reactions, question or
+stay flagged. On a closed or merged thread, a comment or opening post whose
+latest version predates the close is settled; a later one stays flagged as a
+possible reopen request. Director reactions, question or
 decision records, later comments or closeout posts without a targeted address,
 labels and notifications do not answer a comment. Director awareness is diagnostic only;
 it is not required to clear attention. Decisions needing the Director still go
@@ -232,7 +234,7 @@ comments). Configured automation is excluded and does not advance that cutoff.
 Edits advance it only when GitHub identifies a configured human as the editor;
 maintainer edits to the Director's posts do not hide replies. Overlapping
 portfolio or explicit `--thread` scopes keep their normal attention rules.
-This scan lists replies even on closed threads. GitHub search visibility,
+This scan lists replies posted after a thread closed. GitHub search visibility,
 indexing and its 1,000-result cap limit discovery; detected partial results are
 degraded coverage. It uses the same attention and exit-code contract.
 Routine outbound scans also read triage comments in the Director's repositories.

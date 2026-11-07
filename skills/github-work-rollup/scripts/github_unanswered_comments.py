@@ -554,6 +554,12 @@ def comment_activity_time(comment: Comment) -> datetime:
     return max(comment_timestamp(comment.created_at), comment_timestamp(comment.updated_at))
 
 
+def written_before_close(thread: dict[str, Any], comment: Comment) -> bool:
+    """A closed or merged thread settled what was said before it; a later comment can be a reopen request."""
+    closed_at = rollup.parse_timestamp(str(thread.get("closed_at") or ""))
+    return thread.get("state") == "closed" and closed_at is not None and comment_activity_time(comment) <= closed_at
+
+
 def in_window(created: str, updated: str, since: datetime, until: datetime) -> bool:
     return since <= comment_timestamp(created) <= until or since <= comment_timestamp(updated) <= until
 
@@ -1194,7 +1200,7 @@ def comment_states_for_thread(
     ]
     results = []
     for comment in sorted(external_comments, key=event_sort_key):
-        if comment.key not in candidate_ids:
+        if comment.key not in candidate_ids or written_before_close(thread, comment):
             continue
         owner_response = targeted_response_for(
             comment,
@@ -1677,6 +1683,7 @@ def outbound_states_for_thread(
     for comment in sorted(comments, key=event_sort_key):
         if (
             not is_external_comment(comment, self_logins, bot_logins, automation, own_automation)
+            or written_before_close(thread, comment)
             or not comment_in_window(comment, settings["since"], settings["until"])
             or comment_activity_through(comment, settings["until"]) <= latest
         ):
@@ -1991,7 +1998,7 @@ def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, .
             "Configured own automation and People-index bots uniquely assigned to the Director are excluded. Other people's People-index agents (contacts.github.bot_usernames) remain eligible even as GitHub Bot accounts and are labeled with who they act for. Other GitHub bots stay filtered on comments, but their opening posts remain eligible; unlisted human-account logins ending in bot or automation are marked possible_automation.",
             "Waits on the Director are open issues whose current wait (the trusted structured record when one is readable, otherwise the Current Status prose marked for review) names the Director's login, a people-index name, or the Director role, with no Director or Owner question still open; an unreadable trusted record is listed as an unresolved wait for review, whether or not a question is open; negated mentions are left out, and waits worded as the Director's own hold (resume, park, hold, select, revisit) are listed as director_hold without raising attention; repository scans only.",
             "A targeted public reply from the Director or configured automation handles a comment after its latest edit. Exact comment links, an inline-review thread with one eligible external comment, or a salutation using an unambiguous people-index name target a reply; automation may also use an unambiguous single-author mention.",
-            "Director reactions and question/decision records are diagnostic awareness evidence, not public replies or requirements for clearing attention. Unanswered comments remain flagged even on closed threads; edits and new comments reopen attention.",
+            "Director reactions and question/decision records are diagnostic awareness evidence, not public replies or requirements for clearing attention. Unanswered comments remain flagged, except on closed or merged threads, where only comments whose latest version follows the close stay flagged; edits and new comments reopen attention.",
             "Opt-in --outbound searches involvement in repositories not owned by the configured human logins, verifies authorship or comment participation, and lists external messages in the window after their latest human activity, including review bodies and inline comments. Only edits with a verified human editor advance that cutoff; automation and maintainer edits do not. Explicit thread and portfolio scopes retain their normal rules when outbound discovery overlaps them. GitHub search indexing, visibility and its 1,000-result cap limit discovery; detected partial results degrade coverage.",
             "With --outbound, visible open threads naming or mentioning the Director outside the scanned repositories are untrusted links, including old questions. An explicit --mention-approval retains the optional personal-login search under its approval, login and report-window bounds.",
             "External comments outside the configured lookback window are not included.",
