@@ -463,8 +463,12 @@ class WorkflowBabysitter:
     ) -> dict[str, Any]:
         started_at = self.clock()
         deadline = started_at + timeout_seconds
-        automation_login, reviewer_login = self.client.resolve_actors()
-        if automation_login.casefold() == reviewer_login.casefold():
+        automation_login, reviewer_login = (
+            self.client.resolve_actors()
+            if authorized_environments
+            else (self.client.resolve_automation_actor(), "")
+        )
+        if authorized_environments and automation_login.casefold() == reviewer_login.casefold():
             return blocked_result(
                 outcome="self_review_identity_conflict",
                 message=(
