@@ -9,12 +9,12 @@ import io
 import json
 import multiprocessing
 import os
-import signal
 import shutil
+import signal
 import subprocess
 import sys
-import tempfile
 import tarfile
+import tempfile
 import time
 import unittest
 from decimal import Decimal
@@ -23,6 +23,87 @@ from pathlib import Path
 from unittest.mock import patch
 
 import heavy_run
+
+
+class WorkloadExitTests(unittest.TestCase):
+    def test_job_creation_keeps_image_bootstrap_with_default_and_overridden_command(self) -> None:
+        docker = heavy_run.Docker(heavy_run.Slot(0, io.BytesIO(), "fixture"), io.StringIO(), "unix:///fixture")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bootstrap = root / "bootstrap.py"
+            bootstrap.write_text('import os,sys; os.environ["BOOTSTRAPPED"]="yes"; os.execvp(sys.argv[1], sys.argv[1:])')
+            default = [sys.executable, "-c", 'import os; assert os.environ["BOOTSTRAPPED"]=="yes"; raise SystemExit(255)']
+            config = {"Entrypoint": [sys.executable, str(bootstrap)], "Cmd": default}
+            for command in ([], [sys.executable, "-c", 'import os; assert os.environ["BOOTSTRAPPED"]=="yes"; raise SystemExit(23)']):
+                with self.subTest(command=command), patch.object(docker, "call", side_effect=[json.dumps(config), "job"]) as call:
+                    docker.create({"name": "job", "image": "fixture", "command": command}, "run", "1", "1024", root, workload=True)
+                    arguments = call.call_args.args
+                    result = subprocess.run([sys.executable, *arguments[arguments.index("fixture") + 1 :]], timeout=10)
+                    self.assertEqual(result.returncode, 23 if command else 127)
+
+    def test_actual_child_exits_preserve_success_and_normalize_high_failures(self) -> None:
+        for status in (0, 23, 127, 128, 255):
+            with self.subTest(status=status):
+                result = subprocess.run(
+                    [sys.executable, "-c", heavy_run.WORKLOAD_ENTRYPOINT, sys.executable, "-c", f"raise SystemExit({status})"],
+                    capture_output=True,
+                    timeout=10,
+                )
+                if status < 128:
+                    self.assertEqual(result.returncode, status)
+                else:
+                    self.assertIn(result.returncode, range(1, 128))
+
+    def test_child_signal_and_missing_executable_are_not_ordinary_exits(self) -> None:
+        child = "import os,signal; signal.signal(signal.SIGTERM, signal.SIG_DFL); os.kill(os.getpid(), signal.SIGTERM)"
+        signaled = subprocess.run([sys.executable, "-c", heavy_run.WORKLOAD_ENTRYPOINT, sys.executable, "-c", child], timeout=10)
+        self.assertEqual(signaled.returncode, 128 + signal.SIGTERM)
+        missing = subprocess.run(
+            [sys.executable, "-c", heavy_run.WORKLOAD_ENTRYPOINT, "/no-such-heavy-workload"], capture_output=True, timeout=10
+        )
+        self.assertEqual(missing.returncode, 255)
+
+    def test_bootstrap_argv_environment_and_streams_reach_child(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            bootstrap = Path(directory) / "bootstrap.py"
+            bootstrap.write_text('import os,sys; os.environ["BOOTSTRAPPED"]="yes"; os.execvp(sys.argv[1], sys.argv[1:])')
+            child = 'import json,os,sys; print(json.dumps([sys.argv[1:],os.environ["BOOTSTRAPPED"],os.environ["VALUE"],sys.stdin.read()])); print("stderr",file=sys.stderr)'
+            arguments = ["space value", "", "$(exit 255)"]
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    heavy_run.WORKLOAD_ENTRYPOINT,
+                    sys.executable,
+                    str(bootstrap),
+                    sys.executable,
+                    "-c",
+                    child,
+                    *arguments,
+                ],
+                env={**os.environ, "VALUE": "inherited"},
+                input="stdin",
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout), [arguments, "yes", "inherited", "stdin"])
+            self.assertEqual(result.stderr, "stderr\n")
+
+    def test_forwarded_cancellation_cannot_become_success(self) -> None:
+        child = 'import signal,time; signal.signal(signal.SIGTERM,lambda *_:exit(0)); print("ready",flush=True); time.sleep(30)'
+        with subprocess.Popen(
+            [sys.executable, "-c", heavy_run.WORKLOAD_ENTRYPOINT, sys.executable, "-c", child], stdout=subprocess.PIPE, text=True
+        ) as process:
+            try:
+                assert process.stdout is not None
+                self.assertEqual(process.stdout.readline(), "ready\n")
+                process.send_signal(signal.SIGTERM)
+                self.assertEqual(process.wait(timeout=10), 128 + signal.SIGTERM)
+            finally:
+                if process.poll() is None:
+                    process.kill()
 
 
 class VolumeDocker(heavy_run.Docker):
@@ -592,16 +673,18 @@ class HeavyRunTests(unittest.TestCase):
         self.assertFalse(list((self.root / "home" / heavy_run.STATE_PATH).glob("custody-*")))
 
     def test_nonzero_job_exit_survives_missing_output_and_cleanup(self) -> None:
-        expected = 23
-        process = self.launch("failed-job", job_exit=expected, fail_output=True)
-        wait_for(self.root / "docker/started-failed-job")
-        (self.root / "docker/release-failed-job").touch()
-        process.communicate(timeout=15)
-        self.assertEqual(process.returncode, expected)
-        result = json.loads((self.root / "failed-job/result.json").read_text())
-        self.assertEqual(result["exit_code"], expected)
-        self.assertIn("error", result)
-        self.assertTrue(result["cleanup_complete"])
+        for expected in (23, 255):
+            with self.subTest(expected=expected):
+                name = f"failed-job-{expected}"
+                process = self.launch(name, job_exit=expected, fail_output=True)
+                wait_for(self.root / f"docker/started-{name}")
+                (self.root / f"docker/release-{name}").touch()
+                process.communicate(timeout=15)
+                self.assertEqual(process.returncode, expected)
+                result = json.loads((self.root / f"{name}/result.json").read_text())
+                self.assertEqual(result["exit_code"], expected)
+                self.assertIn("error", result)
+                self.assertTrue(result["cleanup_complete"])
 
     def test_malformed_input_and_too_small_budgets_refuse_before_allocation(self) -> None:
         container = {"name": "job", "image": "fixture-image"}
