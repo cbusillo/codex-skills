@@ -651,6 +651,20 @@ class WorkflowBabysitterTests(unittest.TestCase):
                 self.assertEqual(result["actors"]["review"], "")
                 human.assert_not_called()
 
+    def test_build_dispatch_and_running_watch_do_not_require_a_human_session(self) -> None:
+        client = FakeWorkflowClient(runs=[run_snapshot("in_progress"), run_snapshot("completed", conclusion="success")])
+        clock = ManualClock()
+        with mock.patch.object(client, "resolve_actors", side_effect=AssertionError("no human session")) as human:
+            result = workflow_babysit.WorkflowBabysitter(client, clock=clock.now, sleep=clock.sleep).dispatch_and_watch(
+                workflow="build.yml", ref="main", inputs={"source": "candidate"},
+                authorized_environments=frozenset(), approval_comment="unused", timeout_seconds=30, poll_interval_seconds=5,
+            )
+        self.assertEqual(result["outcome"], "completed_success")
+        self.assertEqual(result["actors"]["review"], "")
+        self.assertEqual(len(client.dispatch_calls), 1)
+        self.assertEqual(client.approvals, [])
+        human.assert_not_called()
+
     def test_watch_resolves_reviewer_only_when_protected_review_is_reached(self) -> None:
         client = FakeWorkflowClient(
             runs=[run_snapshot("in_progress"), run_snapshot("waiting"), run_snapshot("completed", conclusion="success")],
@@ -735,7 +749,7 @@ class GitHubWorkflowClientTests(unittest.TestCase):
         self.assertEqual(payload["diagnostics"]["last_request"]["status"], 404)
         self.assertEqual(payload["diagnostics"]["last_request"]["operation"], "github.workflow.jobs.read")
         self.assertEqual(calls, [
-            ("GET", "/user"), ("GET", "/user"),
+            ("GET", "/user"),
             ("POST", "/repos/example/repo/actions/workflows/operator.yml/dispatches"),
             ("GET", run_path), ("GET", jobs_path),
         ])

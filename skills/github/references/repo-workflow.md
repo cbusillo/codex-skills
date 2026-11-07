@@ -120,6 +120,7 @@ uv run github/scripts/github_workflow_babysit.py dispatch \
 The helper uses the configured automation token for dispatch and ordinary run
 reads. It uses the active local `gh` account for protected-environment review,
 explicitly clearing automation-token environment variables before those calls.
+Build dispatch without `--approve-environment` resolves automation alone.
 Recovering an existing run resolves the reviewer only when the run reaches a
 waiting state that needs protected-environment diagnosis; completed and running
 observations use automation alone. The review actor is empty until resolved.
