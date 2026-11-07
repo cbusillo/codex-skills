@@ -6345,13 +6345,6 @@ class ClaimTests(unittest.TestCase):
             self.assertEqual(inventory["worktrees"], [{"branch": OTHER["branch"], "path": str(root.resolve())}])
             self.assertNotIn("remote_branches", inventory)
 
-    def test_private_https_inventory_reads_api_heads_without_git_credentials(self) -> None:
-        branches = [{"name": OTHER["branch"]}]
-        replies = ["https://github.com/owner/repo.git\n", "worktree /fixture/repo\nbranch refs/heads/main\n", "main abc\n"]
-        with patch.object(CLAIM, "run_read", side_effect=replies), patch.multiple(PLAN, collect_paged_rest_items=Mock(return_value=(TEST_BOT, branches))):
-            inventory = PLAN.claim_inventory("owner/repo", 42)
-        self.assertEqual(inventory["remote_branches"], [branch["name"] for branch in branches])
-
     def test_remote_inventory_failure_never_publishes_a_claim(self) -> None:
         pages = self.read_pages
         def read(path: str, **options: Any) -> Any:
@@ -6359,9 +6352,8 @@ class ClaimTests(unittest.TestCase):
                 raise PLAN.PlanError("Remote branch read denied")
             return pages(path, **options)
         self.read_pages = read
-        with patch.object(CLAIM, "run_read", return_value="https://github.com/owner/repo.git"):
-            with self.assertRaises(PLAN.PlanError):
-                self.run_claim()
+        with self.assertRaises(PLAN.PlanError):
+            self.run_claim()
         self.assert_no_writes()
 
     def test_git_inventory_error_includes_bounded_stderr(self) -> None:
@@ -6418,7 +6410,7 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual([e["id"] for e in caught.exception.payload["competing_evidence"]], [1, 3])
 
     def test_origin_case_does_not_change_repository_identity(self):
-        replies = ["git@github.com:OWNER/Repo.git\n", "worktree /fixture/repo\nbranch refs/heads/main\n", "main\n", ""]
+        replies = ["git@github.com:OWNER/Repo.git\n", "worktree /fixture/repo\nbranch refs/heads/main\n", "main\n"]
         with patch.object(CLAIM, "run_read", side_effect=replies):
             self.assertEqual(CLAIM.local_inventory("owner/repo", 42)["local_branches"], ["main"])
 

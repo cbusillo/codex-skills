@@ -1178,10 +1178,6 @@ Agent routing and the session override are defined in
 explicit Director exception. Both creation helpers accept `--agent` as an
 assignment.
 
-Ownership inventory reads live remote branches through the existing paged App API
-reader, so private HTTPS remotes need no interactive Git credential. Local Git
-read failures include bounded stderr in the existing redacted diagnostic envelope.
-
 Claim the exact branch that the worktree helper will create. For
 `<catalog>/skills/github/scripts/dev-worktree <repo> <task-slug> <start>`,
 that is `work/<task-slug>`. Read [task worktrees](worktrees.md) before creation:
@@ -1189,6 +1185,7 @@ the helper reads the private per-host `~/.config/codex-skills/worktrees.json`
 setting, with a portable root outside repositories and an existing-host-helper
 integration for stricter storage policies. No PATH installation is needed.
 Verify holds and recorded waits under Choose Work before invoking claim.
+For an inventory failure, read the underlying diagnostic cause before retrying.
 Claim preflight reads waits and holds only from native `blocked-by` links and
 the machine-readable `github-plan:wait` record. Current
 Status and ordinary comment prose are recovery evidence, never wait or executing-worker
