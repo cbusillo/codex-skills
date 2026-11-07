@@ -466,6 +466,37 @@ def resolve(
     return {"ok": True, "status": "not_found", "query": query, "candidates": []}
 
 
+def github_logins(person: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """Return a person's own GitHub logins and the automation logins that act for them."""
+    own: list[str] = []
+    automation: list[str] = []
+    contacts = person.get("contacts")
+    for entry in (person.get("github"), contacts.get("github") if isinstance(contacts, dict) else None):
+        if isinstance(entry, str):
+            own.append(entry)
+        elif isinstance(entry, dict):
+            for key, target in (("username", own), ("handle", own), ("bot_usernames", automation),
+                                ("bot_handles", automation)):
+                value = entry.get(key)
+                target.extend(item for item in ([value] if isinstance(value, str) else value or [])
+                              if isinstance(item, str))
+    def clean(logins: list[str]) -> list[str]:
+        return [login for login in (item.strip().casefold().removeprefix("@") for item in logins) if login]
+    return clean(own), clean(automation)
+
+
+def github_team(login: str, people: list[dict[str, Any]]) -> list[str]:
+    """The GitHub logins, own and automation, of the person holding `login` and of everyone in their company."""
+    login = login.strip().casefold().removeprefix("@")
+    holders = [person for person in people if login in sum(github_logins(person), [])]
+    if len(holders) != 1:
+        return []
+    def company(person: dict[str, Any]) -> str:
+        return (first_string(nested_value(person, "organization", "company")) or "").strip().casefold()
+    team = [person for person in people if person is holders[0] or company(holders[0]) == company(person) != ""]
+    return sorted({item for person in team for item in sum(github_logins(person), [])})
+
+
 def contact_sources() -> set[str]:
     return {"github", "email", "discord", "slack", "phone", "website"}
 
@@ -572,6 +603,10 @@ def main() -> None:
         help="Exit nonzero when the query does not resolve exactly once",
     )
     parser.add_argument(
+        "--github-team", action="store_true",
+        help="Treat the query as a GitHub login; print the logins of its person, their agents and their company",
+    )
+    parser.add_argument(
         "--self-test", action="store_true", help="Run built-in resolver smoke tests"
     )
     args = parser.parse_args()
@@ -601,6 +636,10 @@ def main() -> None:
                 "query": args.query,
                 "candidates": [],
             }
+        elif args.github_team:
+            team = github_team(args.query, people)
+            payload = {"ok": True, "status": "matched" if team else "not_found", "query": args.query,
+                       "logins": team}
         else:
             payload = resolve(args.query, people, fuzzy=args.fuzzy)
         if args.explain_sources and sources is not None:

@@ -7,8 +7,9 @@
 
 The existing comment radar (github_unanswered_comments.py) reads the issue and
 the threads it links. A comment blocks closure until an owner or agent reply is
-posted after its latest version; an edit to an older comment is not a reply. A
-recorded Director decision on the issue is the only override.
+posted after its latest version; an edit to an older comment is not a reply. The
+closing comment itself answers comments on the closing issue from people in the
+people index. A recorded Director decision on the issue is the only override.
 """
 
 from __future__ import annotations
@@ -140,7 +141,8 @@ def run_radar(threads: list[str], gh_cmd: str | None = None,
     return payload
 
 
-def unanswered_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
+def unanswered_rows(payload: dict[str, Any], answered: str | None = None) -> list[dict[str, Any]]:
+    """Rows still unanswered; `answered` names the thread a closing comment replies to, for known people."""
     # Only later_reply_url counts: the radar's targeted response follows edit time, so it is not used here.
     return [
         {key: row.get(key) for key in ("repo", "number", "author", "comment_url", "created_at",
@@ -148,6 +150,8 @@ def unanswered_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
         for row in [*(payload.get("attention") or []), *(payload.get("handled") or [])]
         if isinstance(row, dict)
         and not row.get("later_reply_url")
+        and not (row.get("known_person")
+                 and (answered or "").casefold() == thread_ref(str(row.get("repo")), int(row.get("number") or 0)).casefold())
     ]
 
 
@@ -207,7 +211,7 @@ def describe(row: dict[str, Any]) -> str:
 
 
 def check(repo: str, number: int, *, issue: dict[str, Any] | None = None, decision_url: str | None = None,
-          gh_cmd: str | None = None, reader: GitHubReader | None = None,
+          close_comment: str = "", gh_cmd: str | None = None, reader: GitHubReader | None = None,
           radar: Callable[..., dict[str, Any]] | None = None) -> dict[str, Any]:
     """Return the passed check, or raise CloseAttentionError before any write."""
     if issue is not None and str(issue.get("state") or "").casefold() == "closed":
@@ -225,7 +229,8 @@ def check(repo: str, number: int, *, issue: dict[str, Any] | None = None, decisi
                                                          "error": f"linked threads unreadable: {error}"}
     else:
         payload = (radar or run_radar)(threads, gh_cmd)
-    rows, gaps = unanswered_rows(payload), coverage_gaps(payload)
+    rows = unanswered_rows(payload, thread_ref(repo, number) if close_comment.strip() else None)
+    gaps = coverage_gaps(payload)
     result = {"threads": threads, "unanswered": rows, "coverage_gaps": gaps}
     if not rows and not gaps:
         return {"result": "passed", **result}

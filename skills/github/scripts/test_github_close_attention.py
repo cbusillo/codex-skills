@@ -50,8 +50,8 @@ def fake_reader(**kwargs: Any) -> GitHubReader:
 
 
 def row(number: int = 7, *, author: str = "client", author_class: str = "person", addressed: bool = False,
-        later_reply: str | None = None, created: str = "2026-10-17T17:33:49Z") -> dict[str, Any]:
-    return {"repo": REPO, "number": number, "author": author, "author_class": author_class,
+        later_reply: str | None = None, created: str = "2026-10-17T17:33:49Z", known: bool = False) -> dict[str, Any]:
+    return {"repo": REPO, "number": number, "author": author, "author_class": author_class, "known_person": known,
             "comment_url": f"https://github.com/{REPO}/issues/{number}#issuecomment-{number}00",
             "created_at": created, "updated_at": created, "body_excerpt": "Can I send a corrected sheet?",
             "publicly_addressed": addressed, "later_reply_url": later_reply}
@@ -116,6 +116,16 @@ class CloseAttentionTests(unittest.TestCase):
         self.assertEqual(result["result"], "passed")
         with self.assertRaises(gate.CloseAttentionError):
             gate.check(REPO, 7, reader=fake_reader(), radar=radar(row(author="client-agent", author_class="automation")))
+
+    def test_the_close_comment_answers_known_people_on_this_issue_only(self) -> None:
+        # cbusillo/odoo-tenant-cm#335: the Client's teammate confirmed the work was done.
+        confirmed = row(known=True)
+        passed = gate.check(REPO, 7, reader=fake_reader(), radar=radar(confirmed), close_comment="Thanks, closing.")
+        self.assertEqual(passed["result"], "passed")
+        reader = fake_reader(pages={f"repos/{REPO}/issues/7/sub_issues": [{"html_url": f"https://github.com/{REPO}/issues/9"}]})
+        for rows, comment in (((confirmed,), ""), ((row(),), "Closing."), ((row(9, known=True),), "Closing.")):
+            with self.assertRaises(gate.CloseAttentionError):
+                gate.check(REPO, 7, reader=reader, radar=radar(*rows), close_comment=comment)
 
     def test_a_targeted_response_without_a_later_posted_reply_refuses(self) -> None:
         # The radar's targeted response follows edit time, so an edited older comment can be one.

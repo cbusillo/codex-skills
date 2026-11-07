@@ -444,26 +444,6 @@ def normalize_login(value: object) -> str:
     return str(value or "").strip().casefold().removeprefix("@")
 
 
-def github_logins(person: dict[str, Any]) -> tuple[list[str], list[str]]:
-    """Return a person's own GitHub logins and the automation logins that act for them."""
-    own: list[str] = []
-    automation: list[str] = []
-    entries = [person.get("github")]
-    contacts = person.get("contacts")
-    if isinstance(contacts, dict):
-        entries.append(contacts.get("github"))
-    for entry in entries:
-        if isinstance(entry, str):
-            own.append(entry)
-        elif isinstance(entry, dict):
-            own.extend(rollup.as_str_list(entry.get("username")) + rollup.as_str_list(entry.get("handle")))
-            automation.extend(rollup.as_str_list(entry.get("bot_usernames")) + rollup.as_str_list(entry.get("bot_handles")))
-    return (
-        [login for login in map(normalize_login, own) if login],
-        [login for login in map(normalize_login, automation) if login],
-    )
-
-
 def people_identities(self_logins: set[str], index_path: Path | None) -> dict[str, Any]:
     empty = {"director_names": [], "director_ambiguous": False, "automation": {}, "address_names": {}, "own_automation": []}
     if index_path is not None and not index_path.expanduser().is_file():
@@ -476,12 +456,12 @@ def people_identities(self_logins: set[str], index_path: Path | None) -> dict[st
             status, people, _sources = resolve_person.load_scoped_people()
     except resolve_person.PeopleConfigError as exc:
         return {**empty, "status": "error", "error": str(exc)}
-    directors = [person for person in people if set(github_logins(person)[0]) & self_logins]
+    directors = [person for person in people if set(resolve_person.github_logins(person)[0]) & self_logins]
     automation: dict[str, str] = {}
     named_people: dict[str, set[str]] = {}
     login_people: dict[str, set[str]] = {}
     for person in people:
-        own, agents = github_logins(person)
+        own, agents = resolve_person.github_logins(person)
         for login in [*own, *agents]:
             login_people.setdefault(login, set()).add(str(person.get("id")))
         label = str(person.get("preferred_reference") or person.get("display_name") or person.get("id") or "")
@@ -494,7 +474,7 @@ def people_identities(self_logins: set[str], index_path: Path | None) -> dict[st
     address_names: dict[str, list[str]] = {}
     for person in people:
         names = [name for name, identities in named_people.items() if identities == {str(person.get("id"))}]
-        own, agents = github_logins(person)
+        own, agents = resolve_person.github_logins(person)
         for login in [*own, *agents]:
             if len(login_people[login]) == 1:
                 address_names[login] = names
@@ -506,7 +486,7 @@ def people_identities(self_logins: set[str], index_path: Path | None) -> dict[st
         # names rather than guess which match is the Director.
         return {**empty, "status": status, "director_ambiguous": len(directors) > 1, "automation": automation}
     [director] = directors
-    own_automation = [login for login in github_logins(director)[1] if len(login_people[login]) == 1]
+    own_automation = [login for login in resolve_person.github_logins(director)[1] if len(login_people[login]) == 1]
     empty["own_automation"] = own_automation
     for login in own_automation:
         automation.pop(login)
@@ -1282,6 +1262,7 @@ def comment_states_for_thread(
                 "author": comment.author,
                 "author_class": author_kind,
                 "automation_for": automation_for,
+                "known_person": normalize_login(comment.author) in (address_names or {}),
                 "created_at": comment.created_at,
                 "updated_at": comment.updated_at,
                 "body_excerpt": compact_body(comment.body),

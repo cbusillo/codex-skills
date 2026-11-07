@@ -6765,11 +6765,11 @@ def close_error_with_recovery(
 
 
 def close_attention_preflight(
-    issue_repo: str, number: int, issue: dict[str, Any], decision_url: str | None, gh_cmd: str,
+    issue_repo: str, number: int, issue: dict[str, Any], decision_url: str | None, gh_cmd: str, close_comment: str = "",
 ) -> dict[str, Any]:
     try:
         return github_close_attention.check(issue_repo, number, issue=issue, decision_url=decision_url,
-                                            gh_cmd=gh_cmd)
+                                            close_comment=close_comment, gh_cmd=gh_cmd)
     except github_close_attention.CloseAttentionError as exc:
         raise PlanError(
             str(exc),
@@ -6825,7 +6825,7 @@ def cmd_close(args: argparse.Namespace) -> None:
     validate_plan_references(close_comment, issue_repo)
     route_actor, gh_cmd, expected_actor = comment_route()
     close_attention = close_attention_preflight(issue_repo, number, issue, getattr(args, "unanswered_decision", None),
-                                                gh_cmd)
+                                                gh_cmd, close_comment)
     actor = issue_actor
     completed_steps: list[str] = []
     comment_result: dict[str, Any] = {}

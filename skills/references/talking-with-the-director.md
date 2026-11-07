@@ -82,16 +82,16 @@ mentioned needs exact-text approval. Proposing design, scope or outcome
 choices, or promising a feature or date, still needs the Director.
 
 Post these replies with `gh-comment issue NUMBER --repo OWNER/REPO --body-file
-FILE --client-login LOGIN`, repeating `--client-login` for each Client, team or
-agent login verified through `people` or the product's recorded identity
+FILE --client-login LOGIN`, naming the Client; the people index adds their
+agents and their company's people. Repeat `--client-login` only for someone it
+does not record, verified through `people` or the product's recorded identity
 context. This mode checks the opening, all timeline comments, PR reviews and
 inline comments, and the outgoing text for outside participants and mentions;
 unreadable coverage refuses the reply. It requires the configured automation
-identity. A refusal is not permission to omit the flag; obtain approval of the
-exact text instead. Include verified Director/team/agent logins in the same
-list, including the product's own Launchplane bot, when not already configured
-as own identities. Unknown and
-third-party bots are outside participants. Link screenshot evidence in the
+identity. A refusal names the participant; it is not permission to omit the
+flag. The Director's agents not configured as own identities, such as the
+product's Launchplane bot, also go in `--client-login`. Unknown and third-party
+bots are outside participants. Link screenshot evidence in the
 reply; answer inline review comments on the PR timeline through this flow.
 For a post in the Director's voice, ask approval of the exact text as its own
 question, never bundled with push or code approval. Other authorized flows,

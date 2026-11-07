@@ -617,7 +617,8 @@ Any attention result or degraded coverage requires a response or explicit
 handoff; apply the [radar rule](../github-work-rollup/SKILL.md#external-comment-radar).
 `close` itself
 refuses while an outside person's comment on the issue or a thread it links has
-no reply, naming each one: read and answer it on its thread, then rerun. Only a
+no reply, naming each one: read and answer it on its thread, then rerun. The
+close comment answers people the people index records on the closing issue. Only a
 Director decision passed as `--unanswered-decision` closes over it; read
 [Planning: Management](../github/references/cli-reference.md#planning-management)
 before using it.
