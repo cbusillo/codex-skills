@@ -442,6 +442,19 @@ class ResumeLaunchTests(unittest.TestCase):
 
 
 class ProviderLaunchTests(unittest.TestCase):
+    def test_new_launch_preflight_prepares_a_fresh_ledger_location(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            command = Path(folder) / "command"
+            command.write_text("cd /repo && exec claude")
+            ledger = Path(folder) / "new-location" / "ledger.json"
+            args = argparse.Namespace(ledger=ledger, account_provider="anthropic", command_file=[command])
+            with patch.object(iterm_tab, "fresh_claude_session", side_effect=RuntimeError) as prepare:
+                with self.assertRaises(RuntimeError):
+                    iterm_tab.prepare_launch_batch(args)
+                prepare.assert_called_once()
+            self.assertTrue(ledger.parent.is_dir())
+            self.assertFalse(ledger.exists())
+
     def test_lead_launch_records_its_owner_on_the_worker_ledger_row(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             ledger = Path(folder) / "ledger.json"

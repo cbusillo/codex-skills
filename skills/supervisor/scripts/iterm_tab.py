@@ -1516,6 +1516,7 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
     command_texts = [read_launch_text(path).rstrip("\n") for path in files]
     claude_sessions = []
     if getattr(args, "ledger", None):
+        args.ledger.parent.mkdir(parents=True, exist_ok=True)
         read_launch_ledger(args.ledger)
         if provider == "anthropic":
             command_texts, claude_sessions = zip(*map(fresh_claude_session, command_texts))
@@ -1606,7 +1607,6 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
         if getattr(args, "ledger", None) and provider == "google":
             native_commands = []
             for text, choice in zip(command_texts, choices):
-                args.ledger.parent.mkdir(parents=True, exist_ok=True)
                 log = args.ledger.parent / f".native-launch-{uuid.uuid4()}.log"
                 choice["file_native"] = {"harness": "agy", "home": str(claim_history.AGY_HOME.expanduser()), "log": str(log)}
                 native_commands.append(f"{text} --log-file {shlex.quote(str(log))}")
@@ -1614,7 +1614,6 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
         if getattr(args, "ledger", None) and provider == "openai":
             if not any(apps) and any(choice.get("tools", {}).get("route") == "local" for choice in choices):
                 raise ValueError("fresh --ledger registration needs the managed remote route")
-            args.ledger.parent.mkdir(parents=True, exist_ok=True)
             for choice in choices:
                 if any(apps):
                     choice["file_native"] = {"harness": "codex", "home": str(Path(choice["env"]["CODEX_HOME"]).expanduser().resolve())}
@@ -2107,6 +2106,7 @@ def register_file_launch(launch: dict, native: dict, ledger: Path) -> dict:
             raise ValueError("exact fresh AGY conversation is unavailable; preserve its terminal and log")
         time.sleep(0.2)
     terminal = "tmux_session_id" if launch.get("backend") == "tmux" else "iterm_session_id"
+    ledger.parent.mkdir(parents=True, exist_ok=True)
     existing = [row for row in session_record.load_ledger(ledger) if row["session_id"] == native["session_id"]]
     if existing:
         entry = session_record.terminal_entry(ledger, terminal, launch["session_id"])

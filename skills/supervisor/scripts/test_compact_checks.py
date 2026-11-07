@@ -506,7 +506,7 @@ class OperationTests(unittest.TestCase):
             "message": {"content": [{"type": "text", "text": "acknowledged"}], "stop_reason": "end_turn"},
         }) + "\n")
         launch = {"session_id": "owned-terminal", "pid": 8, "tty": "/dev/ttys001", "backend": "tmux"}
-        ledger = self.root / "ledger.json"
+        ledger = self.root / "new-location" / "ledger.json"
         command, session = iterm_tab.fresh_claude_session("cd /repo && exec claude --model opus")
         self.assertEqual(iterm_tab.launch_words(command)[-2:], ["--session-id", session])
         with self.assertRaises(ValueError):
