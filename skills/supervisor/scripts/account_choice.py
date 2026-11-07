@@ -294,8 +294,6 @@ def _choose_batch(provider, config, snapshot, unavailable_reason, count, now, na
         if len(accounts) != 1 or len(rows) != 1:
             raise ValueError("google requires one configured account and one Context Panel row; "
                              "AGY has no account override")
-        if name is not None:
-            raise ValueError("google account choice must follow Context Panel; --account is unsupported")
     if name is not None:
         named = [a for a in accounts if a["name"] == name]
         if len(named) != 1:
