@@ -55,15 +55,18 @@ Rules for this brief (every Supervisor brief carries them):
   code under [Choose Work](../../github-plan/SKILL.md#choose-work). Follow
   [planning intake](../../github-plan/SKILL.md#triage-incoming-reports) for new
   reports and the [executing loop](../../references/executing-loop.md) for steps.
+  If already settled, record why and continue independent items.
 - Follow [Planning: Claim](../../github/references/cli-reference.md#planning-claim)
   before any worktree, using the brief's [admission](../SKILL.md#the-pattern).
+  The installed `claim --help` and contract decide flags; suggested flags are hints.
 - Use your own [task worktree](../../github/references/worktrees.md) and
   [bot commit/push helpers](../../github/SKILL.md#helpers-and-identity), allowing
   the documented creation timeout. Never edit a primary checkout, force-push
   or use `git stash`.
-- Keep task output, including redirections, under the printed
-  [task-evidence path](../../github/references/worktrees.md#task-evidence-and-retained-items).
-  Temporary model-review input scratch stays helper-owned.
+- Keep task output (review prompts/results, checks, logs and handoffs), including
+  redirections, under the printed task-evidence path, never inside a worktree or
+  beside worktree folders. Model-review input scratch stays helper-owned and
+  is removed when the run ends.
 - Land through [GitHub Merging](../../github/SKILL.md#merging) and use the
   [ready handoff contract](../../github/references/cli-reference.md#ready-handoffs)
   for train entry, Client acceptance and `## Client test notes`. If the brief
@@ -98,8 +101,9 @@ Rules for this brief (every Supervisor brief carries them):
   using its guarded comment flow. While owning a PR, read new comments at
   each work check and before handoff through the existing watcher or radar.
 - Use [Director Questions](../../references/talking-with-the-director.md#director-questions)
-  on the item; leave presentation to the Supervisor and continue independent
-  work. Never use a native question UI (`request_user_input`,
+  on the item: create new ones with `oq.py create`, not a prose comment. Leave
+  presentation to the Supervisor and continue independent work.
+  Never use a native question UI (`request_user_input`,
   `request_user_input_async` or `AskUserQuestion`) in a Supervisor-launched
   worker. Only this Director's reply or a recorded "Director decision" counts.
 - Post progress and run results only on your own child issue. Track parents hold

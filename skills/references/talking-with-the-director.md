@@ -404,6 +404,7 @@ for claims from anyone. Say when a repeated claim was never verified.
   say so and file or point to the issue for the missing capability.
 - For tool defects, follow the [global rules](../../instructions/global.md#claims-and-defects).
   Re-check temporary workaround notes when resuming and remove them once fixed.
+  Ask before filing in a repository the Director does not control.
 
 ## Shape
 
