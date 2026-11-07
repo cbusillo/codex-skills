@@ -71,11 +71,11 @@ def direction_content(home: Path) -> str:
     marker_path = hook["marker_path"]({**os.environ, "HOME": str(home)})
     if not marker_path.is_file():
         return ""
+    sys.path.insert(0, str(ROOT))
     sys.path.insert(0, str(ROOT / "skills/github/scripts"))
-    sys.path.insert(0, str(ROOT / "skills/direction/scripts"))
-    from direction_audit import AuditError, owner_repositories, repository_listing_gaps
-    from github_api import parse_gh_include_output
-    from github_read import GitHubReader, GitHubReadError, GitHubReadShapeError
+    from skills.direction.scripts.direction_audit import AuditError, owner_repositories, repository_listing_gaps
+    from skills.github.scripts.github_api import parse_gh_include_output
+    from skills.github.scripts.github_read import GitHubReader, GitHubReadError, GitHubReadShapeError
 
     marker = hook["read_marker"](marker_path)
     owner = hook["marker_account"](marker)
@@ -86,8 +86,8 @@ def direction_content(home: Path) -> str:
     def fetch(args: list[str]) -> object:
         try:
             return reader.get_json(args[1], step="direction_repositories")
-        except (GitHubReadError, GitHubReadShapeError) as error:
-            raise AuditError(str(error)) from error
+        except (GitHubReadError, GitHubReadShapeError) as read_error:
+            raise AuditError(str(read_error)) from read_error
     try:
         inventory, cut = owner_repositories(owner, fetch=fetch)
         if not inventory or repository_listing_gaps(cut, fetch=fetch):

@@ -24,10 +24,10 @@ SPEC = importlib.util.spec_from_file_location("sync_global_instructions", Path(_
 assert SPEC and SPEC.loader
 sync = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(sync)
+sys.path.insert(0, str(sync.ROOT))
 sys.path.insert(0, str(sync.ROOT / "skills/github/scripts"))
-import github_identity
-with mock.patch.object(github_identity, "automation_login", return_value=None):
-    import github_read
+with mock.patch("github_identity.automation_login", return_value=None):
+    from skills.github.scripts import github_read
 
 
 def setUpModule() -> None:
@@ -67,12 +67,12 @@ class GlobalInstructionsTests(unittest.TestCase):
             hook = runpy.run_path(str(sync.ROOT / "hooks/direction_check_hook.py"))
             with (
                 mock.patch.dict(os.environ, {"DIRECTION_MARKER": str(marker)}),
-                mock.patch.object(sync.runpy, "run_path", return_value={**hook, "run_reader": read}),
+                mock.patch.object(runpy, "run_path", return_value={**hook, "run_reader": read}),
             ):
                 content = sync.direction_content(home)
             for override in ("", "~/.code/direction-last-check.json"):
                 with (mock.patch.dict(os.environ, {"HOME": str(home), "DIRECTION_MARKER": override}),
-                      mock.patch.object(sync.runpy, "run_path", return_value={**hook, "run_reader": read})):
+                      mock.patch.object(runpy, "run_path", return_value={**hook, "run_reader": read})):
                     self.assertEqual(sync.direction_content(home), content)
             def user_inventory(path: str, *, step: str) -> list[dict]:
                 if path.startswith("installation/"):
@@ -80,7 +80,7 @@ class GlobalInstructionsTests(unittest.TestCase):
                 return repositories
             reader.get_json.side_effect = user_inventory
             with (mock.patch.dict(os.environ, {"DIRECTION_MARKER": str(marker)}),
-                  mock.patch.object(sync.runpy, "run_path", return_value={**hook, "run_reader": read})):
+                  mock.patch.object(runpy, "run_path", return_value={**hook, "run_reader": read})):
                 self.assertEqual(sync.direction_content(home), content)
             reader.get_json.side_effect = None
             for failure in (subprocess.CompletedProcess([], 1, "", "read unavailable"),
@@ -89,7 +89,7 @@ class GlobalInstructionsTests(unittest.TestCase):
                 failed_reader = (mock.Mock(side_effect=failure) if isinstance(failure, Exception)
                                  else mock.Mock(return_value=failure))
                 with (mock.patch.dict(os.environ, {"DIRECTION_MARKER": str(marker)}),
-                      mock.patch.object(sync.runpy, "run_path", return_value={**hook, "run_reader": failed_reader})):
+                      mock.patch.object(runpy, "run_path", return_value={**hook, "run_reader": failed_reader})):
                     with self.assertRaisesRegex(ValueError, "owner/direction"):
                         sync.direction_content(home)
             for repo, source in sources.items():
@@ -121,7 +121,7 @@ class GlobalInstructionsTests(unittest.TestCase):
                 mock.patch.dict(os.environ, {"DIRECTION_MARKER": str(marker)}),
                 mock.patch.object(sys, "argv", [str(sync.__file__), "--source", str(source), "--local-source", str(local),
                                                "--destination", str(destination), "--write"]),
-                mock.patch.object(sync.runpy, "run_path", return_value={**hook, "run_reader": mock.Mock(
+                mock.patch.object(runpy, "run_path", return_value={**hook, "run_reader": mock.Mock(
                     return_value=subprocess.CompletedProcess([], 0, "HTTP/2.0 200 OK\n\n# Overall fixture\n", ""))}),
             ):
                 for inventory in (
