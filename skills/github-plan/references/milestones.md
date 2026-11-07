@@ -30,7 +30,7 @@ alternate backlogs.
   an agent's return is not another finish line. Propose a direction change only
   when the proof itself must change.
 
-The existing Supervisor goal-board check and weekly direction audit assess
+The existing Supervisor routine digest and weekly direction audit assess
 each Track's proof against the merged milestone line, child records
 and linked evidence, independently of open blockers or newly admitted work.
 Their proof-review projections carry recorded text, never a completion verdict.

@@ -6115,6 +6115,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
         agent=github_agent.running_agent(getattr(args, "agent", None)),
         wait_milestone_titles=wait_titles,
         prefetch_nodes=prefetch_graph if NEXT_READS.workers > 1 else None,
+        decision_authors=wait_authors(repo),
     )
     NEXT_READS.read_ahead_unevaluated = len(graph_read_ahead.difference(nodes))
     # Settle the bounded graph look-ahead before taking inventory snapshots.

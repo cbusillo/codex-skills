@@ -100,10 +100,6 @@ def wait_rows(repo, issues, terms, owner, now, discussions=None, trusted=None, e
         verified = source.get("created_at")
         last_verified = parse_date(verified)
         if review and (review == "structured_wait_review" or review.startswith("structured_wait_unreadable")):
-            # A record that cannot be read may hide or release a hold, and a trusted
-            # record may ask for review. Like the goal board, keep the issue as an
-            # unknown wait for review and never resolve it from prose. Only an
-            # unreadable record leaves coverage partial.
             if review != "structured_wait_review" and errors is not None:
                 errors.append({"scope": "structured wait", "repo": repo, "number": issue["number"], "error": review})
             rows.append({

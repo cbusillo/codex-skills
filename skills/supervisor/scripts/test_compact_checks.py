@@ -18,7 +18,6 @@ from unittest.mock import AsyncMock, patch
 import catalog_landing
 import check_changes
 import check_operation
-import goal_board
 import iterm_tab
 import oq
 import session_closeout
@@ -42,22 +41,8 @@ class ChangesTests(unittest.TestCase):
             self.assertTrue(check_changes.changes([], state, ["source"], key="url", complete=True)[0]["removed"])
             self.assertNotIn("active", state.read_text())
 
-    def test_board_and_questions_emit_changes_without_reprinting_private_text(self) -> None:
+    def test_questions_emit_changes_without_reprinting_private_text(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            board: dict[str, Any] = {
-                "repository": "owner/direction", "checked_at": "first", "errors": [],
-                "coverage": {"complete": True},
-                "tracks": [{"url": "track", "status": "active", "read": True, "next_action": "private action",
-                            "children": [{"url": "child", "status": "waiting", "unread": []}]}],
-            }
-            state = Path(directory) / "board.json"
-            first = goal_board.board_changes(board, state, [])
-            self.assertEqual(len(first["records"]), 2)
-            self.assertNotIn("private action", json.dumps(first))
-            board["checked_at"] = "later"
-            self.assertEqual(goal_board.board_changes(board, state, [])["records"], [])
-            board["tracks"][0]["children"][0]["status"] = "active"
-            self.assertEqual(goal_board.board_changes(board, state, [])["records"][0]["url"], "child")
             questions: dict[str, Any] = {
                 "complete": True,
                 "questions": [{"url": "question", "question": "private question", "age_seconds": 1}],

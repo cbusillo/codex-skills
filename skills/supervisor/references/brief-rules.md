@@ -140,7 +140,7 @@ slices itself. This is the
 the first weekly direction audit at least one full week after this brief lands
 judges it, and the Director keeps, changes or drops it. Either harness works;
 Claude leads use tmux for guarded notifications, and the pilot starts on Codex.
-A Track and its goal board are optional views.
+A Track is an optional view; the routine digest includes the milestone summary.
 When several leads share a repository, spread work within its shared PR cap.
 
 Fill the placeholders below and carry the shared rules by link or inclusion.

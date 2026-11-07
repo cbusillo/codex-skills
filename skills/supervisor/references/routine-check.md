@@ -5,7 +5,7 @@ readers and one named normal closeout within the run's scope need no reload.
 Read the full skill at takeover; load owning skills/sections for rare events.
 Keep absolute pointers to the private ledger and one recovery note,
 handoff and question queue. Keep no copied rules,
-decisions, statuses, board contents or narrative; open linked records for action.
+decisions, statuses or narrative; open linked records for action.
 
 1. Read the recovery note and reconcile pending local actions at their source.
 2. Run the digest in the foreground from the catalog:
@@ -41,8 +41,7 @@ decisions, statuses, board contents or narrative; open linked records for action
    comment scan keeps a watermark beside the ledger (`<ledger>-radar-scan.json`)
    and reads only comments changed since it; a missing, unreadable or
    other-identity watermark, or one that no longer covers the window, rereads
-   the whole window. Historical board questions are not
-   a second queue.
+   the whole window.
    A later reply on the same thread by the Director or configured own automation,
    including a merge or closing comment, clears a comment from this digest after
    its latest edit. An opening post stops repeating once its thread has any
@@ -53,6 +52,9 @@ decisions, statuses, board contents or narrative; open linked records for action
    print separately as untrusted pointers, including after a quiet poll. Runner
    lifecycle lines are recognized; an unrecovered stop remains a coverage error.
    That notification window does not prune unanswered comment/question sources.
+   The milestone summary includes every Track and its source decision links,
+   with holds and unread Tracks explicit. Partial global coverage remains an
+   error even when individual Tracks were read.
    The default hides acknowledged QUESTION rows and counts them in one line;
    `--full` prints the complete list at takeover, handoff or recovery. Outstanding
    comments, unacknowledged questions, reviews, missing status, errors and load
@@ -122,7 +124,7 @@ Every check links the question queue and reports source errors and untrusted
 record warnings alongside unknown coverage. Readers
 rebuild current sources; missing proof stays unknown.
 Assess changed Track proof at source; preserve holds, reviews and active work.
-Compare workers with DIRECTION.md and escalate mismatches. Use the full board
-at takeover/handoff; after compaction or a truncated/interrupted check, rebuild
-full board/questions. Watermarks are not delivery records;
+Compare workers with DIRECTION.md and escalate mismatches. Run the digest with `--full`
+at takeover/handoff, after compaction or a truncated/interrupted check.
+Watermarks are not delivery records;
 unpresented queue questions stay outstanding.

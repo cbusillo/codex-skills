@@ -34,9 +34,6 @@ resources:
   - path: references/claude-account-moves.md
     kind: reference
     description: Read when enrolling or moving a rate-limited Supervisor Claude session.
-  - path: scripts/goal_board.py
-    kind: script
-    description: Rebuild the goal board from every open Track issue on OWNER/direction.
   - path: scripts/status.py
     kind: script
     description: Read context and activity for explicit ledger sessions.
@@ -75,7 +72,7 @@ resources:
     description: Where every Director's Supervisor sends field reports about shared skills.
   - path: references/helpers.md
     kind: reference
-    description: Local state, session registry schema, goal board, helper usage and shutdown stages.
+    description: Local state, session registry schema, helper usage and shutdown stages.
   - path: references/brief-rules.md
     kind: reference
     description: Rules every Supervisor brief carries by link, and the milestone lead brief template.
@@ -110,11 +107,6 @@ commands:
     resource_path: scripts/account_choice.py
     example_argv: ["uv", "run", "scripts/account_choice.py", "--provider", "anthropic"]
     purpose: Show which configured account a launch would use and why.
-  - name: supervisor-goal-board
-    source: skill
-    resource_path: scripts/goal_board.py
-    example_argv: ["uv", "run", "scripts/goal_board.py", "--owner", "OWNER", "--format", "markdown"]
-    purpose: Rebuild the goal board from GitHub on every check, after compaction and at takeover.
   - name: supervisor-status
     source: skill
     resource_path: scripts/status.py
@@ -468,10 +460,10 @@ PR carries `## Client test notes`. Discussions are drafts; issues are requests.
 
 ## Milestone State
 
-Use `gh-plan.py next` and the Director's listed milestones. Track issues and
-their goal board are optional; when used, read the board at takeover and after
-compaction. Use the
-[routine digest](references/routine-check.md) at each check. Coverage gaps stay unknown.
+Use `gh-plan.py next` and the Director's listed milestones. Track issues are
+optional. Use the [routine digest](references/routine-check.md) at each check,
+including takeover and after compaction. Its milestone summary includes every
+Track, source decisions and holds. Coverage gaps stay unknown.
 Open the linked decision and Current Status before repeating a hold or briefing
 work. PR handoffs stay open until merged; read current head, mergeability and
 train reason. Assess each Track's `closure_review` under
