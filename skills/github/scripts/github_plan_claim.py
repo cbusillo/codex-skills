@@ -741,7 +741,7 @@ def run_read(argv: list[str], *, cwd: pathlib.Path | None = None, deadline_at: f
     return result.stdout
 
 
-def local_inventory(repo: str, number: int, *, read: Callable[..., Any], cwd: pathlib.Path | None = None,
+def local_inventory(repo: str, number: int, *, cwd: pathlib.Path | None = None,
                     deadline_at: float | None = None) -> dict[str, Any]:
     deadline_options = {"deadline_at": deadline_at} if deadline_at is not None else {}
     remote = run_read(["git", "remote", "get-url", "origin"], cwd=cwd, **deadline_options).strip()
@@ -755,10 +755,8 @@ def local_inventory(repo: str, number: int, *, read: Callable[..., Any], cwd: pa
         worktrees.append({"branch": branch, "path": path})
     local = run_read(["git", "for-each-ref", "--format=%(refname:short) %(objectname)", "refs/heads"], cwd=cwd, **deadline_options).splitlines()
     branch_heads = dict(line.split(" ", 1) for line in local if " " in line)
-    _, branches = read(f"/repos/{repo}/branches", query={}, bucket="rest_core", step_prefix="claim_remote_branches")
-    remote_branches = [branch["name"] for branch in branches]
     return {"worktrees": worktrees, "local_branches": [line.split(" ", 1)[0] for line in local],
-            "remote_branches": remote_branches, "branch_heads": branch_heads, "issue": number}
+            "branch_heads": branch_heads, "issue": number}
 
 
 def released_source(comments: list[dict[str, Any]], comment_id: int) -> dict[str, Any]:

@@ -904,6 +904,8 @@ def preview_guards(entry, *, reader, repo, number, source_id, related, prs, body
     if len(related_comments) != len(related):
         raise ValueError("related ownership changed during preview")
     local = claim.local_inventory(repo, number, cwd=checkout_root / repo.split("/")[1])
+    local["remote_branches"] = [branch["name"] for branch in reader.paged_json(
+        f"/repos/{repo}/branches", step_prefix="preview_remote_branches")]
     now = datetime.now(timezone.utc).isoformat()
     prospective = {"body": body, "user": {"login": actor}, "created_at": now, "updated_at": now}
     branches = set()
@@ -966,8 +968,8 @@ def apply_plans(entry, supervisor_session, plans, status, checkout_root, actor, 
                 item["release_preflight"] = {"status": "refused", "error": str(error)}
                 report["issue_refusals"].append({"repository": repo, "issue": number, "error": str(error)})
             except (ValueError, KeyError, TypeError, StopIteration, OSError, GitHubReadError, GitHubReadShapeError) as error:
-                item["release_preflight"] = {"status": "refused", "error": str(error)}
-                raise ValueError(str(error)) from error
+                item["release_preflight"] = {"status": "refused", "error": github_api.redact_string(str(error))}
+                raise ValueError(github_api.redact_string(str(error))) from error
         if apply:
             result = comment("issue", number, body, repo=repo, expected_actor=actor,
                              operation="github.comment.issue", dedupe_body=True)

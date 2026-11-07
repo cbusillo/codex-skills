@@ -29,6 +29,8 @@ closure = importlib.import_module("github_plan_closure")
 identity = importlib.import_module("github_identity")
 
 ACTOR = "test-automation[bot]"
+LOCAL_INVENTORY = helper.claim.local_inventory
+
 SOURCE = {"worker": "trial", "session": "source-session", "branch": "work/trial",
           "claimed_at": "2026-01-01T00:00:00Z"}
 
@@ -40,6 +42,13 @@ def patch_attribute(target: Any, name: str, *args: Any, **kwargs: Any) -> Any:
 def comment(number, body, author=ACTOR):
     return {"id": number, "body": body, "user": {"login": author},
             "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z"}
+
+
+class GitHubPages(Mock):
+    def _execute_mock_call(self, path: str, **kwargs: Any) -> Any:
+        if path.endswith("/branches"):
+            return []
+        return super()._execute_mock_call(path, **kwargs)
 
 
 class ReleaseTests(unittest.TestCase):
@@ -129,12 +138,32 @@ class ReleaseTests(unittest.TestCase):
         self.addCleanup(started.stop)
         self.source = comment(1, "Claimed by trial\n\n" + helper.claim.marker(SOURCE))
         self.reader = Mock()
+        self.reader.paged_json = GitHubPages()
         self.reader.batch_diagnostic = {}
         self.reader.get_json.return_value = {**comment(99, "Handoff"),
             "issue_url": "https://api.github.com/repos/test/a/issues/1"}
         self.inventory = patch.object(helper, "inventory", return_value=[])
         self.inventory.start()
         self.addCleanup(self.inventory.stop)
+
+    def test_private_https_preview_reads_remote_heads_without_git_credentials(self) -> None:
+        replies = ["https://github.com/test/a.git", "", ""]
+        self.reader.paged_json = Mock(side_effect=lambda path, **_kwargs: [{"name": SOURCE["branch"]}] if path.endswith("/branches") else [self.source])
+        with patch_attribute(helper.claim, "local_inventory", side_effect=LOCAL_INVENTORY), patch_attribute(helper.claim, "run_read", side_effect=replies), patch_attribute(helper.release, "prepare_release") as prepare:
+            result = helper.preview_guards(self.entry, reader=self.reader, repo="test/a", number=1,
+                source_id=self.source["id"], related=[], prs=[], body="Preview", actor=ACTOR,
+                supervisor_session="supervisor", checkout_root=self.root)
+        self.assertEqual(prepare.call_args.args[3]["remote_branches"], [SOURCE["branch"]])
+        self.assertFalse(result["attestation_posted"])
+
+    def test_git_diagnostic_is_redacted_in_preview_failure_and_report(self) -> None:
+        secret = "ghp_fixture_secret"
+        report = {"claims": [], "issue_refusals": []}
+        with patch.object(helper, "validate_closure", return_value="closed"), patch.object(helper, "preview_guards", side_effect=ValueError(f"fatal: {secret}")):
+            with self.assertRaises(ValueError) as caught:
+                helper.apply_plans(self.entry, "supervisor", [("test/a", 1, 1, [], [])], "closed", self.root, ACTOR, False, report, self.reader)
+        self.assertNotIn(secret, str(caught.exception))
+        self.assertNotIn(secret, json.dumps(report))
 
     def test_bulk_release_reports_active_pr_claim_with_supported_manual_route(self):
         handoff = dict(self.reader.get_json.return_value)

@@ -1050,6 +1050,12 @@ def path_with_query(path: str, params: dict[str, Any]) -> str:
     return f"{path}?{urllib.parse.urlencode(params)}"
 
 
+def claim_inventory(repo: str, number: int, *, cwd: pathlib.Path | None = None) -> dict[str, Any]:
+    local = github_plan_claim.local_inventory(repo, number, cwd=cwd)
+    _, branches = collect_paged_rest_items(f"/repos/{repo}/branches", query={}, bucket="rest_core", step_prefix="claim_remote_branches")
+    return {**local, "remote_branches": [branch["name"] for branch in branches]}
+
+
 def collect_paged_rest_items(
     path: str,
     *,
@@ -2343,7 +2349,7 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
         source = next((c for c in source_comments if c.get("id") == args.claim_comment), None)
         if source is None:
             raise PlanError("Source claim is missing from the canonical issue")
-        source_inventory = github_plan_claim.local_inventory(source_issue["repo"], source_issue["number"], read=collect_paged_rest_items)
+        source_inventory = claim_inventory(source_issue["repo"], source_issue["number"])
         _, fresh_evidence = api_json("GET", f"/repos/{evidence_repo}/issues/comments/{evidence_id}", bucket="rest_core", failed_step="release_evidence_readback")
         if fresh_evidence != evidence:
             raise PlanError("Session-ended evidence changed during release")
@@ -3670,7 +3676,7 @@ def claim_once(args: argparse.Namespace) -> None:
             f"/repos/{target_repo}/pulls", query={"state": "open"},
             bucket="rest_core", step_prefix="claim_pr_readback",
         )
-        phase["inventory"] = github_plan_claim.local_inventory(target_repo, number, read=collect_paged_rest_items)
+        phase["inventory"] = claim_inventory(target_repo, number)
         inherited_source = any(record.get("retained_handoff") for text in [current_status, *(comment.get("body") or "" for comment in current_comments)]
                                for record in github_plan_claim.records(text))
         if record_kind == "issue" or resume_issue or inherited_source:
@@ -3699,7 +3705,7 @@ def claim_once(args: argparse.Namespace) -> None:
                 planning_path = pathlib.Path(handoff_checkout) if handoff_checkout else config_path.parent.parent if config_path else None
                 if planning_path is None:
                     raise PlanError("Cross-repository refresh requires a verified planning checkout; pass --planning-checkout PATH")
-                phase["planning_inventory"] = github_plan_claim.local_inventory(issue_repo, number, read=collect_paged_rest_items, cwd=planning_path)
+                phase["planning_inventory"] = claim_inventory(issue_repo, number, cwd=planning_path)
                 _, phase["planning_pulls"] = collect_paged_rest_items(
                     f"/repos/{issue_repo}/pulls", query={"state": "open"},
                     bucket="rest_core", step_prefix="refresh_planning_prs",
@@ -5340,9 +5346,9 @@ def read_queue_ownership(repo: str) -> dict[str, Any]:
         target = pathlib.Path.home() / "Developer" / repo.split("/")[1]
         if target.is_dir() and not (NEXT_READS and NEXT_READS.expired):
             try:
-                local = github_plan_claim.local_inventory(repo, 0, read=collect_paged_rest_items, cwd=target,
+                local = github_plan_claim.local_inventory(repo, 0, cwd=target,
                     **({"deadline_at": NEXT_READS.deadline} if NEXT_READS else {}))
-                observed["inventory"] = local
+                observed["inventory"].update(local)
                 observed["coverage"].update(local_artifacts="read")
             except (ValueError, OSError, subprocess.SubprocessError) as exc:
                 observed["coverage"]["local_error"] = str(exc)
