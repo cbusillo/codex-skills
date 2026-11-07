@@ -540,7 +540,6 @@ def test_repository_creation_permission_refusals_do_not_offer_actor_fallback() -
         ))
     # A headerless non-throttling 403 also represents an authorization refusal.
     failures.append(_api.classify_error(403, {}, {"message": "Repository creation denied"}, is_write=True))
-    # GitHub's "Rate Limit Exceeded" wording with quota left is a refusal too.
     failures.append(_api.classify_error(
         403, {"x-ratelimit-remaining": "6366"}, {"message": "Rate Limit Exceeded"}, is_write=True,
     ))
@@ -1334,8 +1333,7 @@ def test_rate_limit_cli_uses_public_operation_id() -> None:
 
 
 def test_classify_legacy_403_rate_limit_text_follows_probed_quota() -> None:
-    # The wrapper's own path for `gh repo create` under an installation token
-    # (codex-skills#1580): only the /rate_limit probe can tell a refusal apart.
+    # https://github.com/cbusillo/codex-skills/issues/1580#issuecomment-6671783947
     for core_remaining, cause, retryable in ((6366, "permission_denied", False), (0, "rest_primary_rate_limited", True)):
         probe = _fake_proc(stdout=_include_output(body={"resources": {"core": {"remaining": core_remaining}}}))
         with tempfile.TemporaryDirectory() as tmp:

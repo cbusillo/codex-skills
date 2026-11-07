@@ -1168,9 +1168,7 @@ def classify_error(
                 request_id=request_id,
                 rate_limit=rl_dict,
             )
-        # GitHub's wording alone is not evidence: account-only writes such as
-        # POST /user/repos answer an installation token with "Rate Limit
-        # Exceeded" while quota remains. A remaining count decides when present.
+        # https://github.com/cbusillo/codex-skills/issues/1580
         if not permission_message and (
             rl.remaining == 0
             or (rl.remaining is None and ("rate limit exceeded" in msg_lower or "api rate limit" in msg_lower))
@@ -1533,8 +1531,6 @@ def classify_legacy_failure(
     elif ("rate limit" in lowered or "rate_limited" in lowered) and "http 403" in lowered and _probe_shows_quota(
         rate_limit_result
     ):
-        # A 403 that names a rate limit while every quota bucket has requests
-        # left is a refusal of this identity, not throttling.
         cause = "permission_denied"
         disposition = "requires_authorization"
         retryable = False
