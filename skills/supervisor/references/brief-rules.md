@@ -99,9 +99,7 @@ Rules for this brief (every Supervisor brief carries them):
   Post the waiting handoff instead, a `gh-pr.py comment <pr> --body-file <file>`
   whose first line is `Engineering ready; waiting for <named reason>`, and run
   `ready` once the hold ends. A brief that holds a PR names that wait in one
-  line. Every PR in a repository that feeds a Client release carries
-  a `## Client test notes` section, checked by [`gh-pr.py ready`](../../github/references/cli-reference.md#ready-handoffs).
-  Launchplane and codex-skills have no Client.
+  line. That contract owns the `## Client test notes` requirement.
 - Briefs state the goal and observable finish line, not a mechanism to build.
   A named mechanism is a suggestion unless it records a Director decision.
 - Scope ([approved scope rule](https://github.com/cbusillo/codex-skills/issues/1043#issuecomment-6091977127)):
