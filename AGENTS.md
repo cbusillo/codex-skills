@@ -15,7 +15,7 @@ Evidence: [DIRECTION.md](DIRECTION.md).
 - Use [references/execution-scope.md](skills/references/execution-scope.md) when
   changing execution guidance. Preserve intentional approval, quality,
   delegation, and output-format policies.
-- Follow [reviews by another model](skills/references/model-review.md).
+- Before merging, read [when to get a review](skills/references/model-review.md#when-to-ask-for-one).
 - Maintain the top-level skill sources. The allowlisted system overrides are
   documented in [README.md](README.md#system-skill-overrides); generated
   `.system` caches and installed plugin caches are not development targets.

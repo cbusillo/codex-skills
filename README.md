@@ -1034,8 +1034,6 @@ change to the active local `gh` account implicitly. Set
 `GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1` only for an explicitly approved
 one-off command whose human-owned actor is acceptable.
 
-The `local.env` file follows the [shared repository instructions](instructions/global.md#repository-instructions).
-
 ### Guided Separate Automation Identity
 
 A Director who is the sole code owner can adopt and audit without an App.

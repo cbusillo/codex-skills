@@ -186,7 +186,7 @@ records and write out only otherwise unrecorded gaps.
   change areas; the complete suite runs only in CI. For shared contracts, deployment or
   release changes, broaden local coverage for the affected risk and retain any
   explicit repository gates.
-- Apply [reviews by another model](../references/model-review.md).
+- Before merging, read [when to get a review](../references/model-review.md#when-to-ask-for-one).
 - Frontend/UI change: run browser validation in addition to build/type/test
   checks required by the repo.
 - Docker image change: prefer real image build/smoke/inspection over static
