@@ -11,7 +11,8 @@ writes, owner-specific routing, or authorization decisions.
 
 from __future__ import annotations
 
-from github_plan_status.discussion import section_map
+from github_plan_status.discussion import section_map, unquoted_text
+from github_plan_status.questions import recorded_decision
 
 import datetime as dt
 import re
@@ -1167,6 +1168,7 @@ def rank_direction_work(
     agent: str | None = None,
     wait_milestone_titles: list[str] | None = None,
     prefetch_nodes: Callable[[list[dict[str, Any]]], None] | None = None,
+    decision_authors: set[str] | None = None,
 ) -> dict[str, Any]:
     """Walk ordered Track issues through native blockers and sub-issues.
 
@@ -1202,7 +1204,7 @@ def rank_direction_work(
     waits_recorded: set[tuple[str, int]] = set()
     degraded = 0
     truncated = False
-    track_next_actions: dict[str, dict[str, Any]] = {}
+    track_next_actions: dict[str, list[dict[str, Any]]] = {}
     closure_reviews: list[dict[str, Any]] = []
     for index, root in enumerate(tracks):
         if prefetch_nodes is not None:
@@ -1210,6 +1212,14 @@ def rank_direction_work(
         key = root["repo"].casefold(), root["number"]
         node_cache[key] = read_node(root["repo"], root["number"])
         discussion = node_cache[key]["item"].get("discussion") or {}
+        trusted = {author.casefold() for author in (decision_authors or {root["repo"].split("/")[0]})}
+        track_next_actions.setdefault(root["milestone"]["title"], []).append({
+            "url": root["url"],
+            "read": discussion.get("complete") is True and node_cache[key]["item"].get("exclusion") != "unknown_dependencies",
+            "decisions": [comment["url"] for comment in discussion.get("comments", [])
+                          if str(comment.get("author") or "").casefold() in trusted and comment.get("url")
+                          and recorded_decision(unquoted_text(comment.get("body") or ""))],
+        })
         closure_reviews.append({"url": root["url"], "milestone": root["milestone"]["title"],
             **milestone_closure_review(discussion.get("body", "")),
             })
@@ -1293,10 +1303,6 @@ def rank_direction_work(
                 "reported_at": item.get("updated_at"),
             })
         waits_recorded.add(key)
-        if tracking:
-            track_next_actions[milestone["title"]] = {
-                "track": item["url"],
-            }
         own_item = item
         if held_parents:
             item = include_parent_context(item, held_parents, complete=True, tracking_roots=tracks)
@@ -1365,7 +1371,7 @@ def rank_direction_work(
 
 def milestone_summary(
     milestone_titles: list[str], *, completed: list[str], candidates: list[dict[str, Any]],
-    graph_waits: list[dict[str, Any]], track_next_actions: dict[str, dict[str, Any]],
+    graph_waits: list[dict[str, Any]], track_next_actions: dict[str, list[dict[str, Any]]],
     underway: list[dict[str, Any]] | None = None, needs_status: list[dict[str, Any]] | None = None,
     graph_complete: bool = True,
 ) -> list[dict[str, Any]]:
@@ -1401,11 +1407,11 @@ def milestone_summary(
         for row in [*owned, *missing]:
             if row.get("wait_review_required") and not any((entry["repo"], entry["number"]) == (row["repo"], row["number"]) for entry in reviews):
                 reviews.append({**row, "waiting_for": "Legacy wait review required"})
-        track = track_next_actions.get(title) or {}
+        tracks = track_next_actions.get(title) or []
         summary.append({
             "milestone": title,
-            "track": track.get("track"),
-            "state": "work_listed" if work else "needs_status" if missing else "wait_review_required" if reviews else "underway" if owned else "waiting" if waits else "no_linked_work" if graph_complete else "unknown",
+            "tracks": tracks,
+            "state": "unknown" if any(not track["read"] for track in tracks) else "work_listed" if work else "needs_status" if missing else "wait_review_required" if reviews else "underway" if owned else "waiting" if waits else "no_linked_work" if graph_complete else "unknown",
             "work": work, "underway": owned, "verification_only": [], "scope_review": [], "needs_status": missing, "wait_reviews": reviews,
             "waits": waits,
         })

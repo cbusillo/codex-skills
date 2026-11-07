@@ -172,6 +172,13 @@ def digest(sources: dict[str, dict], *, full: bool = False) -> str:
         if row.get("action") or row.get("error"):
             lines.append(f"WORKER {pointer(row)}: {row.get('error') or row['action']}")
     selection = sources.get("next", {})
+    for milestone in selection.get("milestone_summary", []):
+        lines.append(f"MILESTONE {milestone['milestone']}: {milestone['state']}")
+        for track in milestone.get("tracks", []):
+            lines.append(f"TRACK {pointer(track)}: {'read' if track['read'] else 'UNKNOWN, not refreshed'}")
+            lines.extend(f"DECISION {url}" for url in track.get("decisions", []))
+        for wait in [*milestone.get("waits", []), *milestone.get("wait_reviews", [])]:
+            lines.append(f"WAIT {pointer(wait)}: {wait.get('waiting_for')}")
     needs_status = []
     for field in ("candidates", "excluded", "needs_status"):
         for row in selection.get(field, []):

@@ -109,26 +109,17 @@ class ClaimMarkerTests(unittest.TestCase):
                       f"## Lead routing\nNext actor: agent:{session}"):
             with self.subTest(field=field):
                 self.assertFalse(CLAIM.belongs_to_session(status + field, session))
-    def test_only_a_complete_unquoted_launch_request_distinguishes_the_coordinator(self) -> None:
+    def test_exact_dispatch_recipient_distinguishes_the_coordinator_without_a_fenced_request(self) -> None:
         actor = "agent:01970242-7941-7f0c-b461-16aa5723fb52"
         request = f"Next actor: {actor}\nBrief:\n````text\nTask.\n```sh\necho example\n```\n````\n"
-        for status in (request, request.replace("\n", "\r\n")):
+        for status in (request, request.replace("\n", "\r\n"), f"Next actor: {actor}\n"):
             self.assertIsNone(CLAIM.recipient_evidence(status, [], repo="owner/repo", number=42, trusted={"owner"},
                                                       dispatch_recipient=actor.removeprefix("agent:")))
             for recipient in ("", "different-session"):
                 found = CLAIM.recipient_evidence(status, [], repo="owner/repo", number=42, trusted={"owner"},
                                                 dispatch_recipient=recipient)
                 assert found is not None
-                recovery = found["next_action"].split()
-                self.assertIsNone(CLAIM.recipient_evidence(status, [], repo="owner/repo", number=42, trusted={"owner"},
-                    dispatch_recipient=recovery[recovery.index("--dispatch-recipient") + 1]))
-        for status in (f"Next actor: {actor}\n", request.removesuffix("````\n"),
-                       f"Next actor: {actor}\nBrief:\n```text\n \n```\n",
-                       f"Next actor: {actor}\n> Brief:\n> ```text\n> Task.\n> ```\n",
-                       f"Next actor: {actor}\n`````text\n{request}`````\n"):
-            with self.subTest(status=status):
-                self.assertIsNotNone(CLAIM.recipient_evidence(status, [], repo="owner/repo", number=42, trusted={"owner"},
-                                                              dispatch_recipient=actor.removeprefix("agent:")))
+                self.assertEqual(found["worker"], actor.removeprefix("agent:"))
 
     def test_fenced_claim_examples_never_become_holders_or_recorded_branches(self) -> None:
         for opening, closing in (("~~~text", "~~~"), ("```text", "```"), ("````text", "````")):
@@ -6476,8 +6467,9 @@ class ClaimTests(unittest.TestCase):
 
     def test_lead_launch_request_allows_a_fresh_worker_but_keeps_claims_and_waits(self) -> None:
         lead = "01970242-7941-7f0c-b461-16aa5723fb52"
-        for retained, mode in product((None, "numeric", "url", "case-url"), ("clear", "competitor", "wait", "redirected", "no-dispatch")):
-            with self.subTest(retained=retained, mode=mode):
+        for retained, mode, brief in product((None, "numeric", "url", "case-url"),
+                ("clear", "competitor", "wait", "redirected", "no-dispatch"), (False, True)):
+            with self.subTest(retained=retained, mode=mode, brief=brief):
                 if retained in {"url", "case-url"} and mode not in {"clear", "no-dispatch"}: continue
                 self.setUp()
                 if retained:
@@ -6487,16 +6479,17 @@ class ClaimTests(unittest.TestCase):
                     if retained.endswith("url"):
                         repo = "OWNER/Repo" if retained == "case-url" else "owner/repo"
                         self.args.resume_from = f"https://github.com/{repo}/issues/42#issuecomment-{self.args.resume_from}"
-                self.issue["body"] += (
-                    f"Next actor: agent:{lead}\nNext action: Launch the bounded worker.\n"
-                    "Brief:\n```text\nAnchor and claim: https://github.com/owner/repo/issues/42\n"
-                    "Implement the export in a new worktree.\n```\n"
-                )
+                self.issue["body"] += f"Next actor: agent:{lead}\nNext action: Route the bounded worker.\n"
+                if brief:
+                    self.issue["body"] += (
+                        "Brief:\n```text\nAnchor and claim: https://github.com/owner/repo/issues/42\n"
+                        "Implement the export in a new worktree.\n```\n"
+                    )
                 self.args.dispatch_recipient = lead if mode != "no-dispatch" else None
                 if mode == "redirected":
                     self.issue["body"] = self.issue["body"].replace(lead, "01970242-7941-7f0c-b461-16aa5723fb53")
                 if mode == "competitor":
-                    self.compete()
+                    self.compete({**OTHER, "session": lead})
                 if mode == "wait":
                     self.record_wait()
                 if mode == "clear":
@@ -6530,9 +6523,7 @@ class ClaimTests(unittest.TestCase):
             self.assertEqual(caught.exception.code, "claim_conflict")
             recipient = next(row for row in caught.exception.payload["competing_evidence"]
                              if row["source"] == "recorded_recipient")
-            command = recipient["next_action"].split("gh-comment ", 1)[1]
-            remedy = github_comment.build_parser().parse_args(command.split())
-            self.assertEqual((remedy.repo, remedy.number), (self.issue["repo"], self.issue["number"]))
+            self.assertEqual(recipient["worker"], "existing-worker")
             self.assert_no_writes()
 
     def test_later_activity_does_not_replace_trusted_comment_assignment(self) -> None:
