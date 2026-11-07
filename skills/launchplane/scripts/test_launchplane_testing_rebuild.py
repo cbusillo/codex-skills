@@ -167,17 +167,74 @@ def test_generic_plan_refuses_when_service_selected_different_inputs(field: str,
     read.assert_called_once()
 
 
-def test_generic_pending_preflight_cannot_queue_a_rebuild() -> None:
-    response = generic_inputs()
-    response["status"] = "pending"
-    code, output, _, _, _ = invoke(args=generic_arguments(rebuild.PLAN_COMMAND), read_body=response)
+@pytest.mark.parametrize("native", [False, True])
+def test_conditional_plan_survives_projection_but_cannot_queue(native: bool) -> None:
+    response = generic_inputs() if native else plan_receipt()
+    result = response if native else response["result"]
+    result.update(status="pending", steps=["prepare_independent_copy", "publish_same_address"],
+        blockers=[{"code": "testing_in_use", "message": "odoo-user:42 since 2026-11-07T22:00:00Z until 2026-11-07T22:05:00Z",
+            "private": "PRIVATE_SENTINEL"}])
+    plan_args = generic_arguments(rebuild.PLAN_COMMAND) if native else arguments(command=rebuild.PLAN_COMMAND)
+    code, output, post, read, _ = invoke(args=plan_args,
+        **({"read_body": response} if native else {"body": response}))
     assert code == 0
-    assert output["result"]["status"] == "pending"
-    code, _, post, read, settings = invoke(args=generic_arguments(), evidence=output)
+    assert output["result"]["steps"] == result["steps"]
+    assert output["result"]["blockers"] == [{key: result["blockers"][0][key] for key in ("code", "message")}]
+    assert "PRIVATE_SENTINEL" not in json.dumps(output)
+    if native:
+        post.assert_not_called()
+        read.assert_called_once()
+    else:
+        post.assert_called_once()
+        read.assert_not_called()
+    code, _, post, read, settings = invoke(
+        args=generic_arguments() if native else arguments(), evidence=output)
     assert code != 0
     post.assert_not_called()
     read.assert_not_called()
     settings.assert_not_called()
+
+
+@pytest.mark.parametrize("fields", [
+    {"steps": "execute"}, {"steps": ["execute"] * 33}, {"steps": [None]},
+    {"blockers": {}}, {"blockers": [None]},
+    {"blockers": [{"code": "testing_in_use"}]},
+    {"blockers": [{"code": "testing_in_use", "message": "x"}] * 33},
+    {"status": "pass", "blockers": [{"code": "testing_in_use", "message": "Recorded use"}]},
+])
+def test_malformed_conditional_fields_refuse_without_leaking_the_response(fields: dict[str, Any]) -> None:
+    response = plan_receipt()
+    response["result"].update({"status": "pending", **fields})
+    code, output, post, _, _ = invoke(response, args=arguments(command=rebuild.PLAN_COMMAND))
+    assert code != 0
+    post.assert_called_once()
+    assert "PRIVATE_SENTINEL" not in json.dumps(output)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("steps", ["publish_same_address"]),
+    ("blockers", [{"code": "testing_in_use", "message": "New use"}]),
+])
+def test_plan_fields_remain_bound_to_reviewed_evidence(field: str, value: object) -> None:
+    def change(evidence: dict[str, Any]) -> None:
+        evidence["result"][field] = value
+
+    code, _, post, read, settings = invoke(receipt(), change_evidence=change)
+    assert code != 0
+    post.assert_not_called()
+    read.assert_not_called()
+    settings.assert_not_called()
+
+
+def test_plan_blocker_prose_uses_existing_service_redaction() -> None:
+    response = plan_receipt()
+    response["result"].update(status="pending", message="Wait password=PRIVATE_SENTINEL",
+        blockers=[{"code": "testing_in_use", "message": "Recorded actor https://PRIVATE_SENTINEL.invalid password=PRIVATE_SENTINEL"}])
+    code, output, _, _, _ = invoke(response, args=arguments(command=rebuild.PLAN_COMMAND))
+    assert code == 0
+    assert output["result"]["message"]
+    assert output["result"]["blockers"][0]["message"]
+    assert "PRIVATE_SENTINEL" not in json.dumps(output)
 
 
 @pytest.mark.parametrize("field,value", [("operation_id", "original-operation"), ("operation_id", "other"), ("product", "foreign")])
