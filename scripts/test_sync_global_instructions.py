@@ -24,6 +24,11 @@ SPEC = importlib.util.spec_from_file_location("sync_global_instructions", Path(_
 assert SPEC and SPEC.loader
 sync = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(sync)
+sys.path.insert(0, str(sync.ROOT))
+sys.path.insert(0, str(sync.ROOT / "skills/github/scripts"))
+with tempfile.TemporaryDirectory() as configuration:
+    with mock.patch.dict(os.environ, {"CODEX_SKILLS_ENV_FILE": str(Path(configuration) / "absent.env")}, clear=True):
+        from skills.github.scripts import github_read
 
 
 def setUpModule() -> None:
@@ -40,11 +45,17 @@ class GlobalInstructionsTests(unittest.TestCase):
             marker = home / ".code/direction-last-check.json"
             marker.parent.mkdir()
             sources = {"owner/direction": "# Overall fixture\n\nComplete purpose and boundaries.\n",
-                       "owner/product": "# Product fixture\n\nComplete journey.\n"}
+                       "owner/Product": "# Product fixture\n\nComplete journey.\n"}
             stamp = "2026-10-23T12:00:00Z"
             absent = "owner/retired"
             marker.write_text(json.dumps({"turn": stamp, "turn_repo": "owner/direction",
-                                          "audits": dict.fromkeys((*sources, "other/product", absent), stamp)}))
+                                          "audits": dict.fromkeys(("owner/direction", "other/product", "owner/archived"), stamp)}))
+            reader = self.enterContext(mock.patch.object(github_read, "GitHubReader")).return_value
+            repositories = [
+                {"full_name": repo, "owner": {"login": repo.split("/")[0]}, "archived": repo == "owner/archived"}
+                for repo in (*sources, "other/product", absent, "owner/archived")
+            ]
+            reader.get_json.return_value = {"repositories": repositories, "repository_selection": "all"}
             calls = []
 
             def read(*args: str) -> subprocess.CompletedProcess[str]:
@@ -52,38 +63,81 @@ class GlobalInstructionsTests(unittest.TestCase):
                 repo = args[1].removeprefix("repos/").removesuffix("/contents/DIRECTION.md")
                 if repo == absent:
                     return subprocess.CompletedProcess(args, 1, 'HTTP/2.0 404 Not Found\n\n{"message":"Not Found"}', "")
-                return subprocess.CompletedProcess(args, 0, "HTTP/2.0 200 OK\ncontent-type: text/plain\n\n" + sources[repo], "")
+                return subprocess.CompletedProcess(args, 0, "HTTP/2.0 200 OK\ncontent-type: text/plain\n\n" + sources.get(repo, "# Archived fixture\n"), "")
 
             hook = runpy.run_path(str(sync.ROOT / "hooks/direction_check_hook.py"))
             with (
                 mock.patch.dict(os.environ, {"DIRECTION_MARKER": str(marker)}),
-                mock.patch.object(sync.runpy, "run_path", return_value={**hook, "run_reader": read}),
+                mock.patch.object(runpy, "run_path", return_value={**hook, "run_reader": read}),
             ):
                 content = sync.direction_content(home)
             for override in ("", "~/.code/direction-last-check.json"):
                 with (mock.patch.dict(os.environ, {"HOME": str(home), "DIRECTION_MARKER": override}),
-                      mock.patch.object(sync.runpy, "run_path", return_value={**hook, "run_reader": read})):
+                      mock.patch.object(runpy, "run_path", return_value={**hook, "run_reader": read})):
                     self.assertEqual(sync.direction_content(home), content)
+            def user_inventory(path: str, *, step: str) -> list[dict]:
+                if path.startswith("installation/"):
+                    raise github_read.GitHubReadShapeError(step)
+                return repositories
+            reader.get_json.side_effect = user_inventory
+            with (mock.patch.dict(os.environ, {"DIRECTION_MARKER": str(marker)}),
+                  mock.patch.object(runpy, "run_path", return_value={**hook, "run_reader": read})):
+                self.assertEqual(sync.direction_content(home), content)
+            reader.get_json.side_effect = None
             for failure in (subprocess.CompletedProcess([], 1, "", "read unavailable"),
                             subprocess.CompletedProcess([], 1, 'HTTP/2.0 404 Not Found\n\n{"message":"Not Found"}', ""),
                             subprocess.TimeoutExpired("reader", 6)):
                 failed_reader = (mock.Mock(side_effect=failure) if isinstance(failure, Exception)
                                  else mock.Mock(return_value=failure))
                 with (mock.patch.dict(os.environ, {"DIRECTION_MARKER": str(marker)}),
-                      mock.patch.object(sync.runpy, "run_path", return_value={**hook, "run_reader": failed_reader})):
+                      mock.patch.object(runpy, "run_path", return_value={**hook, "run_reader": failed_reader})):
                     with self.assertRaisesRegex(ValueError, "owner/direction"):
                         sync.direction_content(home)
             for repo, source in sources.items():
                 self.assertIn(source, content)
                 self.assertIn(repo, content)
             self.assertNotIn("other/product", content)
+            self.assertNotIn("owner/archived", content)
             self.assertEqual({call[1] for call in calls}, {f"repos/{repo}/contents/DIRECTION.md" for repo in (*sources, absent)})
             self.assertLess(
                 content.index(sources["owner/direction"]),
-                content.index(sources["owner/product"]),
+                content.index(sources["owner/Product"]),
             )
             with mock.patch.dict(os.environ, {"DIRECTION_MARKER": str(home / "missing")}):
                 self.assertEqual(sync.direction_content(home), "")
+
+    def test_direction_inventory_failure_preserves_existing_instructions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            marker = root / "marker.json"
+            marker.write_text(json.dumps({"turn_repo": "owner/direction"}))
+            destination = root / "AGENTS.md"
+            destination.write_text("Existing instructions.\n")
+            source, local = root / "shared.md", root / "private.md"
+            source.write_text("Shared fixture instructions.\n")
+            local.write_text("")
+            reader = self.enterContext(mock.patch.object(github_read, "GitHubReader")).return_value
+            hook = runpy.run_path(str(sync.ROOT / "hooks/direction_check_hook.py"))
+            with (
+                mock.patch.dict(os.environ, {"DIRECTION_MARKER": str(marker)}),
+                mock.patch.object(sys, "argv", [str(sync.__file__), "--source", str(source), "--local-source", str(local),
+                                               "--destination", str(destination), "--write"]),
+                mock.patch.object(runpy, "run_path", return_value={**hook, "run_reader": mock.Mock(
+                    return_value=subprocess.CompletedProcess([], 0, "HTTP/2.0 200 OK\n\n# Overall fixture\n", ""))}),
+            ):
+                for inventory in (
+                    github_read.GitHubReadShapeError("incomplete inventory"),
+                    {"repositories": [], "repository_selection": "all"},
+                    {"repositories": [{"full_name": "owner/product", "owner": {"login": "owner"}, "archived": False}],
+                     "repository_selection": "selected"},
+                    {"repositories": [{"full_name": "other/product", "owner": {"login": "other"}, "archived": False}],
+                     "repository_selection": "all"},
+                ):
+                    with self.subTest(inventory=inventory):
+                        reader.get_json.side_effect = inventory if isinstance(inventory, Exception) else None
+                        reader.get_json.return_value = inventory
+                        self.assertEqual(sync.main(), 1)
+                        self.assertEqual(destination.read_text(), "Existing instructions.\n")
 
     def test_explicit_upgrade_adopts_legacy_catalog_hook_and_preserves_other_handlers(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
