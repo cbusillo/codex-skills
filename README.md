@@ -701,7 +701,7 @@ that account's visible, non-archived repository directions as explicitly scoped 
 Each repository section applies only to work in that repository; the overall
 direction wins. Text comes from GitHub's merged default branch. A repository
 file reported absent or not visible to the reader (HTTP 404) is omitted. Other
-unreadable sources or incomplete owner inventories preserve the installed instructions and stop the refresh. The installer and catalog
+unreadable sources or incomplete inventories preserve the installed instructions and stop the refresh. The installer and catalog
 updater use the same renderer. Native account files linked to those generated
 targets receive the same refresh, preserving their links. Independent account
 homes need their own configured refresh; verify the selected destinations and
