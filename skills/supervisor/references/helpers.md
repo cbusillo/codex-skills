@@ -1940,6 +1940,13 @@ Snapshots older than
 [context-panel#961](https://github.com/cbusillo/context-panel/pull/961) carry
 no periods, so both are `null` (unknown) and the label is `null`.
 
+For a long-running Supervisor or lead, check wakes and cache misses before
+lowering its [launch tier](../SKILL.md#accounts-pace-and-launch-tier): on
+Anthropic's prices, replaying cached context costs about the same on its two
+strongest models, the gap is in output and uncached input, and a model switch
+rewrites the cache once
+([Q1246 correction](https://github.com/cbusillo/direction/issues/98#issuecomment-6620626100)).
+
 Morning numbers and account reads include each provider account's
 `banked_resets.available_count` and `earliest_known_expiry`, alongside its
 `coverage`. These and `known_expiries` pass through Context Panel's summary
