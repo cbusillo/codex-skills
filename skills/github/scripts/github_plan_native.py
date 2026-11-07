@@ -285,9 +285,11 @@ class QueueNotSent(ValueError):
 
 
 async def require_loaded_thread(request, session, home):
-    if (await read_thread(request, session))["state"] == "notLoaded":
+    thread = await read_thread(request, session)
+    if thread["state"] == "notLoaded":
         raise ValueError(f"thread {session} is not loaded by the CODEX_HOME={home} daemon; "
                          "queue through the home whose daemon runs it, or resume it first")
+    return thread
 
 
 async def queue_input(home: Path, session: str, text: str, *, transcript: Path | None = None,
@@ -313,15 +315,11 @@ async def queue_input(home: Path, session: str, text: str, *, transcript: Path |
         await asyncio.to_thread(lambda: source_endpoint(session, home, transcript=transcript))
         with _queue_outcome("steering" if steering else "submission") as mark_sent:
             async with connection(home, max_msg_size=allowance) as request:
-                await require_loaded_thread(request, session, home)
+                thread = await require_loaded_thread(request, session, home)
+                if steering and thread["state"] != "active":
+                    raise ValueError("steer requires an active turn; preserve state and do not queue a fallback")
                 leased = True
                 async with closure.async_resume_guard(session, method=method, home=home):
-                    await require_loaded_thread(request, session, home)
-                    if steering:
-                        thread = await read_thread(request, session)
-                        active = [turn["id"] for turn in await read_turns(request, session) if turn["status"] == "inProgress"]
-                        if thread["state"] != "active" or active != [expected_turn_id]:
-                            raise ValueError("steer requires the unchanged active turn; preserve state and do not queue a fallback")
                     mark_sent()
                     result = await request(method, params)
                     if steering:

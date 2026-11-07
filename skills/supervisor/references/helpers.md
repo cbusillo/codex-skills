@@ -1571,8 +1571,8 @@ Inspect stale input through the existing guarded `queue-cancel` route.
 
 Use `steer` for a correction needed by the current turn. Read the worker's
 `turn_id` with `status.py --ledger <ledger.json>` or the native thread reader
-first. The helper checks it against native `thread/turns/list` on that home
-under the ownership lease and sends the harness built-in
+first. The helper requires that home's thread to be active before taking the
+ownership lease, then sends the harness built-in
 [`turn/steer`](https://learn.chatgpt.com/docs/app-server#steer-an-active-turn)
 with `expectedTurnId`. An idle, NotLoaded, changed or refused target never
 falls back to future queueing or starts a turn. `delivery: active_turn_accepted`
