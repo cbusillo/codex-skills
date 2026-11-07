@@ -26,7 +26,8 @@ sync = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(sync)
 sys.path.insert(0, str(sync.ROOT / "skills/github/scripts"))
 import github_identity
-import github_read
+with mock.patch.object(github_identity, "automation_login", return_value=None):
+    import github_read
 
 
 def setUpModule() -> None:
@@ -49,10 +50,11 @@ class GlobalInstructionsTests(unittest.TestCase):
             marker.write_text(json.dumps({"turn": stamp, "turn_repo": "owner/direction",
                                           "audits": dict.fromkeys(("owner/direction", "other/product", "owner/archived"), stamp)}))
             reader = self.enterContext(mock.patch.object(github_read, "GitHubReader")).return_value
-            self.enterContext(mock.patch.object(github_identity, "github_app_config", return_value={}))
-            reader.paged_json.return_value = [
-                {"full_name": repo, "archived": False} for repo in (*sources, "other/product", absent)
-            ] + [{"full_name": "owner/archived", "archived": True}]
+            repositories = [
+                {"full_name": repo, "owner": {"login": repo.split("/")[0]}, "archived": repo == "owner/archived"}
+                for repo in (*sources, "other/product", absent, "owner/archived")
+            ]
+            reader.get_json.return_value = {"repositories": repositories, "repository_selection": "all"}
             calls = []
 
             def read(*args: str) -> subprocess.CompletedProcess[str]:
@@ -72,6 +74,15 @@ class GlobalInstructionsTests(unittest.TestCase):
                 with (mock.patch.dict(os.environ, {"HOME": str(home), "DIRECTION_MARKER": override}),
                       mock.patch.object(sync.runpy, "run_path", return_value={**hook, "run_reader": read})):
                     self.assertEqual(sync.direction_content(home), content)
+            def user_inventory(path: str, *, step: str) -> list[dict]:
+                if path.startswith("installation/"):
+                    raise github_read.GitHubReadShapeError(step)
+                return repositories
+            reader.get_json.side_effect = user_inventory
+            with (mock.patch.dict(os.environ, {"DIRECTION_MARKER": str(marker)}),
+                  mock.patch.object(sync.runpy, "run_path", return_value={**hook, "run_reader": read})):
+                self.assertEqual(sync.direction_content(home), content)
+            reader.get_json.side_effect = None
             for failure in (subprocess.CompletedProcess([], 1, "", "read unavailable"),
                             subprocess.CompletedProcess([], 1, 'HTTP/2.0 404 Not Found\n\n{"message":"Not Found"}', ""),
                             subprocess.TimeoutExpired("reader", 6)):
@@ -105,8 +116,6 @@ class GlobalInstructionsTests(unittest.TestCase):
             source.write_text("Shared fixture instructions.\n")
             local.write_text("")
             reader = self.enterContext(mock.patch.object(github_read, "GitHubReader")).return_value
-            self.enterContext(mock.patch.object(github_identity, "github_app_config", return_value=None))
-            reader.paged_json.side_effect = github_read.GitHubReadShapeError("incomplete inventory")
             hook = runpy.run_path(str(sync.ROOT / "hooks/direction_check_hook.py"))
             with (
                 mock.patch.dict(os.environ, {"DIRECTION_MARKER": str(marker)}),
@@ -115,8 +124,19 @@ class GlobalInstructionsTests(unittest.TestCase):
                 mock.patch.object(sync.runpy, "run_path", return_value={**hook, "run_reader": mock.Mock(
                     return_value=subprocess.CompletedProcess([], 0, "HTTP/2.0 200 OK\n\n# Overall fixture\n", ""))}),
             ):
-                self.assertEqual(sync.main(), 1)
-            self.assertEqual(destination.read_text(), "Existing instructions.\n")
+                for inventory in (
+                    github_read.GitHubReadShapeError("incomplete inventory"),
+                    {"repositories": [], "repository_selection": "all"},
+                    {"repositories": [{"full_name": "owner/product", "owner": {"login": "owner"}, "archived": False}],
+                     "repository_selection": "selected"},
+                    {"repositories": [{"full_name": "other/product", "owner": {"login": "other"}, "archived": False}],
+                     "repository_selection": "all"},
+                ):
+                    with self.subTest(inventory=inventory):
+                        reader.get_json.side_effect = inventory if isinstance(inventory, Exception) else None
+                        reader.get_json.return_value = inventory
+                        self.assertEqual(sync.main(), 1)
+                        self.assertEqual(destination.read_text(), "Existing instructions.\n")
 
     def test_explicit_upgrade_adopts_legacy_catalog_hook_and_preserves_other_handlers(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

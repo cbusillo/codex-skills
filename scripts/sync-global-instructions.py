@@ -72,8 +72,9 @@ def direction_content(home: Path) -> str:
     if not marker_path.is_file():
         return ""
     sys.path.insert(0, str(ROOT / "skills/github/scripts"))
+    sys.path.insert(0, str(ROOT / "skills/direction/scripts"))
+    from direction_audit import AuditError, owner_repositories, repository_listing_gaps
     from github_api import parse_gh_include_output
-    from github_identity import github_app_config
     from github_read import GitHubReader, GitHubReadError, GitHubReadShapeError
 
     marker = hook["read_marker"](marker_path)
@@ -81,22 +82,23 @@ def direction_content(home: Path) -> str:
     if not owner:
         return ""
     overall = f"{owner}/direction"
-    installed = github_app_config() is not None
+    reader = GitHubReader()
+    def fetch(args: list[str]) -> object:
+        try:
+            return reader.get_json(args[1], step="direction_repositories")
+        except (GitHubReadError, GitHubReadShapeError) as error:
+            raise AuditError(str(error)) from error
     try:
-        inventory = GitHubReader().paged_json(
-            "/installation/repositories" if installed else "/user/repos",
-            params={} if installed else {"affiliation": "owner"},
-            collection_key="repositories" if installed else None,
-            step_prefix="direction_repositories",
-        )
-    except (GitHubReadError, GitHubReadShapeError) as error:
-        raise ValueError("Could not discover repository DIRECTION sources; installed instructions are preserved.") from error
-    repository_names = (entry["full_name"] for entry in inventory if not entry["archived"])
+        inventory, cut = owner_repositories(owner, fetch=fetch)
+        if not inventory or repository_listing_gaps(cut, fetch=fetch):
+            raise AuditError("owner repository coverage is incomplete")
+    except AuditError as error:
+        raise ValueError("Could not discover all repository DIRECTION sources; installed instructions are preserved. Restore the owner inventory read, then rerun the refresh.") from error
     repositories = [
         overall,
         *sorted(
             repo
-            for repo in repository_names
+            for repo in inventory
             if re.fullmatch(r"[\w.-]+/[\w.-]+", repo)
             and repo.casefold().startswith(f"{owner.casefold()}/")
             and repo.casefold() != overall.casefold()
