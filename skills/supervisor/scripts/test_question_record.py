@@ -32,6 +32,7 @@ def question() -> dict:
         "issue": "https://github.com/example/product/issues/3",
         "decision": "Should we reuse the existing runner?",
         "basis": "The current runner has spare capacity. No prior decision applies.",
+        "checked": "DIRECTION Stop Boundaries; runner capacity record; earlier questions on this issue.",
         "options": [
             {"answer": "Reuse", "changes": "Run this job there", "cost": 0, "next": "Configure the job"},
             {"answer": "Wait", "changes": "Leave the job pending", "cost": "Existing queue upkeep", "next": "Keep it queued"},
@@ -100,6 +101,8 @@ class QuestionRecordTests(unittest.TestCase):
         self.source["body"] = record.question_id.number_heading(record.render(value, legacy=True), "Q5")
         view = record.read_record(self.source)
         self.assertEqual(view["record"], value)
+        self.assertIn(value["checked"], view["text"])
+        self.assertIn(value["checked"], self.source["body"].split("<!--", 1)[0])
         self.assertTrue(all(option["answer"] in view["text"] for option in value["options"]))
         self.source["body"] = self.source["body"].replace(value["decision"], "A different decision?", 1)
         with self.assertRaises(ValueError):
@@ -126,7 +129,9 @@ class QuestionRecordTests(unittest.TestCase):
         self.storage.read.return_value = source
         self.args.decision_author.append(source["author"])
         self.storage.create.return_value = source
-        self.assertEqual(self.create(view["record"])["text"], view["text"])
+        with self.assertRaises(ValueError):
+            self.create(view["record"])
+        self.storage.create.assert_not_called()
         shown = StringIO()
         with redirect_stdout(shown):
             self.assertEqual(record.main(["show-question", source["url"]], lambda _item: [source]), 0)
@@ -187,6 +192,24 @@ class QuestionRecordTests(unittest.TestCase):
         self.assertEqual(result["registration"], "not_configured")
         self.assertEqual(result["recipient"], self.args.owner)
         self.fetch.assert_not_called()
+
+    def test_unchecked_and_agent_added_work_refuse_before_numbering_or_posting(self) -> None:
+        unchecked = question()
+        del unchecked["checked"]
+        for value in (
+            unchecked,
+            question() | {"checked": " "},
+            question() | {"checked": []},
+            question() | {"agent_criterion": True},
+            *(question() | {"agent_criterion": value} for value in (None, 0, "false", "no")),
+        ):
+            for dry_run in (False, True):
+                with self.subTest(value=value, dry_run=dry_run):
+                    self.args.dry_run = dry_run
+                    with self.assertRaises(ValueError):
+                        self.create(value)
+        self.storage.create.assert_not_called()
+        self.assertFalse(record.validation_errors(question() | {"agent_criterion": False}))
 
     def test_queue_configuration_and_writer_disagreement_refuse_before_post(self) -> None:
         self.args.queue = "example/direction#9"
