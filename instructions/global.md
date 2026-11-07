@@ -3,6 +3,7 @@
 - Before repository work, read the Director's overall `DIRECTION.md` in `OWNER/direction` when configured, then the repository's `DIRECTION.md` if present, `AGENTS.md`, and relevant sections of `README.md`. Read nested `AGENTS.md` files before working in their paths; in repositories that still have `CLAUDE.md` or other legacy instruction files, read those too.
 - Read relevant repository instruction files explicitly if the host has not supplied them.
 - Keep repository instructions in `AGENTS.md`.
+- Never commit secrets, credential-bearing `.env` files, private keys, or private data dumps.
 - Before writing Python or Odoo XML/JavaScript, read the [shared Python and Odoo style](https://github.com/cbusillo/codex-skills/blob/main/skills/references/python-odoo-style.md) in full.
 
 # GitHub Branch Discipline

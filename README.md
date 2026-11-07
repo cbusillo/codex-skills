@@ -7,9 +7,8 @@ a skill that only makes sense on one host says so in its description.
 For this repository's purpose, priorities, stop boundaries, and retirements,
 read the Director's overall `DIRECTION.md` in the repository owner's
 `OWNER/direction` repository, then [DIRECTION.md](DIRECTION.md).
-[AGENTS.md](AGENTS.md) holds execution details for both hosts and is the only
-repository agent-instruction filename; path-specific instructions use nested
-`AGENTS.md` files. Generated host-global instructions remain host-specific.
+[AGENTS.md](AGENTS.md) holds execution details for both hosts; instruction filenames
+follow the [shared repository instructions](instructions/global.md#repository-instructions).
 Codex Lab is retired; its traces and archives are historical evidence.
 
 Each skill lives in its own directory under [`skills/`](skills) with a `SKILL.md`
@@ -1035,8 +1034,7 @@ change to the active local `gh` account implicitly. Set
 `GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1` only for an explicitly approved
 one-off command whose human-owned actor is acceptable.
 
-The `local.env` file is local to the user account. Do not commit real
-tokens.
+The `local.env` file follows the [shared repository instructions](instructions/global.md#repository-instructions).
 
 ### Guided Separate Automation Identity
 
