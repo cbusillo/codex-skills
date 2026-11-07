@@ -80,8 +80,7 @@ def eastern(timestamp: str | None) -> str | None:
     return local.strftime("%Y-%m-%d %I:%M:%S %p ET").replace(" 0", " ")
 
 
-def candidate_files(root: Path, since: float | None) -> list[Path]:
-    """Transcripts under root, newest first, so a file limit drops the oldest."""
+def newest_transcripts_first(root: Path, since: float | None) -> list[Path]:
     def failed_walk(error: OSError):
         raise error
 
@@ -97,17 +96,21 @@ def candidate_files(root: Path, since: float | None) -> list[Path]:
     return [path for _, path in sorted(found)]
 
 
+def configured_extra_roots(settings: Path) -> list[Path]:
+    try:
+        with settings.open("rb") as handle:
+            section = tomllib.load(handle).get("history")
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return []
+    roots = section.get("extra_roots") if isinstance(section, dict) else None
+    return [Path(str(root)).expanduser() for root in roots] if isinstance(roots, list) else []
+
+
 def extra_roots(environ: dict[str, str], home: Path) -> list[Path]:
-    """Optional private roots from [history] extra_roots in local-context.toml."""
     homes = [environ[name] for name in ("CODE_HOME", "CODEX_HOME") if environ.get(name, "").strip()]
     for base in [*homes, str(home / ".code")]:
-        try:
-            with (Path(base).expanduser() / "local-context.toml").open("rb") as handle:
-                configured = tomllib.load(handle).get("history", {}).get("extra_roots")
-        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError, AttributeError):
-            continue
-        if isinstance(configured, list) and configured:
-            return [Path(str(root)).expanduser() for root in configured]
+        if roots := configured_extra_roots(Path(base).expanduser() / "local-context.toml"):
+            return roots
     return []
 
 
@@ -126,11 +129,9 @@ def scan(roots: list[Path], *, queries: list[str], signals: list[str], since: fl
             limitations.append({"kind": "unsupported_file", "source": str(root)})
             continue
         try:
-            pending.append((root, deque(candidate_files(root, since))))
+            pending.append((root, deque(newest_transcripts_first(root, since))))
         except OSError as exc:
             limitations.append({"kind": "root_io_error", "source": str(root), "error": str(exc)})
-    # One file per root per round keeps an older, large account from consuming
-    # every provider's allowance.
     while pending and len(files) < max_files:
         root, paths = pending.popleft()
         while paths:
