@@ -59,8 +59,6 @@ def run(args) -> int:
     if canonical != args.session_id:
         raise ValueError(f"use the canonical native thread UUID {canonical}")
     if args.command == "status":
-        # A fresh launch has no closed-log row until it is resumed or closed;
-        # its generation lives in the launch ledger.
         rows = [r for r in closure.log_rows() if r.get("session_id") == args.session_id] if closure.closed_log().exists() else []
         if len(rows) > 1:
             raise ValueError("native session generation is not unique")
@@ -95,7 +93,6 @@ def run(args) -> int:
 
 
 async def session_queue(home: Path, session: str) -> dict:
-    """Read-only: this home's thread state and its pending submissions in delivery order."""
     async with native_operations.connection(home) as request:
         thread = await read_thread(request, session)
         digests = await read_queue(request, session)

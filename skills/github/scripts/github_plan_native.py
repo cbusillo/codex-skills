@@ -96,7 +96,6 @@ async def pages(request, method, session, **params):
 
 
 async def queued_entries(request, session):
-    """The thread's pending submissions, in native delivery order."""
     entries = []
     async for page in pages(request, "thread/queue/list", session):
         for entry in page["data"]:
@@ -297,19 +296,42 @@ async def require_loaded_thread(request, session, home):
     return thread
 
 
-async def _deliver(request, session, params, state) -> dict:
-    """Join all pending input into the head entry, in order, so one turn
-    boundary delivers it all; start an idle thread."""
-    pending = await queued_entries(request, session)
-    result = joined = None
-    if pending:
-        head = pending[0]
-        joined = {**head, "input": [part for entry in pending for part in entry["input"]] + params["input"]}
+async def _join_pending_in_order_into_head(request, session, pending, params):
+    head = pending[0]
+    joined = {**head, "input": [part for entry in pending for part in entry["input"]] + params["input"]}
+    try:
+        result = await request("thread/queue/update", {"threadId": session, "queuedSubmissionId": head["id"],
+                                                       "input": joined["input"]})
+    except NativeRequestRejected:
+        return None, None
+    return result, joined
+
+
+async def _remove_entries_only_after_head_holds_them(request, session, entries):
+    for entry in entries:
         try:
-            result = await request("thread/queue/update", {"threadId": session, "queuedSubmissionId": head["id"],
-                                                           "input": joined["input"]})
+            deleted = await request("thread/queue/delete", {"threadId": session, "queuedSubmissionId": entry["id"]})
         except NativeRequestRejected:
-            joined = None  # The head left the queue first; nothing changed, so add instead.
+            deleted = None
+        if not isinstance(deleted, dict) or deleted.get("deleted") is not True:
+            raise ValueError("joined queue input may now be duplicated; inspect the queue and do not replay")
+
+
+async def _start_idle_entry(request, session, receipt) -> dict:
+    try:
+        started = await request("thread/queue/start", {"threadId": session, "queuedSubmissionId": receipt["queuedSubmissionId"]})
+    except NativeRequestRejected:
+        entry_already_started = receipt["queuedSubmissionId"] not in await read_queue(request, session)
+        return {**receipt, "delivery": "turn_started"} if entry_already_started else receipt
+    turn = started.get("turn") if isinstance(started, dict) else None
+    if not isinstance(turn, dict) or not isinstance(turn.get("id"), str) or not turn["id"]:
+        raise ValueError("native queue start acknowledgement is unavailable")
+    return {**receipt, "delivery": "turn_started", "turnId": turn["id"]}
+
+
+async def _deliver(request, session, params, state) -> dict:
+    pending = await queued_entries(request, session)
+    result, joined = await _join_pending_in_order_into_head(request, session, pending, params) if pending else (None, None)
     expected = joined or {"clientUserMessageId": params["clientUserMessageId"], "input": params["input"]}
     if joined is None:
         result = await request("thread/queue/add", params)
@@ -319,40 +341,15 @@ async def _deliver(request, session, params, state) -> dict:
             or entry.get("clientUserMessageId") != expected["clientUserMessageId"] or entry.get("input") != expected["input"]):
         raise ValueError("native queue acknowledgement is unavailable")
     if joined:
-        # Remove the entries now inside the head only after the head holds
-        # them, so a failure can duplicate input but never lose it.
-        for later in pending[1:]:
-            try:
-                deleted = await request("thread/queue/delete", {"threadId": session, "queuedSubmissionId": later["id"]})
-            except NativeRequestRejected:
-                deleted = None
-            if not isinstance(deleted, dict) or deleted.get("deleted") is not True:
-                raise ValueError("joined queue input may now be duplicated; inspect the queue and do not replay")
+        await _remove_entries_only_after_head_holds_them(request, session, pending[1:])
     receipt = {"delivery": "future_queued", "queuedSubmissionId": entry["id"],
                "clientUserMessageId": entry["clientUserMessageId"], "joined_pending": joined is not None}
-    if state != "idle":
-        return receipt
-    try:
-        started = await request("thread/queue/start", {"threadId": session, "queuedSubmissionId": entry["id"]})
-    except NativeRequestRejected:
-        # An empty idle queue starts its first entry itself, and a turn may have
-        # begun since the read. Either way the entry stays exactly as observed.
-        if entry["id"] not in await read_queue(request, session):
-            receipt["delivery"] = "turn_started"
-        return receipt
-    turn = started.get("turn") if isinstance(started, dict) else None
-    if not isinstance(turn, dict) or not isinstance(turn.get("id"), str) or not turn["id"]:
-        raise ValueError("native queue start acknowledgement is unavailable")
-    return {**receipt, "delivery": "turn_started", "turnId": turn["id"]}
+    return await _start_idle_entry(request, session, receipt) if state == "idle" else receipt
 
 
 async def queue_input(home: Path, session: str, text: str | None, *, transcript: Path | None = None,
                       expected_turn_id: str | None = None, interrupt: bool = False) -> dict:
-    """Submit once; normalize post-send cancellation at the top-level CLI boundary.
-
-    Queue joins pending input and starts an idle thread. Steer adds to the exact
-    active turn. Interrupt stops the exact active turn, then queues any text.
-    """
+    """Submit once; normalize post-send cancellation at the top-level CLI boundary."""
     from github_plan_sessions import native_helpers
     native_helpers()
     from codex_session_proxy import source_endpoint
@@ -365,8 +362,8 @@ async def queue_input(home: Path, session: str, text: str | None, *, transcript:
               "input": [{"type": "text", "text": text or "", "text_elements": []}]}
     if steering:
         params["expectedTurnId"] = expected_turn_id
-    # Native echoes the full input, including pending input this joins. Bound
-    # each acknowledgement to the actual request with room for that queue.
+    # Native echoes the full input. Escaped/multibyte valid text can exceed the
+    # observer's fixed cap; bound this acknowledgement to the actual request.
     allowance = max(16 * 1024 * 1024, len(json.dumps(params).encode()) + 65536)
     leased = False
     try:
@@ -395,12 +392,11 @@ async def queue_input(home: Path, session: str, text: str | None, *, transcript:
                             await asyncio.sleep(.1)
                         receipt = {"delivery": "interrupted" if state != "active" else "interrupt_requested",
                                    "turnId": expected_turn_id, "state": state}
-                        if text is not None and state != "active":
+                        turn_stopped = state != "active"
+                        if text is not None and turn_stopped:
                             receipt["message"] = await _deliver(request, session, params, state)
                         else:
                             if text is not None:
-                                # Native holds a queue across an interrupt, so input
-                                # queued before the turn stops would wait unstarted.
                                 receipt["message_sent"] = False
                             receipt["pending"] = len(await queued_entries(request, session))
                     else:

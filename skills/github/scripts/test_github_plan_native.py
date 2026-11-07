@@ -271,12 +271,12 @@ class NativeQueueTests(unittest.TestCase):
                 def update(request):
                     updates.append(request["params"])
                     return {"queuedSubmission": {**held, "input": request["params"]["input"]}}
-                def delete(request):
-                    self.assertTrue(updates)  # Never remove input before the head holds it.
+                def delete_only_after_head_holds_input(request):
+                    self.assertTrue(updates)
                     deletes.append(request["params"]["queuedSubmissionId"])
                     return {"deleted": True}
                 f.rpc_results["thread/queue/update"] = update
-                f.rpc_results["thread/queue/delete"] = delete
+                f.rpc_results["thread/queue/delete"] = delete_only_after_head_holds_input
                 result = asyncio.run(NATIVE.queue_input(f.home, f.session, "third"))
                 self.assertEqual(updates[0]["queuedSubmissionId"], "held")
                 self.assertEqual([part["text"] for part in updates[0]["input"]], ["first", "second", "third"])
