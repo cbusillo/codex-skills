@@ -410,6 +410,9 @@ def test_next_actor_routes_work_without_prose_inference() -> None:
         recipient = claim.recipient_evidence(queue.current_status(row["discussion"], {"owner"}), [],
             repo=row["repo"], number=row["number"], trusted={"owner"}, worker="new-worker", session="new-session")
         assert [recipient] == result["ownership_evidence"]
+        dispatched = queue.ownership_facts(row, evidence(), trusted={"owner"}, worker="new-worker",
+            session="new-session", dispatch_recipient=actor.removeprefix("agent:"))
+        assert dispatched["recipients"] == []
     row = item()
     row["discussion"]["body"] += "\nNext actor: person:owner\n"
     assert classify(row)["state"] == "needs_status"

@@ -15,6 +15,7 @@ import json
 import sys
 import tempfile
 import unittest
+from itertools import product
 from pathlib import Path
 from typing import Any
 from unittest.mock import Mock, patch
@@ -469,22 +470,24 @@ class CloseConfigTests(unittest.TestCase):
                 self.assertTrue(result["issue"]["launch_check"]["allowed"])
                 self.assertEqual(result["issue"]["launch_check"]["ownership"]["recipients"], [])
 
-    def test_fenced_launch_request_names_the_coordinator_and_keeps_claim_and_wait_checks(self) -> None:
+    def test_dispatch_names_the_coordinator_and_keeps_claim_and_wait_checks(self) -> None:
         actor = "agent:01970242-7941-7f0c-b461-16aa5723fb52"
-        request = {"id": 2, "user": {"login": "fixture"}, "created_at": "2026-10-25T00:00:00Z", "body": (
+        request: dict[str, Any] = {"id": 2, "user": {"login": "fixture"}, "created_at": "2026-10-25T00:00:00Z", "body": (
             f"## Current Status\nNext actor: {actor}\nNext action: Launch the worker.\n"
             "Brief:\n```text\nImplement the export in a new worktree.\n```\n"
         )}
         held = {"id": 3, "user": {"login": "fixture"}, "body": PLAN.github_plan_wait.marker(
             PLAN.github_plan_wait.reviewed(evidence="Client review pending", waiting_for="Client", ends_when="Client accepts"))}
         owner = {"id": 3, "user": {"login": "fixture"}, "body": github_plan_claim.marker({
-            "worker": "holder", "session": "holder-session", "branch": "work/export", "claimed_at": "2026-10-01T00:00:00Z"})}
-        for blocker in (None, held, owner):
-            with self.subTest(blocker=blocker):
+            "worker": "holder", "session": actor.removeprefix("agent:"), "branch": "work/export",
+            "claimed_at": "2026-10-01T00:00:00Z"})}
+        for blocker, brief in product((None, held, owner), (False, True)):
+            with self.subTest(blocker=blocker, brief=brief):
+                routed = request if brief else {**request, "body": request["body"].split("Brief:")[0]}
                 result, _, _ = self.show_fixture(launch=True, worker="fresh-worker", admission="spare-capacity",
                                                 dispatch_recipient=actor.removeprefix("agent:"),
                                                 body_time="2026-10-01T00:00:00Z",
-                                                comments_extra=[request, *([blocker] if blocker else [])])
+                                                comments_extra=[routed, *([blocker] if blocker else [])])
                 check = result["issue"]["launch_check"]
                 self.assertEqual(check["allowed"], blocker is None)
                 self.assertEqual(check["ownership"]["recipients"], [])
