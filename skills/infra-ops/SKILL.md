@@ -51,8 +51,6 @@ The public skill is generic. The private operations repo is the authority for
 environment-specific docs, scripts, hostnames, topology, secrets, and service
 adapter details.
 
-If a task introduces or relies on a credential missing from the private operations repository's credentials index, document it there by name only in the same task before closing it.
-
 Resolve that private repo from `$CODE_HOME/local-context.toml`, falling back to
 `$CODEX_HOME/local-context.toml` and then `~/.code/local-context.toml`, using
 the `[docs].local_infra` key. That is the local pointer for the private
@@ -66,6 +64,8 @@ context is not configured and keep the workflow read-only. Do not guess from
 provider dashboards, browser sessions, shell history, or `.env` files. Do not
 copy private path values, hostnames, tokens, customer/site names, or topology
 into this repo.
+
+If a task introduces or relies on a credential missing from the private operations repository's credentials index, document it there by name only in the same task before closing it.
 
 ## Safety Tiers
 
