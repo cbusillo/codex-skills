@@ -481,7 +481,7 @@ owns status/decisions; keep no copied prose/rules or historical recovery narrati
 At takeover check permission mode and load `direction` for daily-turn reads.
 Use the brief's handoff anchor, or the optional private handoff setting.
 Read this Director's latest handoff and later comments, original Director words,
-full current board and registry, each named thread/screen and the recovery note.
+full current routine digest and registry, each named thread/screen and the recovery note.
 Verify pending actions at their source and list actual watcher processes.
 Recreate the check/digest with the harness scheduler. Persistent services are optional. Bind existing services when present;
 otherwise start scoped bounded idle/foreign watches with separate
@@ -566,7 +566,7 @@ the verified unchanged active row. Reuse its evidence for interrupted retirement
 
 Post one full handoff comment on this Director's own handoff record under
 [Agent Comments](../references/talking-with-the-director.md#agent-comments).
-Link the freshly rebuilt board and coverage, governing decisions, open ready
+Link the current milestone sources and digest coverage, governing decisions, open ready
 PRs, running session identities and anchors, briefs and next actors, verified
 watchers with scopes/state/deadlines, private file pointers and Director
 sessions to leave alone. Link new landed lessons or their tracking issues,

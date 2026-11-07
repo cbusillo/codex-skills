@@ -57,7 +57,7 @@ class RoutineCheckTests(unittest.TestCase):
         decision_url = roots[0]["html_url"] + "#issuecomment-10"
         forged_url = roots[0]["html_url"] + "#issuecomment-11"
         comments = {("someone/direction", 1): [
-            {"id": 10, "user": {"login": "someone"}, "body": "Director decision Q50: Keep the hold.", "html_url": decision_url},
+            {"id": 10, "user": {"login": "someone"}, "body": "\n\t**Director decision Q50: Keep the hold.", "html_url": decision_url},
             {"id": 11, "user": {"login": "outsider"}, "body": "Director decision Q50: Drop it.", "html_url": forged_url},
         ]}
         for unread in (False, True):
@@ -84,6 +84,18 @@ class RoutineCheckTests(unittest.TestCase):
                     self.assertIn("Client acceptance", output)
                     if unread:
                         self.assertRegex(output, roots[1]["html_url"] + r"[^\n]*UNKNOWN")
+
+    def test_failed_next_keeps_discovered_tracks_when_all_bodies_are_unread(self) -> None:
+        roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+        for root in roots:
+            root.pop("body")
+        with global_fixture(roots, [], {}) as (module, _result, _reads):
+            with self.assertRaises(module.PlanError) as error:
+                module.cmd_next(next_args())
+            output = routine_check.digest({"next": {"ok": False, **error.exception.payload}})
+        for root in roots:
+            self.assertRegex(output, root["html_url"] + r"[^\n]*UNKNOWN")
+        self.assertIn("ERROR next", output)
 
     def test_graphql_bot_sources_keep_acknowledgement_until_edited(self) -> None:
         stamp = "2026-11-01T00:00:00Z"
@@ -422,12 +434,10 @@ class RoutineCheckTests(unittest.TestCase):
         registered = {"url": "registered-question", "registration_url": "registration", "delivery": "unacknowledged"}
         discovered = [{"url": f"discovered-{number}"} for number in range(50)]
         output = routine_check.digest({
-            "board": {"tracks": [{"open_questions": [{"url": "historical-board-question"}]}]},
             "questions": {"queue": "owner/direction#98", "questions": [registered, *discovered],
                           "unnumbered_sources": ["discovered-49"], "untrusted_sources": ["discovered-48"]},
         })
         self.assertIn("registered-question", output)
-        self.assertNotIn("historical-board-question", output)
         summary = next(line for line in output.splitlines() if discovered[0]["url"] in line)
         self.assertIn(str(len(discovered)), summary)
         self.assertNotIn("discovered-47", output)

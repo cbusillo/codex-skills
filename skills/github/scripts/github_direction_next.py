@@ -12,7 +12,7 @@ writes, owner-specific routing, or authorization decisions.
 from __future__ import annotations
 
 from github_plan_status.discussion import section_map, unquoted_text
-from github_plan_status.questions import DECISION_HEADING
+from github_plan_status.questions import recorded_decision
 
 import datetime as dt
 import re
@@ -1218,7 +1218,7 @@ def rank_direction_work(
             "read": discussion.get("complete") is True and node_cache[key]["item"].get("exclusion") != "unknown_dependencies",
             "decisions": [comment["url"] for comment in discussion.get("comments", [])
                           if str(comment.get("author") or "").casefold() in trusted and comment.get("url")
-                          and DECISION_HEADING.match(unquoted_text(comment.get("body") or "").lstrip(" *"))],
+                          and recorded_decision(unquoted_text(comment.get("body") or ""))],
         })
         closure_reviews.append({"url": root["url"], "milestone": root["milestone"]["title"],
             **milestone_closure_review(discussion.get("body", "")),
@@ -1410,7 +1410,6 @@ def milestone_summary(
         tracks = track_next_actions.get(title) or []
         summary.append({
             "milestone": title,
-            "track": tracks[0]["url"] if tracks else None,
             "tracks": tracks,
             "state": "unknown" if any(not track["read"] for track in tracks) else "work_listed" if work else "needs_status" if missing else "wait_review_required" if reviews else "underway" if owned else "waiting" if waits else "no_linked_work" if graph_complete else "unknown",
             "work": work, "underway": owned, "verification_only": [], "scope_review": [], "needs_status": missing, "wait_reviews": reviews,
