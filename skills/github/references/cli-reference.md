@@ -2202,6 +2202,13 @@ through `gh-comment issue N --repo OWNER/REPO --body-file FILE`,
 or name the worker's native session ID instead. Private briefs and ledgers are
 not read by this check. It reuses issue evidence and creates no registry.
 
+For an authorized dispatch through the recorded coordinator, pass its exact
+identity as `--dispatch-recipient` to `show --launch-check` and the worker's
+own-identity `claim`. This distinguishes coordinator routing from execution
+custody even when Current Status has no fenced `Brief:`. It neither proves the
+coordinator ended nor releases any claim, lease, artifact or wait. Missing or
+mismatched recipients still require routing review; unread evidence stays UNKNOWN.
+
 `next` returns one JSON envelope with compact discussion summaries by default.
 Rows retain identity, counts, actor/action, blockers, sources and coverage;
 `discussion.comment_count` counts the comments read, and `discussion.complete`
