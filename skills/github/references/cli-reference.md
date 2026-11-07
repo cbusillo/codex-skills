@@ -1185,6 +1185,7 @@ the helper reads the private per-host `~/.config/codex-skills/worktrees.json`
 setting, with a portable root outside repositories and an existing-host-helper
 integration for stricter storage policies. No PATH installation is needed.
 Verify holds and recorded waits under Choose Work before invoking claim.
+For an inventory failure, read the underlying diagnostic cause before retrying.
 Claim preflight reads waits and holds only from native `blocked-by` links and
 the machine-readable `github-plan:wait` record. Current
 Status and ordinary comment prose are recovery evidence, never wait or executing-worker

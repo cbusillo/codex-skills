@@ -24,6 +24,7 @@ from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime
 from itertools import product
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import Mock, patch
 
@@ -280,6 +281,9 @@ class ClaimTests(unittest.TestCase):
     def read_pages(self, path, **_):
         self.events.append("read_comments" if path.endswith("comments") else "read_pulls")
         items = self.target_comments.get(path, self.comments) if path.endswith("comments") else self.blockers if path.endswith("blocked_by") else self.pulls
+        if path.endswith("/branches"):
+            inventory = self.planning_inventory if path.startswith("/repos/other/plans/") and self.planning_inventory is not None else self.inventory
+            items = [{"name": branch} for branch in inventory.get("remote_branches", [])]
         if path.endswith("/sub_issues"):
             items = self.children.get(path, [])
         if path.endswith("/timeline"):
@@ -6335,22 +6339,30 @@ class ClaimTests(unittest.TestCase):
                 "commit", "--allow-empty", "-m", "Fixture source")
             git("switch", "-c", OTHER["branch"])
             git("remote", "add", "origin", "https://github.com/owner/repo.git")
-            head, original = git("rev-parse", "HEAD"), CLAIM.run_read
-            def read(argv: list[str], **kwargs: Any) -> str:
-                return "" if argv[1] == "ls-remote" else original(argv, **kwargs)
-            with patch.object(CLAIM, "run_read", side_effect=read):
-                inventory = CLAIM.local_inventory("owner/repo", 42, cwd=root)
+            head = git("rev-parse", "HEAD")
+            inventory = CLAIM.local_inventory("owner/repo", 42, cwd=root)
             self.assertEqual(inventory["branch_heads"][OTHER["branch"]], head)
             self.assertEqual(inventory["worktrees"], [{"branch": OTHER["branch"], "path": str(root.resolve())}])
-            self.assertFalse(inventory["remote_branches"])
+            self.assertNotIn("remote_branches", inventory)
 
-    def test_local_inventory_uses_live_remote_heads(self):
-        replies = ["git@github.com:owner/repo.git\n", "worktree /fixture/repo\nbranch refs/heads/main\n",
-                   "main\n", "abc\trefs/heads/work/go42-repair\n"]
-        with patch.object(CLAIM, "run_read", side_effect=replies) as read:
-            inventory = CLAIM.local_inventory("owner/repo", 42)
-        self.assertEqual(inventory["remote_branches"], ["work/go42-repair"])
-        self.assertIn(["git", "ls-remote", "--heads", "origin"], [c.args[0] for c in read.call_args_list])
+    def test_remote_inventory_failure_never_publishes_a_claim(self) -> None:
+        pages = self.read_pages
+        def read(path: str, **options: Any) -> Any:
+            if path.endswith("/branches"):
+                raise PLAN.PlanError("Remote branch read denied")
+            return pages(path, **options)
+        self.read_pages = read
+        with self.assertRaises(PLAN.PlanError):
+            self.run_claim()
+        self.assert_no_writes()
+
+    def test_git_inventory_error_includes_bounded_stderr(self) -> None:
+        stderr = "fatal: cannot resolve the worktree directory\n" + "x" * 2000
+        with patch.object(subprocess, "run", return_value=SimpleNamespace(returncode=128, stdout="", stderr=stderr)):
+            with self.assertRaises(ValueError) as caught:
+                CLAIM.run_read(["git", "worktree", "list", "--porcelain"])
+        self.assertIn(stderr.splitlines()[0], str(caught.exception))
+        self.assertLess(len(str(caught.exception)), len(stderr))
 
     def test_reclaim_after_exact_release_posts_a_new_claim(self):
         self.comments = [{"id": 1, "body": CLAIM.marker(OWNER), "user": {"login": "bot"}},
@@ -6398,7 +6410,7 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual([e["id"] for e in caught.exception.payload["competing_evidence"]], [1, 3])
 
     def test_origin_case_does_not_change_repository_identity(self):
-        replies = ["git@github.com:OWNER/Repo.git\n", "worktree /fixture/repo\nbranch refs/heads/main\n", "main\n", ""]
+        replies = ["git@github.com:OWNER/Repo.git\n", "worktree /fixture/repo\nbranch refs/heads/main\n", "main\n"]
         with patch.object(CLAIM, "run_read", side_effect=replies):
             self.assertEqual(CLAIM.local_inventory("owner/repo", 42)["local_branches"], ["main"])
 

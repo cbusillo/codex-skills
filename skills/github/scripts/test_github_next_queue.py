@@ -319,6 +319,18 @@ def test_repository_inventory_bound_can_be_widened_without_losing_held_work() ->
     assert any('plan:active' in direction.normalize_labels(row['labels']) for row in complete)
 
 
+def test_local_inventory_preserves_the_existing_remote_branch_read() -> None:
+    module = cli.load_module()
+    branches = ["work/issue-1-source"]
+    def read(path: str, **_kwargs) -> tuple[str, list[dict[str, str]]]:
+        return 'bot', [{"name": branch} for branch in branches] if path.endswith('/branches') else []
+    with patch.multiple(module, collect_paged_rest_items=Mock(side_effect=read)), patch.multiple(module.pathlib.Path, is_dir=lambda *_: True), patch.multiple(module.github_plan_claim, local_inventory=Mock(return_value={"worktrees": [], "local_branches": []})):
+        observed = module.read_queue_ownership('owner/repo')
+        branch_reads = [call for call in module.collect_paged_rest_items.call_args_list if call.args[0].endswith('/branches')]
+    assert len(branch_reads) == 1
+    assert observed['inventory']['remote_branches'] == branches
+
+
 def test_optional_local_inventory_failure_keeps_remote_queue_evidence() -> None:
     module = cli.load_module()
     row = item()

@@ -736,7 +736,8 @@ def run_read(argv: list[str], *, cwd: pathlib.Path | None = None, deadline_at: f
         raise subprocess.TimeoutExpired(argv, timeout)
     result = subprocess.run(argv, cwd=cwd, text=True, capture_output=True, timeout=timeout)
     if result.returncode:
-        raise ValueError(f"Ownership inventory failed: {argv[0]} {argv[1]} (exit {result.returncode})")
+        detail = " ".join(result.stderr.split())[:1000]
+        raise ValueError(f"Ownership inventory failed: {argv[0]} {argv[1]} (exit {result.returncode}): {detail}")
     return result.stdout
 
 
@@ -754,12 +755,8 @@ def local_inventory(repo: str, number: int, *, cwd: pathlib.Path | None = None,
         worktrees.append({"branch": branch, "path": path})
     local = run_read(["git", "for-each-ref", "--format=%(refname:short) %(objectname)", "refs/heads"], cwd=cwd, **deadline_options).splitlines()
     branch_heads = dict(line.split(" ", 1) for line in local if " " in line)
-    remote_branches = [
-        line.split("\t", 1)[1].removeprefix("refs/heads/")
-        for line in run_read(["git", "ls-remote", "--heads", "origin"], cwd=cwd, **deadline_options).splitlines()
-    ]
     return {"worktrees": worktrees, "local_branches": [line.split(" ", 1)[0] for line in local],
-            "remote_branches": remote_branches, "branch_heads": branch_heads, "issue": number}
+            "branch_heads": branch_heads, "issue": number}
 
 
 def released_source(comments: list[dict[str, Any]], comment_id: int) -> dict[str, Any]:
