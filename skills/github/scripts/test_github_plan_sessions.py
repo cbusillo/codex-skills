@@ -125,6 +125,9 @@ class ReceiptFixture(AbstractContextManager):
                     elif method == "thread/goal/get": result = {"goal": None}
                     elif method == "thread/read": result = {"thread": {
                         "id": self.session, "cwd": "/retained/source", "path": str(native_path), "historyMode": "paginated", "status": {"type": self.home_states.get(str(native_home), self.native_state)}}}
+                    elif method == "thread/queue/start":
+                        self.mutations.append(request)
+                        result = {"turn": {"id": "queue-started-turn", "status": "inProgress"}}
                     elif method in {"thread/resume", "thread/fork", "turn/start", "thread/archive", "thread/queue/add"}:
                         self.mutations.append(request)
                         target = request["params"]["threadId"]

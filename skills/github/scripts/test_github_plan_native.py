@@ -257,6 +257,82 @@ class NativeQueueTests(unittest.TestCase):
                     self.assertFalse(accepted)
                 self.assertNotIn("input", result)
 
+    def test_queue_joins_pending_input_and_starts_an_idle_thread(self) -> None:
+        import uuid
+        held = {"id": "held", "clientUserMessageId": "earlier", "input": [{"type": "text", "text": "first", "text_elements": []}]}
+        for state in ("idle", "active"):
+            with self.subTest(state=state), ReceiptFixture(str(uuid.uuid4())) as f:
+                f.native_state = state
+                f.queue_items = [held]
+                updates = []
+                def update(request):
+                    updates.append(request["params"])
+                    return {"queuedSubmission": {**held, "input": request["params"]["input"]}}
+                f.rpc_results["thread/queue/update"] = update
+                result = asyncio.run(NATIVE.queue_input(f.home, f.session, "second"))
+                self.assertEqual(updates[0]["queuedSubmissionId"], "held")
+                self.assertEqual([part["text"] for part in updates[0]["input"]], ["first", "second"])
+                self.assertNotIn("thread/queue/add", f.rpc_requests)
+                self.assertTrue(result["joined_pending"])
+                if state == "idle":
+                    started = [r["params"] for r in f.mutations if r["method"] == "thread/queue/start"]
+                    self.assertEqual(started, [{"threadId": f.session, "queuedSubmissionId": "held"}])
+                    self.assertEqual((result["delivery"], result["turnId"]), ("turn_started", "queue-started-turn"))
+                else:
+                    self.assertNotIn("thread/queue/start", f.rpc_requests)
+                    self.assertEqual(result["delivery"], "future_queued")
+
+    def test_queue_adds_when_the_pending_entry_left_and_reports_a_refused_start_truthfully(self) -> None:
+        import uuid
+        held = {"id": "held", "clientUserMessageId": "earlier", "input": []}
+        for still_queued in (False, True):
+            with self.subTest(still_queued=still_queued), ReceiptFixture(str(uuid.uuid4())) as f:
+                f.queue_items = [held]
+                f.rpc_results["thread/queue/update"] = ValueError("queued submission not found")
+                def add(request):
+                    entry = {"id": "added", **{key: request["params"][key] for key in ("clientUserMessageId", "input")}}
+                    f.queue_items = [entry] if still_queued else []
+                    return {"queuedSubmission": entry}
+                f.rpc_results["thread/queue/add"] = add
+                f.rpc_results["thread/queue/start"] = ValueError("thread already has an active or pending turn")
+                result = asyncio.run(NATIVE.queue_input(f.home, f.session, "only"))
+                self.assertEqual(f.rpc_requests.count("thread/queue/add"), 1)
+                self.assertFalse(result["joined_pending"])
+                self.assertEqual(result["delivery"], "future_queued" if still_queued else "turn_started")
+
+    def test_interrupt_stops_the_exact_active_turn_then_delivers_its_message(self) -> None:
+        import uuid
+        for message in (None, "stop and do this"):
+            with self.subTest(message=message), ReceiptFixture(str(uuid.uuid4())) as f:
+                f.native_state = "active"
+                def interrupt(request):
+                    self.assertTrue(CLOSURE.action_pending(f.session))
+                    self.assertEqual(request["params"], {"threadId": f.session, "turnId": "working-turn"})
+                    f.native_state = "idle"
+                    return {}
+                f.rpc_results["turn/interrupt"] = interrupt
+                result = asyncio.run(NATIVE.queue_input(f.home, f.session, message, expected_turn_id="working-turn", interrupt=True))
+                self.assertEqual((result["delivery"], result["state"]), ("interrupted", "idle"))
+                self.assertNotIn("turn/steer", f.rpc_requests)
+                if message is None:
+                    self.assertEqual(result["pending"], 0)
+                    self.assertNotIn("thread/queue/add", f.rpc_requests)
+                else:
+                    self.assertEqual(result["message"]["delivery"], "turn_started")
+                    added = [r["params"] for r in f.mutations if r["method"] == "thread/queue/add"]
+                    self.assertEqual(added[0]["input"][0]["text"], message)
+
+    def test_interrupt_refuses_an_inactive_thread_without_sending(self) -> None:
+        import uuid
+        for state in ("idle", "notLoaded"):
+            with self.subTest(state=state), ReceiptFixture(str(uuid.uuid4())) as f:
+                f.native_state = state
+                with self.assertRaises(NATIVE.QueueNotSent):
+                    asyncio.run(NATIVE.queue_input(f.home, f.session, "x", expected_turn_id="working-turn", interrupt=True))
+                self.assertNotIn("turn/interrupt", f.rpc_requests)
+                self.assertNotIn("thread/queue/add", f.rpc_requests)
+                self.assertFalse(CLOSURE.action_pending(f.session))
+
     def test_inactive_steer_preserves_closure_and_never_queues_fallback(self) -> None:
         import uuid
         for state in ("notLoaded", "idle", "systemError"):

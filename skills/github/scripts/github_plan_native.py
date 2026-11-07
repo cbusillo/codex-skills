@@ -95,18 +95,23 @@ async def pages(request, method, session, **params):
         seen.add(cursor)
 
 
-async def read_queue(request, session):
-    entries = {}
+async def queued_entries(request, session):
+    """The thread's pending submissions, in native delivery order."""
+    entries = []
     async for page in pages(request, "thread/queue/list", session):
         for entry in page["data"]:
             if (not isinstance(entry, dict) or not isinstance(entry.get("id"), str) or not entry["id"]
                     or not isinstance(entry.get("clientUserMessageId"), str) or not isinstance(entry.get("input"), list)
-                    or entry["id"] in entries):
+                    or any(entry["id"] == seen["id"] for seen in entries)):
                 raise ValueError("native queue identity is unavailable")
-            digest = hashlib.sha256(json.dumps(entry, sort_keys=True, separators=(",", ":"),
-                                               ensure_ascii=True, allow_nan=False).encode()).hexdigest()
-            entries[entry["id"]] = (entry["clientUserMessageId"], digest)
+            entries.append(entry)
     return entries
+
+
+async def read_queue(request, session):
+    return {entry["id"]: (entry["clientUserMessageId"], hashlib.sha256(json.dumps(
+                entry, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest())
+            for entry in await queued_entries(request, session)}
 
 
 # Known native history variants: a future execution-shaped variant must not be
@@ -292,46 +297,99 @@ async def require_loaded_thread(request, session, home):
     return thread
 
 
-async def queue_input(home: Path, session: str, text: str, *, transcript: Path | None = None,
-                      expected_turn_id: str | None = None) -> dict:
-    """Submit once; normalize post-send cancellation at the top-level CLI boundary."""
+async def _deliver(request, session, params, state) -> dict:
+    """Join pending input so one turn boundary delivers it all; start an idle thread."""
+    pending = await queued_entries(request, session)
+    result = joined = None
+    if pending:
+        last = pending[-1]
+        joined = {**last, "input": last["input"] + params["input"]}
+        try:
+            result = await request("thread/queue/update", {"threadId": session, "queuedSubmissionId": last["id"],
+                                                           "input": joined["input"]})
+        except NativeRequestRejected:
+            joined = None  # The entry left the queue first; nothing changed, so add instead.
+    expected = joined or {"clientUserMessageId": params["clientUserMessageId"], "input": params["input"]}
+    if joined is None:
+        result = await request("thread/queue/add", params)
+    entry = result.get("queuedSubmission") if isinstance(result, dict) else None
+    if (not isinstance(entry, dict) or not isinstance(entry.get("id"), str) or not entry["id"]
+            or joined and entry["id"] != joined["id"]
+            or entry.get("clientUserMessageId") != expected["clientUserMessageId"] or entry.get("input") != expected["input"]):
+        raise ValueError("native queue acknowledgement is unavailable")
+    receipt = {"delivery": "future_queued", "queuedSubmissionId": entry["id"],
+               "clientUserMessageId": entry["clientUserMessageId"], "joined_pending": joined is not None}
+    if state != "idle":
+        return receipt
+    try:
+        started = await request("thread/queue/start", {"threadId": session, "queuedSubmissionId": entry["id"]})
+    except NativeRequestRejected:
+        # An empty idle queue starts its first entry itself, and a turn may have
+        # begun since the read. Either way the entry stays exactly as observed.
+        if entry["id"] not in await read_queue(request, session):
+            receipt["delivery"] = "turn_started"
+        return receipt
+    turn = started.get("turn") if isinstance(started, dict) else None
+    if not isinstance(turn, dict) or not isinstance(turn.get("id"), str) or not turn["id"]:
+        raise ValueError("native queue start acknowledgement is unavailable")
+    return {**receipt, "delivery": "turn_started", "turnId": turn["id"]}
+
+
+async def queue_input(home: Path, session: str, text: str | None, *, transcript: Path | None = None,
+                      expected_turn_id: str | None = None, interrupt: bool = False) -> dict:
+    """Submit once; normalize post-send cancellation at the top-level CLI boundary.
+
+    Queue joins pending input and starts an idle thread. Steer adds to the exact
+    active turn. Interrupt stops the exact active turn, then queues any text.
+    """
     from github_plan_sessions import native_helpers
     native_helpers()
     from codex_session_proxy import source_endpoint
     client_id = str(uuid.uuid4())
-    steering = expected_turn_id is not None
-    if steering and (not isinstance(expected_turn_id, str) or not expected_turn_id.strip()):
-        raise QueueNotSent("steer requires the exact active turn ID")
-    method = "turn/steer" if steering else "thread/queue/add"
+    steering = expected_turn_id is not None and not interrupt
+    if (steering or interrupt) and (not isinstance(expected_turn_id, str) or not expected_turn_id.strip()):
+        raise QueueNotSent(("interrupt" if interrupt else "steer") + " requires the exact active turn ID")
+    method = "turn/interrupt" if interrupt else "turn/steer" if steering else "thread/queue/add"
     params: dict[str, object] = {"threadId": session, "clientUserMessageId": client_id,
-              "input": [{"type": "text", "text": text, "text_elements": []}]}
+              "input": [{"type": "text", "text": text or "", "text_elements": []}]}
     if steering:
         params["expectedTurnId"] = expected_turn_id
-    # Native echoes the full input. Escaped/multibyte valid text can exceed the
-    # observer's fixed cap; bound this acknowledgement to the actual request.
-    allowance = max(1024 * 1024, len(json.dumps(params, ensure_ascii=True).encode()) + 65536)
+    # Native echoes the full input, including pending input this joins. Bound
+    # each acknowledgement to the actual request with room for that queue.
+    allowance = max(16 * 1024 * 1024, len(json.dumps(params).encode()) + 65536)
     leased = False
     try:
         await asyncio.to_thread(lambda: source_endpoint(session, home, transcript=transcript))
-        with _queue_outcome("steering" if steering else "submission") as mark_sent:
+        with _queue_outcome("interrupt" if interrupt else "steering" if steering else "submission") as mark_sent:
             async with connection(home, max_msg_size=allowance) as request:
                 thread = await require_loaded_thread(request, session, home)
-                if steering and thread["state"] != "active":
-                    raise ValueError("steer requires an active turn; preserve state and do not queue a fallback")
+                if (steering or interrupt) and thread["state"] != "active":
+                    raise ValueError(method.split("/")[1] + " requires an active turn; preserve state and do not queue a fallback")
                 leased = True
                 async with closure.async_resume_guard(session, method=method, home=home):
                     mark_sent()
-                    result = await request(method, params)
                     if steering:
+                        result = await request(method, params)
                         if not isinstance(result, dict) or result.get("turnId") != expected_turn_id:
                             raise ValueError("native steering acknowledgement is unavailable")
                         receipt = {"delivery": "active_turn_accepted", "turnId": expected_turn_id, "clientUserMessageId": client_id}
+                    elif interrupt:
+                        if not isinstance(await request(method, {"threadId": session, "turnId": expected_turn_id}), dict):
+                            raise ValueError("native interrupt acknowledgement is unavailable")
+                        state = "active"
+                        for _ in range(30):
+                            state = (await read_thread(request, session))["state"]
+                            if state != "active":
+                                break
+                            await asyncio.sleep(.1)
+                        receipt = {"delivery": "interrupted" if state != "active" else "interrupt_requested",
+                                   "turnId": expected_turn_id, "state": state}
+                        if text is not None:
+                            receipt["message"] = await _deliver(request, session, params, state)
+                        else:
+                            receipt["pending"] = len(await queued_entries(request, session))
                     else:
-                        entry = result.get("queuedSubmission") if isinstance(result, dict) else None
-                        if (not isinstance(entry, dict) or not isinstance(entry.get("id"), str) or not entry["id"]
-                                or entry.get("clientUserMessageId") != client_id or entry.get("input") != params["input"]):
-                            raise ValueError("native queue acknowledgement is unavailable")
-                        receipt = {"delivery": "future_queued", "queuedSubmissionId": entry["id"], "clientUserMessageId": client_id}
+                        receipt = await _deliver(request, session, params, thread["state"])
     except (OSError, ValueError) as error:
         if leased:
             raise

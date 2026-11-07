@@ -1554,20 +1554,41 @@ missing or mismatched ledger identity fields from `codex-session.py status`
 before `finish`; status reads the recorded generation even after the client
 exits. Already-running clients from an older catalog keep their in-memory
 generation recorder until they exit and may need that same refresh.
-Resume, queue and steer mutations use the source account's
+Resume, queue, steer and interrupt mutations use the source account's
 existing daemon and the same per-thread lease as closure and successor admission:
 
 ```sh
 uv run skills/supervisor/scripts/codex-session.py queue --session-id <native-id> --codex-home <source-home> --message <text>
 uv run skills/supervisor/scripts/codex-session.py steer --session-id <native-id> --codex-home <source-home> --expected-turn-id <active-turn-id> --message <text>
+uv run skills/supervisor/scripts/codex-session.py interrupt --session-id <native-id> --codex-home <source-home> --expected-turn-id <active-turn-id> [--message <text>]
 uv run skills/supervisor/scripts/codex-session.py resume --session-id <native-id> --codex-home <source-home>
-uv run skills/supervisor/scripts/codex-session.py status --session-id <native-id>
+uv run skills/supervisor/scripts/codex-session.py status --session-id <native-id> [--codex-home <source-home>]
 ```
 
-Use `queue` for work that should wait until the current turn finishes. Its
-`delivery: future_queued` receipt proves storage, not delivery to the active
-turn. Queued input can survive a restart; a newer steer does not cancel it.
-Inspect stale input through the existing guarded `queue-cancel` route.
+Use `queue` for work that should wait until the current turn finishes. Native
+Codex starts one queued entry per turn, so `queue` appends to the last pending
+entry when there is one (`joined_pending: true`); everything queued reaches the
+worker at the next turn boundary together. On an idle thread, including one
+left idle by an interrupt with input still held, it starts that entry at once
+and reports `delivery: turn_started`. `delivery: future_queued` proves storage
+only: the thread is busy and the entry runs when its turn ends. Queued input
+can survive a restart; a newer steer does not cancel it. Inspect stale input
+through the existing guarded `queue-cancel` route.
+
+Use `interrupt` to stop the exact active turn, the way Esc does in the
+terminal, with no keystrokes. It refuses a thread that is not active. Native
+interrupt keeps the queue and does not start it; `--message` queues and starts
+that text through the `queue` route above once the thread is idle, and without
+it the receipt counts what is still `pending`. `interrupt_requested` means the
+turn had not stopped within three seconds; check `status`, then `queue` once
+it is idle.
+
+`status` reads the closed-session log's resumed generation when there is one; a
+fresh launch has none, and its generation is in the launch ledger. With
+`--codex-home`, or the generation's own home, it also reports that home's
+`thread_state` and pending `queue` (ID, client ID and full-entry digest, in
+delivery order) for this session. A daemon read failure is `queue_error`, not
+an empty queue.
 
 Use `steer` for a correction needed by the current turn. Read the worker's
 `turn_id` with `status.py --ledger <ledger.json>` or the native thread reader
@@ -1588,7 +1609,7 @@ which home runs the thread; only the running home's daemon delivers queued
 input. Take the home from the ledger's `codex_home`. Resume a stopped session
 before queueing to it.
 
-Queue and steer report success only after their acknowledgement and connection
+Queue, steer and interrupt report success only after their acknowledgement and connection
 and ownership cleanup complete. Once submission may have started, any failure,
 including timeout or cancellation during cleanup, reports uncertainty with
 no-replay guidance. Inspect the native thread, turn transcript and queue before further action; never resend
