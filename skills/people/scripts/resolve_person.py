@@ -488,13 +488,18 @@ def github_logins(person: dict[str, Any]) -> tuple[list[str], list[str]]:
 def github_team(login: str, people: list[dict[str, Any]]) -> list[str]:
     """The GitHub logins, own and automation, of the person holding `login` and of everyone in their company."""
     login = login.strip().casefold().removeprefix("@")
-    holders = [person for person in people if login in sum(github_logins(person), [])]
-    if len(holders) != 1:
+    holders: dict[str, list[dict[str, Any]]] = {}
+    for person in people:
+        for item in set(sum(github_logins(person), [])):
+            holders.setdefault(item, []).append(person)
+    if len(holders.get(login, [])) != 1:
         return []
-    def company(person: dict[str, Any]) -> str:
-        return (first_string(nested_value(person, "organization", "company")) or "").strip().casefold()
-    team = [person for person in people if person is holders[0] or company(holders[0]) == company(person) != ""]
-    return sorted({item for person in team for item in sum(github_logins(person), [])})
+    [holder] = holders[login]
+    def company(entry: dict[str, Any]) -> str:
+        return (first_string(nested_value(entry, "organization", "company")) or "").strip().casefold()
+    team = [person for person in people if person is holder or company(holder) == company(person) != ""]
+    # A login another person also holds is ambiguous, so it never joins a team.
+    return sorted({item for person in team for item in sum(github_logins(person), []) if len(holders[item]) == 1})
 
 
 def contact_sources() -> set[str]:

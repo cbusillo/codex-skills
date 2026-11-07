@@ -114,6 +114,9 @@ class ResolvePersonTest(TestCase):
         self.assertEqual(resolve_person.github_team("client-agent[bot]", people), team)
         self.assertEqual(resolve_person.github_team("loner-gh", people), ["loner-gh"])
         self.assertEqual(resolve_person.github_team("stranger", people), [])
+        shared = [*people, {"id": "contractor", "github": "teammate-gh", "organization": {"company": "Other"}}]
+        self.assertEqual(resolve_person.github_team("client-owner", shared), ["client-agent[bot]", "client-owner"])
+        self.assertEqual(resolve_person.github_team("teammate-gh", shared), [])
 
     def test_resolves_explicit_misspelling_alias(self) -> None:
         result = resolve_person.resolve("exmaple", self.people())

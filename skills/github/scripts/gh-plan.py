@@ -6829,6 +6829,8 @@ def cmd_close(args: argparse.Namespace) -> None:
     actor = issue_actor
     completed_steps: list[str] = []
     comment_result: dict[str, Any] = {}
+    # A close comment that answers a confirmation is a fresh reply posted before the close, never a reused one.
+    answers_comments = bool(close_attention.get("answered_by_close_comment"))
     if trigger is not None:
         # Persist and read back the trigger before closing: failed publication
         # must never leave a closed issue whose reopen event was lost.
@@ -6848,7 +6850,7 @@ def cmd_close(args: argparse.Namespace) -> None:
                 "issue", number, trigger_comment, repo=issue_repo, gh_cmd=gh_cmd,
                 expected_actor=expected_actor, operation=CURRENT_OPERATION,
                 completed_steps=completed_steps, failed_step="post_reopen_trigger",
-                dedupe_body=prior_trigger == trigger)
+                dedupe_body=prior_trigger == trigger and not answers_comments)
         except github_comment_core.CommentError as exc:
             raise plan_error_from_comment(exc, completed_steps=completed_steps) from exc
         completed_steps.append("post_reopen_trigger")
@@ -6888,7 +6890,7 @@ def cmd_close(args: argparse.Namespace) -> None:
             comment_result = github_comment_core.comment(
                 "issue", number, close_comment, repo=issue_repo, gh_cmd=gh_cmd,
                 expected_actor=expected_actor, operation=CURRENT_OPERATION, completed_steps=completed_steps,
-                failed_step="post_scope_cut_reason", dedupe_body=True)
+                failed_step="post_scope_cut_reason", dedupe_body=not answers_comments)
             comment_id = comment_result["comment"]["id"]
             _, published = api_json("GET", f"/repos/{issue_repo}/issues/comments/{comment_id}",
                                     failed_step="read_scope_cut_reason", repository=issue_repo)
@@ -6900,6 +6902,16 @@ def cmd_close(args: argparse.Namespace) -> None:
         except github_comment_core.CommentError as exc:
             raise plan_error_from_comment(exc, completed_steps=completed_steps) from exc
         completed_steps.append("scope_cut_reason_readback")
+        close_comment = ""
+
+    if close_comment and answers_comments:
+        try:
+            comment_result = github_comment_core.comment(
+                "issue", number, close_comment, repo=issue_repo, gh_cmd=gh_cmd, expected_actor=expected_actor,
+                operation=CURRENT_OPERATION, completed_steps=completed_steps, failed_step="post_close_reply")
+        except github_comment_core.CommentError as exc:
+            raise plan_error_from_comment(exc, completed_steps=completed_steps) from exc
+        completed_steps.append("post_close_reply")
         close_comment = ""
 
     project_result: dict[str, Any] = {}

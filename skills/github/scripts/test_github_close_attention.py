@@ -122,6 +122,7 @@ class CloseAttentionTests(unittest.TestCase):
         confirmed = row(known=True)
         passed = gate.check(REPO, 7, reader=fake_reader(), radar=radar(confirmed), close_comment="Thanks, closing.")
         self.assertEqual(passed["result"], "passed")
+        self.assertEqual([item["comment_url"] for item in passed["answered_by_close_comment"]], [confirmed["comment_url"]])
         reader = fake_reader(pages={f"repos/{REPO}/issues/7/sub_issues": [{"html_url": f"https://github.com/{REPO}/issues/9"}]})
         for rows, comment in (((confirmed,), ""), ((row(),), "Closing."), ((row(9, known=True),), "Closing.")):
             with self.assertRaises(gate.CloseAttentionError):

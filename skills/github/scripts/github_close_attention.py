@@ -231,7 +231,9 @@ def check(repo: str, number: int, *, issue: dict[str, Any] | None = None, decisi
         payload = (radar or run_radar)(threads, gh_cmd)
     rows = unanswered_rows(payload, thread_ref(repo, number) if close_comment.strip() else None)
     gaps = coverage_gaps(payload)
-    result = {"threads": threads, "unanswered": rows, "coverage_gaps": gaps}
+    # The caller must post the close comment as a new reply before closing when it answers these.
+    answered = [row for row in unanswered_rows(payload) if row not in rows]
+    result = {"threads": threads, "unanswered": rows, "coverage_gaps": gaps, "answered_by_close_comment": answered}
     if not rows and not gaps:
         return {"result": "passed", **result}
     if decision_url:

@@ -2104,8 +2104,9 @@ malformed rather than ignoring its additional field.
   they link the comment. Answer each with a new reply on its thread and rerun.
   The close comment (`--comment` or `--comment-file`) is the reply to comments
   on the closing issue itself from people the people index records, such as a
-  Client confirming the work is done; unknown people and linked threads still
-  need their own reply. When degraded coverage comes from a body reference that does not exist, such
+  Client confirming the work is done, and is then posted as a new comment
+  before the issue closes; unknown people and linked threads still need their
+  own reply. When degraded coverage comes from a body reference that does not exist, such
   as a bare `#N` meant for another repository, the refusal names each one with
   its `owner/repo#N` correction and does not offer the override for it; fix
   the body and rerun.
