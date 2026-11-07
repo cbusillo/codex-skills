@@ -25,16 +25,16 @@ os.environ["CODEX_SKILLS_ENV_FILE"] = "/definitely/missing/codex-skills-test.env
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "work-closeout/scripts"))
 
-import goal_board
 import routine_check
 import question_delivery
 import session_closeout
 claim_transcripts: Any = importlib.import_module("claim_transcripts")
 from check_operation import GateFailed, Operation
-from test_goal_board import TRUSTED, child, comment
 
 from skills.github.scripts.github_api import ApiResult
 from skills.github.scripts import github_agent
+from skills.github.scripts.test_gh_plan_next import global_fixture, global_issue, next_args, relationships, track
+from skills.github.scripts.test_github_next_queue import classify, item
 
 
 def patch_attr(target: Any, name: str, *args: Any, **kwargs: Any) -> Any:
@@ -49,6 +49,53 @@ class RoutineCheckTests(unittest.TestCase):
         self.enterContext(patch.object(routine_check.oq, "default_decision_authors", return_value=["agent[bot]"]))
         self.enterContext(patch_attr(routine_check.radar.github_identity, "automation_login", return_value="agent[bot]"))
         self.enterContext(patch_attr(routine_check.radar.github_identity, "configured_bot_logins", return_value=["agent[bot]"]))
+
+    def test_digest_keeps_every_track_decision_wait_and_unread_source(self) -> None:
+        roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second"),
+                 track("someone/direction", 3, "First")]
+        held = global_issue("someone/product", 4, waiting_for="Client acceptance")
+        decision_url = roots[0]["html_url"] + "#issuecomment-10"
+        forged_url = roots[0]["html_url"] + "#issuecomment-11"
+        comments = {("someone/direction", 1): [
+            {"id": 10, "user": {"login": "someone"}, "body": "\n\t**Director decision Q50: Keep the hold.", "html_url": decision_url},
+            {"id": 11, "user": {"login": "outsider"}, "body": "Director decision Q50: Drop it.", "html_url": forged_url},
+        ]}
+        for unread in (False, True):
+            with self.subTest(unread=unread), global_fixture(
+                roots, [held], {("someone/direction", 1): relationships(sub_issues=[held])},
+                comments=comments, clear_waits=roots,
+            ) as (module, result, _reads):
+                original = module.read_next_issue_relationships
+
+                def read(repo: str, number: int, raw: dict | None = None) -> Any:
+                    if unread and number == 2:
+                        raise module.PlanError("Track source unavailable")
+                    return original(repo, number, raw)
+
+                with patch_attr(module, "read_next_issue_relationships", side_effect=read):
+                    module.cmd_next(next_args())
+                for full in (False, True):
+                    output = routine_check.digest({"next": result}, full=full)
+                    for root in roots:
+                        self.assertIn(root["html_url"], output)
+                    self.assertIn(decision_url, output)
+                    self.assertNotIn(forged_url, output)
+                    self.assertIn(held["html_url"], output)
+                    self.assertIn("Client acceptance", output)
+                    if unread:
+                        self.assertRegex(output, roots[1]["html_url"] + r"[^\n]*UNKNOWN")
+
+    def test_failed_next_keeps_discovered_tracks_when_all_bodies_are_unread(self) -> None:
+        roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
+        for root in roots:
+            root.pop("body")
+        with global_fixture(roots, [], {}) as (module, _result, _reads):
+            with self.assertRaises(module.PlanError) as error:
+                module.cmd_next(next_args())
+            output = routine_check.digest({"next": {"ok": False, **error.exception.payload}})
+        for root in roots:
+            self.assertRegex(output, root["html_url"] + r"[^\n]*UNKNOWN")
+        self.assertIn("ERROR next", output)
 
     def test_graphql_bot_sources_keep_acknowledgement_until_edited(self) -> None:
         stamp = "2026-11-01T00:00:00Z"
@@ -220,8 +267,7 @@ class RoutineCheckTests(unittest.TestCase):
                         self.assertEqual(f"COMMENT {opening.url} (untrusted):" in output, len(comments) == 1)
 
     def test_held_accept_and_agent_next_action_survive_unchanged_checks(self) -> None:
-        staffing = comment("## Current Status\nNext actor: agent:integrator\nNext action: Finish the two source slices.", ident=6532738729)
-        program = goal_board.child_row(child(277, comments=[staffing]), TRUSTED)
+        program = item(number=277, actor="agent:integrator", action="Finish the two source slices.")
         url = "https://github.com/cbusillo/odoo-tenant-cm/pull/290#issuecomment-6531928916"
         client_comment = routine_check.radar.normalize_issue_comment(
             "cbusillo/odoo-tenant-cm",
@@ -248,8 +294,7 @@ class RoutineCheckTests(unittest.TestCase):
         client = attention[0]
         self.assertNotEqual(client["attention_state"], "handled")
         sources = {
-            "next": {"candidates": [{**program, "queue": {"state": "available", "next_actor": program["next_actor"],
-                      "next_action": program["next_action"]}}], "candidate_coverage": {"complete": True}},
+            "next": {"candidates": [{**program, "queue": classify(program)}], "candidate_coverage": {"complete": True}},
             "sessions": {
                 "sessions": [{"session_id": "worker", "action": "verify_finished_session"}],
                 "coverage": {"complete": True},
@@ -289,7 +334,7 @@ class RoutineCheckTests(unittest.TestCase):
 
     def test_reader_failure_does_not_hide_other_results_and_repeats_errors(self) -> None:
         readers = {
-            "board": Mock(side_effect=ValueError("unread program")),
+            "next": Mock(side_effect=ValueError("unread program")),
             "watch": Mock(return_value={"errors": ["watch offline"], "coverage_gaps": ["unwatched repo"]}),
             "comments": Mock(
                 return_value={
@@ -389,12 +434,10 @@ class RoutineCheckTests(unittest.TestCase):
         registered = {"url": "registered-question", "registration_url": "registration", "delivery": "unacknowledged"}
         discovered = [{"url": f"discovered-{number}"} for number in range(50)]
         output = routine_check.digest({
-            "board": {"tracks": [{"open_questions": [{"url": "historical-board-question"}]}]},
             "questions": {"queue": "owner/direction#98", "questions": [registered, *discovered],
                           "unnumbered_sources": ["discovered-49"], "untrusted_sources": ["discovered-48"]},
         })
         self.assertIn("registered-question", output)
-        self.assertNotIn("historical-board-question", output)
         summary = next(line for line in output.splitlines() if discovered[0]["url"] in line)
         self.assertIn(str(len(discovered)), summary)
         self.assertNotIn("discovered-47", output)

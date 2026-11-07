@@ -28,6 +28,10 @@ DECISION_HEADING = re.compile(
 )
 
 
+def recorded_decision(text: str) -> re.Match[str] | None:
+    return DECISION_HEADING.match(text.lstrip().lstrip("*"))
+
+
 def questions(comments: list[dict[str, Any]], owner: str, decision_authors: Iterable[str],
               related_comments: Iterable[dict[str, Any]] = (), *, recorded_decisions_only: bool = False) -> list[dict[str, Any]]:
     owner = owner.casefold()
@@ -43,7 +47,7 @@ def questions(comments: list[dict[str, Any]], owner: str, decision_authors: Iter
         for answer in [*comments[i + 1 :], *related_comments]:
             author = (answer.get("author") or "").casefold()
             text = answer.get("body", "").lstrip().lstrip("*")
-            decision = DECISION_HEADING.match(text)
+            decision = recorded_decision(answer.get("body", ""))
             recorded = decision is not None
             heading_number = (decision["number"] or decision["parenthetical_number"]) if decision else None
             if heading_number and heading_number != number:

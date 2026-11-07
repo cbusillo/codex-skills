@@ -5861,13 +5861,14 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
             graph_readers[issue_repo] = next_graph_reader(issue_repo)
         return graph_readers[issue_repo]
 
-    def unread(code: str, message: str, *, action: str = "review_partial_coverage", **evidence: Any) -> NoReturn:
+    def unread(code: str, message: str, *, action: str = "review_partial_coverage",
+               track_sources: dict[str, list[dict[str, Any]]] | None = None, **read_context: Any) -> NoReturn:
         summary = github_direction_next.milestone_summary(titles, completed=completed_titles,
-            candidates=[], graph_waits=[], track_next_actions={}, graph_complete=False)
+            candidates=[], graph_waits=[], track_next_actions=track_sources or {}, graph_complete=False)
         if CURRENT_RETRY_FIELDS.get("recommended_next_action") in {None, "none", "inspect_last_failure"}:
             CURRENT_RETRY_FIELDS["recommended_next_action"] = action
         raise ClassifiedPlanError(code, message, payload={"milestone_summary": summary,
-            "recommended_next_action": CURRENT_RETRY_FIELDS["recommended_next_action"], **evidence})
+            "recommended_next_action": CURRENT_RETRY_FIELDS["recommended_next_action"], **read_context})
 
     NEXT_READS.start_phase("repository_inventory")
     complete_inventory, inventory_context = discover_direction_work(repo, args) if scope is None else (
@@ -5950,7 +5951,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
             if NEXT_READS.observation(path) is not None:
                 issue_actor, raw_issue = api_json("GET", path, bucket="rest_core", failed_step="next_issue_observation")
                 actor = issue_actor or actor
-            elif raw_issue is None:
+            elif raw_issue is None or "body" not in raw_issue:
                 issue_actor, raw_issue = get_issue(str(number), issue_repo)
                 actor = issue_actor or actor
             source_issue: dict[str, Any] = {**raw_issue, "repo": issue_repo}
@@ -6115,6 +6116,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
         agent=github_agent.running_agent(getattr(args, "agent", None)),
         wait_milestone_titles=wait_titles,
         prefetch_nodes=prefetch_graph if NEXT_READS.workers > 1 else None,
+        decision_authors=wait_authors(repo),
     )
     NEXT_READS.read_ahead_unevaluated = len(graph_read_ahead.difference(nodes))
     # Settle the bounded graph look-ahead before taking inventory snapshots.
@@ -6134,7 +6136,8 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
                       "truncated": ranked["truncated"], "evaluation_note": graph_evaluation_note}
     tracking_keys = [(row["repo"].casefold(), row["number"]) for row in ranked["tracking_roots"]]
     if tracking_keys and not any(key in seeds and "body" in seeds[key] for key in tracking_keys):
-        unread("work_graph_unread", "Track graph nodes are unread; milestones are unknown", graph_context=graph_coverage)
+        unread("work_graph_unread", "Track graph nodes are unread; milestones are unknown", graph_context=graph_coverage,
+               track_sources=ranked["track_next_actions"])
     # Establish useful native-frontier evidence before optional portfolio work.
     NEXT_READS.start_phase("milestone_ownership")
     graph_queue_context = annotate_next_queue(ranked["candidates"], args)

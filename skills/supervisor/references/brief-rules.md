@@ -128,7 +128,7 @@ Rules for this brief (every Supervisor brief carries them):
   [verbatim under the standard header](helpers.md#terminal-launches).
   When a lead launched you, notify it through its verified native delivery route
   with the issue URL; an automation-authored status edit does not wake the foreign watch.
-  Never post staffing lists or STAFF NOW on the Track board.
+  Never post staffing lists or STAFF NOW on the Track issue.
 <!-- brief-rules:end -->
 
 ## Milestone lead briefs
@@ -140,7 +140,7 @@ slices itself. This is the
 the first weekly direction audit at least one full week after this brief lands
 judges it, and the Director keeps, changes or drops it. Either harness works;
 Claude leads use tmux for guarded notifications, and the pilot starts on Codex.
-A Track and its goal board are optional views.
+A Track is an optional view; the routine digest includes the milestone summary.
 When several leads share a repository, spread work within its shared PR cap.
 
 Fill the placeholders below and carry the shared rules by link or inclusion.
@@ -159,7 +159,7 @@ How a lead works:
 1. Read the Director's overall and repository DIRECTION.md, the milestone's finish line, and gh-plan.py next. If a Track is supplied, read it and its native children too; do not claim the Track itself. Take only work belonging to this milestone. Keep a current forecast date in the milestone's due date field once the Director has seen it, with each date and its reasons on your Track when supplied, and leave the field blank while the milestone waits on a person or event.
 2. Brief workers for the next actionable items in that order: not waiting on a person or event, not natively blocked, not owned by another running session. Recheck ownership before dispatch; workers claim their own issues and use their own task worktrees. Choose the tier each slice needs under Q1199, rather than giving every slice the strongest tier.
 3. Launch through the existing iterm_tab.py launcher on either terminal backend, into the shared ledger, with --lead-session-id <your-native-session-id> and an explicit --account from the allowed accounts. The launcher enforces your assigned cap across repositories and batches. Never raise the cap or use another account yourself. Put your native id and the native delivery pointers from the shared launch reference in each worker brief and use the shared brief rules. Handle worker-originated requests with --brief-issue on their child issues; do not send staffing requests to the Supervisor for launches within your assignment.
-4. Watch and review workers through handoff comments, issue status and the optional board; leave diffs, CI logs, implementation, tests and the review of record to workers. Nudge stalls, record decisions and keep each issue's Current Status current. Close your workers with session_closeout.py on the same ledger, passing your native id as --supervisor-session; all existing claim, handoff, process and terminal checks apply. Recover a partial launch before dispatching more work. The Supervisor adopts your rows if you cannot continue.
+4. Watch and review workers through handoff comments, issue status and the routine digest; leave diffs, CI logs, implementation, tests and the review of record to workers. Nudge stalls, record decisions and keep each issue's Current Status current. Close your workers with session_closeout.py on the same ledger, passing your native id as --supervisor-session; all existing claim, handoff, process and terminal checks apply. Recover a partial launch before dispatching more work. The Supervisor adopts your rows if you cannot continue.
 5. Idle at the native prompt between events so messages reach you. Reuse worker-finish notices, the existing foreign watch narrowed to the milestone's repositories, and native message delivery; use a rare backstop check every few hours, not a continuous turn or cache-warming schedule. On each wake, handle finished workers and new messages, scan child statuses naming your native id, then refill available capacity. Preserve coverage gaps as UNKNOWN. Reach the Supervisor only by setting the item's Current Status to `Next actor: agent:supervisor` with the action, which its routine check surfaces; never send text into the Supervisor's terminal, where it reads as the Director's own input.
 6. When an item needs a person, record its wait, follow the shared brief rules for Director questions and Asking a Client for Client questions, and move to independent milestone work. When nothing is actionable, keep waits and the next actor current and remain idle for events. When the assignment is done or handed off, close out with work-closeout and end with a standalone final line: Safe to exit: yes
 

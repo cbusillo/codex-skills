@@ -2150,26 +2150,6 @@ reconciliation_strategy = "paged_read"
 retained_graphql_rationale = "One query per repository page supplies aggregate counts without fetching issue or PR nodes; shared transport owns identity and retries. GraphQL has no conditional REST cache."
 
 [[operations]]
-id = "github.supervisor.goal_board"
-request_priority = "essential"
-capabilities = ["metadata_read", "issues_read", "pull_requests_read"]
-permission_mode = "fixed"
-permission_note = "Read-only Track graph on the owner's direction repository and the open PRs closing its children, under the configured automation identity; no grant or identity fallback."
-entrypoint = "supervisor/scripts/goal_board.py"
-intent = "Rebuild the Supervisor's goal board from every open Track issue on each check, after compaction and at takeover, instead of carrying status in a private ledger."
-current_transport = "gh_cli_graphql"
-endpoint_or_command = "POST /graphql repository.issues open listing and native Track details; GET /repos/{repo}/issues/{n}/comments for truncated closing-PR discussions; GET /repos/{repo}/issues/comments/{id} for claim-release evidence"
-quota_bucket = "mixed"
-actor_policy = "automation_required"
-mutation_class = "read"
-idempotency = "read_only"
-retry_eligibility = "safe"
-reconciliation_strategy = "paged_read"
-retained_graphql_rationale = "GraphQL exposes the native Track graph and closing PR windows; the existing REST paginator completes PR discussions and REST verifies claim-release evidence."
-
-
-
-[[operations]]
 id = "github.plan.reconcile_landing"
 request_priority = "essential"
 capabilities = ["pull_requests_read", "issues_read", "issues_write", "projects_write"]

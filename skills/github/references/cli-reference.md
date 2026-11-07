@@ -2248,9 +2248,9 @@ still returns `live_breakage_unread` or `work_graph_unread`; successful partial
 answers recommend `review_partial_coverage`. Explicit milestone selection reads
 its Track graph without inventorying unrelated repositories or PRs.
 
-The goal board and direction audit consume the same native graph and discussion
-reading functions. The board keeps its bounded view of recent
-decisions and PR handoffs. A weekly audit shares one invocation cache from
+Global next and the direction audit consume the same native graph and discussion
+reading functions. The milestone summary includes every Track, source decision
+links and explicit unread status. A weekly audit shares one invocation cache from
 repository discovery through its per-repository, capacity, outcome and stale-wait
 projections, including unread responses. Audit attribution retains full native
 relationship metadata and reads the canonical issue when a minimal projection
