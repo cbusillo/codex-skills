@@ -788,8 +788,12 @@ installed local helper bindings.
   build and source must match the requested pair. It records no artifact,
   allocation, lease or provider effect. Its bounded receipt identifies the
   testing lane's address origin, build/source, observation time and pending
-  candidate verification. It does not attest a healthy successor or completed
-  restore. Save the JSON output outside the repository and inspect it.
+  candidate verification. Conditional plans retain bounded typed steps and
+  blocker codes with redacted service prose. A pending plan cannot authorize
+  submission; resolve its blockers and repeat the dry run. These fields join
+  the existing review digest. Older compact responses remain supported.
+  It does not attest a healthy successor or completed restore. Save the JSON
+  output outside the repository and inspect it.
 
   `testing-rebuild-submit` with those same intent arguments plus
   `--idempotency-key --reviewed-dry-run --expected-plan-digest
