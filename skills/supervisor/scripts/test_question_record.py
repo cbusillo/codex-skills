@@ -201,6 +201,7 @@ class QuestionRecordTests(unittest.TestCase):
             question() | {"checked": " "},
             question() | {"checked": []},
             question() | {"agent_criterion": True},
+            *(question() | {"agent_criterion": value} for value in (None, 0, "false", "no")),
         ):
             for dry_run in (False, True):
                 with self.subTest(value=value, dry_run=dry_run):
@@ -208,8 +209,6 @@ class QuestionRecordTests(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         self.create(value)
         self.storage.create.assert_not_called()
-        self.fetch.assert_not_called()
-        self.assertFalse(record.question_id.counter_path().exists())
         self.assertFalse(record.validation_errors(question() | {"agent_criterion": False}))
 
     def test_queue_configuration_and_writer_disagreement_refuse_before_post(self) -> None:

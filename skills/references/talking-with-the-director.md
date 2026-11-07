@@ -104,9 +104,9 @@ Create a structured question with
 The JSON record has `version: 1`, `issue` (exact owning issue URL), `decision`,
 `basis`, `options`, `recommendation`, `comparison` (what an experienced developer
 would do and why), and `manual` (the Director's work, including "answer only").
-Set `checked` to the DIRECTION section, earlier Q, repository document or record read before asking (shown as "Checked before asking:"); declare `agent_criterion: true` for an agent- or reviewer-added criterion, finish line or child issue beyond the agreed outcome, which the validator refuses.
 Each option has `answer`, `changes`, `cost` (ongoing cost; explicit zero is valid),
 and `next` (the agent's action after that answer). Recommendation names one answer.
+Set `checked` to the DIRECTION section, earlier Q, repository document or record read before asking (shown as "Checked before asking:"); declare `agent_criterion: true` for an agent- or reviewer-added criterion, finish line or child issue beyond the agreed outcome, which the validator refuses.
 Use one short line in `basis` saying why this needs the Director; do not paste
 the stop-boundary quote. State a wrong premise or prior choice plainly;
 completeness does not prove the premise. Validation reports all field errors before posting.
@@ -124,6 +124,7 @@ The terminal text and `show-question`'s `text` use this shape:
 - **Recommendation:** <recommended answer>
 - **You do:** <manual>
 
+Checked before asking: <checked>
 Owning issue: <original issue URL>
 ```
 

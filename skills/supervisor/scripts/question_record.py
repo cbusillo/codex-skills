@@ -37,6 +37,7 @@ def validation_errors(record: Any, *, require_checked: bool = True) -> list[str]
         errors.append(
             'DIRECTION: "any agent may cut or close it without asking" for an agent- or reviewer-added criterion, '
             "finish line or child issue beyond the agreed outcome; cutting never removes a protection DIRECTION names."
+            if record["agent_criterion"] is True else "agent_criterion must be a boolean"
         )
     if type(record.get("version")) is not int or record["version"] != VERSION:
         errors.append(f"version must be {VERSION}")
