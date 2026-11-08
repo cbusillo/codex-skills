@@ -2862,7 +2862,7 @@ operation; public PR history contains the head, reason and Director citation.
 `governance-projection-read --repository OWNER/REPO --base-branch BRANCH --pr N`
 uses the existing admin config and GET `/v1/governance/projection`. It uses
 no POST, idempotency key or mutation authority. The producer owns the
-[governance contract](https://github.com/cbusillo/launchplane/blob/main/docs/governance-evidence.md).
+[governance contract](https://github.com/cbusillo/launchplane/blob/main/docs/merge-admission.md#governance-projection).
 
 The bounded result retains readiness availability, reason and state, admission
 status, record id and decision, landing status, target applicability, outcome id
