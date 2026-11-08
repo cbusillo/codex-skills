@@ -138,10 +138,10 @@ class ResumeTests(unittest.TestCase):
         argv = ["codex-session.py", "queue", "--session-id", self.native, "--ledger", str(ledger), "--message", "notice"]
         self.thread_state = "idle"
 
-        def execute(rows: list[dict], caller: dict[str, str]) -> bool:
-            ledger.write_text(json.dumps(rows))
+        def execute(ledger_rows: list, environment: dict[str, str]) -> bool:
+            ledger.write_text(json.dumps(ledger_rows))
             output = io.StringIO()
-            with patch.object(sys, "argv", argv), patch.dict(os.environ, caller), contextlib.redirect_stdout(output):
+            with patch.object(sys, "argv", argv), patch.dict(os.environ, environment), contextlib.redirect_stdout(output):
                 code = SESSION.main()
             delivered = bool(self.queue_requests)
             self.assertEqual(code == 0, delivered)

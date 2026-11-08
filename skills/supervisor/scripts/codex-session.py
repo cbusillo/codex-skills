@@ -43,9 +43,12 @@ def recorded_lead_home(session: str, ledger: Path | None = None) -> Path:
     caller = identities.pop()
     lead = terminal_entry(ledger, "session_id", session)
     home = lead.get("codex_home")
+    entries = read_ledger(ledger)
+    if not isinstance(entries, list) or not all(isinstance(entry, dict) for entry in entries):
+        raise ValueError("ledger must contain session objects")
     # A recorded worker reaches only its lead. A caller with no row, such as the
     # Supervisor that keeps this ledger, reaches only a top-level lead.
-    if any(entry.get("session_id") == caller for entry in read_ledger(ledger)):
+    if any(entry.get("session_id") == caller for entry in entries):
         worker = terminal_entry(ledger, "session_id", caller)
         routed = worker.get("harness") == agent and worker.get("lead_session_id") == session
     else:
