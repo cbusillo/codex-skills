@@ -103,6 +103,14 @@ def kinds(result: dict[str, Any]) -> list[str]:
     return [item["kind"] for item in result["findings"]]
 
 
+def run_cli(module: Any, argv: list[str], marker: Path, **overrides: Any) -> tuple[int, dict[str, Any]]:
+    output = StringIO()
+    with (patch.dict(os.environ, {"DIRECTION_MARKER": str(marker)}),
+          patch.dict(vars(module), overrides), redirect_stdout(output)):
+        code = module.main(argv)
+    return code, json.loads(output.getvalue())
+
+
 def test_clean_state_has_no_findings() -> None:
     module = load()
     result = run(module)
@@ -475,14 +483,9 @@ def test_unadopted_audit_leaves_marker_untouched() -> None:
                 marker.write_text(original)
             else:
                 marker.unlink()
-            output = StringIO()
-            with (patch.dict("os.environ", {"DIRECTION_MARKER": str(marker)}),
-                  patch.dict(vars(module), {
-                      "merged_direction": lambda *_args, **_kwargs: None,
-                      "gh_json": lambda *_args, **_kwargs: [],
-                  }), redirect_stdout(output)):
-                assert module.main(["--repo", "o/unadopted", "--automation", "bot", "--gh", "fixture-gh"]) == 3
-            result = json.loads(output.getvalue())
+            code, result = run_cli(module, ["--repo", "o/unadopted", "--automation", "bot", "--gh", "fixture-gh"], marker,
+                                   merged_direction=lambda *_args, **_kwargs: None, gh_json=lambda *_args, **_kwargs: [])
+            assert code == 3
             assert any(item["kind"] == "direction_missing" for item in result["findings"])
             assert result["marked"] is None
             assert marker.exists() == exists
@@ -500,12 +503,8 @@ def test_archived_audit_with_direction_does_not_reenter_weekly_marker() -> None:
             def fetch(args: list[str], **_kwargs: Any) -> Any:
                 return {"archived": archived} if args[1] == "repos/o/r" else []
 
-            output = StringIO()
-            with (patch.dict(os.environ, {"DIRECTION_MARKER": str(marker)}),
-                  patch.dict(vars(module), {"merged_direction": lambda *_args, **_kwargs: DIRECTION,
-                                            "gh_json": fetch}), redirect_stdout(output)):
-                module.main(["--repo", "o/r", "--automation", "bot", "--gh", "fixture-gh"])
-            result = json.loads(output.getvalue())
+            _, result = run_cli(module, ["--repo", "o/r", "--automation", "bot", "--gh", "fixture-gh"], marker,
+                                merged_direction=lambda *_args, **_kwargs: DIRECTION, gh_json=fetch)
             if archived is not False:
                 assert result["marked"] is None and marker.read_bytes() == original
             else:
@@ -521,13 +520,9 @@ def test_audit_that_confirms_archive_drops_the_repository_from_the_marker() -> N
                     "audit_runs": {"o/r": {"ran": "2026-09-01T00:00:00Z"}}}
         for archived in (None, True):
             marker.write_text(json.dumps(original))
-            output = StringIO()
-            with (patch.dict(os.environ, {"DIRECTION_MARKER": str(marker)}),
-                  patch.dict(vars(module), {"merged_direction": lambda *_args, **_kwargs: DIRECTION,
-                                            "gh_json": lambda args, **_kwargs: {"archived": archived} if args[1] == "repos/o/r" else []}),
-                  redirect_stdout(output)):
-                module.main(["--repo", "o/r", "--automation", "bot", "--gh", "fixture-gh"])
-            result = json.loads(output.getvalue())
+            _, result = run_cli(module, ["--repo", "o/r", "--automation", "bot", "--gh", "fixture-gh"], marker,
+                                merged_direction=lambda *_args, **_kwargs: DIRECTION,
+                                gh_json=lambda args, **_kwargs: {"archived": archived} if args[1] == "repos/o/r" else [])
             saved = json.loads(marker.read_text())
             assert result["marked"] is None
             if archived:
@@ -1035,14 +1030,10 @@ def test_ruleset_plan_limit_is_a_finding_and_other_403s_still_fail() -> None:
                     raise module.AuditError(_error)
                 return []
 
-            output = StringIO()
-            with (patch.dict("os.environ", {"DIRECTION_MARKER": str(Path(tmp) / "marker.json")}),
-                  patch.dict(vars(module), {
-                      "merged_direction": lambda *_args, _text=direction_text, **_kwargs: _text,
-                      "gh_json": gh_json,
-                  }), redirect_stdout(output)):
-                assert module.main(["--repo", "o/private", "--automation", "bot", "--gh", "fixture-gh"]) == code
-            result = json.loads(output.getvalue())
+            actual_code, result = run_cli(module, ["--repo", "o/private", "--automation", "bot", "--gh", "fixture-gh"],
+                                         Path(tmp) / "marker.json",
+                                         merged_direction=lambda *_args, _text=direction_text, **_kwargs: _text, gh_json=gh_json)
+            assert actual_code == code
             if code == 1:
                 assert result["ok"] is False and "Resource not accessible" in result["error"], result
             else:
@@ -2015,17 +2006,11 @@ def test_only_the_direction_repository_audit_counts_capacity() -> None:
         with tempfile.TemporaryDirectory() as tmp:
             marker = Path(tmp) / "marker.json"
             marker.write_text(json.dumps({"audits": {audited: stamp(SINCE)}}))
-            output = StringIO()
-            with (patch.dict("os.environ", {"DIRECTION_MARKER": str(marker)}),
-                  patch.object(module.dt, "datetime", Clock),
-                  patch.dict(vars(module), {
-                      "merged_direction": lambda *_args, **_kwargs: DIRECTION,
-                      "gh_json": lambda args, **_kwargs: {"archived": False} if args[1] == f"repos/{audited}" else [],
-                      "fetch_capacity": capacity,
-                  }),
-                  redirect_stdout(output)):
-                module.main(["--repo", audited, "--automation", "bot", "--gh", "fixture-gh"])
-            result = json.loads(output.getvalue())
+            with patch.object(module.dt, "datetime", Clock):
+                _, result = run_cli(module, ["--repo", audited, "--automation", "bot", "--gh", "fixture-gh"], marker,
+                                    merged_direction=lambda *_args, **_kwargs: DIRECTION,
+                                    gh_json=lambda args, **_kwargs: {"archived": False} if args[1] == f"repos/{audited}" else [],
+                                    fetch_capacity=capacity)
             assert ("capacity" in result) is (audited == "o/direction")
             # The direction audit's capacity read was incomplete, so its window stays open.
             assert (result["marked"] is None) is (audited == "o/direction")
@@ -2090,17 +2075,11 @@ def test_weekly_direction_audit_covers_active_repositories_without_a_direction_f
     with tempfile.TemporaryDirectory() as tmp:
         marker = Path(tmp) / "marker.json"
         marker.write_text(json.dumps({"audits": {"o/direction": stamp(SINCE)}}))
-        output = StringIO()
-        with (patch.dict("os.environ", {"DIRECTION_MARKER": str(marker)}),
-              patch.dict(vars(module), {
-                  "merged_direction": lambda *_args, **_kwargs: DIRECTION,
-                  "gh_json": lambda args, **_kwargs: {"archived": False} if args[1] == "repos/o/direction" else [],
-                  "fetch_capacity": lambda *_args, **_kwargs: (summary(module), []),
-                  "active_unadopted_report": lambda *_args, **_kwargs: report,
-              }),
-              redirect_stdout(output)):
-            module.main(["--repo", "o/direction", "--automation", "bot", "--gh", "fixture-gh"])
-        result = json.loads(output.getvalue())
+        _, result = run_cli(module, ["--repo", "o/direction", "--automation", "bot", "--gh", "fixture-gh"], marker,
+                            merged_direction=lambda *_args, **_kwargs: DIRECTION,
+                            gh_json=lambda args, **_kwargs: {"archived": False} if args[1] == "repos/o/direction" else [],
+                            fetch_capacity=lambda *_args, **_kwargs: (summary(module), []),
+                            active_unadopted_report=lambda *_args, **_kwargs: report)
         assert result["active_unadopted"] == report
         assert "direction_missing" not in kinds(result)
         # Its coverage limits are reported, not a reason to hold the audit window open.
@@ -3276,18 +3255,14 @@ class WeeklyAccount:
         return []
 
     def run(self, argv: list[str], marker: Path) -> tuple[int, dict[str, Any]]:
-        output = StringIO()
-        with (patch.dict(os.environ, {"DIRECTION_MARKER": str(marker), "JB_WEEKLY_BASELINE": str(marker.with_name("inspection.json"))}),
-              patch.dict(vars(self.module), {
-                  "gh_json": self.fetch,
-                  "fetch_capacity": lambda *_args, **_kwargs: (summary(self.module), list(self.capacity_errors)),
-                  "active_unadopted_report": lambda *_args, **_kwargs: {"complete": True, "repositories": [], "unavailable": []},
-              }),
+        with (patch.dict(os.environ, {"JB_WEEKLY_BASELINE": str(marker.with_name("inspection.json"))}),
               patch.dict(vars(self.module.github_identity), {"configured_bot_logins": lambda: ("bot",),
                                                              "automation_login": lambda: None}),
-              redirect_stdout(output), redirect_stderr(StringIO())):
-            code = self.module.main([*argv, "--automation", "bot", "--gh", "fixture-gh"])
-        return code, json.loads(output.getvalue())
+              redirect_stderr(StringIO())):
+            return run_cli(self.module, [*argv, "--automation", "bot", "--gh", "fixture-gh"], marker,
+                           gh_json=self.fetch,
+                           fetch_capacity=lambda *_args, **_kwargs: (summary(self.module), list(self.capacity_errors)),
+                           active_unadopted_report=lambda *_args, **_kwargs: {"complete": True, "repositories": [], "unavailable": []})
 
 
 def test_single_repository_audits_do_not_record_a_weekly_audit() -> None:
