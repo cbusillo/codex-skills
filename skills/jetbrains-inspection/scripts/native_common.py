@@ -302,9 +302,9 @@ def preparation(config, private):
 
 
 def lane_gaps(host, config, selected, product_key="pycharm"):
-    if not config.get("lanes"):
-        return []
     lanes = host.parse_inspection_lanes(config)
+    if not lanes:
+        return []
     projects = set()
     for path in selected:
         owner = lane_owner(host, lanes, path)
@@ -326,7 +326,7 @@ ALTERNATE_PRODUCT_KEYS = ("webstorm", "intellij")
 
 
 def configured_product_key(host, config, selected):
-    if config.get("lanes"):
+    if host.parse_inspection_lanes(config):
         return next((key for key in ALTERNATE_PRODUCT_KEYS if selected and not lane_gaps(host, config, selected, key)), "pycharm")
     product = host.product_for_selector(config.get("ide")) if isinstance(config.get("ide"), str) else None
     return next((key for key in ALTERNATE_PRODUCT_KEYS if product is host.IDE_PRODUCTS[key]), "pycharm")
@@ -360,7 +360,7 @@ def node_package_manager(root: Path) -> str:
 def web_project_path(host: Any, repo: Path, config: dict[str, Any], selected: set[str]) -> Path:
     if lane_gaps(host, config, selected, "webstorm"):
         raise Blocked("native_lane_models_unqualified")
-    lanes = host.parse_inspection_lanes(config) if config.get("lanes") else ()
+    lanes = host.parse_inspection_lanes(config)
     owner = lane_owner(host, lanes, next(iter(selected))) if selected else None
     relative = Path(getattr(owner, "project_path", None) or ".")
     project = repo / relative
@@ -405,10 +405,11 @@ def scope_selection(args: Any, host: Any, receipt: dict[str, Any] | None = None)
         path = host.normalize_inspection_lane_path(raw, repo)
         if path.is_file():
             selected.add(path.relative_to(repo).as_posix())
-    if config.get("lanes"):
+    lanes = host.parse_inspection_lanes(config)
+    if lanes:
         selection = host.resolve_inspection_lane_selection(args, {
             "worktree_root": str(repo), "scope": scope,
-            "_inspection_lanes": host.parse_inspection_lanes(config),
+            "_inspection_lanes": lanes,
         })
         selected -= set(selection["unmatched_files"])
         selected -= {entry["file"] for entry in selection["excluded_files"]}
