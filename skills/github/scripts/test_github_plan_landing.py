@@ -868,7 +868,7 @@ class MutationProjectionTests(unittest.TestCase):
                          sub_issues_summary={"total": 1, "completed": 0, "percent_completed": 0},
                          parent_issue_url=f"https://api.github.com/repos/{REPO}/issues/3")
         with self.settle_after_first_read(7, settle):
-            result = self.command("link", "7", "blocked-by", "8")
+            self.command("link", "7", "blocked-by", "8")
         self.assertEqual(self.blockers[7], {8})
         self.assertEqual(len(self.fact_writes), 1)
 
@@ -1009,7 +1009,6 @@ class MutationProjectionTests(unittest.TestCase):
 
     def test_source_comment_read_denial_skips_same_repo_and_continues_independent_repo(self):
         self.independent_dependents()
-        before = copy.deepcopy(self.records[7]["labels"])
         error = self.read_error("permission_denied", outcome="rejected")
         def comments(path, **kwargs):
             if "/issues/7/comments" in path:
