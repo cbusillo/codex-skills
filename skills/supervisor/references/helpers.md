@@ -1421,6 +1421,10 @@ stays UNKNOWN and preserves the worker. Completed native compaction, API-error
 messages and task/subagent list observations do not count as background work.
 A canceled background command needs its matching native error notification;
 a kill request alone cannot prove completion. Unfinished commands still block.
+A completed one-shot timer needs its matching native DONE notification, session,
+task identity, prompt and result. Recurring, daemon and unobserved schedule
+shapes stay UNKNOWN. A kill request against an already completed and notified
+task adds no pending work; its own result is still recorded.
 Completed `search_web` calls use the existing completed-tool reader. A native
 async declaration still requires matching task-completion proof for any tool.
 Use `cd /absolute/repository && exec agy`
