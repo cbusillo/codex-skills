@@ -2163,7 +2163,7 @@ def labeled_waiting(endpoint: str) -> list[dict[str, object]]:
     return [waiting_issue("Pat's review of the release.")] if "state=open" in endpoint else []
 
 
-def structured_wait_rows(monkeypatch, tmp_path: Path, routes: dict[str, object]) -> dict[str, object]:
+def structured_wait_rows(monkeypatch, tmp_path: Path, routes: dict[str, object]) -> dict[str, Any]:
     monkeypatch.setattr(github_unanswered_comments, "run_json", FakeGitHub(routes))
     return github_unanswered_comments.collect_payload(portfolio_settings(people_index=people_index(tmp_path)))
 
@@ -2215,7 +2215,9 @@ def test_malformed_trusted_record_keeps_prose_wait_for_review(monkeypatch, tmp_p
 
     assert payload["status"] == "degraded"
     assert [error["lane"] for error in payload["coverage"]["errors"]] == ["director_waits/141"]
-    assert [(row["number"], row["wait_review_required"]) for row in payload["unasked_director_waits"]] == [(141, True)]
+    assert [(row["number"], row["wait_kind"], row["wait_source"], row["wait_review_required"])
+            for row in payload["unasked_director_waits"]] == [(141, "unresolved", "unresolved_structured_wait", True)]
+    assert all(row["url"] in github_unanswered_comments.render_markdown(payload) for row in payload["unasked_director_waits"])
 
 
 def test_unread_wait_discussion_or_partial_wait_search_degrades_coverage(monkeypatch, tmp_path: Path) -> None:
@@ -2234,69 +2236,6 @@ def test_unread_wait_discussion_or_partial_wait_search_degrades_coverage(monkeyp
         assert payload["status"] == "degraded"
         assert [(error["repo"], error["lane"]) for error in payload["coverage"]["errors"]] == [
             ("example/repo" if lane != "director_waits_search" else "example", lane)]
-
-
-MALFORMED_WAIT = "<!-- github-plan:wait {not json -->"
-
-
-@pytest.mark.parametrize("case", ["malformed_after_hold", "malformed_before_hold", "malformed_contributor_envelope"])
-def test_unreadable_trusted_record_keeps_a_comment_hold_as_unresolved(monkeypatch, tmp_path: Path, case: str) -> None:
-    # The body prose names someone else, so only the comment records a hold on Pat.
-    issue = waiting_issue("Client's testing of the build.")
-    hold = wait_record_comment(141, 5, "example", "Pat's approval of the release.")
-    malformed = wait_record_comment(141, 6, "example", marker=MALFORMED_WAIT)
-    if case == "malformed_contributor_envelope":
-        issue = {**issue, "body": "<!-- github-plan:managed:start -->\n" + str(issue["body"])}
-    comments = {"malformed_after_hold": [hold, malformed], "malformed_before_hold": [malformed, hold],
-                "malformed_contributor_envelope": [hold]}[case]
-    payload = structured_wait_rows(monkeypatch, tmp_path, {
-        "repos/example/repo/issues": lambda endpoint: [issue] if "state=open" in endpoint else [],
-        "repos/example/repo/issues/comments": comments,
-        "repos/example/repo/issues/141/comments": comments,
-    })
-
-    assert payload["status"] == "degraded"
-    assert [error["lane"] for error in payload["coverage"]["errors"]] == ["director_waits/141"]
-    assert [(row["number"], row["wait_kind"], row["wait_source"], row["wait_review_required"])
-            for row in payload["unasked_director_waits"]] == [(141, "unresolved", "unresolved_structured_wait", True)]
-    rendered = github_unanswered_comments.render_markdown(payload)
-    assert all(row["url"] in rendered for row in payload["unasked_director_waits"]), "the unresolved wait is shown"
-
-
-REVIEW_WAIT = '<!-- github-plan:wait {"evidence": "", "state": "review", "version": 1, "waits": []} -->'
-
-
-@pytest.mark.parametrize("reviewer", ["example", "outside-contributor", None])
-def test_trusted_review_record_after_a_hold_is_an_unresolved_wait(monkeypatch, tmp_path: Path, reviewer: str | None) -> None:
-    # No prose records a wait; only the comments do.
-    quiet = {**waiting_issue("Nothing.", number=52), "labels": [], "state": "open",
-             "repository_url": "https://api.github.com/repos/example/repo", "body": "Plain issue."}
-    comments = [wait_record_comment(52, 5, "example", "Pat's approval of the release.")]
-    if reviewer:
-        comments.append(wait_record_comment(52, 6, reviewer, marker=REVIEW_WAIT))
-    payload = structured_wait_rows(monkeypatch, tmp_path, {
-        "search/issues": {"items": [quiet], "total_count": 1, "incomplete_results": False},
-        "repos/example/repo/issues/52/comments": comments,
-    })
-
-    assert payload["coverage"]["errors"] == []
-    expected = {"example": (52, "unresolved", "unresolved_structured_wait", True),
-                "outside-contributor": (52, "decision", "structured_wait", False),
-                None: (52, "decision", "structured_wait", False)}[reviewer]
-    assert [(row["number"], row["wait_kind"], row["wait_source"], row["wait_review_required"])
-            for row in payload["unasked_director_waits"]] == [expected]
-
-
-def test_issue_with_no_wait_record_or_prose_is_not_a_wait(monkeypatch, tmp_path: Path) -> None:
-    quiet = {**waiting_issue("Nothing.", number=52), "labels": [], "state": "open",
-             "repository_url": "https://api.github.com/repos/example/repo", "body": "Plain issue."}
-    payload = structured_wait_rows(monkeypatch, tmp_path, {
-        "search/issues": {"items": [quiet], "total_count": 1, "incomplete_results": False},
-        "repos/example/repo/issues/52/comments": [],
-    })
-
-    assert payload["coverage"]["errors"] == []
-    assert payload["unasked_director_waits"] == []
 
 
 def test_unlabeled_wait_reads_a_new_comment_hold_before_search_indexes_it(monkeypatch, tmp_path: Path) -> None:

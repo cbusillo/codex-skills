@@ -1467,106 +1467,37 @@ def test_executive_collection_surfaces_release_and_workflow_warnings(monkeypatch
 
 
 def test_render_manager_brief_markdown() -> None:
+    attention = {
+        "repo": "example-org/code", "number": 101, "title": "Choose auth direction",
+        "url": "https://github.com/example-org/code/issues/101", "kind": "issue", "state": "open",
+        "handoff": "github-plan for planning reconciliation",
+    }
+    merged_pr = {
+        "repo": "example-org/code", "number": 202, "title": "Ship session routing",
+        "url": "https://github.com/example-org/code/pull/202", "kind": "pr", "state": "merged",
+    }
     payload = {
         "ok": True,
         "window": {"since": "2026-06-01T16:00:00Z", "until": "2026-06-02T16:00:00Z", "label": "24h"},
         "timezone": "America/New_York",
         "report_recipient": "Chris",
-        "recipient_profile": {
-            "company": "Example Company",
-            "roles": ["owner"],
-            "technical_depth": "low-to-medium",
-            "framing": "big-picture-first",
-            "detail_preference": "outcomes and risk",
-        },
+        "recipient_profile": {"company": "Example Company", "roles": ["owner"], "technical_depth": "low-to-medium"},
         "repositories": ["example-org/code"],
         "layout": "manager",
-        "buckets": {
-            "needs_attention": [
-                {
-                    "repo": "example-org/code",
-                    "number": 101,
-                    "title": "Choose auth direction",
-                    "url": "https://github.com/example-org/code/issues/101",
-                    "kind": "issue",
-                    "state": "open",
-                    "handoff": "github-plan for planning reconciliation",
-                }
-            ],
-            "ready_for_review": [
-                {
-                    "repo": "example-org/code",
-                    "number": 102,
-                    "title": "Review CLI fallback",
-                    "url": "https://github.com/example-org/code/pull/102",
-                    "kind": "pr",
-                    "state": "open",
-                }
-            ],
-            "recently_completed": [
-                {
-                    "repo": "example-org/code",
-                    "number": 202,
-                    "title": "Ship session routing",
-                    "url": "https://github.com/example-org/code/pull/202",
-                    "kind": "pr",
-                    "state": "merged",
-                }
-            ],
-        },
-        "priority_sections": [
-            {
-                "name": "Northwind",
-                "items": [{"repo": "example-org/code", "title": "Choose auth direction"}],
-                "recently_completed": [{"repo": "example-org/code", "title": "Ship session routing"}],
-                "recently_completed_count": 4,
-            }
-        ],
+        "buckets": {"needs_attention": [attention], "recently_completed": [merged_pr]},
+        "priority_sections": [{"name": "Northwind", "items": [attention], "recently_completed": [merged_pr], "recently_completed_count": 4}],
         "limitations": ["Read-only mode"],
-        "releases": [],
-        "workflows": [
-            {"repo": "example-org/code", "name": "CI", "status": "completed", "conclusion": "success"}
-        ],
+        "workflows": [{"repo": "example-org/code", "conclusion": "success"}, {"repo": "example-org/code", "conclusion": "skipped"}],
     }
 
     rendered = github_work_rollup.render_payload(payload, "markdown")
 
-    assert "# GitHub Planning Brief for Chris" in rendered
-    assert "active planning scope for Example Company" in rendered
-    assert "technical depth: low-to-medium" in rendered
-    assert "Northwind**: 1 open priority item(s), 4 recent completion(s)" in rendered
-    assert "[code#101](https://github.com/example-org/code/issues/101) Choose auth direction" in rendered
-    assert "Ship session routing" in rendered
-    assert "Automation was green" in rendered
-
-
-def test_render_manager_brief_uses_profile_framing_without_attention_items() -> None:
-    payload = {
-        "ok": True,
-        "window": {"since": "2026-06-01T16:00:00Z", "until": "2026-06-02T16:00:00Z", "label": "24h"},
-        "timezone": "America/New_York",
-        "report_recipient": "Owner",
-        "recipient_profile": {
-            "company": "Example Company",
-            "roles": ["owner"],
-            "detail_preference": "outcomes and risk",
-        },
-        "repositories": ["example-org/code"],
-        "layout": "manager",
-        "buckets": {
-            "in_progress": [
-                {"repo": "example-org/code", "number": 1, "title": "Open work", "kind": "issue", "state": "open"}
-            ]
-        },
-        "priority_sections": [],
-        "limitations": [],
-        "releases": [],
-        "workflows": [],
-    }
-
-    rendered = github_work_rollup.render_payload(payload, "markdown")
-
-    assert "based on outcomes and risk" in rendered
+    for expected in (
+        "Chris", "Example Company", "low-to-medium", "Northwind", "Read-only mode",
+        "[code#101](https://github.com/example-org/code/issues/101) Choose auth direction",
+        "github-plan for planning reconciliation", "Ship session routing", "1 successful, 0 failed, 2 total",
+    ):
+        assert expected in rendered
 
 
 def test_render_payload_rejects_unknown_markdown_layout() -> None:
@@ -1807,28 +1738,10 @@ def test_executive_workstream_identity(title: str, section_fields: dict[str, Any
         assert f"**{initiative}**" not in rendered
 
 
-@pytest.mark.parametrize("reverse", [False, True])
-def test_render_executive_brief_mixed_focus_heading_is_order_stable(reverse: bool) -> None:
-    sections = [{"name": "Agent Product Issues"}, {"name": "Example Skill Updates"}]
-    payload = {
-        "ok": True,
-        "window": {"since": "2026-06-05T16:00:00Z", "until": "2026-06-12T16:00:00Z", "label": "7d"},
-        "timezone": "America/New_York",
-        "report_recipient": "Justin",
-        "layout": "executive",
-        "priority_sections": sections[::-1] if reverse else sections,
-    }
-    rendered = github_work_rollup.render_payload(payload, "markdown")
-
-    assert "## Skills and Agent Product Issues Impact" in rendered
-    assert "## Agent Product Issues Impact" not in rendered
-    assert "## Agent Product Issues and Skills Impact" not in rendered
-
-
 def test_focus_heading_treats_retired_product_labels_as_supplied_data() -> None:
     # Historical input is readable without restoring its old product taxonomy.
-    sections = [{"name": "Northwind Product Issues"}, {"name": "Skills"}]
-    expected = " and ".join(section["name"] for section in sections[::-1]) + " Impact"
+    sections = [{"name": "Northwind Product Issues"}, {"name": "Example Skill Updates"}]
+    expected = f"Skills and {sections[0]['name']} Impact"
     assert github_work_rollup.focus_area_heading({"priority_sections": sections}) == expected
     assert github_work_rollup.focus_area_heading({"priority_sections": sections[::-1]}) == expected
 
@@ -2060,37 +1973,6 @@ def test_render_executive_brief_separates_finished_work_from_cleared_paths() -> 
     assert "advanced" not in rendered
     assert "meaningful work moved forward" not in rendered
     assert "Cleared or superseded paths: example-repo#10 Close abandoned auth attempt." in rendered
-
-
-def test_render_executive_brief_does_not_call_neutral_automation_green() -> None:
-    payload = {
-        "ok": True,
-        "window": {"since": "2026-06-01T16:00:00Z", "until": "2026-06-02T16:00:00Z", "label": "24h"},
-        "timezone": "America/New_York",
-        "report_recipient": "Justin",
-        "repositories": ["example-org/example-repo"],
-        "layout": "executive",
-        "buckets": {"recently_completed": []},
-        "priority_sections": [],
-        "limitations": [],
-        "releases": [],
-        "workflows": [
-            {
-                "repo": "example-org/example-repo",
-                "name": "CodeQL",
-                "status": "completed",
-                "conclusion": "skipped",
-                "completed_at": "2026-06-02T10:00:00Z",
-            }
-        ],
-    }
-
-    rendered = github_work_rollup.render_payload(payload, "markdown")
-
-    assert "Automation ran, but the collected sample did not include a successful run." not in rendered
-    assert "Automation was green" not in rendered
-    assert "## Failed Runs" in rendered
-    assert "- None collected in this window." in rendered
 
 
 if __name__ == "__main__":

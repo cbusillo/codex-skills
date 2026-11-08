@@ -215,10 +215,30 @@ class ClaimCloseoutTests(unittest.TestCase):
             self.check()
 
     def test_exact_authored_release_is_read_back(self):
-        self.comments.append(self.release)
-        result = self.check()
-        self.assertEqual([r["claim_comment"] for r in result], [self.source["id"]])
-        self.assertEqual(result[0]["retained_prs"], [])
+        for prose in ("", "Tooling landed this session: https://github.com/owner/repo/pull/3510 (IDE records) and "
+                      "https://github.com/owner/repo/pull/3519 (claim scope).",
+                      "- Status for this exact session: `status` reports completion.",
+                      "Tooling landed this\nsession: https://github.com/owner/repo/pull/3510",
+                      "Tooling landed in the\nsession: https://github.com/owner/repo/pull/3510",
+                      "Work was done in the same\nsession: all green",
+                      "Earlier in this session: the IDE records landed.", "Prior to this session: nothing was claimed.",
+                      "Summary: tooling landed during this\nsession: https://github.com/owner/repo/pull/3510",
+                      "Summary: we did\nthe work in this\nsession: all green",
+                      "Verified everything (session: see the run above)", "Done, session: all green"):
+            with self.subTest(prose=prose):
+                self.comments = [self.source, {**self.release, "body": self.release["body"] + "\n\n" + prose}]
+                result = self.check()
+                self.assertEqual([r["claim_comment"] for r in result], [self.source["id"]])
+                self.assertEqual(result[0]["retained_prs"], [])
+
+    def test_release_with_foreign_native_session_is_refused(self) -> None:
+        foreign = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+        for field in ("Session: {}", "Status for this exact session: {}", "Status for this exact session: ({}).",
+                      "Done, session: ({})", "Tooling landed this\nsession: {}"):
+            with self.subTest(field=field):
+                self.comments = [self.source, {**self.release, "body": self.release["body"] + "\n" + field.format(foreign)}]
+                with self.assertRaisesRegex(ValueError, "release names another native session"):
+                    self.check()
 
     def test_the_claim_helpers_bare_exact_recovery_release_is_accepted(self):
         self.comments.append({**self.release, "body": "Released claim 10"})
