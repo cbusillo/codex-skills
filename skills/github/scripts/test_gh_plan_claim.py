@@ -368,7 +368,7 @@ class ClaimTests(unittest.TestCase):
                 patch.object(github_issue, "edit_issue", side_effect=self.labels):
             (command or PLAN.cmd_claim)(self.args)
 
-    def register_pr_target(self, number: int, target: dict[str, Any], *, repo: str = "owner/repo") -> None:
+    def register_pr_target(self, number: int | str, target: dict[str, Any], *, repo: str = "owner/repo") -> None:
         self.targets[str(number)] = target
         self.target_comments[f"/repos/{repo}/issues/{number}/comments"] = []
 
