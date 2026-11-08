@@ -220,11 +220,11 @@ def resolve_choice(provider: str, config: dict, snapshot: dict, account_id: obje
         raise ValueError(f"Context Panel {provider} choice matches no single configured account")
     row = matched[0]
     return decision(configured[0], source, reason, account_id=account_id,
-                    remaining=row.get("remainingFraction"), unused_at_pace=unused_at_pace(snapshot, provider),
+                    remaining=row.get("remainingFraction"), unused_at_pace=provider_unused_at_pace(snapshot, provider),
                     **window_report(row), **snapshot_notices(snapshot))
 
 
-def unused_at_pace(snapshot, provider):
+def provider_unused_at_pace(snapshot, provider):
     """Context Panel's provider pace forecast, unchanged; None when an older Context Panel omits it."""
     entries = snapshot.get("providers")
     entries = [e for e in entries if isinstance(e, dict) and e.get("provider") == provider] if isinstance(entries, list) else []
