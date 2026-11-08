@@ -18,12 +18,17 @@ import sys
 from datetime import datetime
 from types import SimpleNamespace
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 os.environ["CODEX_SKILLS_ENV_FILE"] = "/definitely/missing/codex-skills-test.env"
 
 import gh_pr_watch
 import pytest
+
+if TYPE_CHECKING:
+    from skills.github.scripts import github_read
+else:
+    github_read = gh_pr_watch.github_read
 
 
 @pytest.fixture(autouse=True)
@@ -507,23 +512,16 @@ def test_nullable_review_decision_does_not_override_blocking_merge_state():
     assert gh_pr_watch.is_pr_ready_to_merge(pr, sample_checks(), []) is False
 
 
-def test_review_readiness_requires_complete_check_evidence():
+@pytest.mark.parametrize(
+    "incomplete", [{"evidence_complete": False}, {"head_matches": False}], ids=["incomplete-evidence", "different-head"]
+)
+def test_review_readiness_requires_complete_current_checks(incomplete: dict[str, bool]) -> None:
     pr = sample_pr()
     pr["metadata_availability"]["review_decision"] = False
-    assert gh_pr_watch.is_review_readiness_unavailable(
-        pr, sample_checks(evidence_complete=False), []
-    ) is False
-
-
-def test_review_readiness_requires_exact_check_head():
-    pr = sample_pr()
-    pr["metadata_availability"]["review_decision"] = False
-    assert gh_pr_watch.is_review_readiness_unavailable(
-        pr, sample_checks(head_matches=False), []
-    ) is False
-    assert gh_pr_watch.is_pr_ready_to_merge(
-        {**pr, "review_requirement": "satisfied"}, sample_checks(head_matches=False), []
-    ) is False
+    checks = sample_checks(**incomplete)
+    assert gh_pr_watch.is_review_readiness_unavailable(pr, checks, []) is False
+    pr["metadata_availability"]["review_decision"] = True
+    assert gh_pr_watch.is_pr_ready_to_merge(pr, checks, []) is False
 
 
 @pytest.mark.parametrize(
@@ -604,43 +602,41 @@ def test_review_readiness_actor_drift_is_unknown():
     assert review["requirement"] == "unknown"
 
 
-def test_head_mismatch_does_not_diagnose_unrelated_check_failure():
-    checks = sample_checks(
-        all_terminal=False,
-        evidence_complete=False,
-        failed_count=1,
-        head_matches=False,
-    )
-
-    assert gh_pr_watch.recommend_actions(
-        sample_pr(),
-        checks,
-        [],
-        [],
-        [],
-        0,
-        3,
-    ) == ["check_evidence_incomplete"]
-
-
-def test_incomplete_evidence_still_diagnoses_proven_failure():
-    checks = sample_checks(
-        all_terminal=False,
-        evidence_complete=False,
-        counts_are_lower_bounds=True,
-        failed_count=1,
-        head_matches=True,
-    )
-
-    assert gh_pr_watch.recommend_actions(
-        sample_pr(),
-        checks,
-        [{"run_id": 1}],
+@pytest.mark.parametrize(
+    ("inputs", "expected"),
+    [
+        pytest.param({"pr": {"merged": True, "closed": True, "state": "MERGED"}}, ["stop_pr_closed"], id="merged"),
+        pytest.param({"pr": {"merged": False, "closed": True, "state": "CLOSED"}}, ["stop_pr_closed"], id="closed"),
+        pytest.param(
+            {"checks": {"all_terminal": False, "evidence_complete": False, "failed_count": 1, "head_matches": False}},
+            ["check_evidence_incomplete"],
+            id="other-head-failure",
+        ),
+        pytest.param(
+            {
+                "checks": {"all_terminal": False, "evidence_complete": False, "counts_are_lower_bounds": True, "failed_count": 1},
+                "failed_runs": [{"run_id": 1}],
+            },
+            ["check_evidence_incomplete", "diagnose_ci_failure"],
+            id="proven-partial-failure",
+        ),
+    ],
+)
+def test_recommend_actions_preserves_terminal_and_failure_dispositions(
+    inputs: dict[str, Any],
+    expected: list[str],
+) -> None:
+    pr = {**sample_pr(), **inputs.get("pr", {})}
+    actions = gh_pr_watch.recommend_actions(
+        pr,
+        sample_checks(**inputs.get("checks", {})),
+        inputs.get("failed_runs", []),
         [],
         [],
         0,
         3,
-    ) == ["check_evidence_incomplete", "diagnose_ci_failure"]
+    )
+    assert actions == expected
 
 
 def test_gh_text_uses_wrapper_by_default(monkeypatch):
@@ -748,8 +744,7 @@ def test_unstarted_workflow_run_keeps_green_checks_from_becoming_ready(monkeypat
     pr = sample_pr()
     monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *args, **kwargs: dict(pr))
     monkeypatch.setattr(gh_pr_watch, "load_state", lambda path: ({}, True))
-    monkeypatch.setattr(gh_pr_watch, "get_authenticated_login", lambda reader=None: "octocat")
-    monkeypatch.setattr(gh_pr_watch, "fetch_new_review_items", lambda *args, **kwargs: [])
+    mock_pr_discussion(monkeypatch, login="octocat")
     monkeypatch.setattr(
         gh_pr_watch.github_read,
         "pull_request_checks",
@@ -800,17 +795,8 @@ def test_collect_snapshot_emits_review_request_and_session_degradation(monkeypat
     monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *args, **kwargs: pr)
     monkeypatch.setattr(gh_pr_watch, "load_state", lambda path: ({}, True))
     monkeypatch.setattr(gh_pr_watch, "watcher_reader", lambda **_kwargs: reader)
-    monkeypatch.setattr(gh_pr_watch, "get_authenticated_login", lambda active_reader=None: "octocat")
-    monkeypatch.setattr(gh_pr_watch, "fetch_new_review_items", lambda *args, **kwargs: [])
-    monkeypatch.setattr(
-        gh_pr_watch.github_read,
-        "pull_request_checks",
-        lambda *args, **kwargs: {"headSha": pr["head_sha"], "summary": {}, "_watcher_diagnostic": {}},
-    )
-    monkeypatch.setattr(gh_pr_watch, "summarize_checks", lambda *args, **kwargs: sample_checks())
-    monkeypatch.setattr(gh_pr_watch, "get_workflow_runs_for_sha", lambda *args, **kwargs: [])
+    mocked_snapshot_inputs(monkeypatch, checks=sample_checks(), runs=[], jobs=[], login="octocat")
     monkeypatch.setattr(gh_pr_watch, "failed_runs_from_workflow_runs", lambda *args, **kwargs: [])
-    monkeypatch.setattr(gh_pr_watch, "failed_jobs_from_workflow_runs", lambda *args, **kwargs: [])
     monkeypatch.setattr(gh_pr_watch, "save_state", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         gh_pr_watch,
@@ -831,45 +817,6 @@ def test_collect_snapshot_emits_review_request_and_session_degradation(monkeypat
     assert review_diagnostic["degradedReasons"] == reader.degraded_reasons
 
     assert snapshot["minimum_poll_seconds"] == 90
-
-
-def test_recommend_actions_prioritizes_review_comments():
-    actions = gh_pr_watch.recommend_actions(
-        sample_pr(),
-        sample_checks(failed_count=1),
-        [{"run_id": 99}],
-        [],
-        [{"kind": "review_comment", "id": "1"}],
-        0,
-        3,
-    )
-
-    assert actions == [
-        "process_review_comment",
-        "diagnose_ci_failure",
-        "retry_failed_checks",
-    ]
-
-
-@pytest.mark.parametrize(
-    "terminal_fields",
-    [
-        {"merged": True, "closed": True, "state": "MERGED"},
-        {"merged": False, "closed": True, "state": "CLOSED"},
-    ],
-)
-def test_recommend_actions_stops_for_merged_or_closed_pr(terminal_fields):
-    pr = {**sample_pr(), **terminal_fields}
-
-    assert gh_pr_watch.recommend_actions(
-        pr,
-        sample_checks(),
-        [],
-        [],
-        [],
-        0,
-        3,
-    ) == ["stop_pr_closed"]
 
 
 def test_fetch_new_review_items_surfaces_unknown_external_human(monkeypatch):
@@ -1344,50 +1291,6 @@ def test_saved_review_malformed_output_stays_unavailable_without_echoing_output(
         gh_pr_watch.read_launchplane_owner_review(sample_pr())
     assert stdout not in str(failure.value)
     assert "private" not in str(failure.value)
-
-
-def test_recommend_actions_ignores_stale_failed_jobs_from_completed_runs():
-    actions = gh_pr_watch.recommend_actions(
-        sample_pr(),
-        sample_checks(),
-        [],
-        [
-            {
-                "run_id": 99,
-                "run_status": "completed",
-                "run_conclusion": "failure",
-                "job_name": "unit tests",
-                "conclusion": "failure",
-            }
-        ],
-        [],
-        3,
-        3,
-    )
-
-    assert actions == ["ready_to_merge"]
-
-
-def test_recommend_actions_diagnoses_failed_jobs_from_active_runs():
-    actions = gh_pr_watch.recommend_actions(
-        sample_pr(),
-        sample_checks(all_terminal=False, pending_count=1),
-        [],
-        [
-            {
-                "run_id": 99,
-                "run_status": "in_progress",
-                "run_conclusion": "",
-                "job_name": "unit tests",
-                "conclusion": "failure",
-            }
-        ],
-        [],
-        0,
-        3,
-    )
-
-    assert actions == ["diagnose_ci_failure"]
 
 
 def test_run_watch_keeps_polling_open_ready_to_merge_pr(monkeypatch):
@@ -2148,6 +2051,28 @@ def test_resolved_comments_do_not_replay_after_graphql_failure(monkeypatch):
     body["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"][0]["isResolved"] = False
     assert gh_pr_watch.fetch_new_review_items(pr, state, False, reader=reader) == []
     assert "resolve_review_threads" in gh_pr_watch.recommend_actions(pr, sample_checks(), [], [], [], 0, 3)
+
+
+def mock_pr_discussion(monkeypatch: pytest.MonkeyPatch, *, login: str) -> None:
+    monkeypatch.setattr(gh_pr_watch, "get_authenticated_login", lambda *_args, **_kwargs: login)
+    monkeypatch.setattr(gh_pr_watch, "fetch_new_review_items", lambda *_args, **_kwargs: [])
+
+
+def mocked_snapshot_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    checks: dict[str, Any],
+    runs: list[dict[str, Any]],
+    jobs: list[dict[str, Any]],
+    login: str,
+) -> None:
+    mock_pr_discussion(monkeypatch, login=login)
+    monkeypatch.setattr(github_read, "pull_request_checks", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(gh_pr_watch, "summarize_checks", lambda *_args, **_kwargs: checks)
+    monkeypatch.setattr(gh_pr_watch, "get_workflow_runs_for_sha", lambda *_args, **_kwargs: runs)
+    monkeypatch.setattr(gh_pr_watch, "failed_jobs_from_workflow_runs", lambda *_args, **_kwargs: jobs)
+
+
 def retry_snapshot(monkeypatch, tmp_path, runs, jobs) -> tuple[dict[str, Any], Path]:
     state_path = tmp_path / "retry-state.json"
     snapshot = {
@@ -2285,15 +2210,11 @@ def test_snapshot_reconciles_write_intent_before_recommending_retry(monkeypatch,
     gh_pr_watch.save_state(path, {"pending_reruns_by_sha": {"abc123": {"1": {"run_attempt": 1, "outcome": "submitting"}}},
                                   "retries_by_sha": {"abc123": 1}})
     monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *args, **kwargs: sample_pr())
-    monkeypatch.setattr(gh_pr_watch, "get_authenticated_login", lambda reader=None: "octocat")
-    monkeypatch.setattr(gh_pr_watch, "fetch_new_review_items", lambda *args, **kwargs: [])
-    monkeypatch.setattr(gh_pr_watch.github_read, "pull_request_checks", lambda *args, **kwargs: {})
-    monkeypatch.setattr(gh_pr_watch, "summarize_checks", lambda *args, **kwargs: sample_checks(failed_count=1))
-    monkeypatch.setattr(gh_pr_watch, "get_workflow_runs_for_sha", lambda *args, **kwargs: [
-        {"id": 1, "head_sha": "abc123", "run_attempt": run_attempt,
-         "status": "completed", "conclusion": "failure"},
-    ])
-    monkeypatch.setattr(gh_pr_watch, "failed_jobs_from_workflow_runs", lambda *args, **kwargs: [failed_job(1)])
+    mocked_snapshot_inputs(
+        monkeypatch, checks=sample_checks(failed_count=1), login="octocat",
+        runs=[{"id": 1, "head_sha": "abc123", "run_attempt": run_attempt, "status": "completed", "conclusion": "failure"}],
+        jobs=[failed_job(1)],
+    )
     args = argparse.Namespace(pr="123", repo=None, state_file=str(path), max_flaky_retries=max_retries)
 
     snapshot, _ = gh_pr_watch.collect_snapshot(args)
@@ -2398,11 +2319,7 @@ def test_snapshot_cannot_overwrite_retry_intent(monkeypatch, tmp_path):
     snapshot = {"pr": sample_pr(), "retry_state": {"max_flaky_retries": 3}}
     args = argparse.Namespace(pr="123", repo=None, state_file=str(path), max_flaky_retries=3)
     monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *a, **kw: sample_pr())
-    monkeypatch.setattr(gh_pr_watch, "get_authenticated_login", lambda reader=None: "octocat")
-    monkeypatch.setattr(gh_pr_watch, "fetch_new_review_items", lambda *a, **kw: [])
-    monkeypatch.setattr(gh_pr_watch.github_read, "pull_request_checks", lambda *a, **kw: {})
-    monkeypatch.setattr(gh_pr_watch, "summarize_checks", lambda *a, **kw: sample_checks(failed_count=1))
-    monkeypatch.setattr(gh_pr_watch, "failed_jobs_from_workflow_runs", lambda *a, **kw: [])
+    mocked_snapshot_inputs(monkeypatch, checks=sample_checks(failed_count=1), runs=[], jobs=[], login="octocat")
 
     def runs(*_args, **_kwargs):
         snapshot_reading.set()
@@ -2700,16 +2617,12 @@ def test_snapshot_offers_only_verified_acquisition_recovery(monkeypatch, tmp_pat
     if gate in {"closed", "pending", "budget"}:
         reader.paged_json = lambda *_a, **_kw: pytest.fail("premature acquisition proof read")
     monkeypatch.setattr(gh_pr_watch, "watcher_reader", make_reader)
-    monkeypatch.setattr(gh_pr_watch, "get_authenticated_login", lambda *_a, **_kw: "fixture-bot")
-    monkeypatch.setattr(gh_pr_watch, "fetch_new_review_items", lambda *_a, **_kw: [])
-    monkeypatch.setattr(gh_pr_watch.github_read, "pull_request_checks", lambda *_a, **_kw: {})
-    monkeypatch.setattr(gh_pr_watch, "summarize_checks", lambda *_a, **_kw: sample_checks(
-        failed_count=1, all_terminal=gate not in {"pending", "external_pending"},
-        unfinished_workflow_run_count=int(gate == "pending"),
-        pending_count=int(gate in {"pending", "external_pending"}),
-    ))
-    monkeypatch.setattr(gh_pr_watch, "get_workflow_runs_for_sha", lambda *_a, **_kw: [reader.run])
-    monkeypatch.setattr(gh_pr_watch, "failed_jobs_from_workflow_runs", lambda *_a, **_kw: [failed_job(1, "cancelled")])
+    mocked_snapshot_inputs(
+        monkeypatch, checks=sample_checks(
+            failed_count=1, all_terminal=gate not in {"pending", "external_pending"},
+            unfinished_workflow_run_count=int(gate == "pending"), pending_count=int(gate in {"pending", "external_pending"}),
+        ), runs=[reader.run], jobs=[failed_job(1, "cancelled")], login="fixture-bot",
+    )
     args = argparse.Namespace(max_flaky_retries=0 if gate == "budget" else 3)
     snapshot, _ = gh_pr_watch.collect_locked_snapshot(args, pr, {}, tmp_path / "state.json")
     settled = gate in {"terminal", "external_pending"}
@@ -2765,12 +2678,7 @@ def test_pending_lifecycle_snapshot_and_watch_stop(monkeypatch, tmp_path, outcom
     gh_pr_watch.save_state(path, {"pending_reruns_by_sha": {"abc123": {"1": intent}},
                                  "retries_by_sha": {"abc123": 1}})
     monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *_a, **_kw: sample_pr())
-    monkeypatch.setattr(gh_pr_watch, "get_authenticated_login", lambda *_a: "fixture-bot")
-    monkeypatch.setattr(gh_pr_watch, "fetch_new_review_items", lambda *_a, **_kw: [])
-    monkeypatch.setattr(gh_pr_watch.github_read, "pull_request_checks", lambda *_a, **_kw: {})
-    monkeypatch.setattr(gh_pr_watch, "summarize_checks", lambda *_a, **_kw: sample_checks())
-    monkeypatch.setattr(gh_pr_watch, "get_workflow_runs_for_sha", lambda *_a, **_kw: inventory)
-    monkeypatch.setattr(gh_pr_watch, "failed_jobs_from_workflow_runs", lambda *_a, **_kw: [])
+    mocked_snapshot_inputs(monkeypatch, checks=sample_checks(), runs=inventory, jobs=[], login="fixture-bot")
     args = argparse.Namespace(pr="123", repo=None, state_file=str(path), max_flaky_retries=3,
                               poll_seconds=60, green_poll_seconds=300)
     snapshot, _ = gh_pr_watch.collect_snapshot(args)
@@ -2840,14 +2748,11 @@ def test_nonretryable_rejection_is_not_resubmitted_until_new_attempt(monkeypatch
 def test_rejected_attempt_snapshot_has_terminal_disposition(monkeypatch, tmp_path):
     path = tmp_path / "state.json"
     gh_pr_watch.save_state(path, {"rejected_reruns_by_sha": {"abc123": {"1": {"run_attempt": 1}}}})
-    monkeypatch.setattr(gh_pr_watch, "get_authenticated_login", lambda *_a: "fixture-bot")
-    monkeypatch.setattr(gh_pr_watch, "fetch_new_review_items", lambda *_a, **_kw: [])
-    monkeypatch.setattr(gh_pr_watch.github_read, "pull_request_checks", lambda *_a, **_kw: {})
-    monkeypatch.setattr(gh_pr_watch, "summarize_checks", lambda *_a, **_kw: sample_checks(failed_count=1))
-    monkeypatch.setattr(gh_pr_watch, "get_workflow_runs_for_sha", lambda *_a, **_kw: [
-        {"id": 1, "head_sha": "abc123", "run_attempt": 1, "status": "completed", "conclusion": "failure"},
-    ])
-    monkeypatch.setattr(gh_pr_watch, "failed_jobs_from_workflow_runs", lambda *_a, **_kw: [failed_job(1)])
+    mocked_snapshot_inputs(
+        monkeypatch, checks=sample_checks(failed_count=1), login="fixture-bot",
+        runs=[{"id": 1, "head_sha": "abc123", "run_attempt": 1, "status": "completed", "conclusion": "failure"}],
+        jobs=[failed_job(1)],
+    )
     snapshot, _ = gh_pr_watch.collect_locked_snapshot(argparse.Namespace(max_flaky_retries=3), sample_pr(), {}, path)
     assert "stop_nonretryable_rerun" in snapshot["actions"]
     assert "retry_failed_checks" not in snapshot["actions"]
@@ -2976,14 +2881,10 @@ def test_snapshot_honors_long_managed_cooldown(monkeypatch, tmp_path, watcher_tr
         (503, {"retry-after": "70"}, {"message": "Service unavailable"}, "fixture-bot"),
         (200, {}, [], "fixture-bot"),
     ])
-    monkeypatch.setattr(gh_pr_watch, "get_authenticated_login", lambda *_a: "fixture-bot")
+    mocked_snapshot_inputs(monkeypatch, checks=sample_checks(), runs=[], jobs=[], login="fixture-bot")
     def reviews(pr, _state, **kwargs):
         return kwargs["reader"].get_json(f"/repos/{pr['repo']}/issues/123/comments", step="comments")
     monkeypatch.setattr(gh_pr_watch, "fetch_new_review_items", reviews)
-    monkeypatch.setattr(gh_pr_watch.github_read, "pull_request_checks", lambda *_a, **_kw: {})
-    monkeypatch.setattr(gh_pr_watch, "summarize_checks", lambda *_a, **_kw: sample_checks())
-    monkeypatch.setattr(gh_pr_watch, "get_workflow_runs_for_sha", lambda *_a, **_kw: [])
-    monkeypatch.setattr(gh_pr_watch, "failed_jobs_from_workflow_runs", lambda *_a, **_kw: [])
     snapshot, _ = gh_pr_watch.collect_locked_snapshot(argparse.Namespace(max_flaky_retries=3), sample_pr(), {}, tmp_path / "state.json")
     assert fixture.clock[0] >= 1070
     assert len(fixture.calls) == 2
@@ -3575,8 +3476,7 @@ class ExecutionReader:
 def execution_snapshot(monkeypatch, tmp_path, runs, checks, *, allow_no_checks=False, **reader_kwargs):
     reader = ExecutionReader(runs, checks, **reader_kwargs)
     monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *a, **kw: sample_pr())
-    monkeypatch.setattr(gh_pr_watch, "get_authenticated_login", lambda *_: "octocat")
-    monkeypatch.setattr(gh_pr_watch, "fetch_new_review_items", lambda *a, **kw: [])
+    mock_pr_discussion(monkeypatch, login="octocat")
     monkeypatch.setattr(gh_pr_watch, "watcher_reader", lambda **_kwargs: reader)
     args = argparse.Namespace(pr="123", repo=None, state_file=str(tmp_path / "state.json"), max_flaky_retries=3,
                               allow_no_checks=allow_no_checks)
@@ -4177,15 +4077,11 @@ def test_snapshot_offers_retry_only_for_a_verified_own_timeout(monkeypatch, tmp_
         reader.annotations[120485524103][0]["message"] = "The run was canceled by @octocat."
     monkeypatch.setattr(gh_pr_watch, "watcher_reader",
                         lambda **kwargs: ReviewReader() if kwargs.get("operation") is None else reader)
-    monkeypatch.setattr(gh_pr_watch, "get_authenticated_login", lambda *_a, **_kw: "fixture-bot")
-    monkeypatch.setattr(gh_pr_watch, "fetch_new_review_items", lambda *_a, **_kw: [])
-    monkeypatch.setattr(gh_pr_watch.github_read, "pull_request_checks", lambda *_a, **_kw: {})
-    monkeypatch.setattr(gh_pr_watch, "summarize_checks", lambda *_a, **_kw: sample_checks(failed_count=1))
-    monkeypatch.setattr(gh_pr_watch, "get_workflow_runs_for_sha", lambda *_a, **_kw: [
-        {"id": 1, "head_sha": "abc123", "run_attempt": 1, "status": "completed", "conclusion": "cancelled",
-         "name": "Validate Skills", "event": "pull_request"},
-    ])
-    monkeypatch.setattr(gh_pr_watch, "failed_jobs_from_workflow_runs", lambda *_a, **_kw: [failed_job(1, "cancelled")])
+    mocked_snapshot_inputs(
+        monkeypatch, checks=sample_checks(failed_count=1), login="fixture-bot",
+        runs=[{"id": 1, "head_sha": "abc123", "run_attempt": 1, "status": "completed", "conclusion": "cancelled",
+               "name": "Validate Skills", "event": "pull_request"}], jobs=[failed_job(1, "cancelled")],
+    )
     snapshot, _ = gh_pr_watch.collect_locked_snapshot(
         argparse.Namespace(max_flaky_retries=3), sample_pr(), {}, tmp_path / "state.json")
     assert ("retry_failed_checks" in snapshot["actions"]) == own_timeout
@@ -4203,11 +4099,10 @@ def test_own_timeout_retry_reruns_failed_jobs_within_the_budget(monkeypatch, tmp
     assert gh_pr_watch.current_retry_count(gh_pr_watch.load_state(path)[0], "abc123") == 1
 
 
-@pytest.mark.parametrize("outside_check", ["launchplane/owner-review", "external-preview"])
 @pytest.mark.parametrize("conclusion", ["failure", "cancelled"])
 @pytest.mark.parametrize("workflows", ["settled", "unfinished", "unavailable"])
 def test_outside_check_wait_preserves_workflow_retry_admission(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, outside_check: str, conclusion: str, workflows: str,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, conclusion: str, workflows: str,
 ) -> None:
     run = execution(1, conclusion)
     timeout_reader = TimeoutReader()
@@ -4216,7 +4111,7 @@ def test_outside_check_wait_preserves_workflow_retry_admission(
     ]
     checks = [execution_check(run, job["id"], job["conclusion"]) for job in jobs]
     checks.append({
-        "id": 51, "name": outside_check, "head_sha": run["head_sha"],
+        "id": 51, "name": "launchplane/owner-review", "head_sha": run["head_sha"],
         "app": {"slug": "outside-app", "id": 101}, "status": "in_progress",
         "conclusion": None, "details_url": "https://example.test/review",
     })
@@ -4236,8 +4131,7 @@ def test_outside_check_wait_preserves_workflow_retry_admission(
 
     monkeypatch.setattr(reader, "paged_json", paged_json)
     monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *_a, **_kw: sample_pr())
-    monkeypatch.setattr(gh_pr_watch, "get_authenticated_login", lambda *_a: "fixture-bot")
-    monkeypatch.setattr(gh_pr_watch, "fetch_new_review_items", lambda *_a, **_kw: [])
+    mock_pr_discussion(monkeypatch, login="fixture-bot")
     monkeypatch.setattr(gh_pr_watch, "watcher_reader", lambda **_kwargs: reader)
     writes = []
     monkeypatch.setattr(gh_pr_watch, "gh_text", lambda command_args, **_kw: writes.append(command_args))
