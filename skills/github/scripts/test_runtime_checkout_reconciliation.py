@@ -811,6 +811,7 @@ def session_fixture(tmp_path: Path) -> RuntimeFixture:
         tmp_path, helper_relative_path=Path("skills/github/scripts") / SCRIPT.name,
         extra_files={relative: root / relative for relative in (
             "hooks/direction_check_hook.py", "hooks/hooks.json", "scripts/sync-global-instructions.py",
+            "skills/github/scripts/dev_worktree.py",
         )},
     )
 

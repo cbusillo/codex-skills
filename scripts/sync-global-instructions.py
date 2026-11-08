@@ -58,8 +58,15 @@ class HookOutputs(dict[Path, str]):
         self.disabled_migrated_handlers = disabled_migrated_handlers
 
 
+def with_artifact_roots(text: str) -> str:
+    roots = runpy.run_path(str(ROOT / "skills/github/scripts/dev_worktree.py"))["configured_roots"]()
+    for key in ("evidenceRoot", "retainedRoot"):
+        text = text.replace(f"{{{key}}}", str(roots[key]))
+    return text
+
+
 def render(source: Path, local_source: Path, direction: str = "") -> str:
-    sections = [HEADER, source.read_text().strip()]
+    sections = [HEADER, with_artifact_roots(source.read_text().strip())]
     if local_source.exists():
         sections.append(local_source.read_text().strip())
     sections.append(direction)

@@ -63,7 +63,7 @@ def committed_shared_sources(sync) -> list[str]:
     for revision in history.stdout.splitlines() if history.returncode == 0 else []:
         old = subprocess.run(["git", "--no-optional-locks", "-C", str(ROOT), "show", f"{revision}:instructions/global.md"], capture_output=True, text=True, timeout=30)
         if old.returncode == 0:
-            bases.append("\n\n".join(filter(None, (sync.HEADER, old.stdout.strip()))) + "\n")
+            bases.append("\n\n".join(filter(None, (sync.HEADER, sync.with_artifact_roots(old.stdout.strip())))) + "\n")
     return bases
 
 
@@ -166,8 +166,7 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
         str(path) not in hashes and path.resolve() != (ROOT / "instructions" / "global.md").resolve()
         and (not local.exists() or not safe_file(path, instruction=True).startswith(sync.HEADER)))]
     personal = personal_source(sync, adoption, local, new_destinations={path for path in destinations if str(path) not in hashes})
-    shared_source = (ROOT / "instructions" / "global.md").read_text()
-    base = "\n\n".join(filter(None, (sync.HEADER, shared_source.strip()))) + "\n"
+    base = sync.render(ROOT / "instructions" / "global.md", ROOT / ".absent-personal-source")
     content = "\n\n".join(filter(None, (base.strip(), personal.strip(), sync.direction_content(home)))) + "\n"
     requested = {"codex": str(codex), "claude": str(claude)}
     previous = {key: previous_installation.get(key) for key in requested}
