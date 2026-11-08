@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from itertools import product
 from pathlib import Path
@@ -31,7 +32,7 @@ def varint(value: int) -> bytes:
     return bytes([*result, value])
 
 
-def protobuf(values: dict[int, int | bytes]) -> bytes:
+def protobuf(values: Mapping[int, int | bytes]) -> bytes:
     return b"".join(
         varint(key * 8) + varint(value) if isinstance(value, int) else varint(key * 8 + 2) + varint(len(value)) + value
         for key, value in values.items()
@@ -349,7 +350,7 @@ runpy.run_path(sys.argv[0], run_name="__main__")
                 identity = f"{session}/task-0".encode()
                 prompt = b"Check the fixture result"
                 payload = b"> " + prompt + b"\n\n**Status**: Fired"
-                for change in (
+                schedule_cases: tuple[str, ...] = (
                     "complete",
                     "condition",
                     "missing_notification",
@@ -371,25 +372,26 @@ runpy.run_path(sys.argv[0], run_name="__main__")
                     "missing_declaration",
                     "bad_prompt",
                     "zero_duration",
-                ):
-                    with self.subTest(change=change):
+                )
+                for timer_case in schedule_cases:
+                    with self.subTest(timer_case=timer_case):
                         arguments = {"DurationSeconds": 1, "Prompt": prompt.decode()}
-                        if change in {"recurring", "daemon", "unknown_argument", "condition"}:
+                        if timer_case in {"recurring", "daemon", "unknown_argument", "condition"}:
                             key, value = {
                                 "recurring": ("CronExpression", "* * * * *"),
                                 "daemon": ("IsDaemon", True),
                                 "unknown_argument": ("Unproven", True),
                                 "condition": ("TimerCondition", "after"),
-                            }[change]
+                            }[timer_case]
                             arguments[key] = value
-                        if change == "bad_duration":
+                        if timer_case == "bad_duration":
                             arguments["DurationSeconds"] = True
-                        if change == "zero_duration":
+                        if timer_case == "zero_duration":
                             arguments["DurationSeconds"] = 0
-                        if change == "bad_prompt":
+                        if timer_case == "bad_prompt":
                             arguments["Prompt"] = 1
-                        result_payload = b"Timer finished" if change == "reworded_result" else payload
-                        if change == "empty_terminal":
+                        result_payload = b"Timer finished" if timer_case == "reworded_result" else payload
+                        if timer_case == "empty_terminal":
                             result_payload = b""
                         result = protobuf({10: protobuf({1: result_payload})})
                         timer_metadata = protobuf(
@@ -398,7 +400,7 @@ runpy.run_path(sys.argv[0], run_name="__main__")
                                 4: protobuf(
                                     {
                                         1: b"timer-call",
-                                        2: b"unknown_tool" if change == "unknown_tool" else b"schedule",
+                                        2: b"unknown_tool" if timer_case == "unknown_tool" else b"schedule",
                                         3: json.dumps(arguments).encode(),
                                     }
                                 ),
@@ -408,25 +410,25 @@ runpy.run_path(sys.argv[0], run_name="__main__")
                             1: 132,
                             4: 3,
                             5: timer_metadata,
-                            148: protobuf({1: b"foreign/task-0" if change == "foreign_declaration" else identity}),
+                            148: protobuf({1: b"foreign/task-0" if timer_case == "foreign_declaration" else identity}),
                             140: protobuf({2: protobuf({3: result})}),
                         }
-                        if change == "missing_terminal":
+                        if timer_case == "missing_terminal":
                             scheduled.pop(140)
-                        if change == "missing_declaration":
+                        if timer_case == "missing_declaration":
                             scheduled.pop(148)
-                        if change == "early_notification":
+                        if timer_case == "early_notification":
                             scheduled[148] = protobuf({1: f"{session}/task-1".encode()})
                         envelope = {
-                            2: b"foreign" if change == "foreign_session" else session.encode(),
-                            3: b"foreign/task-0" if change == "foreign_task" else identity,
-                            4: b"foreign prompt" if change == "foreign_prompt" else prompt,
-                            5: 2 if change == "not_done" else 3,
+                            2: b"foreign" if timer_case == "foreign_session" else session.encode(),
+                            3: b"foreign/task-0" if timer_case == "foreign_task" else identity,
+                            4: b"foreign prompt" if timer_case == "foreign_prompt" else prompt,
+                            5: 2 if timer_case == "not_done" else 3,
                         }
-                        if change == "early_notification":
+                        if timer_case == "early_notification":
                             envelope[3] = f"{session}/task-1".encode()
                         note = {
-                            2: protobuf({10: protobuf({1: b"other"})}) if change == "different_result" else result,
+                            2: protobuf({10: protobuf({1: b"other"})}) if timer_case == "different_result" else result,
                             3: b"task_notification",
                             4: protobuf(envelope),
                         }
@@ -436,8 +438,8 @@ runpy.run_path(sys.argv[0], run_name="__main__")
                             5: protobuf({1: protobuf({1: 2})}),
                             114: protobuf(note),
                         }
-                        steps = [scheduled] if change == "missing_notification" else [scheduled, notification]
-                        if change == "early_notification":
+                        steps = [scheduled] if timer_case == "missing_notification" else [scheduled, notification]
+                        if timer_case == "early_notification":
                             steps.reverse()
                         writer.execute("DELETE FROM steps")
                         for index, step in enumerate(steps):
@@ -445,8 +447,8 @@ runpy.run_path(sys.argv[0], run_name="__main__")
                         writer.execute("INSERT INTO steps VALUES (?,15,3,0,?)", (len(steps), response))
                         writer.commit()
                         summary = session_record.session_status(entry)
-                        self.assertEqual(summary["safe_verdict"], change in {"complete", "reworded_result"})
-                        self.assertEqual(bool(summary["background_tasks"]), change not in {"complete", "reworded_result"})
+                        self.assertEqual(summary["safe_verdict"], timer_case in {"complete", "reworded_result"})
+                        self.assertEqual(bool(summary["background_tasks"]), timer_case not in {"complete", "reworded_result"})
 
                 for fixture_name, change in product(
                     ("agy-command-background.json", "agy-command-cancelled.json"),
