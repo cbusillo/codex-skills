@@ -1639,12 +1639,7 @@ def has_managed_provenance(body: str) -> bool:
     return True
 
 
-def issue_body_is_fully_managed(issue: dict[str, Any]) -> bool:
-    body = issue.get("body") or ""
-    has_managed_provenance(body)
-    if contributor_plan_body(issue) is not None:
-        return False
-    author_login = issue_author_login(issue)
+def automation_author(author_login: str | None) -> bool:
     managed_authors = {
         login.casefold()
         for login in (
@@ -1656,6 +1651,14 @@ def issue_body_is_fully_managed(issue: dict[str, Any]) -> bool:
         author_login
         and author_login.casefold() in managed_authors
     )
+
+
+def issue_body_is_fully_managed(issue: dict[str, Any]) -> bool:
+    body = issue.get("body") or ""
+    has_managed_provenance(body)
+    if contributor_plan_body(issue) is not None:
+        return False
+    return automation_author(issue_author_login(issue))
 
 
 def marked_block(body: str, start_marker: str, end_marker: str) -> tuple[int, int, str] | None:
@@ -2080,12 +2083,9 @@ def cmd_show(args: argparse.Namespace) -> None:
     if not args.full and "Current Status" in result["sections"]:
         provenance["current_status_managed"] = provenance["section_updates_allowed"]
         if not issue_body_is_fully_managed(issue):
-            discussion = github_direction_next.discussion_snapshot(issue, comments, complete=True)
-            trusted = wait_authors(issue["repo"])
-            record = github_plan_status.discussion.current_status_record(discussion, trusted,
-                body_recorded_at=next_status_body_time({**issue, "discussion": discussion}, trusted), preserve_content=True)
+            record = claim_current_status_record(issue, issue_plan_sections(issue), comments, preserve_content=True)
             result["sections"]["Current Status"] = record.text.strip()
-            provenance["current_status_managed"] = issue_body_is_fully_managed({"user": {"login": record.author}})
+            provenance["current_status_managed"] = automation_author(record.author)
     try:
         wait = current_wait(issue, comments, issue["repo"])
     except (PlanError, ValueError) as exc:
@@ -2258,15 +2258,20 @@ def _claim_release_evidence(evidence_repo, _number, evidence_id):
         return None
 
 
-def claim_current_status(issue: dict[str, Any], sections: dict[str, str], comments: list[dict[str, Any]],
-                         *, preserve_content: bool = False) -> str:
+def claim_current_status_record(issue: dict[str, Any], sections: dict[str, str], comments: list[dict[str, Any]],
+                                *, preserve_content: bool = False) -> github_plan_status.discussion.CurrentStatus:
     discussion = github_direction_next.discussion_snapshot(issue, comments, complete=True)
     if "body" not in issue:
         discussion["body"] = "## Current Status\n" + sections.get("Current Status", "")
     trusted = wait_authors(issue["repo"])
     body_time = next_status_body_time({**issue, "discussion": discussion}, trusted)
-    return github_next_queue.current_status(discussion, trusted, body_recorded_at=body_time,
-                                           preserve_markers=True, preserve_content=preserve_content)
+    return github_plan_status.discussion.current_status_record(discussion, trusted, body_recorded_at=body_time,
+                                                               preserve_content=preserve_content)
+
+
+def claim_current_status(issue: dict[str, Any], sections: dict[str, str], comments: list[dict[str, Any]],
+                         *, preserve_content: bool = False) -> str:
+    return claim_current_status_record(issue, sections, comments, preserve_content=preserve_content).text.strip()
 
 
 def effective_current_status(issue: dict[str, Any], comments: list[dict[str, Any]]) -> str:

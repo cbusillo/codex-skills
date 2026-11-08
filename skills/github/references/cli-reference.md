@@ -970,6 +970,10 @@ selection is unchanged.
   Selected Current Status fields display that projection; `--full` preserves
   the original body as evidence alongside it. Hand-written status and labels
   cannot override the projection. Missing or malformed wait evidence needs review.
+  `recorded_current_status` preserves the selected authored content, including
+  fenced briefs. `provenance.current_status_managed` reports whether that
+  selected source is automation-authored; `section_updates_allowed` describes
+  permission to edit the issue body, independently of status-comment ownership.
   `labels` and `recorded_labels` preserve the observed routing, share and type
   labels; labels do not determine status.
   `--launch-check` also reuses `next`'s current ownership and retained-delivery

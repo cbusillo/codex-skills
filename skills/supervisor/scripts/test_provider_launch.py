@@ -50,7 +50,8 @@ def patch_attr(target: object, name: str, **kwargs: Any) -> Any:
 
 class LaunchIssueTests(unittest.TestCase):
     def test_reporter_status_dispatch_uses_current_bot_source_and_preserves_holds(self) -> None:
-        spec = importlib.util.spec_from_file_location("dispatch_plan", Path(__file__).resolve().parents[2] / "github/scripts/gh-plan.py")
+        spec = importlib.util.spec_from_file_location(
+            "dispatch_plan", Path(__file__).resolve().parents[2] / "github/scripts/gh-plan.py")
         assert spec and spec.loader
         plan: Any = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(plan)
@@ -69,7 +70,8 @@ class LaunchIssueTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             command, brief = Path(folder) / "command", Path(folder) / "header"
             command.write_text("agy")
-            brief.write_text(f"Brief from the Supervisor. Trial token: FIXTURE.\nAnchor and claim: {issue_url}\nRules: {iterm_tab.BRIEF_RULES_URL}\n")
+            brief.write_text(f"Brief from the Supervisor. Trial token: FIXTURE.\nAnchor and claim: {issue_url}\n"
+                             f"Rules: {iterm_tab.BRIEF_RULES_URL}\n")
             args = argparse.Namespace(command_file=[command], brief_file=[brief], brief_issue=[issue_url], lead_session_id=lead)
             for case in ("current", "untrusted", "human-owner", "stale", "recipient", "missing-brief", "wait", "blocker", "closed"):
                 current, comment, wait = copy.deepcopy(issue), copy.deepcopy(managed), clear
@@ -99,10 +101,15 @@ class LaunchIssueTests(unittest.TestCase):
                     return subprocess.CompletedProcess(argv, 0, json.dumps(emitted.call_args.args[0]))
                 with (self.subTest(case=case),
                       patch.multiple(plan, get_issue=Mock(return_value=("automation-gh", current)),
-                          load_config=Mock(return_value={}), collect_paged_rest_items=Mock(return_value=("automation-gh", [comment, wait_comment])),
-                          read_issue_relationships=Mock(return_value=("automation-gh", {"blocked_by": blockers, "blocking": [], "sub_issues": []})),
+                          EXPECTED_ACTOR="fixture-bot[bot]", load_config=Mock(return_value={}),
+                          collect_paged_rest_items=Mock(return_value=("automation-gh", [comment, wait_comment])),
+                          read_issue_relationships=Mock(return_value=("automation-gh",
+                              {"blocked_by": blockers, "blocking": [], "sub_issues": []})),
                           next_status_body_time=Mock(return_value=current["updated_at"]),
-                          read_queue_ownership=Mock(return_value=ownership), wait_authors=Mock(return_value={"fixture", "fixture-bot[bot]"})),
+                          read_queue_ownership=Mock(return_value=ownership),
+                          wait_authors=Mock(return_value={"fixture", "fixture-bot[bot]"}),
+                          api_json=Mock(side_effect=AssertionError("Unexpected network or write")),
+                          rest_edit_issue=Mock(side_effect=AssertionError("Human request edit"))),
                       patch_attr(plan.github_identity, "configured_bot_logins", return_value=["fixture-bot[bot]"]),
                       patch.object(iterm_tab.subprocess, "run", side_effect=read)):
                     if case == "current":
@@ -112,8 +119,9 @@ class LaunchIssueTests(unittest.TestCase):
                         self.assertTrue(prompt.endswith("\n\n" + task))
                         self.assertIn(shlex.join(["--dispatch-recipient", lead]), prompt)
                     else:
-                        with self.assertRaises(ValueError):
+                        with self.assertRaises(ValueError) as refused:
                             iterm_tab.prepare_launches(args)
+                        self.assertIsNone(refused.exception.__cause__)
                     self.assertEqual((current, comment), before)
 
     def test_child_issue_brief_reaches_worker_verbatim_under_supervisor_header(self) -> None:
