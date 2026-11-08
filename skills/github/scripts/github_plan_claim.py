@@ -254,8 +254,14 @@ def session_fields(text: str, *, include_quotes: bool = True, current_only: bool
     return values
 
 
+def declared_session_text(value: str) -> str:
+    """A session field's "dispatched by <id>" names its dispatch coordinator, not a second declared session."""
+    return re.sub(rf"\bdispatched[ \t]+by[ \t]+[`(<]*{NATIVE_SESSION_ID.pattern}(?![\w-])", "", value, flags=re.IGNORECASE)
+
+
 def session_identifiers(value: str) -> set[str]:
-    tokens = [token.strip("()<>").removesuffix(".").strip("()<>") for token in re.findall(r"[^\s,;|]+", value)]
+    tokens = [token.strip("()<>").removesuffix(".").strip("()<>")
+              for token in re.findall(r"[^\s,;|]+", declared_session_text(value))]
     native = {token for token in tokens if NATIVE_SESSION_ID.fullmatch(token)}
     return native or {value}
 
@@ -388,7 +394,7 @@ def belongs_to_session(body: str, session: str) -> bool:
         return True
     fields = session_fields(ownership_text(body, strip_quotes=False, keep_link_targets=True),
                             include_quotes=False, current_only=True)
-    return any(identity.search(value.split(";", 1)[0]) for value in fields)
+    return any(identity.search(declared_session_text(value.split(";", 1)[0])) for value in fields)
 
 
 def released_session_signoff(
