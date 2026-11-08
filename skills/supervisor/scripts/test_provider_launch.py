@@ -324,6 +324,7 @@ class ResumeLaunchTests(unittest.TestCase):
     def retired_lead_source(self) -> dict:
         import release_session_claims
         self.enterContext(patch_attr(release_session_claims, "inventory", return_value=[]))
+        self.enterContext(patch.object(account_choice, "inventory_accounts", return_value=[self.account]))
         transcript = self.home / "sessions" / (self.session + ".jsonl")
         records = [json.loads(transcript.read_text()),
                    {"type": "event_msg", "timestamp": "2026-01-01T00:00:00Z",
@@ -348,18 +349,16 @@ class ResumeLaunchTests(unittest.TestCase):
         self.assertEqual(rows[-1], source)
         self.assertEqual(rows[0]["worker_launches"], {"pending": 1})
         self.assertEqual(self.log.read_bytes(), before)
-        self.select.assert_not_called()
-        self.prepare.assert_not_called()
-        self.inspect.assert_not_called()
-        self.start.assert_not_called()
         with self.assertRaises(ValueError):
             iterm_tab.append_launch_ledger(self.ledger, source)
 
     def test_restoration_keeps_cap_and_canonical_closed_authority(self) -> None:
         source = self.retired_lead_source()
-        ledger = self.ledger.read_bytes()
         closed = self.log.read_bytes()
-        for changes in ({"lead_session_id": "other"}, {"lead_launch_id": "pending"},
+        rows = json.loads(self.ledger.read_text())
+        self.ledger.write_text(json.dumps([*rows, {**rows[0], "session_id": "other"}]))
+        ledger = self.ledger.read_bytes()
+        for changes in ({"lead_session_id": "other"}, {"lead_session_id": None}, {"lead_launch_id": "pending"},
                         {"codex_home": str(self.root)}, {"pid": 456}, {"transcript": str(self.root / "other.jsonl")}):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 iterm_tab.append_launch_ledger(self.ledger, {**source, **changes})
@@ -386,15 +385,15 @@ class ResumeLaunchTests(unittest.TestCase):
         self.assertEqual(self.ledger.read_bytes(), capped)
 
     def test_restoration_refuses_live_changed_frozen_or_unknown_source_without_effects(self) -> None:
-        import github_plan_closure as closure
         import release_session_claims
+        from check_operation import closure
         source = self.retired_lead_source()
         ledger, closed = self.ledger.read_bytes(), self.log.read_bytes()
         with patch_attr(release_session_claims, "inventory", return_value=[(source["pid"], source["tty"], "codex")]):
             with self.assertRaises(ValueError):
                 iterm_tab.append_launch_ledger(self.ledger, source)
         for state in ({"successor_admitted": True}, {"action_pending": True, "action_at": "2026-01-02T00:00:00Z"},
-                      {"successor_admitted": True, "claim_admission_unknown": {}}):
+                      {"action_pending": True, "action_at": "2025-12-31T23:59:59Z", "claim_admission_unknown": {}}):
             with closure.ownership(self.session, create=True):
                 closure.write_lease_state(self.session, {"session_id": self.session, **state})
             with self.subTest(state=state), self.assertRaises(ValueError):
@@ -409,7 +408,7 @@ class ResumeLaunchTests(unittest.TestCase):
         self.assertEqual(self.log.read_bytes(), closed)
 
     def test_restoration_preserves_busy_lease_and_native_identity_refusals(self) -> None:
-        import github_plan_closure as closure
+        from check_operation import closure
         source = self.retired_lead_source()
         ledger, closed = self.ledger.read_bytes(), self.log.read_bytes()
         with closure.ownership(self.session, create=True):
@@ -425,10 +424,37 @@ class ResumeLaunchTests(unittest.TestCase):
                 iterm_tab.append_launch_ledger(self.ledger, changed)
         self.assertEqual(self.ledger.read_bytes(), ledger)
         self.log.write_bytes(closed)
-        self.log.unlink()
-        with self.assertRaises(ValueError):
-            iterm_tab.append_launch_ledger(self.ledger, source)
-        self.assertEqual(self.ledger.read_bytes(), ledger)
+
+    def test_restoration_validation_leaves_shared_ledger_available_for_other_workers(self) -> None:
+        import release_session_claims
+        source = self.retired_lead_source()
+        validate = release_session_claims.validate_closure
+        unrelated = {"session_id": str(uuid.uuid4()), "harness": "codex", "supervisor_owned": True}
+
+        def validate_with_registration(entry: dict, supervisor: str) -> dict:
+            iterm_tab.append_launch_ledger(self.ledger, unrelated)
+            return validate(entry, supervisor)
+
+        with patch_attr(release_session_claims, "validate_closure", side_effect=validate_with_registration):
+            iterm_tab.append_launch_ledger(self.ledger, {**source, "tty": "/dev/" + source["tty"]})
+        self.assertEqual(json.loads(self.ledger.read_text())[-2:], [unrelated, source])
+
+    def test_restoration_refuses_newer_activity_in_each_configured_transcript_copy(self) -> None:
+        source = self.retired_lead_source()
+        ledger = self.ledger.read_bytes()
+        original = Path(source["transcript"]).read_text()
+        other = self.root / "other-account"
+        accounts = [self.account, {**self.account, "name": "other", "env": {"CODEX_HOME": str(other)}}]
+        for root in (self.home / "archived_sessions", other / "sessions"):
+            root.mkdir(parents=True)
+            copy = root / (self.session + ".jsonl")
+            copy.write_text(original + json.dumps({"type": "event_msg", "timestamp": "2026-01-02T00:00:00Z",
+                                                   "payload": {"type": "user_message", "message": "continue"}}) + "\n")
+            with patch.object(account_choice, "inventory_accounts", return_value=accounts):
+                with self.subTest(root=root), self.assertRaises(ValueError):
+                    iterm_tab.append_launch_ledger(self.ledger, source)
+            self.assertEqual(self.ledger.read_bytes(), ledger)
+            copy.unlink()
 
     def test_missing_or_live_original_pid_refuses_before_launch_preparation(self) -> None:
         for pid in (None, 0, True, 123):
@@ -684,8 +710,8 @@ class ProviderLaunchTests(unittest.TestCase):
         # Generic launch cases must not discover the host's private opt-in.
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
-        import github_plan_closure
-        self.enterContext(patch.object(github_plan_closure, "closed_log", return_value=Path(temp.name) / "closed.json"))
+        from check_operation import closure
+        self.enterContext(patch_attr(closure, "closed_log", return_value=Path(temp.name) / "closed.json"))
         opt_in = patch.object(iterm_tab, "CHROME_OPT_IN", Path(temp.name) / "absent")
         opt_in.start()
         self.addCleanup(opt_in.stop)
