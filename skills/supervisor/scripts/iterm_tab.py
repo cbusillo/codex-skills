@@ -1341,7 +1341,7 @@ def read_issue_brief(issue: str, header: str, lead_session_id: str | None = None
                                 stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
         payload = json.loads(result.stdout)
         status = payload["issue"]["recorded_current_status"] if not result.returncode and payload.get("ok") else ""
-        managed = payload["issue"]["provenance"]["section_updates_allowed"]
+        managed = payload["issue"]["provenance"]["current_status_managed"]
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError) as error:
         raise ValueError(f"Brief source unavailable for {issue}") from error
     if managed is not True:

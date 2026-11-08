@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime
-from typing import Any
+from typing import Any, NamedTuple
 
 MARKER = "github-plan:claim "
 ABANDONED_RELEASE_MARKER = "github-plan:abandoned-release "
@@ -56,8 +56,13 @@ def unquoted_text(text: str) -> str:
     return "\n".join(line for _, line in unquoted_lines(text))
 
 
-def current_status(discussion: dict[str, Any], trusted: set[str], *, body_recorded_at: str | None = None,
-                   preserve_markers: bool = False, preserve_content: bool = False) -> str:
+class CurrentStatus(NamedTuple):
+    text: str
+    author: str
+
+
+def current_status_record(discussion: dict[str, Any], trusted: set[str], *, body_recorded_at: str | None = None,
+                          preserve_content: bool = False) -> CurrentStatus:
     def timestamp(value: Any) -> datetime | None:
         try:
             parsed = datetime.fromisoformat(value.replace("Z", "+00:00")) if isinstance(value, str) else None
@@ -66,6 +71,7 @@ def current_status(discussion: dict[str, Any], trusted: set[str], *, body_record
             return None
     body = discussion.get("body") or ""
     status = section_map(body if preserve_content else unquoted_text(body)).get("Current Status")
+    author = discussion.get("author") or ""
     has_body_status = status is not None
     body_time = timestamp(body_recorded_at or discussion.get("body_recorded_at") or discussion.get("updated_at"))
     for comment in discussion.get("comments", []):
@@ -76,9 +82,16 @@ def current_status(discussion: dict[str, Any], trusted: set[str], *, body_record
         comment_time = timestamp(comment.get("created_at"))
         if found is not None and (not has_body_status or (comment_time is not None and (body_time is None or comment_time >= body_time))):
             status = found
+            author = comment["author"]
             body_time = comment_time
             has_body_status = True
-    return (status or "").strip() if preserve_markers else re.sub(r"<!--.*?-->", "", status or "", flags=re.S).strip()
+    return CurrentStatus(status or "", author)
+
+
+def current_status(discussion: dict[str, Any], trusted: set[str], *, body_recorded_at: str | None = None,
+                   preserve_markers: bool = False, preserve_content: bool = False) -> str:
+    status = current_status_record(discussion, trusted, body_recorded_at=body_recorded_at, preserve_content=preserve_content).text
+    return status.strip() if preserve_markers else re.sub(r"<!--.*?-->", "", status, flags=re.S).strip()
 
 
 def status_field(status: str, field: str) -> str:
