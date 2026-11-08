@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from collections.abc import Callable
 from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any
@@ -153,19 +154,29 @@ class RetireTests(unittest.TestCase):
                                            apply=True, runner=run)
             self.assertEqual([row["decision"] for row in rows], ["retired", expected])
 
-    def runner(self, refuse_preview=False, refuse_apply=False):
+    def runner(
+        self,
+        refuse_preview: bool = False,
+        refuse_apply: bool = False,
+        *,
+        returncode: int = 1,
+        stdout: str | None = "",
+        stderr: str | None = "Retire refused: dirty\n",
+    ) -> tuple[list[tuple[str, bool]], Callable[..., subprocess.CompletedProcess[str]]]:
         calls = []
 
-        def run(path, *, dry_run):
+        def run(path: str, *, dry_run: bool) -> subprocess.CompletedProcess[str]:
             calls.append((path, dry_run))
             failed = refuse_preview if dry_run else refuse_apply
-            return subprocess.CompletedProcess([], 1 if failed else 0, "", "Retire refused: dirty\n" if failed else "")
+            return subprocess.CompletedProcess([], returncode if failed else 0, stdout if failed else "", stderr if failed else "")
+
         return calls, run
 
     def test_apply_previews_then_retires_only_candidates(self):
         calls, run = self.runner()
-        rows = landed_worktrees.retire([{"path": "/a", "decision": "candidate"}, {"path": "/b", "decision": "kept"}],
-                                       apply=True, runner=run)
+        rows = landed_worktrees.retire(
+            [{"path": "/a", "decision": "candidate"}, {"path": "/b", "decision": "kept"}], apply=True, runner=run
+        )
         self.assertEqual(calls, [("/a", True), ("/a", False)])
         self.assertEqual([r["decision"] for r in rows], ["retired", "kept"])
 
@@ -174,13 +185,60 @@ class RetireTests(unittest.TestCase):
         rows = landed_worktrees.retire([{"path": "/a", "decision": "candidate"}], apply=False, runner=run)
         self.assertEqual((calls, rows[0]["decision"]), ([("/a", True)], "would_retire"))
 
-    def test_helper_refusals_keep_the_worktree(self):
-        for refuse, expected_calls in (({"refuse_preview": True}, [("/a", True)]),
-                                       ({"refuse_apply": True}, [("/a", True), ("/a", False)])):
-            calls, run = self.runner(**refuse)
-            rows = landed_worktrees.retire([{"path": "/a", "decision": "candidate"}], apply=True, runner=run)
-            self.assertEqual((rows[0]["decision"], rows[0]["detail"]), ("kept", ["Retire refused: dirty"]))
-            self.assertEqual(calls, expected_calls)
+    def test_helper_refusals_keep_the_worktree_and_report_status_and_output(self) -> None:
+        cases = (
+            ("", "earlier error\nRetire refused: dirty\n \t\n", "stderr", "Retire refused: dirty"),
+            ("earlier output\nRetire refused: unpublished\n \t\n", "", "stdout", "Retire refused: unpublished"),
+            ("unused stdout", "Retire refused: busy\n", "stderr", "Retire refused: busy"),
+            ("Retire refused: live user\n", " \t\n", "stdout", "Retire refused: live user"),
+            ("", "", None, "no output"),
+            (" \t\n", "\n \t\n", None, "no output"),
+            (None, None, None, "no output"),
+        )
+        for refuse, expected_calls in (
+            ({"refuse_preview": True}, [("/a", True)]),
+            ({"refuse_apply": True}, [("/a", True), ("/a", False)]),
+        ):
+            for stdout, stderr, stream, message in cases:
+                for status in (1, 23, -15):
+                    with self.subTest(stage=refuse, stream=stream, message=message, status=status):
+                        calls, run = self.runner(**refuse, returncode=status, stdout=stdout, stderr=stderr)
+                        rows = landed_worktrees.retire([{"path": "/a", "decision": "candidate"}], apply=True, runner=run)
+                        self.assertEqual(rows[0]["decision"], "kept")
+                        self.assertEqual(
+                            rows[0]["reason"], "retire preview refused" if refuse.get("refuse_preview") else "retire refused"
+                        )
+                        detail = "\n".join(rows[0]["detail"])
+                        self.assertIn(str(status), detail)
+                        self.assertIn(message, detail)
+                        if stream:
+                            self.assertIn(stream, detail)
+                        self.assertNotIn("earlier", detail)
+                        self.assertNotIn("unused stdout", detail)
+                        self.assertTrue(all(line.strip() for line in rows[0]["detail"]))
+                        self.assertEqual(calls, expected_calls)
+
+    def test_refusal_diagnostics_bound_and_redact_the_selected_line(self) -> None:
+        secret = "fixture-private-value"
+        output = "unrelated payload\nrefused token=" + secret * 100 + " trailing context " * 100
+        for preview in (True, False):
+            for stream in ("stderr", "stdout"):
+                with self.subTest(preview=preview, stream=stream):
+                    calls, run = self.runner(
+                        refuse_preview=preview,
+                        refuse_apply=not preview,
+                        stdout=output if stream == "stdout" else "",
+                        stderr=output if stream == "stderr" else "",
+                    )
+                    row = landed_worktrees.retire([{"path": "/a", "decision": "candidate"}], apply=True, runner=run)[0]
+                    detail = "\n".join(row["detail"])
+                    self.assertEqual(row["decision"], "kept")
+                    self.assertIn("refused", detail)
+                    self.assertIn(stream, detail)
+                    self.assertNotIn(secret, detail)
+                    self.assertNotIn("unrelated payload", detail)
+                    self.assertLess(len(detail), len(output.splitlines()[-1]))
+                    self.assertEqual(calls, [("/a", True)] if preview else [("/a", True), ("/a", False)])
 
     def test_expired_budget_keeps_a_candidate_without_starting_removal(self) -> None:
         calls = []

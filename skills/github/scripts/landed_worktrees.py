@@ -25,18 +25,19 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
-from git_status import read_status
-
 import dev_worktree
+import github_api
 import github_plan_claim
 import github_plan_release
 import published_history
+from git_status import read_status
 
 ANY_CLAIM = {"worker": "", "session": "", "branch": "", "claimed_at": ""}
 NO_WORKTREES = {"worktrees": []}
 FRESH_START = dt.timedelta(hours=2)
 SEARCH_PAGE = 100
 PREVIEW_TIMEOUT = 30
+REFUSAL_DETAIL_LIMIT = 300
 
 
 @dataclass(frozen=True)
@@ -226,6 +227,15 @@ def portable_retire(path: Path, *, dry_run: bool) -> subprocess.CompletedProcess
     return result
 
 
+def _retirement_detail(result: subprocess.CompletedProcess[str]) -> list[str]:
+    for stream, output in (("stderr", result.stderr), ("stdout", result.stdout)):
+        lines = (output or "").strip().splitlines()
+        if lines:
+            message = github_api.redact_string(lines[-1].strip())[:REFUSAL_DETAIL_LIMIT]
+            return [f"exit {result.returncode}, {stream}: {message}"]
+    return [f"exit {result.returncode} with no output"]
+
+
 def retire(rows: Iterable[dict], *, apply: bool, runner=None, deadline: float | None = None) -> list[dict]:
     runner = runner or run_retire
     results = []
@@ -239,8 +249,7 @@ def retire(rows: Iterable[dict], *, apply: bool, runner=None, deadline: float | 
         try:
             preview = runner(row["path"], dry_run=True)
             if preview.returncode:
-                row.update(decision="kept", reason="retire preview refused",
-                           detail=preview.stderr.strip().splitlines()[-1:] or [""])
+                row.update(decision="kept", reason="retire preview refused", detail=_retirement_detail(preview))
                 continue
             if not apply:
                 row["decision"] = "would_retire"
@@ -251,8 +260,7 @@ def retire(rows: Iterable[dict], *, apply: bool, runner=None, deadline: float | 
             stage = "apply"
             result = runner(row["path"], dry_run=False)
             if result.returncode:
-                row.update(decision="kept", reason="retire refused",
-                           detail=result.stderr.strip().splitlines()[-1:] or [""])
+                row.update(decision="kept", reason="retire refused", detail=_retirement_detail(result))
             else:
                 row["decision"] = "retired"
         except Exception as exc:
