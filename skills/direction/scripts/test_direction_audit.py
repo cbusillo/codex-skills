@@ -2006,7 +2006,7 @@ def test_only_the_direction_repository_audit_counts_capacity() -> None:
         with tempfile.TemporaryDirectory() as tmp:
             marker = Path(tmp) / "marker.json"
             marker.write_text(json.dumps({"audits": {audited: stamp(SINCE)}}))
-            with patch.object(module.dt, "datetime", Clock):
+            with patch.object(dt, "datetime", Clock):
                 _, result = run_cli(module, ["--repo", audited, "--automation", "bot", "--gh", "fixture-gh"], marker,
                                     merged_direction=lambda *_args, **_kwargs: DIRECTION,
                                     gh_json=lambda args, **_kwargs: {"archived": False} if args[1] == f"repos/{audited}" else [],
