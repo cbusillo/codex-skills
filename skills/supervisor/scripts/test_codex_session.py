@@ -38,8 +38,10 @@ class ResumeTests(unittest.TestCase):
     def assert_managed_worker_queue(self, harness: str) -> None:
         worker = str(uuid.uuid4())
         ledger = self.root / "launch-ledger.json"
+        # A nested lead keeps every unrecorded-caller case below a refusal.
         rows = [{"session_id": worker, "harness": harness, "supervisor_owned": True, "lead_session_id": self.native},
-                {"session_id": self.native, "harness": "codex", "supervisor_owned": True, "codex_home": str(self.home)}]
+                {"session_id": self.native, "harness": "codex", "supervisor_owned": True, "codex_home": str(self.home),
+                 "lead_session_id": str(uuid.uuid4())}]
         argv = ["codex-session.py", "queue", "--session-id", self.native, "--message", "https://github.com/fixture/repo/issues/7"]
         self.thread_state = "idle"
 
@@ -123,6 +125,58 @@ class ResumeTests(unittest.TestCase):
             argv.extend(["--codex-home", str(self.home)])
             with patch.object(sys, "argv", argv), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 SESSION.main()
+
+    def test_unrecorded_root_caller_queues_only_to_one_exact_top_level_lead(self) -> None:
+        supervisor, worker, other = (str(uuid.uuid4()) for _ in range(3))
+        ledger = self.root / "launch-ledger.json"
+        lead = {"session_id": self.native, "harness": "codex", "supervisor_owned": True, "tab_id": "@105",
+                "codex_home": str(self.home)}
+        reused_tab = [{"session_id": other, "harness": "codex", "supervisor_owned": True, "tab_id": "@287",
+                       "codex_home": str(self.home)},
+                      {"session_id": worker, "harness": "agy", "supervisor_owned": True, "tab_id": "@287",
+                       "lead_session_id": self.native}]
+        argv = ["codex-session.py", "queue", "--session-id", self.native, "--ledger", str(ledger), "--message", "notice"]
+        self.thread_state = "idle"
+
+        def execute(rows: list[dict], caller: dict[str, str]) -> bool:
+            ledger.write_text(json.dumps(rows))
+            output = io.StringIO()
+            with patch.object(sys, "argv", argv), patch.dict(os.environ, caller), contextlib.redirect_stdout(output):
+                code = SESSION.main()
+            delivered = bool(self.queue_requests)
+            self.assertEqual(code == 0, delivered)
+            self.queue_requests.clear()
+            return delivered
+
+        root = {"CODEX_THREAD_ID": supervisor, "CODEX_SESSION_ID": supervisor}
+        with patch.dict(os.environ), patch.dict(github_agent.__dict__, {"ancestor_agent": MagicMock(return_value=None)}):
+            for name in ("CLAUDE_CODE_SESSION_ID", "CLAUDECODE", "CODEX_SESSION_ID", "CODEX_THREAD_ID",
+                         "ANTIGRAVITY_SOURCE_METADATA", LAUNCH_LEDGER_ENV):
+                os.environ.pop(name, None)
+            self.assertTrue(execute([lead], root))
+            self.assertTrue(execute([lead, *reused_tab], root))
+            self.assertTrue(execute([lead], {"CLAUDE_CODE_SESSION_ID": supervisor}))
+            for rows, caller in (
+                    ([lead, {**lead, "tab_id": "@106"}], root),
+                    ([{**lead, "lead_session_id": other}], root),
+                    ([{**lead, "supervisor_owned": False}], root),
+                    ([{**lead, "harness": "claude"}], root),
+                    ([{**lead, "codex_home": "relative-home"}], root),
+                    ([{**lead, "session_id": other}], root),
+                    ([lead], {"CODEX_THREAD_ID": supervisor, "CODEX_SESSION_ID": other}),
+                    ([lead], {}),
+                    ([lead, {"session_id": supervisor, "harness": "codex", "supervisor_owned": False}], root),
+                    ([lead, *[{"session_id": supervisor, "harness": "codex", "supervisor_owned": True}] * 2], root),
+                    ([lead, {"session_id": supervisor, "harness": "codex", "supervisor_owned": True,
+                             "lead_session_id": other}], root),
+                    ([lead, "malformed"], root)):
+                with self.subTest(rows=rows, caller=caller):
+                    self.assertFalse(execute(rows, caller))
+            reused_home = self.root / "reused"
+            reused_home.mkdir()
+            self.assertFalse(execute([{**lead, "codex_home": str(reused_home)}], root))
+            self.thread_state = "notLoaded"
+            self.assertFalse(execute([lead], root))
 
     def test_queue_cli_preserves_certain_absence_but_never_relabels_permission_or_native_refusal(self) -> None:
         for cause, not_sent in ((ValueError("not loaded"), True), (PermissionError("denied"), False),

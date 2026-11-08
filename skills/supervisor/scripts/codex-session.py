@@ -18,7 +18,7 @@ import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
 import github_plan_closure as closure
-from session_record import LAUNCH_LEDGER_ENV, terminal_entry
+from session_record import LAUNCH_LEDGER_ENV, read_ledger, terminal_entry
 github_agent = importlib.import_module("github_agent")
 native_operations = importlib.import_module("github_plan_native")
 queue_input = native_operations.queue_input
@@ -39,13 +39,20 @@ def recorded_lead_home(session: str, ledger: Path | None = None) -> Path:
         agent = "agy"
     identities = set(github_agent.native_sessions(agent).values())
     if ledger is None or not ledger.is_absolute() or len(identities) != 1:
-        raise ValueError("queue needs --codex-home or a managed launch ledger with one current native worker")
-    worker = terminal_entry(ledger, "session_id", identities.pop())
+        raise ValueError("queue needs --codex-home or a managed launch ledger with one current native session")
+    caller = identities.pop()
     lead = terminal_entry(ledger, "session_id", session)
     home = lead.get("codex_home")
-    if (worker.get("harness") != agent or worker.get("lead_session_id") != session
-            or lead.get("harness") != "codex" or not isinstance(home, str) or not Path(home).is_absolute()):
-        raise ValueError("queue without --codex-home requires this worker's recorded Codex lead and source home")
+    # A recorded worker reaches only its lead. A caller with no row, such as the
+    # Supervisor that keeps this ledger, reaches only a top-level lead.
+    if any(entry.get("session_id") == caller for entry in read_ledger(ledger)):
+        worker = terminal_entry(ledger, "session_id", caller)
+        routed = worker.get("harness") == agent and worker.get("lead_session_id") == session
+    else:
+        routed = lead.get("lead_session_id") is None
+    if not routed or lead.get("harness") != "codex" or not isinstance(home, str) or not Path(home).is_absolute():
+        raise ValueError("queue without --codex-home requires a recorded Codex lead with a source home:"
+                         " this worker's own lead, or a top-level lead for a caller with no ledger row")
     return Path(home)
 
 
