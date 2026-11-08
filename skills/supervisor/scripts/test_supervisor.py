@@ -2192,9 +2192,7 @@ class TabCloseTests(unittest.TestCase):
     def setUp(self):
         self.folder = tempfile.TemporaryDirectory()
         self.addCleanup(self.folder.cleanup)
-        opt_in = patch.object(iterm_tab, "CHROME_OPT_IN", Path(self.folder.name) / "absent")
-        opt_in.start()
-        self.addCleanup(opt_in.stop)
+        self.enterContext(patch.object(iterm_tab, "CHROME_OPT_IN", Path(self.folder.name) / "absent"))
         self.ledger = Path(self.folder.name) / "ledger.json"
         self.entry = {"supervisor_owned": True, "iterm_session_id": "owned", "pid": 123,
                       "tty": "ttys001", "window_id": "supervisor", "tab_id": "tab"}
@@ -2528,9 +2526,7 @@ class CodexProjectTests(unittest.TestCase):
         self.enterContext(patch.object(iterm_tab, "check_launch_issue"))
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
-        opt_in = patch.object(iterm_tab, "CHROME_OPT_IN", Path(folder.name) / "absent")
-        opt_in.start()
-        self.addCleanup(opt_in.stop)
+        self.enterContext(patch.object(iterm_tab, "CHROME_OPT_IN", Path(folder.name) / "absent"))
 
     def test_codex_cannot_skip_preflight_through_another_provider(self):
         for provider in ("anthropic", "google"):
@@ -2771,8 +2767,7 @@ class ClaudeTrustTests(unittest.TestCase):
                        patch.object(account_choice, "select", side_effect=lambda *_: self.choice),
                        patch.object(iterm_tab, "check_codex_daemon"),
                        patch.object(account_choice, "prepare_launch")):
-            target.start()
-            self.addCleanup(target.stop)
+            self.enterContext(target)
 
     def launch(self, directory):
         command = self.root / "command"
@@ -3123,25 +3118,17 @@ class TerminalTests(unittest.TestCase):
         self.enterContext(patch.object(iterm_tab, "check_launch_issue"))
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
-        opt_in = patch.object(iterm_tab, "CHROME_OPT_IN", Path(folder.name) / "absent")
-        opt_in.start()
-        self.addCleanup(opt_in.stop)
+        self.enterContext(patch.object(iterm_tab, "CHROME_OPT_IN", Path(folder.name) / "absent"))
         # These cases exercise selection/input mechanics. Protocol and startup
         # observation have their own fake-adapter regressions.
-        daemon = patch.object(iterm_tab, "inspect_codex_daemon")
-        daemon.start()
-        self.addCleanup(daemon.stop)
+        self.enterContext(patch.object(iterm_tab, "inspect_codex_daemon"))
 
         async def submit(app, session, command, **_):
             await iterm_tab.send(session, command, allow_tabs=True)
 
-        startup = patch.object(iterm_tab, "submit_iterm_launch", side_effect=submit)
-        startup.start()
-        self.addCleanup(startup.stop)
+        self.enterContext(patch.object(iterm_tab, "submit_iterm_launch", side_effect=submit))
         # Claude folder trust has its own tests (ClaudeTrustTests); keep host homes untouched.
-        trust = patch.object(iterm_tab, "folder_trust_writes", return_value=[])
-        trust.start()
-        self.addCleanup(trust.stop)
+        self.enterContext(patch.object(iterm_tab, "folder_trust_writes", return_value=[]))
 
     def assert_file_settings_argument(self, command, path, brief):
         args = shlex.split(command)
@@ -3438,8 +3425,7 @@ class TerminalTests(unittest.TestCase):
                 path.write_text("codex --remote unix://")
             args = account_launch_args(files)
             args.brief_file[1].write_text("")
-            window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock())
-            app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
+            _, window, app = launch_terminal_fixture()
             with (
                 patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
                 patch.object(account_choice, "select_batch") as select,
@@ -3516,10 +3502,7 @@ class TerminalTests(unittest.TestCase):
             launch = root / "launch.txt"
             write_codex_project_fixture(root, home)
             launch.write_text("codex --remote unix:// -C " + shlex.quote(str(root)))
-            terminal = SimpleNamespace(session_id="new", async_send_text=AsyncMock())
-            tab = SimpleNamespace(tab_id="tab", current_session=terminal)
-            window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock(return_value=tab))
-            app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
+            terminal, window, app = launch_terminal_fixture()
             args = argparse.Namespace(command="new", window_id="chosen", command_file=launch, brief_file=fixture_briefs(launch),
                                       account_provider="openai", account=None, account_config=None)
             with (
@@ -3574,8 +3557,7 @@ class TerminalTests(unittest.TestCase):
                 write_codex_project_fixture(root, Path(choice["env"]["CODEX_HOME"]))
             for path in files:
                 path.write_text("codex --remote unix:// -C " + shlex.quote(str(root)))
-            window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock())
-            app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
+            _, window, app = launch_terminal_fixture()
             args = argparse.Namespace(command="new", window_id="chosen", command_file=files, brief_file=fixture_briefs(files),
                                       account_provider="openai", account=None, account_config=None)
             with (
@@ -3642,8 +3624,7 @@ class TerminalTests(unittest.TestCase):
             choice = {"provider": "openai", "env": {"CODEX_HOME": str(Path(folder) / "selected")}}
             write_codex_project_fixture(Path(folder), Path(choice["env"]["CODEX_HOME"]))
             launch.write_text("codex --remote unix:// -C " + shlex.quote(folder))
-            window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock())
-            app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
+            _, window, app = launch_terminal_fixture()
             args = argparse.Namespace(command="new", window_id="chosen", command_file=launch, brief_file=fixture_briefs(launch),
                                       account_provider="openai", account=None, account_config=None)
             for failure, reason in failures:
@@ -3869,12 +3850,7 @@ class TerminalTests(unittest.TestCase):
         self.assertEqual(launched.stdout.splitlines(), [choice["env"]["CODEX_HOME"], *settings])
 
     def test_launch_on_chosen_account_prefixes_env_only(self):
-        terminal = SimpleNamespace(session_id="new", async_send_text=AsyncMock())
-        tab = SimpleNamespace(tab_id="newtab", current_session=terminal)
-        window = SimpleNamespace(
-            window_id="chosen", async_create_tab=AsyncMock(return_value=tab)
-        )
-        app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
+        terminal, window, app = launch_terminal_fixture()
         choice = account_choice.decision(
             accounts_config()["accounts"][1], "context-panel", "resets soonest"
         )
@@ -4001,8 +3977,7 @@ class TerminalTests(unittest.TestCase):
     def test_manual_account_environment_without_provider_refuses_before_tabs(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "launch.txt"
-            window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock())
-            app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
+            _, window, app = launch_terminal_fixture()
             args = argparse.Namespace(command="new", window_id="chosen", command_file=path, brief_file=fixture_briefs(path),
                                       account_provider=None, account=None, account_config=None)
             for command in ("env CODEX_HOME=/manual codex brief", "export CLAUDE_CONFIG_DIR=/manual && claude brief"):
@@ -4014,8 +3989,7 @@ class TerminalTests(unittest.TestCase):
     def test_codex_daemon_launch_without_provider_refuses_before_tabs(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "launch.txt"
-            window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock())
-            app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
+            _, window, app = launch_terminal_fixture()
             args = argparse.Namespace(command="new", window_id="chosen", command_file=path, brief_file=fixture_briefs(path),
                                       account_provider=None, account=None, account_config=None)
             for command in ("codex --remote unix:///daemon.sock -C /work", "cd /work && exec codex --remote=unix://"):
@@ -4031,8 +4005,7 @@ class TerminalTests(unittest.TestCase):
             path.write_text("claude brief")
             choice = account_choice.choose("anthropic", accounts_config(), AccountChoiceTests().snapshot(), None)
             choice["storage_root"] = root / "missing-store"
-            window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock())
-            app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
+            _, window, app = launch_terminal_fixture()
             args = account_launch_args(path)
             with (
                 patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
@@ -4112,10 +4085,8 @@ class TerminalTests(unittest.TestCase):
             path.write_text("claude brief")
             choice = account_choice.choose("anthropic", accounts_config(), AccountChoiceTests().snapshot(), None)
             choice["storage_root"] = root
-            terminal = SimpleNamespace(session_id="session", async_send_text=AsyncMock(side_effect=Exception("private RPC payload")))
-            tab = SimpleNamespace(tab_id="tab", current_session=terminal)
-            window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock(return_value=tab))
-            app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
+            terminal, window, app = launch_terminal_fixture()
+            terminal.async_send_text.side_effect = Exception("private RPC payload")
             args = account_launch_args(path)
             with (
                 patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
@@ -4126,12 +4097,11 @@ class TerminalTests(unittest.TestCase):
             self.assertEqual(len(list((root / "Launch Receipts").glob("*.json"))), 1)
             self.assertEqual(failed.exception.detail["failed_launch"]["submission"], "unknown")
             self.assertTrue(failed.exception.detail["failed_launch"]["receipt_written"])
-            self.assertEqual(failed.exception.detail["failed_launch"]["tab_id"], "tab")
+            self.assertEqual(failed.exception.detail["failed_launch"]["tab_id"], window.async_create_tab.return_value.tab_id)
             self.assertNotIn("private RPC payload", json.dumps(failed.exception.detail))
 
     def test_batch_refusal_and_bad_second_command_create_no_tabs_or_receipts(self):
-        window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock())
-        app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
+        _, window, app = launch_terminal_fixture()
         with tempfile.TemporaryDirectory() as folder:
             files = [Path(folder) / "first.txt", Path(folder) / "second.txt"]
             files[0].write_text("claude brief")
@@ -4153,8 +4123,7 @@ class TerminalTests(unittest.TestCase):
             window.async_create_tab.assert_not_awaited()
 
     def test_invalid_launch_file_creates_no_tab(self):
-        window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock())
-        app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
+        _, window, app = launch_terminal_fixture()
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "launch.txt"
             args = argparse.Namespace(
