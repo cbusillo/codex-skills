@@ -5697,7 +5697,7 @@ def test_testing_hold_cli_binds_purpose_and_preserves_apply_key(
         *intent,
         "--purpose",
         purpose,
-        *_reviewed_apply_argv(str(plan["plan_sha256"]), str(evidence_path), "original-hold-key"),
+        *_reviewed_apply_argv(cast(str, plan["plan_sha256"]), str(evidence_path), "original-hold-key"),
     ]
     status, receipt, _posts, _reads = _run_main(apply_args, post=fake_post)
     assert status == 0
