@@ -1502,16 +1502,8 @@ class OwnReleaseTests(ReleaseHarness):
         repo: str = "owner/repo",
         merged_at: str | None = None,
     ) -> dict[str, Any]:
-        pull: dict[str, Any] = {
-            "number": number,
-            "state": state,
-            "user": {"login": author},
-            "created_at": created_at,
-            "body": body,
-            "head": {"ref": ref, "repo": {"full_name": repo}},
-            "base": {"repo": {"full_name": repo}},
-            "html_url": f"https://github.com/{repo.lower()}/pull/{number}",
-        }
+        pull = fixtures._pull_fixture(number, ref, state=state, author=author, repo=repo, body=body)
+        pull.update(created_at=created_at, html_url=f"https://github.com/{repo.lower()}/pull/{number}")
         if merged_at is not None:
             pull["merged_at"] = merged_at
         return pull

@@ -71,6 +71,27 @@ BD_SWEEP_STATUS = (
 )
 
 
+def _pull_fixture(
+    number: int,
+    ref: str,
+    *,
+    body: str = "Refs #42",
+    state: str = "open",
+    author: str = TEST_BOT,
+    repo: str = "owner/repo",
+    **fields: Any,
+) -> dict[str, Any]:
+    return {
+        "number": number,
+        "state": state,
+        "user": {"login": author},
+        "body": body,
+        "head": {"ref": ref, "repo": {"full_name": repo}},
+        "base": {"repo": {"full_name": repo}},
+        **fields,
+    }
+
+
 def format_ownership(text: str) -> tuple[str, ...]:
     """Common status formatting, including formatting inside an assertion."""
     return (
@@ -347,15 +368,16 @@ class ClaimTests(unittest.TestCase):
                 patch.object(github_issue, "edit_issue", side_effect=self.labels):
             (command or PLAN.cmd_claim)(self.args)
 
+    def register_pr_target(self, number: int, target: dict[str, Any], *, repo: str = "owner/repo") -> None:
+        self.targets[str(number)] = target
+        self.target_comments[f"/repos/{repo}/issues/{number}/comments"] = []
+
     def pr_fixture(self, author=TEST_BOT):
         self.issue.update(pull_request={}, html_url="https://github.com/owner/repo/pull/42")
         self.issue["user"] = {"login": author}
         self.issue["body"] = "Bump dependencies" if author == "dependabot[bot]" else "Repair the tool"
-        self.pulls = [{"number": 42, "state": "open", "user": {"login": author},
-                       "title": self.issue["title"], "body": self.issue["body"],
-                       "head": {"ref": "dependabot/python" if author == "dependabot[bot]" else "work/tool-repair",
-                                "repo": {"full_name": "owner/repo"}},
-                       "base": {"repo": {"full_name": "owner/repo"}}}]
+        branch = "dependabot/python" if author == "dependabot[bot]" else "work/tool-repair"
+        self.pulls = [_pull_fixture(42, branch, author=author, body=self.issue["body"], title=self.issue["title"])]
 
     def test_failed_initial_target_read_does_not_poison_the_journal(self) -> None:
         with patch.object(PLAN, "claim_snapshot", side_effect=PLAN.PlanError("not found")):
@@ -452,8 +474,7 @@ class ClaimTests(unittest.TestCase):
         self.pulls[0]["body"] = "Refs #98\nCloses #99"
         self.targets["99"] = {**copy.deepcopy(self.issue), "number": 99}
         del self.targets["99"]["pull_request"]
-        self.targets["98"] = {**copy.deepcopy(self.targets["99"]), "number": 98, "state": "closed"}
-        self.target_comments["/repos/owner/repo/issues/98/comments"] = []
+        self.register_pr_target(98, {**copy.deepcopy(self.targets["99"]), "number": 98, "state": "closed"})
         with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
             self.run_claim()
         self.assertEqual(caught.exception.code, "claim_issue_record_required")
@@ -549,14 +570,11 @@ class ClaimTests(unittest.TestCase):
             {"id": 3, "body": "Released claim 1\n\nSource handoff: PR #99 and #100 are reviewed; work is finished.", "user": {"login": TEST_BOT}},
         ]
         self.pulls = [
-            {"number": n, "state": "open", "user": {"login": TEST_BOT}, "title": "Repair", "body": "Refs #42", "head": {"ref": branch, "repo": {"full_name": "owner/repo"}},
-             "base": {"repo": {"full_name": "owner/repo"}}}
-            for n, branch in [(99, "work/issue-42-audits"), (100, "work/issue-42-fixtures")]
+            _pull_fixture(n, branch, title="Repair") for n, branch in [(99, "work/issue-42-audits"), (100, "work/issue-42-fixtures")]
         ]
         for pull in self.pulls:
             n = pull["number"]
-            self.targets[str(n)] = {**copy.deepcopy(self.issue), "number": n, "pull_request": {}, "body": "Refs #42"}
-            self.target_comments[f"/repos/owner/repo/issues/{n}/comments"] = []
+            self.register_pr_target(n, {**copy.deepcopy(self.issue), "number": n, "pull_request": {}, "body": "Refs #42"})
         self.inventory["local_branches"] = [p["head"]["ref"] for p in self.pulls]
         self.inventory["remote_branches"] = list(self.inventory["local_branches"])
         self.inventory["worktrees"] = [{"path": "/retained/" + p["head"]["ref"].split("/")[-1], "branch": p["head"]["ref"]} for p in self.pulls]
@@ -673,9 +691,9 @@ class ClaimTests(unittest.TestCase):
                 self.setUp()
                 self.released_issue_pr_fixture()
                 self.pulls[0]["body"] = references
-                self.targets["43"] = {**copy.deepcopy(self.targets["42"]), "number": 43,
-                                      "state": "closed", "state_reason": "not_planned"}
-                self.target_comments["/repos/owner/repo/issues/43/comments"] = []
+                self.register_pr_target(
+                    43, {**copy.deepcopy(self.targets["42"]), "number": 43, "state": "closed", "state_reason": "not_planned"}
+                )
                 if released_owner:
                     self.target_comments["/repos/owner/repo/issues/43/comments"] = [
                         {"id": 20, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}, "created_at": OTHER["claimed_at"]},
@@ -743,8 +761,7 @@ class ClaimTests(unittest.TestCase):
         self.refresh_fixture()
         self.pulls.append({**copy.deepcopy(self.pulls[0]), "number": 101})
         self.pulls[-1]["head"]["repo"]["full_name"] = "stranger/repo"
-        self.targets["101"] = {**self.targets["99"], "number": 101}
-        self.target_comments["/repos/owner/repo/issues/101/comments"] = []
+        self.register_pr_target(101, {**self.targets["99"], "number": 101})
         with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
         self.assert_no_writes()
 
@@ -866,9 +883,9 @@ class ClaimTests(unittest.TestCase):
                        "title": "Direction proposal", "body": "Refs #43",
                        "head": {"ref": retained_branch, "repo": {"full_name": fixture["repo"]}},
                        "base": {"repo": {"full_name": fixture["repo"]}}}]
-        self.targets[str(number)] = {**copy.deepcopy(self.issue), "state": "open",
-                                     "pull_request": {}, "body": "Refs #43"}
-        self.target_comments[f"/repos/{fixture['repo']}/issues/{number}/comments"] = []
+        self.register_pr_target(
+            number, {**copy.deepcopy(self.issue), "state": "open", "pull_request": {}, "body": "Refs #43"}, repo=fixture["repo"]
+        )
         self.inventory["local_branches"] = [branch, retained_branch]
         self.inventory["remote_branches"] = [retained_branch]
         self.inventory["worktrees"] = [{"branch": retained_branch, "path": f"/retained/{stage}"}]
@@ -1206,8 +1223,7 @@ class ClaimTests(unittest.TestCase):
         old = {**copy.deepcopy(self.pulls[0]), "number": 98, "state": "closed", "merged_at": None,
                "head": {"ref": "work/old", "repo": {"full_name": "owner/repo"}}}
         self.closed_pulls[98] = old
-        self.targets["98"] = {**self.targets["99"], "number": 98, "state": "closed"}
-        self.target_comments["/repos/owner/repo/issues/98/comments"] = []
+        self.register_pr_target(98, {**self.targets["99"], "number": 98, "state": "closed"})
         self.run_claim()
         self.target_comments["/repos/owner/repo/issues/98/comments"].append({"id": 40, "body": CLAIM.marker(OTHER)})
         with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
@@ -1218,8 +1234,7 @@ class ClaimTests(unittest.TestCase):
         old = {**copy.deepcopy(self.pulls[0]), "number": 98, "state": "closed", "merged_at": None,
                "head": {"ref": "work/old", "repo": {"full_name": "owner/repo"}}}
         self.closed_pulls[98] = old
-        self.targets["98"] = {**self.targets["99"], "number": 98, "state": "closed"}
-        self.target_comments["/repos/owner/repo/issues/98/comments"] = []
+        self.register_pr_target(98, {**self.targets["99"], "number": 98, "state": "closed"})
         self.inventory["local_branches"].append(old["head"]["ref"])
         with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
         self.assertEqual(caught.exception.payload["competing_evidence"][0]["source"], "closed_pr_artifacts")
@@ -1948,8 +1963,7 @@ class ClaimTests(unittest.TestCase):
                 self.pulls.append({**copy.deepcopy(self.pulls[0]), "number": 101,
                                    "user": {"login": author},
                                    "head": {"ref": "work/issue-42-original", "repo": {"full_name": "owner/repo"}}})
-                self.targets["101"] = {**self.targets["99"], "number": 101}
-                self.target_comments["/repos/owner/repo/issues/101/comments"] = []
+                self.register_pr_target(101, {**self.targets["99"], "number": 101})
                 with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
                 self.assert_no_writes()
 
@@ -2141,8 +2155,7 @@ class ClaimTests(unittest.TestCase):
         self.args.branch = self.pulls[0]["head"]["ref"]
         self.ended_family_peer_fixture(self.args.branch)
         self.targets["41"].update(state="closed", state_reason="completed", labels=[])
-        self.targets["42"] = copy.deepcopy(self.issue)
-        self.target_comments["/repos/owner/repo/issues/42/comments"] = []
+        self.register_pr_target(42, copy.deepcopy(self.issue))
         self.issue = self.targets.pop("99")
         self.comments = []
         self.target_comments.pop("/repos/owner/repo/issues/99/comments")
@@ -2212,8 +2225,7 @@ class ClaimTests(unittest.TestCase):
                 if change == "ambiguous_head":
                     self.comments[2]["body"] += " Retain PR #101."
                     self.pulls.append({**copy.deepcopy(self.pulls[0]), "number": 101})
-                    self.targets["101"] = {**copy.deepcopy(self.targets["99"]), "number": 101}
-                    self.target_comments["/repos/owner/repo/issues/101/comments"] = []
+                    self.register_pr_target(101, {**copy.deepcopy(self.targets["99"]), "number": 101})
                 bindings = {} if change == "no_native_binding" else {"CODEX_THREAD_ID": self.args.session}
                 if change == "conflicting_native_binding": bindings["CODEX_SESSION_ID"] = "another-native"
                 with patch.dict(os.environ, bindings):
@@ -2236,8 +2248,7 @@ class ClaimTests(unittest.TestCase):
                         source = CLAIM.records(self.comments[0]["body"])[0]
                         self.pulls.append({**copy.deepcopy(pull), "number": 101,
                                            "head": {"ref": "work/issue-42-later-work", "repo": {"full_name": "owner/repo"}}})
-                        self.targets["101"] = {**copy.deepcopy(self.targets["99"]), "number": 101}
-                        self.target_comments["/repos/owner/repo/issues/101/comments"] = []
+                        self.register_pr_target(101, {**copy.deepcopy(self.targets["99"]), "number": 101})
                         self.comments.append({"id": 88, "user": {"login": TEST_BOT}, "body": (
                             f"Handoff from {source['worker']}\nSource claim 1; Session: {source['session']}; PR #99 #100 #101")})
                     elif change == "head": pull["head"]["ref"] = "work/changed-after-publication"
@@ -2273,10 +2284,7 @@ class ClaimTests(unittest.TestCase):
                         pull = self.pulls.pop(0)
                         self.close_retained_pull(pull, "2026-10-02T03:00:00Z")
                     elif changed:
-                        pull = {"number": 99, "state": "open", "user": {"login": TEST_BOT},
-                                "title": "New retained work", "body": "Refs #42",
-                                "head": {"ref": "work/later-retained", "repo": {"full_name": "owner/repo"}},
-                                "base": {"repo": {"full_name": "owner/repo"}}}
+                        pull = _pull_fixture(99, "work/later-retained", title="New retained work")
                         self.pulls.append(pull)
                         self.comments.append({"id": 88, "user": {"login": TEST_BOT}, "body": (
                             f"Handoff from {source['worker']}\nSource claim {self.args.resume_from}; "
@@ -2321,10 +2329,7 @@ class ClaimTests(unittest.TestCase):
                 source = self.no_pr_resume_fixture()
                 if history != "no_pr":
                     self.comments[-1]["body"] += "\n\nHistorical context: PR #99."
-                    pull = {"number": 99, "state": "closed", "merged_at": "2026-10-02T03:00:00Z",
-                        "user": {"login": TEST_BOT}, "body": "Refs #42",
-                        "head": {"ref": source["branch"], "repo": {"full_name": "owner/repo"}},
-                        "base": {"repo": {"full_name": "owner/repo"}}}
+                    pull = _pull_fixture(99, source["branch"], state="closed", merged_at="2026-10-02T03:00:00Z")
                     if history.startswith("unmerged"): pull["merged_at"] = None
                     if history.endswith("unrelated"):
                         pull["head"]["ref"], pull["body"] = "work/historical-context", "Refs #777"
@@ -2449,10 +2454,7 @@ class ClaimTests(unittest.TestCase):
             with self.subTest(kind=kind):
                 self.setUp()
                 source = self.no_pr_resume_fixture()
-                pull = {"number": 99, "state": "open", "user": {"login": TEST_BOT},
-                        "body": "Refs #42", "title": "Retained work",
-                        "head": {"ref": source["branch"], "repo": {"full_name": self.args.repo}},
-                        "base": {"repo": {"full_name": self.args.repo}}}
+                pull = _pull_fixture(99, source["branch"], repo=self.args.repo, title="Retained work")
                 if kind != "source_open": self.comments[-1]["body"] += " Retain PR #99."
                 if kind == "foreign_author": pull["user"]["login"] = "stranger"
                 if kind == "unlinked": pull["body"] = "Unrelated"
@@ -2471,10 +2473,7 @@ class ClaimTests(unittest.TestCase):
                 self.args.branch = source["branch"]
                 if route in {"missing_handoff", "unrelated_pr"}:
                     branch = source["branch"] if route == "missing_handoff" else "work/unrelated"
-                    self.pulls = [{"number": 199, "state": "open", "user": {"login": TEST_BOT},
-                                   "body": "Unrelated", "title": "Unrelated",
-                                   "head": {"ref": branch, "repo": {"full_name": self.args.repo}},
-                                   "base": {"repo": {"full_name": self.args.repo}}}]
+                    self.pulls = [_pull_fixture(199, branch, repo=self.args.repo, body="Unrelated", title="Unrelated")]
                 with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
                     self.run_claim()
                 requirements = caught.exception.payload["recovery_requirements"]["requirements"]
@@ -2773,8 +2772,7 @@ class ClaimTests(unittest.TestCase):
         first_handoff = self.handoff_id
         later = {**copy.deepcopy(self.closed_pulls[100]), "number": 101, "merged_at": "2026-10-02T02:00:00Z"}
         self.closed_pulls[later["number"]] = later
-        self.targets[str(later["number"])] = {**copy.deepcopy(self.targets["100"]), "number": later["number"]}
-        self.target_comments[f"/repos/owner/repo/issues/{later['number']}/comments"] = []
+        self.register_pr_target(later["number"], {**copy.deepcopy(self.targets["100"]), "number": later["number"]})
         source = CLAIM.records(self.comments[0]["body"])[0]
         self.comments.append({"id": 72, "user": {"login": TEST_BOT}, "body": (
             f"Handoff from {source['worker']}\nclaim {self.args.resume_from}; session {source['session']}\n"
@@ -3058,8 +3056,7 @@ class ClaimTests(unittest.TestCase):
                     holder.update(resume_from="88" if holder_number == 42 else "1",
                                   retained_handoff=f"https://github.com/owner/repo/issues/{43 if holder_number == 42 else 41}#issuecomment-{89 if holder_number == 42 else 3}")
                 if claimant in {"root", "uncle"}:
-                    self.targets["42"] = copy.deepcopy(self.issue)
-                    self.target_comments["/repos/owner/repo/issues/42/comments"] = []
+                    self.register_pr_target(42, copy.deepcopy(self.issue))
                     if claimant == "root":
                         self.select_parent_record()
                         self.args.issue, self.args.resume_from, self.handoff_id = "41", 1, None
@@ -3940,8 +3937,7 @@ class ClaimTests(unittest.TestCase):
                 if change == "no_link": self.parent = None
                 if change == "wrong_parent":
                     self.parent["number"] = 40
-                    self.targets["40"] = {**copy.deepcopy(self.issue), "number": 40}
-                    self.target_comments["/repos/owner/repo/issues/40/comments"] = []
+                    self.register_pr_target(40, {**copy.deepcopy(self.issue), "number": 40})
                 if change == "no_handoff": source[-1]["body"] = "Released claim 1"
                 if change == "unreadable_link": self.api_failure = {"status": 403}
                 if change == "foreign_parent": self.parent["html_url"] = "https://github.com/other/repo/issues/41"
@@ -4428,10 +4424,9 @@ class ClaimTests(unittest.TestCase):
                         **copy.deepcopy(self.closed_pulls[100]), "number": number,
                         "body": "Refs #7", "head": {"ref": "work/unrelated", "repo": {"full_name": self.args.repo}},
                     }
-                    self.targets[str(number)] = {
-                        **copy.deepcopy(self.targets["100"]), "number": number, "body": "Refs #7",
-                    }
-                    self.target_comments[f"/repos/{self.args.repo}/issues/{number}/comments"] = []
+                    self.register_pr_target(
+                        number, {**copy.deepcopy(self.targets["100"]), "number": number, "body": "Refs #7"}, repo=self.args.repo
+                    )
                     self.record_wait(target=str(number))
                 if held:
                     self.record_wait(target=held)
@@ -5756,11 +5751,8 @@ class ClaimTests(unittest.TestCase):
             {"id": 2, "body": "Released claim 1\n\nHandoff: PR #99 is green; ready for the merge train.",
              "user": {"login": TEST_BOT}, "created_at": "2026-10-01T00:02:00Z"},
         ]
-        self.pulls = [{"number": 99, "state": "open", "user": {"login": TEST_BOT}, "title": "Repair", "body": "Refs #42",
-                       "head": {"ref": source["branch"], "repo": {"full_name": "owner/repo"}},
-                       "base": {"repo": {"full_name": "owner/repo"}}}]
-        self.targets["99"] = {**copy.deepcopy(self.issue), "number": 99, "pull_request": {}, "body": "Refs #42"}
-        self.target_comments["/repos/owner/repo/issues/99/comments"] = []
+        self.pulls = [_pull_fixture(99, source["branch"], title="Repair")]
+        self.register_pr_target(99, {**copy.deepcopy(self.issue), "number": 99, "pull_request": {}, "body": "Refs #42"})
         self.issue["body"] += status
         return source
 
@@ -5925,14 +5917,10 @@ class ClaimTests(unittest.TestCase):
         self.args.repo, self.args.issue = "cbusillo/context-panel", "828"
         self.args.worker, self.args.session = source["worker"], source["session"]
         self.args.resume_from, self.handoff_id = (c["id"] for c in self.comments)
-        self.closed_pulls[831] = {
-            "number": 831, "state": "closed", "merged_at": "2026-10-12T07:48:00Z",
-            "user": {"login": TEST_BOT}, "body": "Refs #828",
-            "head": {"ref": source["branch"], "repo": {"full_name": self.args.repo}},
-            "base": {"repo": {"full_name": self.args.repo}},
-        }
-        self.targets["831"] = {**self.closed_pulls[831], "pull_request": {}}
-        self.target_comments[f"/repos/{self.args.repo}/issues/831/comments"] = []
+        self.closed_pulls[831] = _pull_fixture(
+            831, source["branch"], state="closed", repo=self.args.repo, body="Refs #828", merged_at="2026-10-12T07:48:00Z"
+        )
+        self.register_pr_target(831, {**self.closed_pulls[831], "pull_request": {}}, repo=self.args.repo)
         self.inventory["local_branches"] = [source["branch"]]
         self.run_claim()
         result = self.emitted.call_args.args[0]
