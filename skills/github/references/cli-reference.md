@@ -3145,6 +3145,14 @@ reuse complete observations already obtained by global `next`, and source
 repository context reaches the same shared transport and selected App even
 when the command's default repository belongs to another owner.
 
+Metadata reads request labels and scalar state without paging unrelated
+discussions. Consumers request their bounded comment and native relationship
+histories separately. Closed native blocker projections retain the closure
+reason, body and subissue counts; incomplete projections cannot prove a hold
+completed. The shared discussion reader obtains a PR's backing issue ID from
+ordinary comments through `IssueComment.issue.databaseId`. When no comment
+discloses that identity, its existing canonical REST lookup remains available.
+
 Global `next` keeps its complete issue/PR graph reads and reads merged direction
 files with GraphQL blobs; a missing object means no direction file, while an
 unavailable repository or truncated blob remains unknown. Claim discussion and

@@ -304,10 +304,10 @@ class ClientAppTests(unittest.TestCase):
             "if '--include' in args: print('HTTP/2.0 200\\n')\n"
             "if 'graphql' in args or '/graphql' in args:\n"
             "    request = json.load(sys.stdin); query = request['query']\n"
-            "    if 'search(' in query:\n"
+            "    if re.search(r'\\bsearch\\s*\\(', query):\n"
             "        print(json.dumps({'data': {'search': {'nodes': [], 'totalCount': 0, 'pageInfo': {'hasNextPage': False}}}})); raise SystemExit(0)\n"
             "    def argument(name):\n"
-            '        match = re.search(name + r\':\\s*(\\$\\w+|"[^"]*"|\\d+)\', query)\n'
+            '        match = re.search(name + r\'\\s*:\\s*(\\$\\w+|"[^"]*"|\\d+)\', query)\n'
             "        if match is None: return None\n"
             "        value = match[1]\n"
             "        return request.get('variables', {}).get(value[1:]) if value.startswith('$') else json.loads(value)\n"

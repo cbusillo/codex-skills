@@ -831,7 +831,7 @@ def test_global_next_follows_cross_owner_blockers_and_reports_partial_waits() ->
     assert result["recorded_waits"][0]["reported_by"].endswith("/issues/91")
     assert result["dependency_context"]["complete"] is True
     assert len(reads) == len(set(reads))
-    assert {(node["repo"], node["number"]) for node in [parent, backup, provider, later]} <= set(reads)
+    assert {(node["repo"], node["number"]) for node in [parent, backup, provider, later]} == set(reads)
 
 
 def test_global_waiting_milestone_hands_off_to_next_not_unlinked_tooling() -> None:
@@ -1725,15 +1725,17 @@ def test_global_wait_reference_budget_and_auth_stop_are_explicit() -> None:
     module = load_module()
     item = global_issue("someone/business", 10, wait_reviewed=False, body="## Current Status\nWaiting for: Review " + " ".join(f"#{number}" for number in range(20, 32)))
     item["comments"] = 0
+    referenced = global_issue("someone/business", 20, body="Open prerequisite")
+    unrelated = [global_issue("someone/business", number) for number in range(100, 160)]
     reads = []
     def read(method: str, path: str, **_kwargs: Any) -> Any:
         assert method == "GET"
         reads.append(path)
         return "automation-gh", {"state": "open"}
     with patch.multiple(module, api_json=read, load_config=lambda *_: module.DEFAULT_CONFIG):
-        report = module.next_wait_context([item], scan_limit=1, inventory_complete=True)
+        report = module.next_wait_context([item], scan_limit=1, inventory_complete=True, reference_records=[referenced, *unrelated])
     assert report["complete"] is False
-    assert len(reads) == report["read_count"] == report["read_limit"]
+    assert len(reads) + 1 == report["read_count"] == report["read_limit"]
     assert report["unavailable"]
     failure = module.PlanError("quota stop", failure=module.github_api_core.FailureDetail(cause="rest_primary_rate_limited", message="quota exhausted", retryable=False, fallback_eligible=False, disposition="stop"))
     with patch.multiple(module, api_json=Mock(side_effect=failure), load_config=lambda *_: module.DEFAULT_CONFIG):

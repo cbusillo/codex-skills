@@ -907,6 +907,13 @@ def gh_json(
 def plan_read_error(exc: Exception) -> PlanError:
     if isinstance(exc, github_read.GitHubReadError):
         error = PlanError(str(exc), failure=exc.result.failure, api_result=exc.result.as_dict())
+    elif isinstance(exc, github_next_reads.CancelledError):
+        error = PlanError(
+            "GitHub read cancelled",
+            failure=github_api_core.FailureDetail(
+                cause="cancelled", message="GitHub read cancelled", retryable=False, fallback_eligible=False, disposition="stop"
+            ),
+        )
     elif isinstance(exc, (github_read.GitHubReadShapeError, github_read.RepositoryInventoryUnavailable)):
         error = PlanError(
             str(exc),
@@ -928,7 +935,7 @@ def api_json(method: str, path: str, payload: Any = None, **kwargs: Any) -> tupl
     if NEXT_READS is not None and method.upper() == "GET" and payload is None:
         try:
             return NEXT_READS.observe(path, lambda: api_json_uncached(method, path, payload, **kwargs))
-        except (github_next_reads.ReadDeadline, github_read.GitHubReadError, github_read.GitHubReadShapeError) as exc:
+        except (github_next_reads.ReadDeadline, github_next_reads.CancelledError, github_read.GitHubReadError, github_read.GitHubReadShapeError) as exc:
             raise plan_read_error(exc) from exc
     return api_json_uncached(method, path, payload, **kwargs)
 
@@ -1074,13 +1081,22 @@ def planning_read(repo: str | None, key: str, graph: Any, rest: Any, *, enabled:
             if error.rest_recovery_allowed:
                 return rest()
             raise plan_read_error(error) from error
-        except (github_read.GitHubReadShapeError, github_next_reads.ReadDeadline, KeyError, TypeError, ValueError) as error:
+        except github_read.GitHubReadShapeError as error:
+            if error.rest_recovery_allowed:
+                return rest()
+            raise plan_read_error(error) from error
+        except (github_next_reads.ReadDeadline, KeyError, TypeError, ValueError) as error:
             raise plan_read_error(error) from error
 
     try:
-        return NEXT_READS.observe(key, read) if NEXT_READS else read()
-    except github_next_reads.ReadDeadline as budget_error:
-        raise plan_read_error(budget_error) from budget_error
+        return NEXT_READS.observe(key, read, count_request=False) if NEXT_READS else read()
+    except (
+        github_read.GitHubReadError,
+        github_read.GitHubReadShapeError,
+        github_next_reads.ReadDeadline,
+        github_next_reads.CancelledError,
+    ) as observation_error:
+        raise plan_read_error(observation_error) from observation_error
 
 
 def claim_inventory(repo: str, number: int, *, cwd: pathlib.Path | None = None) -> dict[str, Any]:
@@ -1439,12 +1455,18 @@ def get_issue(ref: str, repo: str, *, graphql: bool = False) -> tuple[str, dict[
 
         def graph(reader: github_read.GitHubReader) -> tuple[str, dict[str, Any]]:
             metadata = {}
-            rows = github_plan_graph.planning_graph(reader, issue_repo, number=number, metadata=metadata)
+            rows = github_plan_graph.planning_graph(
+                reader, issue_repo, number=number, metadata=metadata, connection_fields=("labels",)
+            )
             if issue_repo in metadata:
                 rows[0]["_graph_repository"] = metadata[issue_repo]
             return reader.actor or "automation-gh", rows[0]
 
-        actor, data = planning_read(issue_repo, path, graph, lambda: api_json_uncached("GET", path, failed_step="get_issue"))
+        def rest() -> tuple[str, Any]:
+            read = lambda: api_json_uncached("GET", path, failed_step="get_issue")
+            return NEXT_READS.request(read) if NEXT_READS is not None else read()
+
+        actor, data = planning_read(issue_repo, path, graph, rest)
         data["repo"] = issue_repo
         return actor, data
     actor, data = api_json("GET", f"/repos/{issue_repo}/issues/{number}", failed_step="get_issue")
@@ -5177,7 +5199,7 @@ def cmd_next(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
     if github_direction_next.is_direction_repository(repo):
         if getattr(args, "batch_read", False):
-            raise PlanError("--batch-read is currently repository-local; global next retains REST")
+            raise PlanError("--batch-read is repository-local; global next already uses its complete repository graph")
         cmd_direction_next(args, repo)
         return
     if any(getattr(args, name, None) is not None for name in ("repo_limit", "repository_issue_limit")):
@@ -5592,7 +5614,8 @@ def next_source_error(exc: PlanError) -> str:
 def read_next_parent(repo: str, number: int) -> dict[str, Any] | None:
     if NEXT_READS is not None:
         path = github_work_graph.issue_path(repo, number)
-        if NEXT_READS.observation(path) is not None:
+        pending = NEXT_READS.observation(path)
+        if pending is not None and pending.done() and not pending.cancelled() and pending.exception() is None:
             _, observed = api_json("GET", path, bucket="rest_core", failed_step="next_parent_observation")
             if "parent" in observed:
                 return observed["parent"]
@@ -5760,18 +5783,20 @@ def next_wait_context(
     cache: dict[str, Any] = {}
 
     def remember(row: dict[str, Any]) -> None:
+        if "body" not in row or "labels" not in row:
+            return
         base = github_work_graph.issue_path(row["repo"], row["number"])
         cache[base] = copy.deepcopy(row)
-        if row.get("pull_request"):
+        if row.get("pull_request") and "merged_at" in row and "base" in row:
             cache[base.replace("/issues/", "/pulls/")] = cache[base]
         cache.update(github_work_graph.complete_issue_pages(row))
         if row.get("_graph_repository"):
-            cache[f"/repos/{row['repo']}"] = row["_graph_repository"]
+            cache[github_next_reads.observation_key(f"/repos/{row['repo']}")] = row["_graph_repository"]
 
     for record in reference_records or []:
         remember(record)
     for name, metadata in (repository_metadata or {}).items():
-        cache[f"/repos/{name}"] = metadata
+        cache[github_next_reads.observation_key(f"/repos/{name}")] = metadata
     read_paths: set[str] = set()
     fetch_lock = threading.Lock()
     unavailable: list[dict[str, Any]] = []
@@ -5780,18 +5805,44 @@ def next_wait_context(
     budget = max(1, scan_limit) * 5 if scan_limit is not None else None
 
     def fetch(argv: list[str]) -> Any:
-        path = "/" + argv[1].lstrip("/")
-        if path not in cache:
-            with fetch_lock:
-                if budget is not None and path not in read_paths and len(read_paths) >= budget:
+        path = github_next_reads.observation_key("/" + argv[1].lstrip("/"))
+        with fetch_lock:
+            if path not in read_paths:
+                if budget is not None and len(read_paths) >= budget:
                     raise direction_audit.AuditError("wait read limit reached")
                 read_paths.add(path)
+        if path not in cache:
             try:
                 match = re.fullmatch(r"/repos/([\w.-]+/[\w.-]+)/(?:issues|pulls)/([1-9]\d*)", path)
+                parsed = urllib.parse.urlsplit(path)
+                connection = re.fullmatch(
+                    r"/repos/([\w.-]+/[\w.-]+)/issues/([1-9]\d*)/(comments|sub_issues|dependencies/(?:blocked_by|blocking))",
+                    parsed.path,
+                )
+                query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+                try:
+                    page, size = int(query.get("page", ["1"])[0]), int(query.get("per_page", ["100"])[0])
+                    supported_page = (
+                        page > 0
+                        and 0 < size <= 100
+                        and set(query) <= {"page", "per_page"}
+                        and all(len(values) == 1 for values in query.values())
+                    )
+                except ValueError:
+                    page, size, supported_page = 0, 0, False
                 if match and next_graph_reader(match[1]) is not None:
                     _, row = get_issue(match[2], match[1], graphql=True)
                     remember(row)
                     cache[path] = row
+                elif connection and supported_page and next_graph_reader(connection[1]) is not None:
+                    field = {
+                        "comments": "comments",
+                        "sub_issues": "subIssues",
+                        "dependencies/blocked_by": "blockedBy",
+                        "dependencies/blocking": "blocking",
+                    }[connection[3]]
+                    _, rows = read_planning_connection(connection[1], int(connection[2]), field, limit=page * size)
+                    cache[path] = rows[(page - 1) * size : page * size]
                 else:
                     _, cache[path] = api_json("GET", path, bucket="rest_core", failed_step="next_wait_evidence")
             except PlanError as exc:
@@ -5919,7 +5970,7 @@ def next_wait_context(
             "repositories": repositories, "frozen_issues": frozen_issues,
             "unavailable": unavailable, "unresolved_references": unresolved, "references": references,
             "inventory_complete": inventory_complete, "scope": "evaluated_global_next_issues",
-            "read_limit": budget, "read_count": len(cache),
+            "read_limit": budget, "read_count": len(read_paths),
             "checked_issues": checked_issue_refs}
 
 
@@ -6080,7 +6131,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     if NEXT_READS.expired and repo.casefold() not in NEXT_READS.inventory:
         unread("work_graph_unread", "Track graph is unread within the deadline; milestones are unknown")
     for item in incident_inventory:
-        if "body" in item:
+        if "body" in item and "labels" in item:
             seeds.setdefault((item["repo"].casefold(), item["number"]), item)
     client_records: dict[str, dict[str, Any]] = {}
     client_bot_logins = github_identity.configured_bot_logins()
@@ -6125,7 +6176,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
             if NEXT_READS.observation(path) is not None:
                 issue_actor, raw_issue = api_json("GET", path, bucket="rest_core", failed_step="next_issue_observation")
                 actor = issue_actor or actor
-            elif raw_issue is None or "body" not in raw_issue:
+            elif raw_issue is None or "body" not in raw_issue or "labels" not in raw_issue:
                 issue_actor, raw_issue = get_issue(str(number), issue_repo, graphql=True)
                 actor = issue_actor or actor
             source_issue: dict[str, Any] = {**raw_issue, "repo": issue_repo}
@@ -6256,7 +6307,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
                 if key in visited:
                     break
                 visited.add(key)
-                if "body" in parent:
+                if "body" in parent and "labels" in parent:
                     seeds.setdefault(key, parent)
                 classified = read_node(parent["repo"], parent["number"])["item"]
                 ancestors.append(classified)
@@ -6309,7 +6360,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     graph_coverage = {"complete": ranked["dependency_context"]["complete"], "evaluated": ranked["evaluated"],
                       "truncated": ranked["truncated"], "evaluation_note": graph_evaluation_note}
     tracking_keys = [(row["repo"].casefold(), row["number"]) for row in ranked["tracking_roots"]]
-    if tracking_keys and not any(key in seeds and "body" in seeds[key] for key in tracking_keys):
+    if tracking_keys and not any(key in seeds and "body" in seeds[key] and "labels" in seeds[key] for key in tracking_keys):
         unread("work_graph_unread", "Track graph nodes are unread; milestones are unknown", graph_context=graph_coverage,
                track_sources=ranked["track_next_actions"])
     # Establish useful native-frontier evidence before optional portfolio work.
@@ -6509,7 +6560,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
         scan_limit=args.scan_limit * 2 if args.scan_limit is not None else None,
         inventory_complete=candidate_coverage_complete,
         reference_repositories={item["repo"] for item in discovery.get("repositories", [])},
-        reference_records=[row for row in seeds.values() if "body" in row],
+        reference_records=[row for row in seeds.values() if "body" in row and "labels" in row],
         structured_waits={key: structured_waits[key] if key in structured_waits else node["item"]["structured_wait"]
                           for key, node in nodes.items() if key in structured_waits or "structured_wait" in node["item"]},
     )

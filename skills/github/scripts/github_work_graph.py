@@ -404,7 +404,8 @@ def read_live_breakage_batch(
                     raise github_read.GitHubReadShapeError("Live-breakage inventory changed during pagination")
                 totals[name] = total
                 for node in nodes:
-                    row = github_plan_graph.rest_related_issue(node)
+                    row = compact_relationship_issue(github_plan_graph.rest_related_issue(node), "live-breakage")
+                    row["html_url"] = row.pop("url")
                     number = row["number"]
                     if (
                         type(number) is not int
@@ -513,6 +514,7 @@ def complete_issue_pages(row: dict[str, Any]) -> dict[str, list[dict[str, Any]]]
         field: values
         for field, values in row.get("_graph_relationships", {}).items()
         if field not in row.get("_graph_truncated", [])
+        and all(value.get("state") != "closed" or github_plan_graph.closed_relationship_metadata_complete(value) for value in values)
     }
     if row.get("_graph_comments_complete"):
         collections["comments"] = row["_graph_comments"]

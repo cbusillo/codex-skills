@@ -510,7 +510,6 @@ def test_default_index_search_and_custody_consume_paged_graphql() -> None:
         assert [row["record_type"] for row in result["issues"]] == ["issue", "pull_request"]
         assert result["count"] == 2 and result["total_count"] == 3 and result["incomplete_results"]
         _, pulls = plan.read_planning_inventory("owner/repo", kind="pullRequest", state="all")
-        assert pulls[0].get("id") != pull["databaseId"]
         inventory = plan.claim_inventory("owner/repo", node["number"])
         assert inventory["remote_branches"] == [pulls[0]["head"]["ref"]]
         _, _, comments, _ = plan.claim_snapshot(str(node["number"]), "owner/repo")
@@ -550,7 +549,8 @@ def test_partial_inventory_and_missing_later_history_never_clear_custody() -> No
                     plan.read_planning_inventory("owner/repo")
                 else:
                     plan.read_planning_connection("owner/repo", node["number"], "comments")
-            except plan.PlanError:
+            except plan.PlanError as error:
+                assert error.failure is not None
                 continue
             raise AssertionError("Unread custody became a complete inventory")
 
@@ -573,8 +573,8 @@ def test_direction_blob_absence_is_distinct_from_unreadable_content() -> None:
         ):
             try:
                 value = plan.load_direction("owner/repo")
-            except plan.PlanError:
-                assert expected == "error"
+            except plan.PlanError as error:
+                assert expected == "error" and error.failure is not None
             else:
                 assert value == expected
 
@@ -685,7 +685,7 @@ def test_global_ownership_and_comment_reads_reuse_complete_observations() -> Non
     row = graph.planning_graph(reader_for(recorded["graphql"]), "owner/repo", number=recorded["rest"]["number"])[0]
     row["_graph_comments_complete"] = True
     pull = {"number": 7, "pull_request": {"url": "https://github.com/owner/repo/pull/7"}, "head": {"ref": "work/source"}}
-    reader = github_read.GitHubReader(gh_cmd="fake-gh", actor="fixture-reader", expected_actor="fixture-reader")
+    reader = plan.PlanningGraphReader(gh_cmd="fake-gh", actor="fixture-reader", expected_actor="fixture-reader")
     documents = [
         {
             "data": {
@@ -712,6 +712,7 @@ def test_global_ownership_and_comment_reads_reuse_complete_observations() -> Non
         reads.publish(plan.github_work_graph.issue_path("owner/repo", row["number"]), ("fixture-reader", {**row, "parent": None}))
         assert plan.read_next_parent("owner/repo", row["number"]) is None
         assert requests.call_count == count
+        assert reads.requests == requests.call_count
         assert first["complete"] and second["complete"] and first["pulls"] == second["pulls"] == [pull]
         assert comments == row["_graph_comments"]
 
@@ -935,6 +936,141 @@ def test_milestone_next_still_reports_unlisted_inbound_blockers() -> None:
     result = output.call_args.args[0]
     assert [row["number"] for row in result["blocking_work_elsewhere"]] == [gate["number"]]
     assert result["blocking_work_elsewhere"][0]["blocking"][0]["repo"] == target["repo"]
+
+
+def test_failed_prefetch_stays_unread_when_reused_as_a_wait_target() -> None:
+    plan = load_plan()
+    fixture = json.loads(FIXTURE.with_name("planning_show.json").read_text())
+    source = graph.planning_graph(reader_for(fixture["graphql"]), "owner/repo", number=fixture["rest"]["number"])[0]
+    source["body"] = "## Current Status\nState: Waiting.\nWaiting for: Review #13.\n"
+    failures = [
+        github_read.GitHubReadShapeError("Missing prefetched graph"),
+        github_read.GitHubReadError(
+            "Source inaccessible",
+            result=github_api.ApiResult(
+                ok=False,
+                status=403,
+                body=None,
+                bucket="graphql",
+                failure=github_api.FailureDetail("identity_refused", "Source inaccessible", False, False, "stop"),
+            ),
+            diagnostics={},
+        ),
+    ]
+    reader = plan.PlanningGraphReader(gh_cmd="fake-gh", actor="fixture-reader", expected_actor="fixture-reader")
+    for failure in failures:
+        with (
+            plan.github_next_reads.NextReads(workers=1, seconds=0) as reads,
+            patch.dict(vars(plan), {"NEXT_READS": reads}),
+            mock_attribute(plan, "next_graph_reader", return_value=reader),
+        ):
+
+            def unavailable() -> Any:
+                raise failure
+
+            try:
+                reads.observe("/repos/owner/repo/issues/13", unavailable)
+            except type(failure):
+                pass
+            result = plan.next_wait_context(
+                [source],
+                scan_limit=1,
+                inventory_complete=True,
+                structured_waits={("owner/repo", source["number"]): None},
+                reference_records=[source],
+                repository_metadata={"owner/repo": {"full_name": "owner/repo", "archived": False}},
+            )
+            assert not result["complete"] and result["unavailable"]
+
+
+def test_metadata_is_available_without_unrelated_discussion_pages() -> None:
+    plan = load_plan()
+    node = copy.deepcopy(json.loads(FIXTURE.with_name("planning_show.json").read_text())["graphql"]["data"]["repository"]["issue"])
+    node["comments"].update(totalCount=1000, pageInfo={"hasNextPage": True, "endCursor": "unavailable-history"})
+    node["blockedBy"] = {"nodes": [], "totalCount": 1, "pageInfo": {"hasNextPage": True, "endCursor": "unavailable-blockers"}}
+    reader = github_read.GitHubReader(gh_cmd="fake-gh", actor="fixture-reader", expected_actor="fixture-reader")
+    with (
+        patch.object(github_api, "call_gh_with_retry", side_effect=transport_for([{"data": {"repository": {"issue": node}}}])),
+        mock_attribute(plan, "next_graph_reader", return_value=reader),
+    ):
+        _, result = plan.get_issue(str(node["number"]), "owner/repo", graphql=True)
+    assert result["body"] == node["body"] and result["comments"] == node["comments"]["totalCount"]
+    assert not result.get("_graph_comments_complete")
+
+
+def test_native_closure_metadata_preserves_holds_in_wait_consumers() -> None:
+    plan = load_plan()
+    from skills.direction.scripts import direction_audit
+
+    original = json.loads(FIXTURE.with_name("planning_show.json").read_text())["graphql"]["data"]["repository"]["issue"]
+    for reason, body, remaining in [("NOT_PLANNED", "", 0), ("COMPLETED", "State: Split", 0), ("COMPLETED", "", 1)]:
+        node = copy.deepcopy(original)
+        node["body"] = "## Current Status\nState: Waiting.\nWaiting for: None.\n"
+        blocker = {
+            "number": 13,
+            "title": "Unfinished prerequisite",
+            "state": "CLOSED",
+            "stateReason": reason,
+            "body": body,
+            "closedAt": node["updatedAt"],
+            "url": "https://github.com/owner/repo/issues/13",
+            "repository": {"nameWithOwner": "owner/repo"},
+            "subIssuesSummary": {"total": 1, "completed": 1 - remaining, "percentCompleted": 0},
+        }
+        node["blockedBy"] = {"nodes": [blocker], "totalCount": 1, "pageInfo": {"hasNextPage": False}}
+        node["issueDependenciesSummary"].update(blockedBy=0, totalBlockedBy=1)
+        row = graph.planning_graph(reader_for({"data": {"repository": {"issue": node}}}), "owner/repo", number=node["number"])[0]
+        [normalized] = row["_graph_relationships"]["blocked_by"]
+        assert not direction_audit.closed_wait_prerequisite(normalized)
+        with mock_attribute(plan, "next_graph_reader", return_value=None):
+            result = plan.next_wait_context(
+                [row],
+                scan_limit=1,
+                inventory_complete=True,
+                structured_waits={("owner/repo", row["number"]): None},
+                reference_records=[row],
+                repository_metadata={"owner/repo": {"full_name": "owner/repo", "archived": False}},
+            )
+        assert result["complete"] and not result["items"], result
+        compact = {key: value for key, value in normalized.items() if key in {"repo", "number", "title", "state", "html_url"}}
+        incomplete = {**row, "_graph_relationships": {**row["_graph_relationships"], "blocked_by": [compact]}}
+        with (
+            plan.github_next_reads.NextReads(workers=1, seconds=0) as reads,
+            patch.dict(vars(plan), {"NEXT_READS": reads}),
+            mock_attribute(plan, "api_json_uncached", return_value=("fixture-reader", [normalized])),
+        ):
+            plan.github_work_graph.publish_issue_pages(reads, incomplete, "fixture-reader")
+            _, observed = plan.api_json(
+                "GET", f"/repos/owner/repo/issues/{row['number']}/dependencies/blocked_by?per_page=100&page=1"
+            )
+            assert not direction_audit.closed_wait_prerequisite(observed[0])
+
+
+def test_root_and_nested_graphql_failures_do_not_invent_missing_targets() -> None:
+    for kind in ("NOT_FOUND", "FORBIDDEN"):
+        for root in ({"number": 13}, None):
+            result = github_api.ApiResult(
+                ok=True,
+                status=200,
+                bucket="graphql",
+                body={
+                    "data": {"repository": {"issue": root}},
+                    "errors": [{"type": kind, "path": ["repository", "issue", "blockedBy", "nodes", 0]}],
+                },
+            )
+            try:
+                github_read.graphql_data(result, root_path=("repository", "issue"))
+            except github_read.GitHubReadShapeError as error:
+                assert error.rest_recovery_allowed is (root is not None)
+            else:
+                raise AssertionError("A nested access error became an available or missing root")
+        result.body["errors"] = [{"type": kind, "path": ["repository", "issue"]}]
+        try:
+            github_read.graphql_data(result, root_path=("repository", "issue"))
+        except github_read.GitHubReadError as error:
+            assert error.result.failure is not None and not error.rest_recovery_allowed
+        else:
+            raise AssertionError("Root access failure lost its classification")
 
 
 if __name__ == "__main__":

@@ -6,14 +6,17 @@
 from __future__ import annotations
 
 import copy
+import json
 import os
 import time
 import unittest
+from pathlib import Path
 from typing import Any
 from unittest.mock import Mock, patch
 
 import github_api
 import github_read
+import github_plan_graph
 from github_api import ApiResult, FailureDetail, RetryRuntime, remaining_retry_timeout_seconds
 from github_read import GitHubReadError, GitHubReadShapeError
 
@@ -56,6 +59,41 @@ def response(data: dict[str, Any], **fields: Any) -> ApiResult:
 
 
 class DiscussionTests(unittest.TestCase):
+    def test_discovered_pr_keeps_its_backing_issue_identity(self) -> None:
+        fixture = json.loads(Path(__file__).with_name("fixtures").joinpath("pr_batch.json").read_text())
+        pull = copy.deepcopy(next(iter(fixture["data"]["repository"].values())))
+        pull.update(repository={"nameWithOwner": "example/repo"}, milestone=None, authorAssociation="CONTRIBUTOR", labels=[])
+        discovered = github_plan_graph.rest_record(pull, kind="pullRequest")
+        issue = thread(number=pull["number"])
+        for comments_available in (False, True):
+            discussion = thread(
+                "PullRequest",
+                number=pull["number"],
+                databaseId=pull["databaseId"],
+                reviews=connection([]),
+                comments=connection([comment(8, issue={"databaseId": issue["databaseId"]})] if comments_available else []),
+            )
+            reader = Mock(deadline_at=None)
+            reader.graphql_json.return_value = response({"repository": {"issueOrPullRequest": discussion}})
+            reader.get_json.return_value = {"id": issue["databaseId"]}
+            if comments_available:
+                reader.get_json.side_effect = GitHubReadError(
+                    "REST quota exhausted",
+                    diagnostics={},
+                    result=ApiResult(
+                        ok=False,
+                        status=403,
+                        body=None,
+                        bucket="rest_core",
+                        failure=FailureDetail("rest_primary_rate_limited", "REST quota exhausted", False, False, "stop"),
+                    ),
+                )
+            result = github_read.read_discussion(reader, "example/repo", pull["number"], issue_id=discovered.get("id"))
+            self.assertEqual(result["id"], issue["databaseId"])
+            if comments_available:
+                with self.assertRaises(GitHubReadShapeError):
+                    github_read.read_discussion(reader, "example/repo", pull["number"], issue_id=pull["databaseId"])
+
     def test_discussion_preserves_inherited_deadline_and_retry_policy(self) -> None:
         clock = 1000.0
         runtime = RetryRuntime(now=lambda: clock)

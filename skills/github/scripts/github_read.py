@@ -90,9 +90,10 @@ def graphql_rest_recovery_allowed(result: github_api_core.ApiResult) -> bool:
 
 
 class GitHubReadShapeError(Exception):
-    def __init__(self, message: str, *, retryable: bool = False) -> None:
+    def __init__(self, message: str, *, retryable: bool = False, rest_recovery_allowed: bool = False) -> None:
         super().__init__(message)
         self.retryable = retryable
+        self.rest_recovery_allowed = rest_recovery_allowed
 
 
 def _default_cache_dir() -> pathlib.Path:
@@ -621,18 +622,36 @@ def graphql_connection_page(value: Any) -> GraphQLConnection:
     return GraphQLConnection(nodes, cursor, total)
 
 
-def graphql_data(result: github_api_core.ApiResult) -> dict[str, Any]:
+def graphql_data(result: github_api_core.ApiResult, *, root_path: tuple[str, ...] = ()) -> dict[str, Any]:
     body = result.body
     if isinstance(body, dict) and body.get("errors"):
-        raise graphql_failure(result, body["errors"])
+        raise graphql_failure(result, body["errors"], root_path=root_path)
     if not isinstance(body, dict) or not isinstance(body.get("data"), dict):
         raise GitHubReadShapeError("GraphQL returned partial or missing data")
     return body["data"]
 
 
-def graphql_failure(result: github_api_core.ApiResult, errors: list[Any]) -> GitHubReadError | GitHubReadShapeError:
+def graphql_failure(
+    result: github_api_core.ApiResult, errors: list[Any], *, root_path: tuple[str, ...] = ()
+) -> GitHubReadError | GitHubReadShapeError:
     kinds = {error.get("type") or (error.get("extensions") or {}).get("code") for error in errors if isinstance(error, dict)}
+    paths = [error.get("path") for error in errors if isinstance(error, dict)]
+    complete_paths = len(paths) == len(errors)
+    direct = bool(root_path and paths and complete_paths) and all(
+        isinstance(path, list) and path and tuple(path) == root_path[: len(path)] for path in paths
+    )
+    nested = bool(root_path and paths and complete_paths) and all(
+        isinstance(path, list) and len(path) > len(root_path) and tuple(path[: len(root_path)]) == root_path for path in paths
+    )
+    root = result.body.get("data") if isinstance(result.body, dict) else None
+    for part in root_path:
+        root = root.get(part) if isinstance(root, dict) else None
     status = 404 if kinds == {"NOT_FOUND"} else 403 if kinds and kinds <= {"FORBIDDEN", "INSUFFICIENT_SCOPES"} else None
+    if not direct:
+        return GitHubReadShapeError(
+            "GraphQL returned partial or missing data",
+            rest_recovery_allowed=nested and isinstance(root, dict) and status is not None,
+        )
     if status is None:
         return GitHubReadShapeError("GraphQL returned partial or missing data")
     failure = github_api_core.classify_error(
@@ -726,9 +745,11 @@ def read_repository_connections(
             try:
                 repository_node = data.get(alias)
                 if alias in invalid:
-                    error = graphql_failure(response, invalid[alias])
+                    error = graphql_failure(response, invalid[alias], root_path=(alias,))
                     if isinstance(error, GitHubReadShapeError):
-                        raise RepositoryInventoryUnavailable(str(error), retryable=error.retryable)
+                        raise RepositoryInventoryUnavailable(
+                            str(error), retryable=error.retryable, rest_recovery_allowed=error.rest_recovery_allowed
+                        )
                     raise error
                 if (
                     not isinstance(repository_node, dict)
@@ -784,6 +805,7 @@ DISCUSSION_REACTIONS = """reactions(first:10, orderBy:{field:CREATED_AT,directio
 DISCUSSION_COMMENT_FIELDS = f"""__typename id databaseId body createdAt updatedAt url author {{ __typename login }}
  ... on Comment {{ lastEditedAt editor {{ login }} }}
  ... on Reactable {{ {DISCUSSION_REACTIONS} }}"""
+DISCUSSION_ISSUE_COMMENT_FIELDS = DISCUSSION_COMMENT_FIELDS + " issue { databaseId }"
 DISCUSSION_INLINE_FIELDS = DISCUSSION_COMMENT_FIELDS + " replyTo { databaseId }"
 DISCUSSION_REVIEW_FIELDS = DISCUSSION_COMMENT_FIELDS + " submittedAt " + (
     "comments(first:10) { totalCount nodes { " + DISCUSSION_INLINE_FIELDS + " } pageInfo { hasNextPage endCursor } }"
@@ -846,7 +868,7 @@ def discussion_comment(node: dict[str, Any], repo: str, number: int) -> dict[str
 
 def read_discussion(reader: GitHubReader, repo: str, number: int, *, issue_id: int | None = None) -> dict[str, Any]:
     owner, name = repo.split("/")
-    fields = DISCUSSION_COMMENT_FIELDS + " number title state closedAt " + discussion_connection("comments", DISCUSSION_COMMENT_FIELDS)
+    fields = DISCUSSION_COMMENT_FIELDS + " number title state closedAt " + discussion_connection("comments", DISCUSSION_ISSUE_COMMENT_FIELDS)
     review_fields = discussion_connection("reviews", DISCUSSION_REVIEW_FIELDS)
     document = (
         "query($owner:String!,$name:String!,$number:Int!) { repository(owner:$owner,name:$name) { "
@@ -858,16 +880,27 @@ def read_discussion(reader: GitHubReader, repo: str, number: int, *, issue_id: i
     thread = repository_node.get("issueOrPullRequest") if isinstance(repository_node, dict) else None
     if not isinstance(thread, dict) or thread.get("__typename") not in {"Issue", "PullRequest"}:
         raise GitHubReadShapeError(f"GitHub did not expose {repo}#{number}")
+    comments = discussion_nodes(reader, thread, "comments", DISCUSSION_ISSUE_COMMENT_FIELDS)
     resolved_id = thread.get("databaseId")
     if thread["__typename"] == "PullRequest":
-        resolved_id = issue_id if issue_id is not None else reader.get_json(
+        identities = {
+            value
+            for node in comments
+            if isinstance(source := node.get("issue"), dict)
+            if type(value := source.get("databaseId")) is int and value > 0
+        }
+        if len(identities) > 1 or issue_id is not None and identities and issue_id not in identities:
+            raise GitHubReadShapeError("PR backing issue identity changed")
+        resolved_id = issue_id if issue_id is not None else next(iter(identities), None)
+        if resolved_id is None:
+            resolved_id = reader.get_json(
             f"/repos/{repo}/issues/{number}", step="discussion_issue_identity"
-        )["id"]
+            )["id"]
     result: dict[str, Any] = {
         **discussion_comment({**thread, "databaseId": resolved_id}, repo, number), "number": thread["number"], "title": thread["title"],
         "state": "closed" if thread["state"] in {"CLOSED", "MERGED"} else "open",
         "closed_at": thread["closedAt"],
-        "comments": [discussion_comment(node, repo, number) for node in discussion_nodes(reader, thread, "comments", DISCUSSION_COMMENT_FIELDS)],
+        "comments": [discussion_comment(node, repo, number) for node in comments],
         "reviews": [], "review_comments": [],
     }
     if thread["__typename"] == "PullRequest":

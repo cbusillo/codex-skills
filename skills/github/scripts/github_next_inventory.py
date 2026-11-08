@@ -72,6 +72,7 @@ def rest_record(node: dict[str, Any], *, kind: str) -> dict[str, Any]:
             "title": node["title"],
             "body": node["body"],
             "state": node["state"].lower(),
+            **({"merged_at": None, "merged": False, "closed_at": None} if node["state"] == "OPEN" else {}),
             "html_url": node["url"],
             "created_at": node["createdAt"],
             "updated_at": node["updatedAt"],
