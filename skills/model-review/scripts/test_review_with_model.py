@@ -59,7 +59,7 @@ cat "$PWD/example.txt" > "$FAKE_CLAUDE_SOURCE_FILE"
 printf '%s' "$FAKE_CLAUDE_JSON"
 """
 FAKE_AGY = """#!/bin/sh
-pwd > "$FAKE_AGY_CWD_FILE"
+[ -n "$FAKE_AGY_CWD_FILE" ] && pwd > "$FAKE_AGY_CWD_FILE"
 [ -n "$FAKE_AGY_ARGV_FILE" ] && printf '%s\\n' "$@" > "$FAKE_AGY_ARGV_FILE"
 [ -n "$FAKE_AGY_PROMPT_FILE" ] && printf '%s' "$2" > "$FAKE_AGY_PROMPT_FILE"
 [ -n "$FAKE_AGY_DIFF_FILE" ] && {
@@ -85,6 +85,7 @@ else
   printf '%s' "$FAKE_AGY_JSON"
 fi
 """
+FAKE_COMMANDS = {"codex": FAKE_CODEX, "claude": FAKE_CLAUDE, "agy": FAKE_AGY}
 
 
 def wire_varint(value: int) -> bytes:
@@ -101,6 +102,18 @@ def wire_bytes(field: int, data: bytes) -> bytes:
 
 def completed(report: str) -> str:
     return json.dumps({"status": "completed", "review": report})
+
+
+def agy_selected_line(label: str) -> str:
+    return f'I1015 20:00:00.100000 1 model_config_manager.go:340] Propagating selected model override to backend: label="{label}"\n'
+
+
+def agy_rerouted_line(alias: str, resolved: str) -> str:
+    return f'I1015 20:00:00.100000 1 model_resolver.go:155] model alias "{alias}" resolved to "{resolved}"\n'
+
+
+def agy_created_line(conversation: str) -> str:
+    return f"I1015 20:00:00.200000 1 server.go:1233] Created conversation {conversation}\n"
 
 
 # Context Panel's agent modes: the snapshot, and --record-launch reading one receipt from stdin.
@@ -144,9 +157,10 @@ class ReviewWithModelTests(unittest.TestCase):
                                    {"provider": "anthropic", "accountID": "anthropic-b"},
                                    {"provider": "google", "accountID": "google-c"}]},
         }))
-        config = self.home / ".code/skill-data/supervisor.toml"
-        config.parent.mkdir(parents=True)
-        config.write_text(
+        self.child_env_file = self.root / "child-env"
+        self.supervisor_config = self.home / ".code/skill-data/supervisor.toml"
+        self.supervisor_config.parent.mkdir(parents=True)
+        self.supervisor_config.write_text(
             '[accounts]\nsnapshot_command = ' + json.dumps(
                 [str(self.reader), "--storage-root", str(self.storage)]) + '\n'
             '[[accounts.account]]\nname = "openai-review"\nprovider = "openai"\n'
@@ -158,7 +172,7 @@ class ReviewWithModelTests(unittest.TestCase):
             '[[accounts.account]]\nname = "google-review"\nprovider = "google"\n'
             'context_panel_label = "google-test"\nsingle_login = true\nenv = {}\n'
         )
-        self.policy = config.with_name("model-review.toml")
+        self.policy = self.supervisor_config.with_name("model-review.toml")
         self.policy.write_text('version = 1\ndecision = "fixture decision"\n'
                                'providers = ["anthropic", "openai", "google"]\n')
         self.agy_settings = self.home / ".gemini" / "antigravity-cli" / "settings.json"
@@ -171,37 +185,46 @@ class ReviewWithModelTests(unittest.TestCase):
         path.write_text(body)
         path.chmod(path.stat().st_mode | stat.S_IEXEC)
 
+    def install_fakes(self, *commands: str) -> None:
+        for command in commands:
+            self.install(command, FAKE_COMMANDS[command])
+
     def write_agy_settings(self, data: object) -> Path:
         self.agy_settings.parent.mkdir(parents=True, exist_ok=True)
         self.agy_settings.write_text(data if isinstance(data, str) else json.dumps(data))
         return self.agy_settings
 
     def child_env(self) -> dict[str, str]:
-        return dict(line.split("=", 1) for line in (self.root / "child-env").read_text().splitlines())
+        return dict(line.split("=", 1) for line in self.child_env_file.read_text().splitlines())
 
     def assert_refused_before_launch(self, target: Path, bodies: tuple[str, ...]) -> None:
         self.install("claude", FAKE_CLAUDE)
-        capture = self.root / "child-env"
         for body in bodies:
             with self.subTest(target=target.name, body=body):
                 target.write_text(body)
-                code, result = self.review("anthropic", FAKE_REVIEW_ENV_FILE=str(capture))
+                code, result = self.review("anthropic")
                 self.assertEqual((code, result["ok"]), (1, False))
-                self.assertFalse(capture.exists())
+                self.assertFalse(self.child_env_file.exists())
                 self.assertFalse((self.storage / "Launch Receipts").exists())
 
     def run_helper(self, *args: str, directory: Path | None = None, **env: str) -> tuple[int, dict]:
         # PATH holds only the fakes plus the interpreter's directory, so an uninstalled provider stays uninstalled.
-        environment = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "FAKE_SNAPSHOT_FILE": str(self.snapshot_file), **env}
+        environment = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "FAKE_SNAPSHOT_FILE": str(self.snapshot_file),
+                       "FAKE_REVIEW_ENV_FILE": str(self.child_env_file), **env}
         if args[0] in {"run", "check"} and "--author-provider" not in args:
             provider = args[args.index("--provider") + 1] if "--provider" in args else "openai"
             args = (*args, "--author-provider", "anthropic" if provider == "openai" else "openai")
         proc = subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True, text=True, env=environment, cwd=directory)
         return proc.returncode, json.loads(proc.stdout or "{}")
 
-    def review(self, provider: str, **env: str) -> tuple[int, dict]:
+    def review(self, provider: str, *options: str, **env: str) -> tuple[int, dict]:
         return self.run_helper(
-            "run", "--provider", provider, "--repo", str(self.repo), "--prompt-file", str(self.prompt), **env
+            "run", "--provider", provider, "--repo", str(self.repo), "--prompt-file", str(self.prompt), *options, **env
+        )
+
+    def review_by_policy(self, author: str, *options: str, **env: str) -> tuple[int, dict]:
+        return self.run_helper(
+            "run", "--repo", str(self.repo), "--prompt-file", str(self.prompt), "--author-provider", author, *options, **env
         )
 
     def test_review_output_in_source_or_worktree_root_moves_to_task_evidence(self) -> None:
@@ -234,10 +257,7 @@ class ReviewWithModelTests(unittest.TestCase):
         self.assertEqual(len(set(saved)), len(saved))
         config.write_text("invalid")
         invocation = self.root / "unexpected-provider-call"
-        code, result = self.run_helper(
-            "run", "--provider", "anthropic", "--repo", str(self.repo), "--prompt-file", str(self.prompt),
-            "--out", str(self.repo / "review.md"), FAKE_REVIEW_ENV_FILE=str(invocation),
-        )
+        code, result = self.review("anthropic", "--out", str(self.repo / "review.md"), FAKE_REVIEW_ENV_FILE=str(invocation))
         self.assertEqual((code, result["phase"]), (1, "output"))
         self.assertFalse(invocation.exists())
 
@@ -252,22 +272,18 @@ class ReviewWithModelTests(unittest.TestCase):
         code, result = self.review("google", **env)
         self.assertEqual((code, result["ok"]), (1, False))
         self.assertIn("primary: anthropic; supplementary: google", result["error"])
-        code, result = self.run_helper("run", "--author-provider", "anthropic", "--provider", "anthropic",
-                                       "--repo", str(self.repo), "--prompt-file", str(self.prompt), **env)
+        code, result = self.review("anthropic", "--author-provider", "anthropic", **env)
         self.assertEqual(code, 1)
         self.assertNotIn("standing review decision", result["error"])
         self.assertFalse(cwd_file.exists())
         self.assertFalse((self.storage / "Launch Receipts").exists())
-        code, result = self.run_helper(
-            "run", "--author-provider", "openai", "--provider", "google", "--supplementary",
-            "--repo", str(self.repo), "--prompt-file", str(self.prompt), **env)
+        code, result = self.review("google", "--author-provider", "openai", "--supplementary", **env)
         self.assertEqual((code, result["provider"], result["selection"]["role"]), (0, "google", "supplementary"))
         self.assertTrue(cwd_file.exists())
         self.assertTrue(Path(result["launch_receipt"]).exists())
 
     def test_default_selects_google_in_policy_order_when_other_providers_are_unavailable(self) -> None:
-        self.install("claude", FAKE_CLAUDE)
-        self.install("agy", FAKE_AGY)
+        self.install_fakes("claude", "agy")
         (self.repo / "probe.txt").write_text("fixture probe line\n")
         cwd_file = self.root / "google-cwd"
         snapshot = json.loads(self.snapshot_file.read_text())
@@ -301,34 +317,27 @@ class ReviewWithModelTests(unittest.TestCase):
         snapshot["answers"]["useNext"] = [r for r in snapshot["answers"]["useNext"] if r["provider"] != "anthropic"]
         snapshot["ranking"] = [{"provider": "anthropic", "nextCapacityAt": "2099-01-01T00:00:00Z"}]
         self.snapshot_file.write_text(json.dumps(snapshot))
-        capture = self.root / "child-env"
-        code, result = self.run_helper(
-            "run", "--repo", str(self.repo), "--prompt-file", str(self.prompt), "--author-provider", "google",
-            FAKE_REVIEW_ENV_FILE=str(capture), FAKE_ANSWER=completed("none"))
+        code, result = self.review_by_policy("google", FAKE_ANSWER=completed("none"))
         self.assertEqual((code, result["provider"]), (0, "openai"))
         self.assertEqual(result["account"]["account_id"], next(r["accountID"] for r in snapshot["answers"]["useNext"]
                                                             if r["provider"] == "openai"))
         self.assertIn(snapshot["ranking"][0]["nextCapacityAt"], result["selection"]["skipped"][0]["reason"])
-        self.assertTrue(capture.exists())
+        self.assertTrue(self.child_env_file.exists())
         self.assertEqual(len(list((self.storage / "Launch Receipts").glob("*.json"))), 1)
         self.policy.write_text(self.policy.read_text() + '[provider.openai]\ntimeout = 10\n')
-        code, result = self.run_helper(
-            "run", "--repo", str(self.repo), "--prompt-file", str(self.prompt), "--author-provider", "google", "--timeout", "20")
+        code, result = self.review_by_policy("google", "--timeout", "20")
         self.assertEqual((code, result["ok"]), (1, False))
         self.assertEqual((result["provider"], [r["provider"] for r in result["skipped"]]), ("openai", ["anthropic"]))
         self.assertIn(snapshot["ranking"][0]["nextCapacityAt"], result["skipped"][0]["reason"])
         self.assertEqual(len(list((self.storage / "Launch Receipts").glob("*.json"))), 1)
 
     def test_timeout_override_cannot_skip_an_available_preferred_provider(self) -> None:
-        self.install("claude", FAKE_CLAUDE)
-        self.install("agy", FAKE_AGY)
+        self.install_fakes("claude", "agy")
         self.policy.write_text('version = 1\ndecision = "preferred provider"\nproviders = ["anthropic", "google"]\n'
                                '[provider.anthropic]\ntimeout = 10\n')
-        capture = self.root / "child-env"
-        code, result = self.run_helper("run", "--repo", str(self.repo), "--prompt-file", str(self.prompt),
-                                       "--author-provider", "openai", "--timeout", "20", FAKE_REVIEW_ENV_FILE=str(capture))
+        code, result = self.review_by_policy("openai", "--timeout", "20")
         self.assertEqual((code, result["provider"], result["skipped"]), (1, "anthropic", []))
-        self.assertFalse(capture.exists())
+        self.assertFalse(self.child_env_file.exists())
         self.assertFalse((self.storage / "Launch Receipts").exists())
 
     def test_exhausted_primary_does_not_promote_supplementary_or_use_author(self) -> None:
@@ -340,20 +349,17 @@ class ReviewWithModelTests(unittest.TestCase):
         snapshot = json.loads(self.snapshot_file.read_text())
         snapshot["answers"]["useNext"] = [r for r in snapshot["answers"]["useNext"] if r["provider"] != "anthropic"]
         self.snapshot_file.write_text(json.dumps(snapshot))
-        code, result = self.run_helper("run", "--repo", str(self.repo), "--prompt-file", str(self.prompt),
-                                       "--author-provider", "openai")
+        code, result = self.review_by_policy("openai")
         self.assertEqual((code, result["ok"]), (1, False))
         self.assertEqual([r["provider"] for r in result["skipped"]], ["anthropic"])
         self.assertFalse((self.storage / "Launch Receipts").exists())
 
     def test_review_failure_never_triggers_provider_fallback(self) -> None:
-        self.install("claude", FAKE_CLAUDE)
-        self.install("agy", FAKE_AGY)
+        self.install_fakes("claude", "agy")
         self.policy.write_text('version = 1\ndecision = "ordered providers"\nproviders = ["anthropic", "google"]\n')
         cwd_file = self.root / "google-cwd"
-        code, result = self.run_helper(
-            "run", "--repo", str(self.repo), "--prompt-file", str(self.prompt), "--author-provider", "openai",
-            FAKE_CLAUDE_JSON=json.dumps({"result": json.dumps({"status": "refused", "review": ""})}),
+        code, result = self.review_by_policy(
+            "openai", FAKE_CLAUDE_JSON=json.dumps({"result": json.dumps({"status": "refused", "review": ""})}),
             FAKE_AGY_CWD_FILE=str(cwd_file), FAKE_AGY_JSON=json.dumps({"response": completed("none")}))
         self.assertEqual((code, result["provider"], result["outcome"]), (1, "anthropic", "refused"))
         self.assertFalse(cwd_file.exists())
@@ -362,15 +368,12 @@ class ReviewWithModelTests(unittest.TestCase):
     def test_plain_install_reviews_with_existing_login(self) -> None:
         self.install("claude", FAKE_CLAUDE)
         self.policy.unlink()
-        (self.home / ".code/skill-data/supervisor.toml").unlink()
-        capture = self.root / "child-env"
+        self.supervisor_config.unlink()
         token = "fixture-existing-login"
-        code, result = self.run_helper("run", "--repo", str(self.repo), "--prompt-file", str(self.prompt),
-                                      "--author-provider", "openai", ANTHROPIC_API_KEY=token,
-                                      FAKE_REVIEW_ENV_FILE=str(capture),
-                                      FAKE_CLAUDE_JSON=json.dumps({"result": completed("none")}))
+        code, result = self.review_by_policy("openai", ANTHROPIC_API_KEY=token,
+                                             FAKE_CLAUDE_JSON=json.dumps({"result": completed("none")}))
         self.assertEqual((code, result["ok"]), (0, True))
-        self.assertTrue(capture.exists())
+        self.assertTrue(self.child_env_file.exists())
         child = self.child_env()
         self.assertEqual(child["ANTHROPIC_API_KEY"], token)
         self.assertIsNone(result["launch_receipt"])
@@ -389,12 +392,10 @@ class ReviewWithModelTests(unittest.TestCase):
     def test_shared_policy_still_restricts_review_when_code_home_has_no_policy(self) -> None:
         self.install("claude", FAKE_CLAUDE)
         self.policy.write_text('version = 1\ndecision = "restricted"\nproviders = ["openai"]\n')
-        capture = self.root / "child-env"
-        code, result = self.review("anthropic", CODE_HOME=str(self.root / "other-code-home"),
-                                   FAKE_REVIEW_ENV_FILE=str(capture))
+        code, result = self.review("anthropic", CODE_HOME=str(self.root / "other-code-home"))
         self.assertEqual((code, result["ok"]), (1, False))
         self.assertEqual(result["phase"], "selection")
-        self.assertFalse(capture.exists())
+        self.assertFalse(self.child_env_file.exists())
 
     def test_policy_model_budget_and_actual_provenance_reach_the_review(self) -> None:
         self.install("claude", FAKE_CLAUDE)
@@ -410,9 +411,7 @@ class ReviewWithModelTests(unittest.TestCase):
         self.assertEqual(result["effort"], "unknown")
         argv_file.unlink()
         for option, value in (("--model", "unapproved-model"), ("--timeout", str(timeout + 1))):
-            code, result = self.run_helper("run", "--provider", "anthropic", "--repo", str(self.repo),
-                                           "--prompt-file", str(self.prompt), option, value,
-                                           FAKE_CLAUDE_ARGV_FILE=str(argv_file))
+            code, result = self.review("anthropic", option, value, FAKE_CLAUDE_ARGV_FILE=str(argv_file))
             self.assertEqual((code, result["ok"]), (1, False))
             self.assertFalse(argv_file.exists())
 
@@ -424,10 +423,10 @@ class ReviewWithModelTests(unittest.TestCase):
         (self.repo / "probe.txt").write_text("fixture probe line\n")
         code, result = self.run_helper(
             "check", "--repo", str(self.repo), "--author-provider", "openai", "--provider", "google", "--supplementary", "--timeout", "12",
-            FAKE_AGY_CWD_FILE=str(self.root / "cwd"), FAKE_AGY_JSON=json.dumps({"response": completed("fixture probe line")}))
+            FAKE_AGY_JSON=json.dumps({"response": completed("fixture probe line")}))
         self.assertEqual((code, result["providers"][0]["provider"], result["providers"][0]["state"]),
                          (0, "google", "ready"))
-        config = review_with_model.account_choice.load_config(self.policy.with_name("supervisor.toml"))
+        config = review_with_model.account_choice.load_config(self.supervisor_config)
         with patch.object(review_with_model.account_choice, "load_config", return_value=config), \
                 patch.object(review_with_model.account_choice, "read_snapshot", return_value=(json.loads(self.snapshot_file.read_text()), None)), \
                 patch.object(review_with_model.shutil, "which", return_value="fake-agy"):
@@ -437,24 +436,21 @@ class ReviewWithModelTests(unittest.TestCase):
 
     def test_missing_author_and_invalid_model_route_are_json_errors_before_capacity(self) -> None:
         self.install("claude", FAKE_CLAUDE)
-        code, result = self.run_helper(
-            "run", "--repo", str(self.repo), "--prompt-file", str(self.prompt), "--author-provider", "openai", "--model", "fixture")
+        code, result = self.review_by_policy("openai", "--model", "fixture")
         self.assertEqual((code, result["ok"]), (1, False))
         self.assertFalse((self.storage / "Launch Receipts").exists())
         # Call without the convenience wrapper's author default, like an older caller.
         proc = subprocess.run([sys.executable, str(SCRIPT), "run", "--provider", "anthropic",
                                "--repo", str(self.repo), "--prompt-file", str(self.prompt)],
                               capture_output=True, text=True, env={"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home),
-                                  "FAKE_SNAPSHOT_FILE": str(self.snapshot_file), "FAKE_REVIEW_ENV_FILE": str(self.root / "child-env"),
+                                  "FAKE_SNAPSHOT_FILE": str(self.snapshot_file), "FAKE_REVIEW_ENV_FILE": str(self.child_env_file),
                                   "FAKE_CLAUDE_JSON": json.dumps({"result": completed("none")})})
         self.assertEqual((proc.returncode, json.loads(proc.stdout)["ok"]), (1, False))
-        self.assertFalse((self.root / "child-env").exists())
+        self.assertFalse(self.child_env_file.exists())
         self.assertFalse((self.storage / "Launch Receipts").exists())
 
     def test_reviews_route_provider_home_and_write_count_only_receipt(self) -> None:
-        self.install("codex", FAKE_CODEX)
-        self.install("claude", FAKE_CLAUDE)
-        capture = self.root / "child-env"
+        self.install_fakes("codex", "claude")
         for provider, variable in review_with_model.account_choice.ACCOUNT_VARIABLES.items():
             with self.subTest(provider=provider):
                 code, result = self.review(
@@ -467,8 +463,7 @@ class ReviewWithModelTests(unittest.TestCase):
                     CLAUDE_CODE_USE_VERTEX="1", CLAUDE_CODE_USE_FOUNDRY="1",
                     CLAUDE_CODE_USE_MANTLE="1", CLAUDE_CODE_USE_ANTHROPIC_AWS="1",
                     ANTHROPIC_CUSTOM_HEADERS="Authorization: fake-header",
-                    FAKE_REVIEW_ENV_FILE=str(capture), FAKE_ANSWER=completed("none"),
-                    FAKE_CLAUDE_JSON=json.dumps({"result": completed("none")}),
+                    FAKE_ANSWER=completed("none"), FAKE_CLAUDE_JSON=json.dumps({"result": completed("none")}),
                 )
                 self.assertEqual((code, result["ok"]), (0, True))
                 child = self.child_env()
@@ -492,35 +487,29 @@ class ReviewWithModelTests(unittest.TestCase):
 
     def test_each_review_reads_the_current_context_panel_choice(self) -> None:
         self.install("claude", FAKE_CLAUDE)
-        capture = self.root / "child-env"
-        config = self.home / ".code/skill-data/supervisor.toml"
-        config.write_text(config.read_text() +
-                         '[[accounts.account]]\nname = "second-review"\nprovider = "anthropic"\n'
-                         'context_panel_label = "second-test"\n[accounts.account.env]\n'
-                         'CLAUDE_CONFIG_DIR = "~/second-home"\n')
+        self.supervisor_config.write_text(self.supervisor_config.read_text() +
+                                          '[[accounts.account]]\nname = "second-review"\nprovider = "anthropic"\n'
+                                          'context_panel_label = "second-test"\n[accounts.account.env]\n'
+                                          'CLAUDE_CONFIG_DIR = "~/second-home"\n')
         for account_id, label, home in (("anthropic-b", "anthropic-test", str(self.home / "anthropic-review")),
                                         ("anthropic-c", "second-test", str(self.home / "second-home"))):
             snapshot = json.loads(self.snapshot_file.read_text())
             snapshot["accounts"] = [{"id": account_id, "provider": "anthropic", "label": label}]
             snapshot["answers"]["useNext"] = [{"provider": "anthropic", "accountID": account_id}]
             self.snapshot_file.write_text(json.dumps(snapshot))
-            code, result = self.review("anthropic", FAKE_REVIEW_ENV_FILE=str(capture),
-                                       FAKE_CLAUDE_JSON=json.dumps({"result": completed("none")}))
+            code, result = self.review("anthropic", FAKE_CLAUDE_JSON=json.dumps({"result": completed("none")}))
             self.assertEqual((code, result["account"]["account_id"]), (0, account_id))
             self.assertEqual(self.child_env()["CLAUDE_CONFIG_DIR"], home)
         self.assertEqual(len(list((self.storage / "Launch Receipts").glob("*.json"))), 2)
 
     def test_default_anthropic_choice_removes_inherited_home_without_mutating_parent(self) -> None:
         self.install("claude", FAKE_CLAUDE)
-        config = self.home / ".code/skill-data/supervisor.toml"
-        config.write_text(config.read_text().replace(
+        self.supervisor_config.write_text(self.supervisor_config.read_text().replace(
             'CLAUDE_CONFIG_DIR = ' + json.dumps(str(self.home / "anthropic-review")), ""))
-        capture = self.root / "child-env"
         code, result = self.review("anthropic", CLAUDE_CONFIG_DIR="caller-home",
-                                   FAKE_REVIEW_ENV_FILE=str(capture),
                                    FAKE_CLAUDE_JSON=json.dumps({"result": completed("none")}))
         self.assertEqual((code, result["ok"]), (0, True))
-        self.assertNotIn("CLAUDE_CONFIG_DIR=", capture.read_text())
+        self.assertNotIn("CLAUDE_CONFIG_DIR=", self.child_env_file.read_text())
         with patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": "caller-home", "KEEP_ME": "inherited"}):
             before = dict(os.environ)
             child = review_with_model.reviewer_environment({"provider": "anthropic", "env": {}})
@@ -540,14 +529,13 @@ class ReviewWithModelTests(unittest.TestCase):
 
     def test_receipt_failure_prevents_launch_and_provider_failure_retains_receipt(self) -> None:
         self.install("claude", FAKE_CLAUDE)
-        capture = self.root / "child-env"
         self.storage.rmdir()
         self.storage.write_text("storage is unavailable")
-        code, result = self.review("anthropic", FAKE_REVIEW_ENV_FILE=str(capture))
+        code, result = self.review("anthropic")
         self.assertEqual((code, result["ok"]), (1, False))
         self.assertNotIn("phase", result, "selection succeeded; the receipt step refused the launch")
         self.assertNotIn("launch_receipt", result)
-        self.assertFalse(capture.exists())
+        self.assertFalse(self.child_env_file.exists())
         self.storage.unlink()
         self.storage.mkdir()
         code, result = self.review("anthropic", FAKE_CLAUDE_JSON=json.dumps({"is_error": True, "result": "limit"}))
@@ -559,24 +547,22 @@ class ReviewWithModelTests(unittest.TestCase):
         app = self.bin / "Context Panel"
         app.write_text(FAKE_CONTEXT_PANEL)
         app.chmod(0o700)
-        config = self.home / ".code/skill-data/supervisor.toml"
-        config.write_text(config.read_text().replace(
+        self.supervisor_config.write_text(self.supervisor_config.read_text().replace(
             json.dumps([str(self.reader), "--storage-root", str(self.storage)]),
             json.dumps([str(app), "--account-snapshot"])))
-        capture, received = self.root / "child-env", self.root / "received.json"
+        received = self.root / "received.json"
         for exit_code, reason in ((64, "receipt is not current"), (1, "storage unavailable")):
             with self.subTest(exit_code=exit_code):
-                code, result = self.review("anthropic", FAKE_REVIEW_ENV_FILE=str(capture),
-                                           FAKE_RECORD_FILE=str(received), FAKE_RECORD_EXIT=str(exit_code),
+                code, result = self.review("anthropic", FAKE_RECORD_FILE=str(received), FAKE_RECORD_EXIT=str(exit_code),
                                            FAKE_RECORD_STDERR=reason)
                 self.assertEqual((code, result["ok"]), (1, False))
                 self.assertIn(f"exit {exit_code}: {reason}", result["error"])
                 self.assertNotIn("launch_receipt", result)
-                self.assertFalse(capture.exists())
-        code, result = self.review("anthropic", FAKE_REVIEW_ENV_FILE=str(capture), FAKE_RECORD_FILE=str(received),
+                self.assertFalse(self.child_env_file.exists())
+        code, result = self.review("anthropic", FAKE_RECORD_FILE=str(received),
                                    FAKE_CLAUDE_JSON=json.dumps({"result": completed("none")}))
         self.assertEqual((code, result["ok"]), (0, True))
-        self.assertTrue(capture.exists())
+        self.assertTrue(self.child_env_file.exists())
         record = json.loads(received.read_text())
         self.assertEqual(record["argv"], ["--record-launch", "--launcher", "supervisor"])
         receipt = json.loads(record["stdin"])
@@ -676,9 +662,8 @@ class ReviewWithModelTests(unittest.TestCase):
         ]
         for response, outcome in responses:
             with self.subTest(response=response[:60]):
-                code, result = self.run_helper(
-                    "run", "--provider", "anthropic", "--repo", str(self.repo),
-                    "--prompt-file", str(self.prompt), "--out", str(output),
+                code, result = self.review(
+                    "anthropic", "--out", str(output),
                     FAKE_CLAUDE_JSON=json.dumps({"result": response, "modelUsage": {"claude-test": {}}}),
                     FAKE_CLAUDE_SOURCE_FILE=str(source_copy), FAKE_REVIEW_CALLS=str(calls))
                 self.assertEqual((code, result["ok"]), (1, False))
@@ -694,18 +679,14 @@ class ReviewWithModelTests(unittest.TestCase):
         self.assertEqual(len(calls.read_text().splitlines()), len(responses))
         # A completed no-findings review still delivers its report.
         marker.unlink()
-        code, result = self.run_helper(
-            "run", "--provider", "anthropic", "--repo", str(self.repo),
-            "--prompt-file", str(self.prompt), "--out", str(output),
-            FAKE_CLAUDE_JSON=json.dumps({"result": completed("No findings.")}),
+        code, result = self.review(
+            "anthropic", "--out", str(output), FAKE_CLAUDE_JSON=json.dumps({"result": completed("No findings.")}),
             FAKE_CLAUDE_SOURCE_FILE=str(source_copy))
         self.assertEqual((code, result["ok"]), (0, True))
         self.assertEqual(output.read_text(), "No findings.")
 
     def test_all_providers_require_a_completed_nonempty_report(self) -> None:
-        self.install("codex", FAKE_CODEX)
-        self.install("claude", FAKE_CLAUDE)
-        self.install("agy", FAKE_AGY)
+        self.install_fakes("codex", "claude", "agy")
         for provider in review_with_model.PROVIDERS:
             # Whole-response fences are formatting, not evidence of interruption.
             for response in (completed("none"), "```json\n" + completed("none") + "\n```",
@@ -713,7 +694,7 @@ class ReviewWithModelTests(unittest.TestCase):
                 with self.subTest(provider=provider, completed=response):
                     code, result = self.review(
                         provider, FAKE_ANSWER=response, FAKE_CLAUDE_JSON=json.dumps({"result": response}),
-                        FAKE_AGY_JSON=json.dumps({"response": response}), FAKE_AGY_CWD_FILE=str(self.root / "cwd"))
+                        FAKE_AGY_JSON=json.dumps({"response": response}))
                     self.assertEqual((code, result["ok"], result["response"]), (0, True, "none"))
             for response in (json.dumps({"status": "refused"}), json.dumps({"status": "incomplete"}),
                              completed(""), json.dumps({"status": "unknown", "review": "none"}),
@@ -722,14 +703,12 @@ class ReviewWithModelTests(unittest.TestCase):
                 with self.subTest(provider=provider, response=response):
                     code, result = self.review(
                         provider, FAKE_ANSWER=response, FAKE_CLAUDE_JSON=json.dumps({"result": response}),
-                        FAKE_AGY_JSON=json.dumps({"response": response}), FAKE_AGY_CWD_FILE=str(self.root / "cwd"))
+                        FAKE_AGY_JSON=json.dumps({"response": response}))
                     self.assertEqual((code, result["ok"]), (1, False))
                     self.assertNotIn("response", result)
 
     def test_every_provider_cli_is_asked_to_enforce_the_result_schema(self) -> None:
-        self.install("codex", FAKE_CODEX)
-        self.install("claude", FAKE_CLAUDE)
-        self.install("agy", FAKE_AGY)
+        self.install_fakes("codex", "claude", "agy")
         argv, schema_copy = self.root / "argv", self.root / "schema"
         for provider in review_with_model.PROVIDERS:
             with self.subTest(provider=provider):
@@ -737,7 +716,7 @@ class ReviewWithModelTests(unittest.TestCase):
                     provider, FAKE_ANSWER=completed("none"), FAKE_CODEX_ARGV_FILE=str(argv),
                     FAKE_CODEX_SCHEMA_COPY=str(schema_copy), FAKE_CLAUDE_ARGV_FILE=str(argv),
                     FAKE_CLAUDE_JSON=json.dumps({"result": completed("none")}), FAKE_AGY_ARGV_FILE=str(argv),
-                    FAKE_AGY_JSON=json.dumps({"response": completed("none")}), FAKE_AGY_CWD_FILE=str(self.root / "cwd"))
+                    FAKE_AGY_JSON=json.dumps({"response": completed("none")}))
                 self.assertEqual(code, 0)
                 lines = argv.read_text().splitlines()
                 if provider == "openai":
@@ -749,24 +728,21 @@ class ReviewWithModelTests(unittest.TestCase):
     def test_structured_output_confirms_completion_despite_narrated_final_text(self) -> None:
         # Observed on Oct 15-16: valid completed objects behind a lead-in sentence, and report
         # strings with raw newlines. The CLI's validated object is the result; the text is not scraped.
-        self.install("claude", FAKE_CLAUDE)
-        self.install("agy", FAKE_AGY)
+        self.install_fakes("claude", "agy")
         narrated = "I have enough context to finish.\n" + completed("line one\nline two")
         structured = {"status": "completed", "review": "line one\nline two"}
         for provider in ("anthropic", "google"):
             with self.subTest(provider=provider):
                 code, result = self.review(
                     provider, FAKE_CLAUDE_JSON=json.dumps({"result": narrated, "structured_output": structured}),
-                    FAKE_AGY_JSON=json.dumps({"response": narrated, "structured_output": structured}),
-                    FAKE_AGY_CWD_FILE=str(self.root / "cwd"))
+                    FAKE_AGY_JSON=json.dumps({"response": narrated, "structured_output": structured}))
                 self.assertEqual((code, result["ok"], result["response"]), (0, True, "line one\nline two"))
                 self.assertTrue(result["structured_output"])
             with self.subTest(provider=provider, status="refused"):
                 refused = {"status": "refused", "review": "WITHHELD-REPORT-CONTENT"}
                 code, result = self.review(
                     provider, FAKE_CLAUDE_JSON=json.dumps({"result": completed("none"), "structured_output": refused}),
-                    FAKE_AGY_JSON=json.dumps({"response": completed("none"), "structured_output": refused}),
-                    FAKE_AGY_CWD_FILE=str(self.root / "cwd"))
+                    FAKE_AGY_JSON=json.dumps({"response": completed("none"), "structured_output": refused}))
                 self.assertEqual((code, result["outcome"]), (1, "refused"))
                 self.assertNotIn("WITHHELD-REPORT-CONTENT", json.dumps(result))
 
@@ -861,9 +837,8 @@ class ReviewWithModelTests(unittest.TestCase):
         self.install("agy", FAKE_AGY)
         command = "sed -n '1,3000p' /repo/large.py"
         conversation = self.saved_command(command, status=6)
-        env = {"FAKE_AGY_CWD_FILE": str(self.root / "cwd")}
         denial = {"conversation_id": conversation, "denied_actions": [{"action": "command"}, {"action": "read_file"}]}
-        code, result = self.review("google", FAKE_AGY_JSON=json.dumps(denial), **env)
+        code, result = self.review("google", FAKE_AGY_JSON=json.dumps(denial))
         self.assertEqual((code, result["denied_commands"]), (1, [command]))
         self.assertNotIn("recovery", result)
         self.assertIn("hint", result)
@@ -887,8 +862,7 @@ class ReviewWithModelTests(unittest.TestCase):
         for conversation in (None, "../../outside", "12345678-1234-1234-1234-123456789abc"):
             with self.subTest(conversation=conversation):
                 denial = {"conversation_id": conversation, "denied_actions": [{"action": "command"}]}
-                code, result = self.review("google", FAKE_AGY_JSON=json.dumps(denial),
-                                           FAKE_AGY_CWD_FILE=str(self.root / "cwd"))
+                code, result = self.review("google", FAKE_AGY_JSON=json.dumps(denial))
                 self.assertEqual((code, result["denied_commands"]), (1, []))
                 self.assertIn("command_diagnostic", result)
                 self.assertEqual(result["recovery"]["attempts"], 2)
@@ -909,8 +883,7 @@ class ReviewWithModelTests(unittest.TestCase):
             with sqlite3.connect(db) as connection:
                 connection.execute("UPDATE steps SET step_payload=? WHERE status=7", (blob,))
             denial = {"conversation_id": conversation, "denied_actions": [{"action": "command"}]}
-            code, result = self.review("google", FAKE_AGY_JSON=json.dumps(denial),
-                                       FAKE_AGY_CWD_FILE=str(self.root / "cwd"))
+            code, result = self.review("google", FAKE_AGY_JSON=json.dumps(denial))
             self.assertEqual((code, result["ok"]), (1, False))
             self.assertIn("command_diagnostic", result)
 
@@ -931,25 +904,22 @@ class ReviewWithModelTests(unittest.TestCase):
         issue = self.root / "saved-issue.md"
         issue.write_text("# The pending question\n")
         seen = self.root / "agy-input"
-        env = {"FAKE_AGY_JSON": json.dumps({"response": completed("none")}), "FAKE_AGY_CWD_FILE": str(self.root / "cwd"),
+        env = {"FAKE_AGY_JSON": json.dumps({"response": completed("none")}),
                "FAKE_AGY_INPUT_NAME": issue.name, "FAKE_AGY_INPUT_FILE": str(seen)}
-        code, result = self.run_helper("run", "--provider", "google", "--repo", str(self.repo),
-                                       "--prompt-file", str(self.prompt), "--input", str(issue), **env)
+        code, result = self.review("google", "--input", str(issue), **env)
         self.assertEqual((code, result["response"]), (0, "none"))
         self.assertEqual(seen.read_text(), "# The pending question\n")
         named = Path(Path(f"{seen}.path").read_text())
         self.assertTrue(named.is_relative_to(self.repo.resolve()), "inputs sit under the reviewer's read root")
         self.assertFalse(list(self.repo.glob(".model-review-*")), "copied inputs are removed with the scratch")
-        code, result = self.run_helper("run", "--provider", "google", "--repo", str(self.repo),
-                                       "--prompt-file", str(self.prompt), "--input", str(self.root / "absent.md"), **env)
+        code, result = self.review("google", "--input", str(self.root / "absent.md"), **env)
         self.assertEqual((code, result["ok"], result["phase"]), (1, False, "inputs"))
 
     def test_links_in_the_request_are_reported_to_caller_and_reviewer(self) -> None:
         self.install("agy", FAKE_AGY)
         self.commit_base_on_main()
         sent = self.root / "agy-prompt"
-        env = {"FAKE_AGY_JSON": json.dumps({"response": completed("none")}), "FAKE_AGY_CWD_FILE": str(self.root / "cwd"),
-               "FAKE_AGY_PROMPT_FILE": str(sent)}
+        env = {"FAKE_AGY_JSON": json.dumps({"response": completed("none")}), "FAKE_AGY_PROMPT_FILE": str(sent)}
         code, result = self.review("google", **env)
         self.assertEqual(code, 0)
         self.assertNotIn("unreachable_links", result)
@@ -1018,8 +988,7 @@ class ReviewWithModelTests(unittest.TestCase):
         self.assertFalse(cwd_file.exists())
 
     def test_a_reviewer_that_could_write_or_was_denied_a_read_is_a_failure(self) -> None:
-        self.install("claude", FAKE_CLAUDE)
-        self.install("agy", FAKE_AGY)
+        self.install_fakes("claude", "agy")
         denied = json.dumps({"is_error": False, "result": "I could not open it.", "permission_denials": [{"tool_name": "Read"}]})
         code, result = self.review("anthropic", FAKE_CLAUDE_JSON=denied)
         self.assertEqual((code, result["denied"]), (1, ["Read"]))
@@ -1077,7 +1046,7 @@ class ReviewWithModelTests(unittest.TestCase):
     def test_a_locked_out_reviewer_is_a_failure_that_says_how_to_fix_it(self) -> None:
         self.install("agy", FAKE_AGY)
         agy_json = json.dumps({"response": "", "denied_actions": [{"action": "read_file"}]})
-        code, result = self.review("google", FAKE_AGY_JSON=agy_json, FAKE_AGY_CWD_FILE=str(self.root / "cwd"))
+        code, result = self.review("google", FAKE_AGY_JSON=agy_json)
         self.assertEqual((code, result["ok"], result["denied"]), (1, False, ["read_file"]))
         # The suggested rule names this repository, not its parent: the parent could be a home directory.
         self.assertIn(f"read_file({self.repo})", result["hint"])
@@ -1086,8 +1055,7 @@ class ReviewWithModelTests(unittest.TestCase):
         self.assertFalse((self.home / ".gemini").exists(), "a failed run must not create or edit user settings")
 
     def test_an_empty_answer_or_a_provider_error_is_never_reported_as_no_findings(self) -> None:
-        self.install("codex", FAKE_CODEX)
-        self.install("claude", FAKE_CLAUDE)
+        self.install_fakes("codex", "claude")
         code, result = self.review("openai", FAKE_ANSWER="  \n")
         self.assertEqual((code, result["ok"], result["error"]), (1, False, "the reviewer returned nothing"))
         limit = json.dumps({"is_error": True, "result": "You've hit your monthly spend limit"})
@@ -1118,9 +1086,7 @@ class ReviewWithModelTests(unittest.TestCase):
 
     def test_openai_successful_shell_evidence_accepts_none_and_reports_requested_model_honestly(self) -> None:
         self.install("codex", FAKE_CODEX)
-        code, result = self.run_helper("run", "--provider", "openai", "--repo", str(self.repo),
-                                       "--prompt-file", str(self.prompt), "--model", "requested-model",
-                                       FAKE_ANSWER=completed("none"))
+        code, result = self.review("openai", "--model", "requested-model", FAKE_ANSWER=completed("none"))
         self.assertEqual((code, result["response"], result["successful_commands"]), (0, "none", 1))
         self.assertEqual(result["model"], "requested-model")
         self.assertIn("not reported", result["model_source"])
@@ -1194,9 +1160,8 @@ class ReviewWithModelTests(unittest.TestCase):
                 "error connecting to api.github.com\n"}},
             {"type": "PRIVATE-EVENT-token=private"},
         ]
-        code, result = self.run_helper(
-            "run", "--provider", "openai", "--repo", str(self.repo), "--prompt-file", str(self.prompt),
-            "--out", str(output), FAKE_CODEX_EVENTS="\n".join(map(json.dumps, events)),
+        code, result = self.review(
+            "openai", "--out", str(output), FAKE_CODEX_EVENTS="\n".join(map(json.dumps, events)),
             FAKE_ANSWER=json.dumps({"status": "incomplete", "review": "PRIVATE-PARTIAL" * 1000}))
         self.assertEqual(code, 1)
         self.assertNotIn("PRIVATE", json.dumps(result))
@@ -1287,30 +1252,20 @@ class ReviewWithModelTests(unittest.TestCase):
                          (0, "retired-alias", "requested, not reported by the CLI"))
         self.assertNotEqual(str(self.repo), Path(env["FAKE_AGY_CWD_FILE"]).read_text().strip())
         self.assertFalse(list(self.repo.glob(".model-review-*")))
-        rerouted_log = (
-            'I1013 16:57:41.887720 1 model_resolver.go:155] model alias "retired-alias" resolved to "replacement"\n'
-            'I1013 16:57:41.888060 1 model_config_manager.go:340] Propagating selected model override to backend: label="replacement"\n'
-            f"I1013 16:57:42.943221 1 server.go:1219] Created conversation {conversation}\n"
-        )
+        rerouted_log = agy_rerouted_line("retired-alias", "replacement") + agy_selected_line("replacement") + agy_created_line(conversation)
         (base / "cli.log").write_text(rerouted_log)
         code, result = self.review("google", **env)
         self.assertNotEqual(result["model"], "retired-alias")
         self.assertEqual((code, result["model"], result["model_source"]),
                          (0, "replacement", "reported by the CLI (rerouted)"))
         selected_model = "selected (High)"
-        (base / "cli.log").write_text(
-            f'I1013 17:14:50.632344 165 model_config_manager.go:340] Propagating selected model override to backend: label="{selected_model}"\n'
-            f"I1013 17:14:50.865659 413 server.go:1219] Created conversation {conversation}\n"
-        )
+        (base / "cli.log").write_text(agy_selected_line(selected_model) + agy_created_line(conversation))
         code, result = self.review("google", **env)
         self.assertEqual((code, result["model"], result["model_source"]),
                          (0, selected_model, "reported by the CLI"))
         self.assertEqual(result["effort"], "high")
         # A cli.log pointing at another session's conversation falls back to the run's own log or request.
-        (base / "cli.log").write_text(
-            'I1013 17:15:00.000000 1 model_config_manager.go:340] Propagating selected model override to backend: label="other-session"\n'
-            f"I1013 17:15:01.000000 1 server.go:1219] Created conversation {other}\n"
-        )
+        (base / "cli.log").write_text(agy_selected_line("other-session") + agy_created_line(other))
         code, result = self.review("google", **env)
         self.assertEqual((code, result["model"], result["model_source"]),
                          (0, "retired-alias", "requested, not reported by the CLI"))
@@ -1326,10 +1281,8 @@ class ReviewWithModelTests(unittest.TestCase):
         first_conversation = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
         second_conversation = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
         shared_log_text = (
-            'I1015 20:00:00.100000 1 model_config_manager.go:340] Propagating selected model override to backend: label="resolved-first"\n'
-            f"I1015 20:00:00.200000 1 server.go:1233] Created conversation {first_conversation}\n"
-            'I1015 20:00:00.300000 2 model_config_manager.go:340] Propagating selected model override to backend: label="resolved-second"\n'
-            f"I1015 20:00:00.400000 2 server.go:1233] Created conversation {second_conversation}\n"
+            agy_selected_line("resolved-first") + agy_created_line(first_conversation) +
+            agy_selected_line("resolved-second") + agy_created_line(second_conversation)
         )
         for shared_path in (base / "cli.log", base / "log" / "cli-20261015_200000.log"):
             shared_path.write_text(shared_log_text)
@@ -1355,15 +1308,9 @@ printf '%s' "$FAKE_AGY_JSON"
         def run_one(requested: str, resolved: str, conversation: str, write_own_log: bool,
                     log_conversation: str | None = None) -> tuple[int, dict]:
             recorded_conversation = log_conversation or conversation
-            own_log = (
-                f'I1015 20:00:00.100000 1 model_config_manager.go:340] Propagating selected model override to backend: label="{resolved}"\n'
-                f'I1015 20:00:00.150000 1 model_config_manager.go:340] Propagating selected model override to backend: label="{resolved}"\n'
-                f"I1015 20:00:00.200000 1 server.go:1233] Created conversation {recorded_conversation}\n"
-            )
-            return self.run_helper(
-                "run", "--provider", "google", "--repo", str(self.repo),
-                "--prompt-file", str(self.prompt), "--model", requested,
-                FAKE_AGY_OWN_LOG=own_log if write_own_log else "",
+            own_log = 2 * agy_selected_line(resolved) + agy_created_line(recorded_conversation)
+            return self.review(
+                "google", "--model", requested, FAKE_AGY_OWN_LOG=own_log if write_own_log else "",
                 FAKE_AGY_JSON=json.dumps({"response": completed("none"), "conversation_id": conversation, "denied_actions": []}),
             )
 
@@ -1384,16 +1331,9 @@ printf '%s' "$FAKE_AGY_JSON"
         # A log with one Created conversation line but conflicting model labels or reroutes is also unconfirmed.
         (base / "log" / "cli-20261015_200000.log").unlink()
         for conflicting_log in (
-            (
-                'I1015 20:00:00.100000 1 model_config_manager.go:340] Propagating selected model override to backend: label="resolved-first"\n'
-                f"I1015 20:00:00.200000 1 server.go:1233] Created conversation {first_conversation}\n"
-                'I1015 20:00:00.300000 2 model_config_manager.go:340] Propagating selected model override to backend: label="resolved-second"\n'
-            ),
-            (
-                'I1015 20:00:00.100000 1 model_resolver.go:155] model alias "requested-first" resolved to "rerouted-first"\n'
-                'I1015 20:00:00.150000 1 model_config_manager.go:340] Propagating selected model override to backend: label="resolved-second"\n'
-                f"I1015 20:00:00.200000 1 server.go:1233] Created conversation {first_conversation}\n"
-            ),
+            agy_selected_line("resolved-first") + agy_created_line(first_conversation) + agy_selected_line("resolved-second"),
+            agy_rerouted_line("requested-first", "rerouted-first") + agy_selected_line("resolved-second") +
+            agy_created_line(first_conversation),
         ):
             (base / "cli.log").write_text(conflicting_log)
             code, result = run_one("requested-first", "resolved-first", first_conversation, False)
@@ -1402,10 +1342,7 @@ printf '%s' "$FAKE_AGY_JSON"
             )
 
         # A non-empty per-run log with a mismatched conversation_id must not fall through to a shared cli.log.
-        (base / "cli.log").write_text(
-            'I1015 20:00:00.100000 1 model_config_manager.go:340] Propagating selected model override to backend: label="shared-fallback"\n'
-            f"I1015 20:00:00.200000 1 server.go:1233] Created conversation {first_conversation}\n"
-        )
+        (base / "cli.log").write_text(agy_selected_line("shared-fallback") + agy_created_line(first_conversation))
         code, result = run_one(
             "requested-first", "resolved-first", first_conversation, True, log_conversation=second_conversation
         )
@@ -1454,10 +1391,7 @@ printf '%s' "$FAKE_AGY_JSON"
         self.assertEqual(result["response"], "none")
         self.assertTrue(inside.exists())
         marker.write_text("High: stop.")
-        code, result = self.run_helper(
-            "run", "--provider", "openai", "--repo", str(self.repo), "--prompt-file", str(self.prompt),
-            "--out", str(self.root / "missing" / "review.md"), FAKE_ANSWER=completed("none"),
-        )
+        code, result = self.review("openai", "--out", str(self.root / "missing" / "review.md"), FAKE_ANSWER=completed("none"))
         self.assertEqual((code, result["ok"]), (0, True))
         self.assertIn("High: stop.", result["response"])
         self.assertIn("output_error", result)
@@ -1504,11 +1438,7 @@ printf '%s' "$FAKE_AGY_JSON"
         backups = list(settings.parent.glob("settings.json.before-model-review-repair-*"))
         # Repaired settings let the reviewer start, and a second repair changes nothing and adds no backup.
         self.install("agy", FAKE_AGY)
-        cwd_file = self.root / "agy-cwd"
-        code, review = self.review(
-            "google", FAKE_AGY_JSON=json.dumps({"response": completed("reviewed"), "denied_actions": []}),
-            FAKE_AGY_CWD_FILE=str(cwd_file),
-        )
+        code, review = self.review("google", FAKE_AGY_JSON=json.dumps({"response": completed("reviewed"), "denied_actions": []}))
         self.assertEqual((code, review["response"]), (0, "reviewed"))
         code, again = self.run_helper("repair")
         self.assertEqual((code, again["removed"], "backup" in again), (0, [], False))
