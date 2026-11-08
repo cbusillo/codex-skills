@@ -2035,18 +2035,28 @@ def test_failed_jobs_include_direct_logs_endpoint(monkeypatch):
 
 
 
+def review_thread_document(
+    pr: dict[str, Any], *, resolved: bool = False, outdated: bool = False,
+    comment_sha: str | None = None, comment_ids: tuple[int, ...] = (17,),
+) -> dict[str, Any]:
+    return {"data": {"repository": {"nameWithOwner": pr["repo"], "pullRequest": {
+        "number": pr["number"], "url": pr["url"], "headRefOid": pr["head_sha"],
+        "reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": [{
+            "id": "thread17", "isResolved": resolved, "isOutdated": outdated,
+            "comments": {"pageInfo": {"hasNextPage": False}, "nodes": [
+                {"databaseId": i, "commit": {"oid": pr["head_sha"] if comment_sha is None else comment_sha}}
+                for i in comment_ids
+            ]},
+        }]},
+    }}}}
+
+
 @pytest.mark.parametrize("resolved,outdated,comment_sha", [(False, False, "abc123"), (False, True, "old"), (True, False, "abc123")])
 def test_security_threads_survive_seen_comments(monkeypatch, resolved, outdated, comment_sha):
     pr = sample_pr()
     comment = {"id": 17, "user": {"login": "github-advanced-security[bot]"}, "body": "CodeQL finding", "commit_id": comment_sha}
     monkeypatch.setattr(gh_pr_watch, "gh_api_list_paginated", lambda endpoint, **kwargs: [comment] if endpoint.endswith("/comments") and "/pulls/" in endpoint else [])
-    body = {"data": {"repository": {"nameWithOwner": pr["repo"], "pullRequest": {
-        "number": pr["number"], "url": pr["url"], "headRefOid": pr["head_sha"],
-        "reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": [{
-            "id": "thread17", "isResolved": resolved, "isOutdated": outdated,
-            "comments": {"pageInfo": {"hasNextPage": False}, "nodes": [{"databaseId": 17, "commit": {"oid": comment_sha}}]},
-        }]},
-    }}}}
+    body = review_thread_document(pr, resolved=resolved, outdated=outdated, comment_sha=comment_sha)
     reader = ReviewReader(body=body)
     state = {}
     first = gh_pr_watch.fetch_new_review_items(pr, state, True, reader=reader)
@@ -2066,12 +2076,8 @@ def test_security_threads_survive_seen_comments(monkeypatch, resolved, outdated,
 @pytest.mark.parametrize("fault", ["head", "errors", "truncated", "missing_comment", "missing_resolution"])
 def test_incomplete_security_threads_never_prove_ready(fault):
     pr = sample_pr()
-    item = {"number": pr["number"], "url": pr["url"], "headRefOid": pr["head_sha"],
-            "reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": [{
-                "id": "thread17", "isResolved": False, "isOutdated": False,
-                "comments": {"pageInfo": {"hasNextPage": False}, "nodes": [{"databaseId": 17, "commit": {"oid": pr["head_sha"]}}]},
-            }]}}
-    body = {"data": {"repository": {"nameWithOwner": pr["repo"], "pullRequest": item}}}
+    body = review_thread_document(pr)
+    item = body["data"]["repository"]["pullRequest"]
     if fault == "head":
         item["headRefOid"] = "different"
     elif fault == "errors":
@@ -2117,15 +2123,7 @@ def test_security_thread_pagination_pins_every_page():
 
 def test_multiple_bot_comments_count_as_one_thread():
     pr = sample_pr()
-    body = {"data": {"repository": {"nameWithOwner": pr["repo"], "pullRequest": {
-        "number": pr["number"], "url": pr["url"], "headRefOid": pr["head_sha"],
-        "reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": [{
-            "id": "thread17", "isResolved": False, "isOutdated": False,
-            "comments": {"pageInfo": {"hasNextPage": False}, "nodes": [
-                {"databaseId": i, "commit": {"oid": pr["head_sha"]}} for i in (17, 18)
-            ]},
-        }]},
-    }}}}
+    body = review_thread_document(pr, comment_ids=(17, 18))
     evidence = gh_pr_watch.fetch_review_threads(pr, [
         {"id": str(i), "author": "github-advanced-security[bot]"} for i in (17, 18)
     ], ReviewReader(body=body))
@@ -2138,13 +2136,7 @@ def test_resolved_comments_do_not_replay_after_graphql_failure(monkeypatch):
     pr = sample_pr()
     comment = {"id": 17, "user": {"login": "github-advanced-security[bot]"}, "body": "CodeQL finding"}
     monkeypatch.setattr(gh_pr_watch, "gh_api_list_paginated", lambda endpoint, **kwargs: [comment] if endpoint.endswith("/comments") and "/pulls/" in endpoint else [])
-    body = {"data": {"repository": {"nameWithOwner": pr["repo"], "pullRequest": {
-        "number": pr["number"], "url": pr["url"], "headRefOid": pr["head_sha"],
-        "reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": [{
-            "id": "thread17", "isResolved": True, "isOutdated": False,
-            "comments": {"pageInfo": {"hasNextPage": False}, "nodes": [{"databaseId": 17, "commit": {"oid": pr["head_sha"]}}]},
-        }]},
-    }}}}
+    body = review_thread_document(pr, resolved=True)
     reader = ReviewReader(body=body)
     state = {}
     assert gh_pr_watch.fetch_new_review_items(pr, state, True, reader=reader) == []
