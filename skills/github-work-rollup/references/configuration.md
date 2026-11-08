@@ -58,3 +58,8 @@ the workstream remains "Example Workstream" and the initiative is "Example
 Initiative". If these
 fields are absent, executive rendering infers a workstream from item titles, but
 explicit metadata is more reliable.
+
+Repository-wide issue-comment and inline-review-comment feeds remain on REST.
+GraphQL has no equivalent repository-wide connection for those feeds, and thread
+`updatedAt` has not been shown to cover every comment edit. The existing
+updated-since discovery and its coverage therefore remain authoritative.

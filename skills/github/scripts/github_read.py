@@ -677,6 +677,7 @@ def read_repository_connections(
     limit: int | None = None,
     identity: Callable[[dict[str, Any]], Any] | None = None,
     metadata: dict[str, dict[str, Any]] | None = None,
+    stop_when: Callable[[dict[str, Any]], bool] | None = None,
 ) -> dict[str, list[dict[str, Any]] | Exception]:
     repos = list(dict.fromkeys(repositories))
     if any(not isinstance(repo, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo) for repo in repos):
@@ -696,6 +697,7 @@ def read_repository_connections(
                     limit=limit,
                     identity=identity,
                     metadata=metadata,
+                    stop_when=stop_when,
                 )
             )
         return grouped
@@ -761,15 +763,20 @@ def read_repository_connections(
                 nodes, cursor, total = graphql_connection_page(repository_node.get(field))
                 if total != totals.setdefault(repo, total):
                     raise RepositoryInventoryUnavailable("inventory changed during pagination", retryable=True)
+                stopped = False
                 for node in nodes:
                     key = identity(node) if identity is not None else node.get("number")
                     if key is None or key in identities[repo] or identity is None and (type(key) is not int or key <= 0):
                         raise RepositoryInventoryUnavailable("invalid or duplicate record")
                     identities[repo].add(key)
-                    records.append(normalize(repo, node))
+                    row = normalize(repo, node)
+                    if stop_when is not None and stop_when(row):
+                        stopped = True
+                        break
+                    records.append(row)
                     if limit is not None and len(records) >= limit:
                         break
-                if limit is not None and len(records) >= limit:
+                if stopped or limit is not None and len(records) >= limit:
                     continue
                 if cursor:
                     if cursor in seen[repo]:
@@ -866,21 +873,17 @@ def discussion_comment(node: dict[str, Any], repo: str, number: int) -> dict[str
     }
 
 
-def read_discussion(reader: GitHubReader, repo: str, number: int, *, issue_id: int | None = None) -> dict[str, Any]:
-    owner, name = repo.split("/")
-    fields = DISCUSSION_COMMENT_FIELDS + " number title state closedAt " + discussion_connection("comments", DISCUSSION_ISSUE_COMMENT_FIELDS)
-    review_fields = discussion_connection("reviews", DISCUSSION_REVIEW_FIELDS)
-    document = (
-        "query($owner:String!,$name:String!,$number:Int!) { repository(owner:$owner,name:$name) { "
-        "issueOrPullRequest(number:$number) { ... on Issue { " + fields + " } ... on PullRequest { "
-        + fields + " " + review_fields + " } } } rateLimit { cost } }"
-    )
-    data = discussion_query(reader, document, {"owner": owner, "name": name, "number": number})
-    repository_node = data.get("repository")
-    thread = repository_node.get("issueOrPullRequest") if isinstance(repository_node, dict) else None
-    if not isinstance(thread, dict) or thread.get("__typename") not in {"Issue", "PullRequest"}:
-        raise GitHubReadShapeError(f"GitHub did not expose {repo}#{number}")
-    comments = discussion_nodes(reader, thread, "comments", DISCUSSION_ISSUE_COMMENT_FIELDS)
+
+def discussion_thread(node: dict[str, Any], repo: str, number: int) -> dict[str, Any]:
+    return {
+        **discussion_comment(node, repo, number), "number": node["number"], "title": node["title"],
+        "state": "closed" if node["state"] in {"CLOSED", "MERGED"} else "open", "closed_at": node["closedAt"],
+    }
+
+def discussion_issue_id(
+    reader: GitHubReader, repo: str, number: int, thread: dict[str, Any], comments: list[dict[str, Any]],
+    *, issue_id: int | None = None,
+) -> int:
     resolved_id = thread.get("databaseId")
     if thread["__typename"] == "PullRequest":
         identities = {
@@ -896,10 +899,29 @@ def read_discussion(reader: GitHubReader, repo: str, number: int, *, issue_id: i
             resolved_id = reader.get_json(
             f"/repos/{repo}/issues/{number}", step="discussion_issue_identity"
             )["id"]
+    if type(resolved_id) is not int:
+        raise GitHubReadShapeError("Discussion message identity is unavailable")
+    return resolved_id
+
+
+def read_discussion(reader: GitHubReader, repo: str, number: int, *, issue_id: int | None = None) -> dict[str, Any]:
+    owner, name = repo.split("/")
+    fields = DISCUSSION_COMMENT_FIELDS + " number title state closedAt " + discussion_connection("comments", DISCUSSION_ISSUE_COMMENT_FIELDS)
+    review_fields = discussion_connection("reviews", DISCUSSION_REVIEW_FIELDS)
+    document = (
+        "query($owner:String!,$name:String!,$number:Int!) { repository(owner:$owner,name:$name) { "
+        "issueOrPullRequest(number:$number) { ... on Issue { " + fields + " } ... on PullRequest { "
+        + fields + " " + review_fields + " } } } rateLimit { cost } }"
+    )
+    data = discussion_query(reader, document, {"owner": owner, "name": name, "number": number})
+    repository_node = data.get("repository")
+    thread = repository_node.get("issueOrPullRequest") if isinstance(repository_node, dict) else None
+    if not isinstance(thread, dict) or thread.get("__typename") not in {"Issue", "PullRequest"}:
+        raise GitHubReadShapeError(f"GitHub did not expose {repo}#{number}")
+    comments = discussion_nodes(reader, thread, "comments", DISCUSSION_ISSUE_COMMENT_FIELDS)
+    resolved_id = discussion_issue_id(reader, repo, number, thread, comments, issue_id=issue_id)
     result: dict[str, Any] = {
-        **discussion_comment({**thread, "databaseId": resolved_id}, repo, number), "number": thread["number"], "title": thread["title"],
-        "state": "closed" if thread["state"] in {"CLOSED", "MERGED"} else "open",
-        "closed_at": thread["closedAt"],
+        **discussion_thread({**thread, "databaseId": resolved_id}, repo, number),
         "comments": [discussion_comment(node, repo, number) for node in comments],
         "reviews": [], "review_comments": [],
     }

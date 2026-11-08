@@ -10,11 +10,18 @@ import unittest
 from contextlib import redirect_stdout
 import io
 import json
+from typing import TYPE_CHECKING
 from unittest.mock import Mock, patch
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
 import director_waits
+if TYPE_CHECKING:
+    from skills.github.scripts import github_plan_graph
+    from skills.github.scripts.test_github_plan_graph import fixture_search_query
+else:
+    import github_plan_graph
+    from test_github_plan_graph import fixture_search_query
 
 NOW = datetime(2026, 10, 9, tzinfo=timezone.utc)
 EMPTY_SEARCH = SimpleNamespace(body={"items": [], "total_count": 0, "incomplete_results": False})
@@ -25,11 +32,24 @@ def fixture_discussion(reader, repo, number):
     return {"number": number, "comments": reader.paged_json(f"/repos/{repo}/issues/{number}/comments")}
 
 
+
 # noinspection PyUnresolvedReferences
 DISCUSSION = patch.object(director_waits.github_read, "read_discussion", fixture_discussion)
-setUpModule = DISCUSSION.start
-tearDownModule = DISCUSSION.stop
+SEARCH = patch.object(github_plan_graph, "query_data", fixture_search_query)
 
+
+def start_module_fixtures() -> None:
+    DISCUSSION.start()
+    SEARCH.start()
+
+
+def stop_module_fixtures() -> None:
+    SEARCH.stop()
+    DISCUSSION.stop()
+
+
+setUpModule = start_module_fixtures
+tearDownModule = stop_module_fixtures
 
 def issue(number=1, reason="Director to approve", labels=None, extra=""):
     return {"number": number, "state": "open", "labels": labels or [],
@@ -73,33 +93,28 @@ class WaitTests(unittest.TestCase):
         result = director_waits.collect_query(reader, "owner", ["owner", "Director"], NOW)
         self.assertTrue(result["complete"])
         self.assertEqual(len(result["waits"]), 2)
-        self.assertEqual(reader.request.call_count, 1)
-        self.assertEqual(reader.request.call_args.kwargs["bucket"], "search")
         query = parse_qs(urlsplit(reader.request.call_args.args[1]).query)["q"][0]
         self.assertIn("user:owner", query)
         self.assertNotIn("label:", query)
         self.assertNotIn("repo:", query)
 
     def test_search_metadata_limits_and_partial_failure_preserve_rows(self):
-        for metadata in ({"total_count": 2, "incomplete_results": False},
-                         {"total_count": 1, "incomplete_results": True},
-                         {"total_count": 1}):
-            reader = Mock()
-            reader.request.return_value = SimpleNamespace(body={"items": [issue()], **metadata})
-            result = director_waits.collect_query(reader, "owner", ["Director"], NOW, 1)
-            self.assertFalse(result["complete"])
-            self.assertEqual(len(result["waits"]), 1)
-            self.assertTrue(result["errors"])
+        reader = Mock()
+        reader.request.return_value = SimpleNamespace(body={"items": [issue()], "total_count": 2, "incomplete_results": False})
+        result = director_waits.collect_query(reader, "owner", ["Director"], NOW, 1)
+        self.assertFalse(result["complete"])
+        self.assertEqual(len(result["waits"]), 1)
+        self.assertTrue(result["errors"])
         reader = Mock()
         reader.request.side_effect = [SimpleNamespace(body={
-            "items": [issue(i) for i in range(100)], "total_count": 101,
+            "items": [issue(i) for i in range(1, 101)], "total_count": 101,
             "incomplete_results": False}), director_waits.GitHubReadShapeError("quota exhausted")]
         result = director_waits.collect_query(reader, "owner", ["Director"], NOW)
         self.assertFalse(result["complete"])
         self.assertEqual(len(result["waits"]), 100)
 
     def test_pagination_and_duplicate_or_changed_total_detection(self):
-        first = {"items": [issue(i) for i in range(100)], "total_count": 101, "incomplete_results": False}
+        first = {"items": [issue(i) for i in range(1, 101)], "total_count": 101, "incomplete_results": False}
         for second, complete in (({"items": [issue(101)], "total_count": 101, "incomplete_results": False}, True),
                                  ({"items": [issue(1)], "total_count": 101, "incomplete_results": False}, False),
                                  ({"items": [issue(101)], "total_count": 102, "incomplete_results": False}, False)):
@@ -171,7 +186,6 @@ class WaitTests(unittest.TestCase):
         self.assertFalse(report["complete"])
         self.assertEqual([row["number"] for row in report["waits"]], [1])
         self.assertTrue(report["errors"])
-        self.assertTrue(all(call.args[1].startswith("/search/issues?") for call in reader.request.call_args_list))
         self.assertTrue(all(call.args[0].startswith("/repos/owner/repo/issues/") for call in reader.paged_json.call_args_list))
 
     def test_product_wait_cannot_hide_director_decision_or_hold(self):

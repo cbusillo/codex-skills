@@ -195,12 +195,16 @@ def search_records(
     query: str,
     *,
     limit: int,
+    allow_partial: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     cursor = None
+    consumed = 0
     seen: set[str] = set()
     rows: list[dict[str, Any]] = []
     identities: set[tuple[str, int]] = set()
     expected = None
+    totals: set[int] = set()
+    errors: list[str] = []
     fields = (
         "__typename ... on Issue { "
         + ISSUE_FIELDS
@@ -212,27 +216,51 @@ def search_records(
         + connection_query("labels")
         + " }"
     )
-    while len(rows) < limit:
-        document = (
-            f"query {{ search(query:{json.dumps(query)},type:ISSUE,first:{min(100, limit - len(rows))},after:{json.dumps(cursor)}) "
-            f"{{ totalCount:issueCount nodes {{ {fields} }} pageInfo {{ hasNextPage endCursor }} }} rateLimit {{ cost remaining resetAt }} }}"
-        )
-        payload = query_data(reader, document, step="planning_search", root_path=("search",))
-        nodes, cursor, total = connection_page(payload.get("search"))
-        expected = max(total, expected or 0)
-        for node in nodes:
-            kind = {"Issue": "issue", "PullRequest": "pullRequest"}[node["__typename"]]
-            key = node["repository"]["nameWithOwner"].casefold(), node["number"]
-            if key in identities:
-                raise github_read.GitHubReadShapeError("Duplicate search record", retryable=True)
-            identities.add(key)
-            rows.append(rest_record(complete_issue(reader, node, comments=False, fields=("labels",), kind=kind), kind=kind))
-        if cursor is None or len(rows) >= limit:
-            return rows, {"total_count": expected, "incomplete_results": cursor is None and len(rows) != expected}
-        if cursor in seen:
-            raise github_read.GitHubReadShapeError("Search cursor repeated")
-        seen.add(cursor)
-    return rows, {"total_count": expected, "incomplete_results": False}
+    while consumed < limit:
+        try:
+            document = (
+                f"query {{ search(query:{json.dumps(query)},type:ISSUE,first:{min(100, limit - consumed)},after:{json.dumps(cursor)}) "
+                f"{{ totalCount:issueCount nodes {{ {fields} }} pageInfo {{ hasNextPage endCursor }} }} rateLimit {{ cost remaining resetAt }} }}"
+            )
+            payload = query_data(reader, document, step="planning_search", root_path=("search",))
+            nodes, cursor, total = connection_page(payload.get("search"))
+            totals.add(total)
+            expected = max(total, expected or 0)
+            for node in nodes[:limit - consumed]:
+                consumed += 1
+                try:
+                    kind = {"Issue": "issue", "PullRequest": "pullRequest"}[node["__typename"]]
+                    repo, number = node["repository"]["nameWithOwner"], node["number"]
+                    if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo) or type(number) is not int or number <= 0:
+                        raise github_read.GitHubReadShapeError("Search record identity unavailable")
+                    key = repo.casefold(), number
+                    if key in identities:
+                        raise github_read.GitHubReadShapeError("Duplicate search record", retryable=True)
+                    row = rest_record(complete_issue(reader, node, comments=False, fields=("labels",), kind=kind), kind=kind)
+                    identities.add(key)
+                    rows.append(row)
+                except (github_read.GitHubReadError, github_read.GitHubReadShapeError, KeyError, TypeError, ValueError) as error:
+                    if not allow_partial:
+                        raise
+                    errors.append(str(error))
+            if cursor is None or consumed >= limit:
+                break
+            if cursor in seen:
+                raise github_read.GitHubReadShapeError("Search cursor repeated")
+            seen.add(cursor)
+        except (github_read.GitHubReadError, github_read.GitHubReadShapeError, KeyError, TypeError, ValueError) as error:
+            if not allow_partial:
+                raise
+            errors.append(str(error))
+            break
+    if len(totals) > 1:
+        errors.append("Search total changed during pagination")
+    return rows, {
+        "total_count": expected,
+        "incomplete_results": bool(errors) or cursor is None and len(rows) != expected,
+        **({"errors": errors} if allow_partial else {}),
+    }
+
 
 
 connection_page = github_read.graphql_connection_page
