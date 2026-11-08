@@ -171,7 +171,7 @@ def verify_handoff(entry: dict, args: argparse.Namespace, operation: Operation, 
     try:
         saved = closure.source_records({entry["session_id"]}).get(entry["session_id"]) if not retired else None
         associated = release.handoff_association(entry, saved, reader=reader, actor=actor)
-    except ValueError as error:
+    except (ValueError, OSError, GitHubReadError) as error:
         raise GateFailed("handoff", str(error)) from error
     selected = getattr(args, "handoff_url", None) or operation.state.get("handoff", {}).get("url") or associated
     require(not associated or associated == selected, "handoff", "current handoff differs; preserve it")

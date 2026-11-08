@@ -322,9 +322,6 @@ def _record_closure(path: Path, entry: dict, supervisor_session: str, *, persist
     else:
         process = github_plan_native._source_process(entry, saved)
         github_plan_native.recheck_source_process(process)
-    if saved and (saved.get("resumed_generation") or saved.get("handoff_url") != entry.get("handoff_url")):
-        entry = {**entry, "handoff_url": handoff_association(entry, saved)}
-    association_changed = saved is not None and saved.get("handoff_url") != entry.get("handoff_url")
     recovered = False
     if existing and existing[0].get("resumed_at") and not existing[0].get("resumed_generation") and native:
         # An invalidation is not a launch. Full current native/source proof can
@@ -355,6 +352,10 @@ def _record_closure(path: Path, entry: dict, supervisor_session: str, *, persist
                    if saved_identity[key] != current_identity[key]]
         if changed:
             raise ValueError(f"closure log identity changed ({', '.join(changed)}); preserve the original record")
+    if saved and (saved.get("resumed_generation") or saved.get("handoff_url") != entry.get("handoff_url")):
+        entry = {**entry, "handoff_url": handoff_association(entry, saved)}
+    association_changed = saved is not None and saved.get("handoff_url") != entry.get("handoff_url")
+    if existing:
         closed = {**existing[0], "handoff_url": entry.get("handoff_url"),
                   **{k: v for k, v in entry.items() if k.startswith("_")}}
     else:

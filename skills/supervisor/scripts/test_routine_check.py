@@ -842,6 +842,8 @@ class RoutineCheckTests(unittest.TestCase):
                 by_id = {str(row["id"]): row for row in comments.values()}
                 if variant in {"explicit", "intermediate", "discovery", "journal_retry"}:
                     by_id.pop("8")
+                if variant == "unknown_comment":
+                    by_id.pop("9")
                 def read_comment(mapping: dict[str, dict], path: str, **_kwargs: Any) -> dict:
                     if path.rsplit("/", 1)[-1] not in mapping:
                         raise session_closeout.GitHubReadError("prior handoff deleted", result=ApiResult(False, status=404, body=None), diagnostics={})
@@ -849,12 +851,9 @@ class RoutineCheckTests(unittest.TestCase):
 
                 reader = SimpleNamespace(get_json=Mock(side_effect=partial(read_comment, by_id)),
                                          paged_json=Mock(return_value=[comments["old"]] if variant == "no_new_handoff" else list(comments.values())))
-                if variant == "unknown_comment":
-                    reader.get_json.side_effect = session_closeout.GitHubReadError(
-                        "comment source unavailable", result=ApiResult(False, status=503, body=None), diagnostics={})
                 error = {"same_generation": "current handoff differs", "aborted_conflict": "current handoff differs",
                          "missing_source": "current handoff differs", "wrong_generation": "source authority",
-                         "unknown_source": "source unavailable", "unknown_comment": "comment source unavailable",
+                         "unknown_source": "source unavailable", "unknown_comment": "prior handoff deleted",
                          "old_selected": "created in", "no_new_handoff": "found 0 candidates",
                          "journal_conflict": "journal already records", "ledger_changed": "ledger generation changed",
                          "canonical_conflict": "current handoff differs"}.get(variant)
@@ -863,8 +862,7 @@ class RoutineCheckTests(unittest.TestCase):
                       patch.object(session_closeout.closure, "source_records", return_value={} if variant == "missing_source" else {session: saved},
                                    side_effect=ValueError("source unavailable") if variant == "unknown_source" else None)):
                     if error:
-                        refusal_type = session_closeout.GitHubReadError if variant == "unknown_comment" else GateFailed
-                        with self.assertRaisesRegex(refusal_type, error):
+                        with self.assertRaisesRegex(GateFailed, error):
                             session_closeout.verify_handoff(current, args, operation, retired=False)
                         self.assertEqual(json.loads(ledger.read_text()), rows)
                         if variant != "ledger_changed":

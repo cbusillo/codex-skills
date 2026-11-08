@@ -1395,6 +1395,17 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "handoff_url"):
             helper.record_closure(log, {**self.entry, "handoff_url": self.entry["handoff_url"].replace("-99", "-100")}, "supervisor")
         self.assertEqual(json.loads(log.read_text())[0]["handoff_url"], self.entry["handoff_url"])
+        modern = {**self.entry, "launch_pid": self.entry["pid"], "launch_generation": "current",
+                  "launch_started_at": "2026-01-01T00:00:30Z", "codex_home": str(self.root)}
+        for current in (False, True):
+            with self.subTest(current=current):
+                log.write_text(json.dumps([{**modern, "handoff_url": None}]))
+                self.reader.get_json.return_value["created_at"] = (
+                    helper.release.stamp(modern["launch_started_at"]) + timedelta(seconds=1 if current else -1)).isoformat()
+                with patch_attribute(helper, "GitHubReader", return_value=self.reader), patch_attribute(identity, "automation_login", return_value=ACTOR):
+                    finished = helper.record_closure(log, modern, "supervisor")
+                self.assertEqual(finished["handoff_url"], modern["handoff_url"] if current else None)
+                self.assertEqual(finished["ended_at"], modern["ended_at"])
 
     def test_finish_preserves_the_canonical_handoff_from_a_stale_ledger(self) -> None:
         log = self.root / "stale-ledger.json"
