@@ -291,7 +291,7 @@ def requested_product_key(args, host):
         return PYTHON_PRODUCT_KEY
     try:
         _repo, config, _scope, selected = common.scope_selection(args, host)
-    except (Blocked, host.InspectError, OSError, subprocess.SubprocessError, ValueError):
+    except (Blocked, OSError, subprocess.SubprocessError, ValueError):
         return PYTHON_PRODUCT_KEY
     return native_product_key(host, config, selected)
 

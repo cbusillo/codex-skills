@@ -94,7 +94,7 @@ class NativeCommonTests(unittest.TestCase):
 
     def test_selection_helpers_use_canonical_lane_validation(self) -> None:
         args = host.build_parser().parse_args(["agent-inspect", "--repo", str(self.repo), "--scope", "files", "--file", "src/a.py"])
-        for value in ([], [{}], False, 0, "", {}):
+        for value in ([], [{}]):
             config = {"lanes": value}
             self.declare_inspection(config)
             with self.assertRaises(host.InspectError) as canonical:

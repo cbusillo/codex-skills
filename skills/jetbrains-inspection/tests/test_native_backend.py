@@ -1335,6 +1335,8 @@ print('Done.')
     def test_invalid_lane_arrays_reach_safe_configuration_reports(self) -> None:
         directory = self.repo / ".github"
         directory.mkdir()
+        self.args.native_worker = None
+        self.args.ide_app = None
         for lanes in ([], [{}]):
             config = {"lanes": lanes}
             (directory / "github.json").write_text(json.dumps({"qualityGate": {"inspection": config}}))
