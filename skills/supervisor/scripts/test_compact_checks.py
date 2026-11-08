@@ -8,9 +8,11 @@ import asyncio
 import json
 import subprocess
 import tempfile
+import time
 import unittest
-from pathlib import Path
 from contextlib import nullcontext
+from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -18,12 +20,12 @@ from unittest.mock import AsyncMock, patch
 import catalog_landing
 import check_changes
 import check_operation
+import codex_session_proxy
 import iterm_tab
 import oq
 import session_closeout
 import session_liveness
 import tmux_terminal
-import codex_session_proxy
 
 
 def patch_attr(target: Any, name: str, *args: Any, **kwargs: Any) -> Any:
@@ -71,6 +73,143 @@ class OperationTests(unittest.TestCase):
             with self.assertRaises(check_operation.GateFailed):
                 operation.run("quit", ["native"], once=True)
             self.assertEqual(run.call_count, 1)
+
+    def test_finish_waits_for_full_source_exit_without_replaying_quit(self) -> None:
+        for obstruction in (
+            "immediate",
+            "delayed_pid",
+            "delayed_tty",
+            "persistent_pid",
+            "persistent_tty",
+            "reused_pid",
+            "uncertain",
+            "changed_ledger",
+            "changed_native",
+        ):
+            with self.subTest(obstruction=obstruction):
+                self._check_finish_exit_wait(obstruction)
+
+    def _check_finish_exit_wait(self, obstruction: str) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            transcript, ledger, closed_log = (root / name for name in ("source.jsonl", "ledger.json", "closed.json"))
+            transcript.write_text(
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "sessionId": "native",
+                        "timestamp": "2026-01-01T00:00:00Z",
+                        "message": {"content": "Safe to exit: yes", "stop_reason": "end_turn"},
+                    }
+                )
+                + "\n"
+            )
+            entry = {
+                "session_id": "native",
+                "harness": "claude",
+                "supervisor_owned": True,
+                "backend": "tmux",
+                "tmux_session_id": "terminal",
+                "transcript": str(transcript),
+                "pid": 8,
+                "tty": "ttys001",
+            }
+            ledger.write_text(json.dumps([entry]))
+            args = argparse.Namespace(
+                ledger=ledger, session_id="native", supervisor_session="supervisor", owner="owner", exit_seconds=1
+            )
+            operation = check_operation.Operation(root / "evidence", [str(ledger), "native"])
+            operation.state["steps"]["quit"] = {"complete": True, "result": {"delivery": "session_ended"}}
+            original_quit = dict(operation.state["steps"]["quit"])
+            rows = (
+                []
+                if obstruction in {"immediate", "uncertain"}
+                else [(8, "other-tty", "claude")]
+                if obstruction == "reused_pid"
+                else [(8, "ttys001", "claude")]
+                if obstruction.endswith("pid")
+                else [(9, "ttys001", "node fixture")]
+            )
+            saved, calls, elapsed = {}, [], 0.0
+
+            def advance(seconds: float) -> None:
+                nonlocal elapsed
+                elapsed += seconds
+                if obstruction.startswith("delayed"):
+                    rows.clear()
+                elif obstruction == "changed_ledger":
+                    ledger.write_text(json.dumps([{**entry, "supervisor_owned": False}]))
+                    rows.clear()
+                elif obstruction == "changed_native":
+                    transcript.write_text(
+                        json.dumps(
+                            {
+                                "type": "user",
+                                "sessionId": "native",
+                                "timestamp": "2026-01-01T00:01:00Z",
+                                "message": {"content": "new work"},
+                            }
+                        )
+                        + "\n"
+                    )
+                    rows.clear()
+
+            def inventory() -> list[tuple[int, str, str]]:
+                if obstruction == "uncertain":
+                    raise OSError("fixture process inventory unavailable")
+                return list(rows)
+
+            def run(gate: str, _command: list[str], **_: Any) -> Any:
+                calls.append(gate)
+                if gate == "claims":
+                    return {"claims_clear": True, "coverage": {"complete": True}}
+                if gate == "finish":
+                    self.assertFalse(rows, "finish reached before independent source exit proof")
+                    self.assertEqual(json.loads(ledger.read_text()), [entry])
+                    self.assertTrue(session_closeout.ready(entry, "supervisor")["safe_verdict"])
+                    closed = session_closeout.release.record_closure(closed_log, entry, "supervisor")
+                    saved["native"] = closed
+                    return {"ok": True, "needs_reconciliation": False}
+                self.assertIn(gate, {"terminals", "disappearance"})
+                return []
+
+            clock = SimpleNamespace(monotonic=lambda: elapsed, sleep=advance, time=time.time)
+            with (
+                patch.object(operation, "run", side_effect=run),
+                patch.object(session_closeout, "verify_handoff"),
+                patch_attr(session_closeout, "time", clock),
+                patch.object(session_closeout.github_identity, "automation_login", return_value="agent[bot]"),
+                patch.object(session_closeout.closure, "ownership", return_value=nullcontext()),
+                patch.object(session_closeout.closure, "source_records", side_effect=lambda _: dict(saved)),
+                patch.object(session_closeout.release, "transcript_roots", return_value=[str(root)]),
+                patch_attr(session_closeout.release, "inventory", side_effect=inventory),
+                patch.object(session_liveness, "inventory", side_effect=inventory),
+                patch.object(
+                    session_liveness,
+                    "process_absent",
+                    side_effect=lambda pid: obstruction == "reused_pid" or all(row[0] != pid for row in rows),
+                ),
+                patch.object(session_liveness, "native_exit_cutoff", return_value=None),
+                patch.object(session_liveness, "process_arguments", return_value=(["node", "fixture"], True)),
+                patch.object(session_closeout.closure, "process_started_at", return_value=datetime(2025, 1, 1, tzinfo=UTC)),
+            ):
+                if obstruction in {"immediate", "delayed_pid", "delayed_tty"}:
+                    session_closeout.closeout(args, operation)
+                    self.assertIn("finish", calls)
+                    self.assertEqual(json.loads(ledger.read_text()), [])
+                    self.assertEqual(elapsed == 0, obstruction == "immediate")
+                else:
+                    with self.assertRaises(check_operation.GateFailed) as failure:
+                        session_closeout.closeout(args, operation)
+                    if obstruction not in {"changed_ledger", "changed_native"}:
+                        self.assertEqual(failure.exception.gate, "process_exit")
+                        self.assertEqual(elapsed, args.exit_seconds)
+                    self.assertNotIn("finish", calls)
+                    self.assertNotIn("close", calls)
+                    self.assertFalse(closed_log.exists())
+                    self.assertTrue(json.loads(ledger.read_text()))
+                self.assertEqual(operation.state["steps"]["quit"], original_quit)
+                self.assertLessEqual(elapsed, args.exit_seconds)
 
     def test_closeout_uses_native_shapes_and_retires_only_verified_closures(self) -> None:
         for outcome in ("complete", "google_complete", "harness_changed", "finish_refused", "uncertain_exit", "close_interrupted", "close_uncertain", "resumed", "draft_before_clear", "draft_after_idle", "turn_after_idle"):
@@ -145,6 +284,7 @@ class OperationTests(unittest.TestCase):
                       patch.object(session_closeout.github_identity, "automation_login", return_value="agent[bot]"),
                       patch.object(session_liveness, "process_absent", side_effect=lambda _: not live),
                       patch.object(session_liveness, "inventory", return_value=[(8, "ttys001", "agy" if outcome == "harness_changed" else entry["harness"]) ]),
+                      patch_attr(session_closeout.release, "inventory", return_value=[]),
                       patch.object(session_closeout.closure, "ownership", return_value=nullcontext()),
                       patch.object(session_closeout.closure, "store_lock", side_effect=lambda *_, **__: nullcontext()),
                       patch.object(session_closeout.closure, "source_records", return_value={"native": closed}),
