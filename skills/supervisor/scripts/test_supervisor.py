@@ -3851,7 +3851,6 @@ class TerminalTests(unittest.TestCase):
 
     def test_launch_on_chosen_account_prefixes_env_only(self):
         terminal, window, app = launch_terminal_fixture()
-        window.async_create_tab.return_value.tab_id = "newtab"
         choice = account_choice.decision(
             accounts_config()["accounts"][1], "context-panel", "resets soonest"
         )
@@ -4087,7 +4086,6 @@ class TerminalTests(unittest.TestCase):
             choice = account_choice.choose("anthropic", accounts_config(), AccountChoiceTests().snapshot(), None)
             choice["storage_root"] = root
             terminal, window, app = launch_terminal_fixture()
-            terminal.session_id = "session"
             terminal.async_send_text.side_effect = Exception("private RPC payload")
             args = account_launch_args(path)
             with (
@@ -4099,7 +4097,7 @@ class TerminalTests(unittest.TestCase):
             self.assertEqual(len(list((root / "Launch Receipts").glob("*.json"))), 1)
             self.assertEqual(failed.exception.detail["failed_launch"]["submission"], "unknown")
             self.assertTrue(failed.exception.detail["failed_launch"]["receipt_written"])
-            self.assertEqual(failed.exception.detail["failed_launch"]["tab_id"], "tab")
+            self.assertEqual(failed.exception.detail["failed_launch"]["tab_id"], window.async_create_tab.return_value.tab_id)
             self.assertNotIn("private RPC payload", json.dumps(failed.exception.detail))
 
     def test_batch_refusal_and_bad_second_command_create_no_tabs_or_receipts(self):
