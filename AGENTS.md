@@ -15,7 +15,6 @@ Evidence: [DIRECTION.md](DIRECTION.md).
 - Use [references/execution-scope.md](skills/references/execution-scope.md) when
   changing execution guidance. Preserve intentional approval, quality,
   delegation, and output-format policies.
-- Before merging, read [when to get a review](skills/references/model-review.md#when-to-ask-for-one).
 - Maintain the top-level skill sources. The allowlisted system overrides are
   documented in [README.md](README.md#system-skill-overrides); generated
   `.system` caches and installed plugin caches are not development targets.
@@ -24,7 +23,6 @@ Evidence: [DIRECTION.md](DIRECTION.md).
 - Validate instruction-only changes with the existing skill structure, reference,
   behavior, and command-policy validators. Do not add tests that merely duplicate
   wording or run unrelated runtime suites without an affected behavior.
-- For test changes, read the [shared test rules](instructions/global.md#tests).
 
 ## Runtime Checkout Discipline
 
