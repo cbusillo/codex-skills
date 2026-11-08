@@ -924,7 +924,7 @@ Planning reads of another repository, such as wait and blocker evidence that
 repository, the same App the transport uses for the request. Write identity
 selection is unchanged.
 
-- `index`: List all open issues by default through paged REST reads, excluding pull
+- `index`: List all open issues by default through paged GraphQL reads, excluding pull
   requests and ordering by most recently updated. Supports `--state`, `--label`,
   and an exact positive `--limit`. Compact states remain normalized as uppercase
   `OPEN` or `CLOSED` values.
@@ -947,7 +947,7 @@ selection is unchanged.
   repository, while the top-level `repo` records the caller's default context
   (null when a scoped search cannot resolve a GitHub origin).
   Result milestones retain the search payload's title. `--state open|closed` adds the matching
-  search qualifier, `--state all` omits it, and quota evidence uses the search
+  search qualifier, `--state all` omits it, and quota evidence uses the GraphQL
   bucket. Compact states remain normalized as uppercase `OPEN` or `CLOSED`
   values. Coverage fields are `limit` (the requested item bound), `total_count`
   (the largest GitHub total observed across fetched pages, not their sum), and
@@ -3131,24 +3131,32 @@ retry and exact-head reconciliation.
 
 ### Planning Graph Batches
 
-For an explicitly cold or changing repository workload, `gh-plan.py show N
---full --batch-read` and `gh-plan.py next --batch-read` collect issue metadata,
-labels and native relationships in the shared bulk reader GraphQL transport.
-Every `show` mode also collects every comment. Every requested connection is paged;
-a partial/error response discards the entire enrichment and recovers through
-the ordinary same-actor REST route. Claims and mutation preflights are unchanged.
-Global next retains its existing REST discovery.
+Planning `show`, `index`, `search` and repository-local `next` use the existing
+GraphQL adapters by default. `--batch-read` remains a compatibility option for
+`show` and local `next`. Every requested issue, label, comment and relationship
+connection is paged. Search preserves mixed issue/PR results, repository scope,
+provider totals and caller limits; missing later pages never establish complete
+coverage. The index reads archive context in the inventory query.
 
-REST remains the default and the route for unchanged observations: its
-authenticated conditional cache can cost zero primary requests, while GraphQL
-costs points on every refresh. Select batching for cold/changed passes, rather
-than replacing free idle polling. The recorded library slice (`planning_graph(reader, repo, limit=20,
-page_size=20)`) uses one GraphQL request versus at least twelve cold REST calls; this excludes direction,
-ownership, inbound visibility and PR evidence. `next --batch-read` reads its
-whole bounded inventory with 100-issue pages and can cost multiple requests
-and points; the twenty-issue slice is not a whole-command savings claim. Response headers retain quota
-evidence; `rateLimit.cost` in the GraphQL document measures points. Request
-counts and GraphQL points are separate from whole-fleet hourly savings.
+Claim and next ownership inventories read open PRs and branch names through
+GraphQL. Comment IDs and exact authored releases continue to decide custody;
+changing transport grants no ownership or mutation authority. Planning reads
+reuse complete observations already obtained by global `next`, and source
+repository context reaches the same shared transport and selected App even
+when the command's default repository belongs to another owner.
+
+Global `next` keeps its complete issue/PR graph reads and reads merged direction
+files with GraphQL blobs; a missing object means no direction file, while an
+unavailable repository or truncated blob remains unknown. Installation enumeration,
+mutation metadata/readbacks and event histories retain their existing routes.
+Explicit identity routes retain their previous REST behavior. There is no new
+transport, cache or persistent inventory. Ordinary watcher polling keeps its
+existing conditional REST default.
+
+GraphQL costs points on every refresh, including unchanged reads. Request and
+quota receipts remain in the existing diagnostics; `rateLimit.cost` records
+query points. A bounded source comparison does not prove fleet hourly savings
+or the separate real-day quota finish line.
 
 ### PR Observer Batches
 

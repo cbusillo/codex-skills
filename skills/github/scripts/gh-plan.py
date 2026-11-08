@@ -114,9 +114,9 @@ PLAN_SECTION_NAMES = frozenset(
 )
 
 PLAN_COMMAND_CONTEXT: dict[str, tuple[str, str, bool]] = {
-    "index": ("rest_api", "rest_core", False),
-    "search": ("rest_api", "search", False),
-    "show": ("rest_api", "rest_core", False),
+    "index": ("composite", "mixed", False),
+    "search": ("composite", "mixed", False),
+    "show": ("composite", "mixed", False),
     "claim": ("composite", "rest_core", True),
     "release-claim": ("composite", "rest_core", True),
     "release": ("composite", "rest_core", True),
@@ -906,6 +906,13 @@ def gh_json(
 def plan_read_error(exc: Exception) -> PlanError:
     if isinstance(exc, github_read.GitHubReadError):
         error = PlanError(str(exc), failure=exc.result.failure, api_result=exc.result.as_dict())
+    elif isinstance(exc, (github_read.GitHubReadShapeError, github_read.RepositoryInventoryUnavailable)):
+        error = PlanError(
+            str(exc),
+            failure=github_api_core.FailureDetail(
+                cause="invalid_response", message=str(exc), retryable=False, fallback_eligible=False, disposition="stop"
+            ),
+        )
     else:
         error = PlanError(str(exc))
     error.__cause__ = exc
@@ -1069,6 +1076,71 @@ def collect_paged_rest_items(
     page_metadata: list[dict[str, Any]] | None = None,
     include_archived: bool = False,
 ) -> tuple[str, list[dict[str, Any]]]:
+    match = re.fullmatch(
+        r"/repos/([^/]+/[^/]+)/(issues|pulls|labels|branches)(?:/([1-9]\d*)/(comments|dependencies/blocked_by|dependencies/blocking|sub_issues))?",
+        path,
+    )
+    repo = match[1] if match else os.environ.get("GH_REPO") or repo_from_git()
+    observed = (
+        NEXT_READS is not None and NEXT_READS.observation(path_with_query(path, {**query, "per_page": 100, "page": 1})) is not None
+    )
+    migrated = not CURRENT_IS_WRITE or CURRENT_OPERATION == "github.plan.claim"
+    reader = next_graph_reader(repo) if (match or path == "/search/issues") and not observed and migrated else None
+    if reader is not None:
+        try:
+            if path == "/search/issues":
+                rows, metadata = github_plan_graph.search_records(reader, query["q"], limit=limit or 1000)
+                if issue_only:
+                    rows = [row for row in rows if "pull_request" not in row]
+                if page_metadata is not None:
+                    page_metadata.append(metadata)
+            else:
+                assert match is not None
+                repo = match[1]
+                if match[3]:
+                    field = {"dependencies/blocked_by": "blockedBy", "dependencies/blocking": "blocking", "sub_issues": "subIssues"}.get(
+                        match[4], match[4]
+                    )
+                    rows = github_plan_graph.issue_connection(reader, repo, int(match[3]), field)
+                elif match[2] in {"labels", "branches"}:
+                    rows = github_plan_graph.repository_names(reader, repo, match[2], limit=limit)
+                else:
+                    kinds = ["issue"] if issue_only else ["pullRequest"] if match[2] == "pulls" else ["issue", "pullRequest"]
+                    metadata = {}
+                    rows = [
+                        row
+                        for kind in kinds
+                        for row in github_plan_graph.repository_records(
+                            reader,
+                            repo,
+                            kind=kind,
+                            state=query.get("state", "open"),
+                            labels=query["labels"].split(",") if query.get("labels") else None,
+                            milestone=query.get("milestone"),
+                            sort=query.get("sort", "created"),
+                            direction=query.get("direction", "desc"),
+                            limit=limit,
+                            metadata=metadata,
+                        )
+                    ]
+                    if page_metadata is not None:
+                        page_metadata.append({"repository": {"archived": metadata[repo].get("isArchived")}})
+                    sort = "updated_at" if query.get("sort") == "updated" else "created_at"
+                    rows.sort(key=lambda row: (row[sort], row["number"]), reverse=query.get("direction", "desc") == "desc")
+            if completed_steps is not None:
+                completed_steps.extend(reader.completed_steps)
+            if NEXT_READS is not None and (limit is None or len(rows) < limit) and collection_key is None:
+                for offset in range(0, len(rows) + 1, 100):
+                    NEXT_READS.publish(
+                        path_with_query(path, {**query, "per_page": 100, "page": offset // 100 + 1}),
+                        (reader.actor, rows[offset : offset + 100]),
+                    )
+            return reader.actor or "automation-gh", rows[:limit]
+        except (github_read.GitHubReadError, github_read.GitHubReadShapeError, KeyError, TypeError, ValueError) as error:
+            raise plan_read_error(error) from error
+        finally:
+            for result in reader.results:
+                record_retry_fields(result)
     actor = ""
     items: list[dict[str, Any]] = []
     steps = completed_steps if completed_steps is not None else []
@@ -1325,6 +1397,17 @@ def issue_ref(ref: str, repo: str) -> tuple[str, int]:
 
 def get_issue(ref: str, repo: str) -> tuple[str, dict[str, Any]]:
     issue_repo, number = issue_ref(ref, repo)
+    observed = NEXT_READS is not None and NEXT_READS.observation(f"/repos/{issue_repo}/issues/{number}") is not None
+    reader = next_graph_reader(issue_repo) if not CURRENT_IS_WRITE and not observed else None
+    if reader is not None:
+        try:
+            data = github_plan_graph.issue_record(reader, issue_repo, number)
+            return reader.actor or "automation-gh", data
+        except (github_read.GitHubReadError, github_read.GitHubReadShapeError, KeyError, TypeError, ValueError) as error:
+            raise plan_read_error(error) from error
+        finally:
+            for result in reader.results:
+                record_retry_fields(result)
     actor, data = api_json("GET", f"/repos/{issue_repo}/issues/{number}", failed_step="get_issue")
     data["repo"] = issue_repo
     return actor, data
@@ -1910,6 +1993,7 @@ def ensure_labels(
 
 def cmd_index(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
+    metadata = []
     actor, data = collect_paged_rest_items(
         f"/repos/{repo}/issues",
         query={
@@ -1922,12 +2006,16 @@ def cmd_index(args: argparse.Namespace) -> None:
         step_prefix="list_plan_issues",
         limit=args.limit + 1,
         issue_only=True,
+        page_metadata=metadata,
     )
     truncated = len(data) > args.limit
     items = [compact_list_issue(repo, item) for item in data[:args.limit]]
     try:
-        _, metadata = api_json("GET", f"/repos/{repo}", bucket="rest_core", failed_step="inventory_repository")
-        context = github_read.repository_disposition(metadata)
+        if metadata:
+            repository = metadata[-1]["repository"]
+        else:
+            _, repository = api_json("GET", f"/repos/{repo}", bucket="rest_core", failed_step="inventory_repository")
+        context = github_read.repository_disposition(repository)
     except PlanError as exc:
         next_source_error(exc)
         context = github_read.repository_disposition(None)
@@ -1997,13 +2085,9 @@ BATCH_READ_CONTEXT: dict[str, Any] = {}
 def read_planning_graph(repo: str, **kwargs: Any) -> list[dict[str, Any]] | None:
     BATCH_READ_CONTEXT.clear()
     BATCH_READ_CONTEXT.update({"used": False, "fallback_reason": "explicit_identity_route"})
-    if not EXPECTED_ACTOR or not BOT_GH.exists():
+    reader = next_graph_reader(repo)
+    if reader is None:
         return None
-    if os.environ.get("GH_PLAN_SKIP_BOT") == "1" or os.environ.get("GH_PLAN_ALLOW_ACTIVE_FIRST") == "1" or github_identity.active_auth_fallback_allowed() or github_identity.own_user_opted_in():
-        return None
-    reader = github_read.GitHubReader(gh_cmd=str(BOT_GH), expected_actor=EXPECTED_ACTOR, actor=EXPECTED_ACTOR, operation=CURRENT_OPERATION, strict_actor=True,
-        cache_enabled=True, cache_revalidate=True,
-        deadline_at=time.time() + github_api_core.remaining_retry_timeout_seconds())
     try:
         rows = github_plan_graph.planning_graph(reader, repo, **kwargs)
         for row in rows:
@@ -2030,10 +2114,7 @@ def cmd_show(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
     issue_repo, number = issue_ref(args.issue, repo)
     config = load_config(issue_repo)
-    graph = None
-    if getattr(args, "batch_read", False):
-        issue_repo, number = issue_ref(args.issue, repo)
-        graph = read_planning_graph(issue_repo, number=number)
+    graph = read_planning_graph(issue_repo, number=number)
     actor, issue = (graph[0]["_graph_actor"], graph[0]) if graph else get_issue(args.issue, repo)
     body = issue.get("body") or ""
     result = compact_issue(issue)
@@ -4703,9 +4784,7 @@ def cmd_link(args: argparse.Namespace) -> None:
     actor_a, source = get_issue(args.issue, repo)
     _, target = get_issue(args.target, repo)
     source_repo = source["repo"]
-    target_repo = target["repo"]
     source_number = int(source["number"])
-    target_number = int(target["number"])
     rel = args.relationship
     if rel == "blocked-by":
         actor, _ = link_native_dependency(source, target)
@@ -5120,8 +5199,7 @@ def cmd_next(args: argparse.Namespace) -> None:
         milestone_scope = milestone_result["milestone"]
         issue_query["milestone"] = milestone_scope["number"]
 
-    graph = read_planning_graph(repo,
-        milestone=issue_query.get("milestone"), limit=NEXT_PLAN_INVENTORY_LIMIT + 1) if getattr(args, "batch_read", False) else None
+    graph = read_planning_graph(repo, milestone=issue_query.get("milestone"), limit=NEXT_PLAN_INVENTORY_LIMIT + 1)
     if graph is not None:
         page_actor, issues = BATCH_READ_CONTEXT["diagnostics"]["actor"], graph
     else:
@@ -5770,6 +5848,8 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
 
 class PlanningGraphReader(github_read.GitHubReader):
     def graphql_json(self, query: str, variables: dict[str, Any], *, step: str, **kwargs: Any) -> github_api_core.ApiResult:
+        if NEXT_READS is None:
+            return super().graphql_json(query, variables, step=step, **kwargs)
         read = super().graphql_json
         policy = kwargs.get("retry_policy") or github_api_core.default_retry_policy()
         bounded = replace(policy, max_wait_seconds=min(30, policy.max_wait_seconds))
@@ -5791,7 +5871,7 @@ class PlanningGraphReader(github_read.GitHubReader):
         return NEXT_READS.request(fetch) if NEXT_READS is not None else fetch()
 
 
-def next_graph_reader(repo: str) -> github_read.GitHubReader | None:
+def next_graph_reader(repo: str | None) -> github_read.GitHubReader | None:
     if (not EXPECTED_ACTOR or not BOT_GH.exists() or os.environ.get("GH_PLAN_SKIP_BOT") == "1"
             or os.environ.get("GH_PLAN_ALLOW_ACTIVE_FIRST") == "1" or github_identity.active_auth_fallback_allowed()
             or github_identity.own_user_opted_in()):
@@ -5853,7 +5933,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
         if scope["title"] not in titles:
             raise PlanError("The selected milestone is not listed in the owner's direction")
         titles = [scope["title"]]
-    config = load_config(repo)
+    load_config(repo)
     graph_readers: dict[str, github_read.GitHubReader | None] = {}
 
     def graph_reader(issue_repo: str) -> github_read.GitHubReader | None:
@@ -7311,6 +7391,36 @@ def load_direction(repo: str) -> str | None:
     is never consulted: it may belong to another repository, or hold an edit
     nobody approved. Any failure other than a clean 404 refuses the write.
     """
+    reader = next_graph_reader(repo) if not CURRENT_IS_WRITE else None
+    if reader is not None:
+        try:
+            owner, name = repo.split("/", 1)
+            data = github_plan_graph.query_data(
+                reader,
+                f"query {{ repository(owner:{json.dumps(owner)},name:{json.dumps(name)}) {{ "
+                f'object(expression:"HEAD:{DIRECTION_FILE}") {{ ... on Blob {{ text isBinary isTruncated }} }} }} rateLimit {{ cost remaining resetAt }} }}',
+                step="read_direction",
+                operation="github.plan.direction_read",
+            )
+            repository = data.get("repository")
+            if not isinstance(repository, dict) or "object" not in repository:
+                raise github_read.GitHubReadShapeError("Direction repository unavailable")
+            blob = repository["object"]
+            if blob is None:
+                return None
+            if (
+                not isinstance(blob, dict)
+                or not isinstance(blob.get("text"), str)
+                or blob.get("isBinary") is not False
+                or blob.get("isTruncated") is not False
+            ):
+                raise github_read.GitHubReadShapeError("Direction file content unavailable or truncated")
+            return blob["text"]
+        except (github_read.GitHubReadError, github_read.GitHubReadShapeError, KeyError, TypeError, ValueError) as error:
+            raise plan_read_error(error) from error
+        finally:
+            for result in reader.results:
+                record_retry_fields(result)
     try:
         _, body = api_json(
             "GET",
@@ -7759,7 +7869,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_search)
 
     p = sub.add_parser("show", help="Show issue sections and all comments")
-    p.add_argument("--batch-read", action="store_true", help="Explicit cold/changed GraphQL slice; REST remains the unchanged-read route")
+    p.add_argument("--batch-read", action="store_true", help="Compatibility option; complete GraphQL reads are the default")
     p.add_argument("issue")
     p.add_argument("--full", action="store_true", help="Include the entire body instead of selected sections")
     p.add_argument("--launch-check", action="store_true", help="Read current ownership and delivery holds for a new execution worker; never claim")
@@ -7886,7 +7996,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("next", help="Rank the next actionable durable plans")
     p.add_argument("--full-output", action="store_true", help="Include full discussion bodies and comments; default rows retain counts, sources and coverage")
-    p.add_argument("--batch-read", action="store_true", help="Explicit repository graph batch; REST remains the unchanged-read route")
+    p.add_argument("--batch-read", action="store_true", help="Compatibility option for repository-local GraphQL reads")
     repository_scope.add_include_archived_argument(p)
     p.add_argument("--agent", choices=github_agent.FAMILIES, help="Running family; defaults to harness detection")
     p.add_argument("--milestone", help="Limit selection to one milestone by number or title")

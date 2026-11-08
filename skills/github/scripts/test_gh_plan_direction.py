@@ -46,6 +46,7 @@ def load_module() -> Any:
 def fake_contents(module: Any, *, text: str | None = None, error_status: int | None = None) -> list[tuple[str, str]]:
     """Make api_json answer the contents read with a merged file, a 404, or a failure."""
     calls: list[tuple[str, str]] = []
+    module.next_graph_reader = lambda _repo: None
 
     def api_json(method: str, path: str, **kwargs: Any) -> tuple[str, dict[str, str]]:
         calls.append((method, path))

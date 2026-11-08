@@ -13,6 +13,7 @@ import re
 from typing import Any, Callable, NamedTuple
 
 import github_read
+import github_pr_batch
 
 
 class NativeIssueGraph(NamedTuple):
@@ -61,12 +62,195 @@ CONNECTIONS = {
     "comments": "databaseId body createdAt updatedAt url author { __typename login }",
 }
 
+PULL_FIELDS = (
+    github_pr_batch.FIELDS + " authorAssociation milestone { number title state createdAt dueOn url } repository { nameWithOwner }"
+)
+
+
+def rest_record(node: dict[str, Any], *, kind: str) -> dict[str, Any]:
+    if kind == "issue":
+        return rest_issue(node)
+    return {
+        **rest_issue(node),
+        **github_pr_batch.rest_pull_request(node, node["labels"]),
+        "pull_request": {"url": f"https://api.github.com/repos/{node['repository']['nameWithOwner']}/pulls/{node['number']}"},
+    }
+
+
+def repository_records(
+    reader: github_read.GitHubReader,
+    repo: str,
+    *,
+    kind: str = "issue",
+    state: str = "open",
+    labels: list[str] | None = None,
+    milestone: int | None = None,
+    sort: str = "created",
+    direction: str = "desc",
+    limit: int | None = None,
+    metadata: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    field = "issues" if kind == "issue" else "pullRequests"
+    states = {"open": "[OPEN]", "closed": "[CLOSED,MERGED]" if kind == "pullRequest" else "[CLOSED]", "all": "null"}[state]
+    order = {"created": "CREATED_AT", "updated": "UPDATED_AT"}[sort]
+    fields = (ISSUE_FIELDS if kind == "issue" else PULL_FIELDS) + " " + connection_query("labels")
+
+    def selection(cursor: str | None) -> str:
+        filters = f",filterBy:{{milestoneNumber:{json.dumps(str(milestone))}}}" if milestone is not None and kind == "issue" else ""
+        return (
+            f"isArchived {field}(first:100,after:{json.dumps(cursor)},states:{states},labels:{json.dumps(labels)}"
+            f"{filters},orderBy:{{field:{order},direction:{direction.upper()}}}) {{ totalCount nodes {{ {fields} }} "
+            "pageInfo { hasNextPage endCursor } }"
+        )
+
+    def normalize(_repo: str, node: dict[str, Any]) -> dict[str, Any]:
+        return rest_record(complete_issue(reader, copy.deepcopy(node), comments=False, fields=("labels",), kind=kind), kind=kind)
+
+    result = github_read.read_repository_connections(
+        reader,
+        [repo],
+        field=field,
+        selection=selection,
+        normalize=normalize,
+        step="planning_inventory",
+        limit=limit,
+        metadata=metadata,
+    )[repo]
+    if isinstance(result, Exception):
+        raise result
+    return result
+
+
+def issue_record(reader: github_read.GitHubReader, repo: str, number: int) -> dict[str, Any]:
+    owner, name = repo.split("/", 1)
+    fields = (
+        "__typename ... on Issue { "
+        + ISSUE_FIELDS
+        + " "
+        + connection_query("labels")
+        + " } ... on PullRequest { "
+        + PULL_FIELDS
+        + " "
+        + connection_query("labels")
+        + " }"
+    )
+    payload = query_data(
+        reader,
+        f"query {{ repository(owner:{json.dumps(owner)},name:{json.dumps(name)}) {{ "
+        f"issueOrPullRequest(number:{number}) {{ {fields} }} }} rateLimit {{ cost remaining resetAt }} }}",
+        step="planning_record",
+    )
+    node = payload["repository"]["issueOrPullRequest"]
+    if not isinstance(node, dict) or node.get("number") != number:
+        raise github_read.GitHubReadShapeError("Planning record unavailable or mismatched")
+    kind = "issue" if node["__typename"] == "Issue" else "pullRequest"
+    return rest_record(complete_issue(reader, node, comments=False, fields=("labels",), kind=kind), kind=kind)
+
+
+def issue_connection(reader: github_read.GitHubReader, repo: str, number: int, field: str) -> list[dict[str, Any]]:
+    owner, name = repo.split("/", 1)
+    payload = query_data(
+        reader,
+        f"query {{ repository(owner:{json.dumps(owner)},name:{json.dumps(name)}) {{ "
+        f"issueOrPullRequest(number:{number}) {{ __typename ... on Issue {{ number updatedAt repository {{ nameWithOwner }} {connection_query(field)} }} "
+        + (
+            f"... on PullRequest {{ number updatedAt repository {{ nameWithOwner }} {connection_query(field)} }}"
+            if field in {"comments", "labels"}
+            else ""
+        )
+        + " } } rateLimit { cost remaining resetAt } }",
+        step="planning_connection",
+    )
+    node = payload["repository"]["issueOrPullRequest"]
+    if not isinstance(node, dict) or node.get("number") != number:
+        raise github_read.GitHubReadShapeError("Planning connection unavailable or mismatched")
+    kind = "issue" if node["__typename"] == "Issue" else "pullRequest"
+    nodes = complete_issue(reader, node, comments=True, fields=(field,), kind=kind)[field]
+    return (
+        [rest_comment(row) for row in nodes]
+        if field == "comments"
+        else [rest_related_issue(row) for row in nodes]
+        if field != "labels"
+        else nodes
+    )
+
+
+def repository_names(reader: github_read.GitHubReader, repo: str, field: str, *, limit: int | None = None) -> list[dict[str, Any]]:
+    selection_field = "refs" if field == "branches" else "labels"
+    arguments = (
+        'refPrefix:"refs/heads/",orderBy:{field:ALPHABETICAL,direction:ASC},'
+        if field == "branches"
+        else "orderBy:{field:NAME,direction:ASC},"
+    )
+    result = github_read.read_repository_connections(
+        reader,
+        [repo],
+        field=selection_field,
+        selection=lambda cursor: (
+            f"{selection_field}({arguments}first:100,after:{json.dumps(cursor)}) {{ totalCount nodes {{ name }} pageInfo {{ hasNextPage endCursor }} }}"
+        ),
+        normalize=lambda _repo, node: node,
+        identity=lambda node: node.get("name"),
+        step="planning_names",
+        limit=limit,
+    )[repo]
+    if isinstance(result, Exception):
+        raise result
+    return result
+
+
+def search_records(
+    reader: github_read.GitHubReader,
+    query: str,
+    *,
+    limit: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    cursor = None
+    seen: set[str] = set()
+    rows: list[dict[str, Any]] = []
+    identities: set[tuple[str, int]] = set()
+    expected = None
+    fields = (
+        "__typename ... on Issue { "
+        + ISSUE_FIELDS
+        + " "
+        + connection_query("labels")
+        + " } ... on PullRequest { "
+        + PULL_FIELDS
+        + " "
+        + connection_query("labels")
+        + " }"
+    )
+    while len(rows) < limit:
+        document = (
+            f"query {{ search(query:{json.dumps(query)},type:ISSUE,first:{min(100, limit - len(rows))},after:{json.dumps(cursor)}) "
+            f"{{ totalCount:issueCount nodes {{ {fields} }} pageInfo {{ hasNextPage endCursor }} }} rateLimit {{ cost remaining resetAt }} }}"
+        )
+        payload = query_data(reader, document, step="planning_search")
+        nodes, cursor, total = connection_page(payload.get("search"))
+        if expected is not None and total != expected:
+            raise github_read.GitHubReadShapeError("Search changed during pagination")
+        expected = total
+        for node in nodes:
+            kind = {"Issue": "issue", "PullRequest": "pullRequest"}[node["__typename"]]
+            key = node["repository"]["nameWithOwner"].casefold(), node["number"]
+            if key in identities:
+                raise github_read.GitHubReadShapeError("Duplicate search record")
+            identities.add(key)
+            rows.append(rest_record(complete_issue(reader, node, comments=False, fields=("labels",), kind=kind), kind=kind))
+        if cursor is None or len(rows) >= limit:
+            return rows, {"total_count": total, "incomplete_results": cursor is None and len(rows) != total}
+        if cursor in seen:
+            raise github_read.GitHubReadShapeError("Search cursor repeated")
+        seen.add(cursor)
+    return rows, {"total_count": expected, "incomplete_results": False}
+
 
 connection_page = github_read.graphql_connection_page
 
 
 def query_data(
-    reader: github_read.GitHubReader, query: str, *, step: str
+    reader: github_read.GitHubReader, query: str, *, step: str, operation: str | None = None,
 ) -> dict[str, Any]:
     # Do not spend the reset window waiting on this optional enrichment. REST
     # recovery uses the same reader identity and inherited operation deadline.
@@ -75,6 +259,7 @@ def query_data(
         {},
         step=step,
         retry_policy=github_read.github_api_core.optional_batch_retry_policy(),
+        **({"operation": operation} if operation is not None else {}),
     )
     if not result.ok:
         raise github_read.GitHubReadError(
@@ -98,7 +283,12 @@ def connection_query(name: str, cursor: str | None = None) -> str:
 
 
 def complete_issue(
-    reader: github_read.GitHubReader, node: dict[str, Any], *, comments: bool, fields: tuple[str, ...] | None = None
+    reader: github_read.GitHubReader,
+    node: dict[str, Any],
+    *,
+    comments: bool,
+    fields: tuple[str, ...] | None = None,
+    kind: str = "issue",
 ) -> dict[str, Any]:
     names = fields if fields is not None else tuple(name for name in CONNECTIONS if comments or name != "comments")
     repo = node["repository"]["nameWithOwner"]
@@ -116,11 +306,9 @@ def complete_issue(
             seen.add(cursor)
             query = (
                 f"query {{ repository(owner:{json.dumps(owner)}, name:{json.dumps(name)}) "
-                f"{{ issue(number:{number}) {{ updatedAt {connection_query(field, cursor)} }} }} rateLimit {{ cost remaining resetAt }} }}"
+                f"{{ {kind}(number:{number}) {{ updatedAt {connection_query(field, cursor)} }} }} rateLimit {{ cost remaining resetAt }} }}"
             )
-            current = query_data(
-                reader, query, step=f"plan_{number}_{field}_{pages + 1}"
-            )["repository"]["issue"]
+            current = query_data(reader, query, step=f"plan_{number}_{field}_{pages + 1}")["repository"][kind]
             if current["updatedAt"] != node["updatedAt"]:
                 raise github_read.GitHubReadShapeError(
                     "issue changed during GraphQL pagination"
@@ -134,6 +322,10 @@ def complete_issue(
             pages += 1
         if len(nodes) != total:
             raise github_read.GitHubReadShapeError("GraphQL connection incomplete")
+        key = "databaseId" if field == "comments" else "name" if field == "labels" else "url"
+        identities = [item.get(key) for item in nodes]
+        if any(value is None for value in identities) or len(set(identities)) != total:
+            raise github_read.GitHubReadShapeError("GraphQL connection identity unavailable or duplicated")
         node[field] = nodes
     return node
 
@@ -162,14 +354,14 @@ def rest_milestone(milestone: dict[str, Any] | None) -> dict[str, Any] | None:
 
 
 def rest_issue(node: dict[str, Any]) -> dict[str, Any]:
-    deps, sub = node["issueDependenciesSummary"], node["subIssuesSummary"]
+    deps, sub = node.get("issueDependenciesSummary"), node.get("subIssuesSummary")
     return {
         "repo": node["repository"]["nameWithOwner"],
         "number": node["number"],
         "title": node["title"],
         "body": node["body"],
-        "state": node["state"].lower(),
-        "state_reason": node["stateReason"].lower() if node["stateReason"] else None,
+        "state": "closed" if node["state"] == "MERGED" else node["state"].lower(),
+        "state_reason": node["stateReason"].lower() if node.get("stateReason") else None,
         "created_at": node["createdAt"],
         "updated_at": node["updatedAt"],
         "html_url": node["url"],
@@ -177,29 +369,48 @@ def rest_issue(node: dict[str, Any]) -> dict[str, Any]:
         "author_association": node["authorAssociation"],
         "labels": node["labels"],
         "milestone": rest_milestone(node["milestone"]),
-        "issue_dependencies_summary": {
-            "blocked_by": deps["blockedBy"],
-            "blocking": deps["blocking"],
-            "total_blocked_by": deps["totalBlockedBy"],
-            "total_blocking": deps["totalBlocking"],
-        },
-        "sub_issues_summary": {
-            "total": sub["total"],
-            "completed": sub["completed"],
-            "percent_completed": sub["percentCompleted"],
-        },
-        "_graph_relationships": {
-            key: [rest_related_issue(n) for n in node[field]]
-            for key, field in [
-                ("blocked_by", "blockedBy"),
-                ("blocking", "blocking"),
-                ("sub_issues", "subIssues"),
-            ]
-        },
-        **({"_graph_comments": [
-            rest_comment(n)
-            for n in node.get("comments", [])
-        ]} if "comments" in node else {}),
+        **(
+            {
+                "issue_dependencies_summary": {
+                    "blocked_by": deps["blockedBy"],
+                    "blocking": deps["blocking"],
+                    "total_blocked_by": deps["totalBlockedBy"],
+                    "total_blocking": deps["totalBlocking"],
+                }
+            }
+            if deps is not None
+            else {}
+        ),
+        **(
+            {
+                "sub_issues_summary": {
+                    "total": sub["total"],
+                    "completed": sub["completed"],
+                    "percent_completed": sub["percentCompleted"],
+                }
+            }
+            if sub is not None
+            else {}
+        ),
+        **(
+            {
+                "_graph_relationships": {
+                    key: [rest_related_issue(n) for n in node[field]]
+                    for key, field in [
+                        ("blocked_by", "blockedBy"),
+                        ("blocking", "blocking"),
+                        ("sub_issues", "subIssues"),
+                    ]
+                }
+            }
+            if all(isinstance(node.get(field), list) for field in ("blockedBy", "blocking", "subIssues"))
+            else {}
+        ),
+        **(
+            {"_graph_comments": [rest_comment(n) for n in node.get("comments", [])]}
+            if isinstance(node.get("comments"), list)
+            else {}
+        ),
     }
 
 
@@ -242,7 +453,7 @@ def planning_graph(
                     if milestone is not None
                     else ""
                 )
-                + f"orderBy:{{field:CREATED_AT, direction:ASC}})"
+                + "orderBy:{field:CREATED_AT, direction:ASC})"
             )
         )
         selection = (

@@ -147,6 +147,39 @@ def rest_author(author):
     }
 
 
+def rest_pull_request(node: dict[str, Any], labels: list[dict[str, Any]]) -> dict[str, Any]:
+    number, sha = node["number"], node["headRefOid"]
+    return {
+        "id": node["databaseId"],
+        "created_at": node["createdAt"],
+        "number": number,
+        "title": node["title"],
+        "body": node["body"],
+        "state": "closed" if node["state"] in {"CLOSED", "MERGED"} else "open",
+        "draft": node["isDraft"],
+        "merged": node["merged"],
+        "merged_at": node["mergedAt"],
+        "merge_commit_sha": (node["mergeCommit"] or {}).get("oid"),
+        "mergeable": {"MERGEABLE": True, "CONFLICTING": False, "UNKNOWN": None}[node["mergeable"]],
+        "mergeable_state": node["mergeStateStatus"].lower(),
+        "reviewDecision": node["reviewDecision"],
+        "labels": labels,
+        "html_url": node["url"],
+        "user": rest_author(node["author"]),
+        "head": {
+            "sha": sha,
+            "ref": node["headRefName"],
+            "repo": {"full_name": (node["headRepository"] or {}).get("nameWithOwner")},
+        },
+        "base": {
+            "ref": node["baseRefName"],
+            "repo": {"full_name": node["baseRepository"]["nameWithOwner"]},
+        },
+        "changed_files": node["changedFiles"],
+        "updated_at": node["updatedAt"],
+    }
+
+
 def batch_pull_requests(
     reader: github_read.GitHubReader,
     repo: str,
@@ -194,39 +227,7 @@ def batch_pull_requests(
         sha = node["headRefOid"]
         if not isinstance(sha, str) or len(sha) != 40:
             raise github_read.GitHubReadShapeError("PR head unavailable")
-        pull = {
-            "id": node["databaseId"],
-            "created_at": node["createdAt"],
-            "number": number,
-            "title": node["title"],
-            "body": node["body"],
-            "state": "closed" if node["state"] in {"CLOSED", "MERGED"} else "open",
-            "draft": node["isDraft"],
-            "merged": node["merged"],
-            "merged_at": node["mergedAt"],
-            "merge_commit_sha": (node["mergeCommit"] or {}).get("oid"),
-            "mergeable": {"MERGEABLE": True, "CONFLICTING": False, "UNKNOWN": None}[
-                node["mergeable"]
-            ],
-            "mergeable_state": node["mergeStateStatus"].lower(),
-            "reviewDecision": node["reviewDecision"],
-            "labels": connections["labels"],
-            "html_url": node["url"],
-            "user": rest_author(node["author"]),
-            "head": {
-                "sha": sha,
-                "ref": node["headRefName"],
-                "repo": {
-                    "full_name": (node["headRepository"] or {}).get("nameWithOwner")
-                },
-            },
-            "base": {
-                "ref": node["baseRefName"],
-                "repo": {"full_name": node["baseRepository"]["nameWithOwner"]},
-            },
-            "changed_files": node["changedFiles"],
-            "updated_at": node["updatedAt"],
-        }
+        pull = rest_pull_request(node, connections["labels"])
         pulls[number] = pull
         responses[f"/repos/{repo}/pulls/{number}"] = pull
         if include_discussion:

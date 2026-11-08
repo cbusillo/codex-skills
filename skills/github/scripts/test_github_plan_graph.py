@@ -63,7 +63,6 @@ def test_recorded_graph_selection_and_request_savings():
     def collect(path, **_kwargs):
         rest_calls.append(path)
         number = int(path.split("/issues/")[1].split("/")[0])
-        row = next(row for row in rows if row["number"] == number)
         key = "sub_issues" if path.endswith("/sub_issues") else path.rsplit("/", 1)[-1]
         return "fixture-reader", rest_record[str(number)][key]
 
@@ -216,11 +215,7 @@ def test_full_discussion_and_all_connection_pagination():
         mock_attribute(plan, "emit") as emit,
         mock_attribute(plan, "api_json", side_effect=AssertionError("unexpected REST")),
     ):
-        plan.cmd_show(
-            argparse.Namespace(
-                repo="owner/repo", issue=str(node["number"]), full=True, batch_read=True
-            )
-        )
+        plan.cmd_show(argparse.Namespace(repo="owner/repo", issue=str(node["number"]), full=True, batch_read=False))
     assert [c["body"] for c in emit.call_args.args[0]["issue"]["comments"]] == [
         "First",
         "Last",
@@ -436,6 +431,143 @@ def test_real_inventory_rows_read_the_newer_wait_comment_before_selection():
     observed = next(row for row in result["excluded"] if row["number"] == node["number"])
     assert observed["exclusion"] == "waiting", observed
     assert observed["derived"]["waits"] == held["waits"], observed
+
+
+def test_default_index_search_and_custody_consume_paged_graphql() -> None:
+    plan = load_plan()
+    recorded = json.loads(FIXTURE.with_name("planning_show.json").read_text())
+    node = recorded["graphql"]["data"]["repository"]["issue"]
+
+    def connection(nodes: list[dict[str, Any]], *, total: int | None = None, cursor: str | None = None) -> dict[str, Any]:
+        return {
+            "nodes": nodes,
+            "totalCount": len(nodes) if total is None else total,
+            "pageInfo": {"hasNextPage": cursor is not None, "endCursor": cursor},
+        }
+
+    pull = copy.deepcopy(next(iter(json.loads(FIXTURE.with_name("pr_batch.json").read_text())["data"]["repository"].values())))
+    pull.update(repository={"nameWithOwner": "owner/repo"}, milestone=None, authorAssociation="CONTRIBUTOR")
+    owner = {"worker": "source", "session": "source-session", "branch": pull["headRefName"], "claimed_at": node["createdAt"]}
+    old_comment = copy.deepcopy(node["comments"]["nodes"][0])
+    old_comment["body"] = plan.github_plan_claim.marker(owner)
+    release = {
+        **old_comment,
+        "databaseId": old_comment["databaseId"] + 1,
+        "body": f"Released claim {old_comment['databaseId']}",
+        "createdAt": "2026-10-13T00:00:00Z",
+    }
+    documents = [
+        {"data": {"r0": {"nameWithOwner": "owner/repo", "issues": connection([node])}}},
+        {"data": {"search": connection([{**node, "__typename": "Issue"}], total=2, cursor="search-next")}},
+        {"data": {"search": connection([{**pull, "__typename": "PullRequest"}], total=2)}},
+        {"data": {"r0": {"nameWithOwner": "owner/repo", "pullRequests": connection([pull])}}},
+        {"data": {"r0": {"nameWithOwner": "owner/repo", "refs": connection([{"name": pull["headRefName"]}])}}},
+        {
+            "data": {
+                "repository": {
+                    "issueOrPullRequest": {
+                        **node,
+                        "__typename": "Issue",
+                        "comments": connection([old_comment], total=2, cursor="history-next"),
+                    }
+                }
+            }
+        },
+        {"data": {"repository": {"issue": {"updatedAt": node["updatedAt"], "comments": connection([release], total=2)}}}},
+    ]
+    reader = github_read.GitHubReader(gh_cmd="fake-gh", expected_actor="fixture-reader", actor="fixture-reader", strict_actor=True)
+    responses = [github_api.ApiResult(ok=True, status=200, actor="fixture-reader", body=document) for document in documents]
+    with (
+        patch.object(github_api, "call_gh_with_retry", side_effect=responses) as requests,
+        mock_attribute(plan, "next_graph_reader", return_value=reader),
+        mock_attribute(plan, "api_json", return_value=("fixture-reader", {"archived": False})),
+        mock_attribute(plan, "claim_inventory", wraps=plan.claim_inventory),
+        mock_attribute(plan.github_plan_claim, "local_inventory", return_value={"worktrees": [], "local_branches": []}),
+        mock_attribute(plan, "emit") as output,
+    ):
+        plan.cmd_index(argparse.Namespace(repo="owner/repo", label=None, state="open", limit=20))
+        assert output.call_args.args[0]["plans"][0]["number"] == recorded["rest"]["number"]
+        assert output.call_args.args[0]["inventory_complete"]
+        plan.cmd_search(argparse.Namespace(repo="owner/repo", query="fixture", state="all", limit=20))
+        result = output.call_args.args[0]
+        assert [row["record_type"] for row in result["issues"]] == ["issue", "pull_request"]
+        assert result["count"] == result["total_count"] == 2 and not result["incomplete_results"]
+        _, pulls = plan.collect_paged_rest_items(
+            "/repos/owner/repo/pulls", query={"state": "all"}, bucket="rest_core", step_prefix="claim"
+        )
+        inventory = plan.claim_inventory("owner/repo", node["number"])
+        assert inventory["remote_branches"] == [pulls[0]["head"]["ref"]]
+        _, comments = plan.collect_paged_rest_items(
+            f"/repos/owner/repo/issues/{node['number']}/comments", query={}, bucket="rest_core", step_prefix="claim"
+        )
+        assert plan.github_plan_claim.discussion_evidence("", comments[:1], {**owner, "worker": "successor"})[0]
+        assert not plan.github_plan_claim.discussion_evidence("", comments, {**owner, "worker": "successor"})[0]
+        assert requests.call_count == len(documents)
+        assert all(call.args[:2] == ("POST", "/graphql") for call in requests.call_args_list)
+
+
+def test_partial_inventory_and_missing_later_history_never_clear_custody() -> None:
+    plan = load_plan()
+    node = issue_fixture()
+    node["__typename"] = "Issue"
+    failures = [
+        [
+            {
+                "data": {
+                    "r0": {
+                        "nameWithOwner": "owner/repo",
+                        "issues": {"nodes": [], "totalCount": 1, "pageInfo": {"hasNextPage": False}},
+                    }
+                }
+            }
+        ],
+        [
+            {"data": {"repository": {"issueOrPullRequest": node}}},
+            {"data": {"repository": None}, "errors": [{"message": "Unavailable page"}]},
+        ],
+    ]
+    for documents in failures:
+        reader = github_read.GitHubReader(gh_cmd="fake-gh")
+        responses = [github_api.ApiResult(ok=True, status=200, body=document) for document in documents]
+        with (
+            patch.object(github_api, "call_gh_with_retry", side_effect=responses),
+            mock_attribute(plan, "next_graph_reader", return_value=reader),
+        ):
+            try:
+                plan.collect_paged_rest_items(
+                    "/repos/owner/repo/issues" if len(documents) == 1 else f"/repos/owner/repo/issues/{node['number']}/comments",
+                    query={},
+                    bucket="rest_core",
+                    step_prefix="claim",
+                    issue_only=True,
+                )
+            except plan.PlanError:
+                continue
+            raise AssertionError("Unread custody became a complete inventory")
+
+
+def test_direction_blob_absence_is_distinct_from_unreadable_content() -> None:
+    import test_gh_plan_direction as direction
+
+    plan = load_plan()
+    for blob, errors, expected in [
+        ({"text": direction.DIRECTION, "isBinary": False, "isTruncated": False}, None, direction.DIRECTION),
+        (None, None, None),
+        ({"text": direction.DIRECTION, "isBinary": False, "isTruncated": True}, None, "error"),
+        (None, [{"message": "Repository unavailable"}], "error"),
+    ]:
+        body = {"data": {"repository": {"object": blob}}, "errors": errors}
+        reader = github_read.GitHubReader(gh_cmd="fake-gh")
+        with (
+            patch.object(github_api, "call_gh_with_retry", return_value=github_api.ApiResult(ok=True, status=200, body=body)),
+            mock_attribute(plan, "next_graph_reader", return_value=reader),
+        ):
+            try:
+                value = plan.load_direction("owner/repo")
+            except plan.PlanError:
+                assert expected == "error"
+            else:
+                assert value == expected
 
 
 if __name__ == "__main__":

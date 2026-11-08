@@ -249,6 +249,7 @@ class GitHubReader:
         include_archived: bool = False,
     ) -> None:
         self.gh_cmd = gh_cmd
+        self.repository = repository
         # Resolve before constructing the opt-in cache: bodies and actor checks
         # must use the same identity as shared transport and quota admission.
         self._identity_error: Optional[github_identity.GitHubAppError] = None
@@ -313,6 +314,7 @@ class GitHubReader:
             deadline_at=self.deadline_at if deadline_at is None else deadline_at,
             allow_escape_sequences=allow_escape_sequences,
             conditional_cache=not self.cache_enabled if conditional_cache is None else conditional_cache,
+            **({"repository": self.repository} if github_api_core.is_graphql_path(path) and self.repository is not None else {}),
         )
 
     def graphql_json(
@@ -625,6 +627,9 @@ def read_repository_connections(
     normalize: Callable[[str, dict[str, Any]], dict[str, Any]],
     step: str,
     retry_policy: github_api_core.RetryPolicy | None = None,
+    limit: int | None = None,
+    identity: Callable[[dict[str, Any]], Any] | None = None,
+    metadata: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, list[dict[str, Any]] | Exception]:
     repos = list(dict.fromkeys(repositories))
     if any(not isinstance(repo, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo) for repo in repos):
@@ -641,12 +646,16 @@ def read_repository_connections(
                     normalize=normalize,
                     step=step,
                     retry_policy=retry_policy,
+                    limit=limit,
+                    identity=identity,
+                    metadata=metadata,
                 )
             )
         return grouped
     result: dict[str, list[dict[str, Any]] | Exception] = {repo: [] for repo in repos}
     cursors: dict[str, str | None] = dict.fromkeys(repos)
     totals, seen = {}, {repo: set() for repo in repos}
+    identities: dict[str, set[Any]] = {repo: set() for repo in repos}
     for _ in range(GRAPHQL_INVENTORY_PAGE_LIMIT):
         if not cursors:
             return result
@@ -693,14 +702,21 @@ def read_repository_connections(
                     or str(repository_node.get("nameWithOwner", "")).casefold() != repo.casefold()
                 ):
                     raise RepositoryInventoryUnavailable("repository unavailable or mismatched")
+                if metadata is not None:
+                    metadata[repo] = {key: value for key, value in repository_node.items() if key != field}
                 nodes, cursor, total = graphql_connection_page(repository_node.get(field))
                 if total != totals.setdefault(repo, total):
                     raise RepositoryInventoryUnavailable("inventory changed during pagination")
                 for node in nodes:
-                    number = node.get("number")
-                    if type(number) is not int or number <= 0 or any(record["number"] == number for record in records):
+                    key = identity(node) if identity is not None else node.get("number")
+                    if key is None or key in identities[repo] or identity is None and (type(key) is not int or key <= 0):
                         raise RepositoryInventoryUnavailable("invalid or duplicate record")
+                    identities[repo].add(key)
                     records.append(normalize(repo, node))
+                    if limit is not None and len(records) >= limit:
+                        break
+                if limit is not None and len(records) >= limit:
+                    continue
                 if cursor:
                     if cursor in seen[repo]:
                         raise RepositoryInventoryUnavailable("repository cursor repeated")
