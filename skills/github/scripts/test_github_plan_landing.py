@@ -705,6 +705,7 @@ class MutationProjectionTests(unittest.TestCase):
         self.add_issue(7)
         self.add_issue(8)
         patches = [
+            patch.dict(vars(PLAN), {"next_graph_reader": lambda _repo: None}),
             patch.multiple(PLAN, default_repo=Mock(return_value=REPO),
                 load_config=self.load_config, get_issue=self.get_issue,
                 collect_paged_rest_items=self.read_comments, read_issue_relationships=self.relationships,

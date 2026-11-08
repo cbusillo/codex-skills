@@ -3157,7 +3157,7 @@ Global `next` keeps its complete issue/PR graph reads and reads merged direction
 files with GraphQL blobs; a missing object means no direction file, while an
 unavailable repository or truncated blob remains unknown. Claim discussion and
 inventory readbacks use the same complete GraphQL readers. Installation enumeration,
-mutation metadata, writes and event histories retain their existing routes.
+issue-body mutation metadata, writes and event histories retain their existing routes.
 Explicit identity routes retain their previous REST behavior. There is no new
 transport, cache or persistent inventory. Ordinary watcher polling keeps its
 existing conditional REST default.
