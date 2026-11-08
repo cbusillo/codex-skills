@@ -149,8 +149,9 @@ class NextReads:
         path = observation_key(path)
         with self.lock:
             future = self.observations.get(path)
-            first = future is None
-            if first:
+            first = False
+            if future is None:
+                first = True
                 future = Future()
                 self.observations[path] = future
             else:

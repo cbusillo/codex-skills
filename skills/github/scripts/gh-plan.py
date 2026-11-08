@@ -5835,13 +5835,13 @@ def next_wait_context(
                     remember(row)
                     cache[path] = row
                 elif connection and supported_page and next_graph_reader(connection[1]) is not None:
-                    field = {
+                    connection_field = {
                         "comments": "comments",
                         "sub_issues": "subIssues",
                         "dependencies/blocked_by": "blockedBy",
                         "dependencies/blocking": "blocking",
                     }[connection[3]]
-                    _, rows = read_planning_connection(connection[1], int(connection[2]), field, limit=page * size)
+                    _, rows = read_planning_connection(connection[1], int(connection[2]), connection_field, limit=page * size)
                     cache[path] = rows[(page - 1) * size : page * size]
                 else:
                     _, cache[path] = api_json("GET", path, bucket="rest_core", failed_step="next_wait_evidence")
