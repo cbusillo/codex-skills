@@ -1699,10 +1699,6 @@ class OwnReleaseTests(ReleaseHarness):
         status = PLAN.section_map(self.f.issue["body"])["Current Status"]
         self.assertEqual(PLAN.github_plan_next_actor.read(status), f"agent:{result['claim']['session']}")
 
-    def test_claim_comment_is_searchable_by_its_session_outside_markup(self) -> None:
-        self.f.comments = []
-        self.f.run_claim()
-        result = self.f.emitted.call_args.args[0]
         posted = next(c for c in self.f.comments if c["id"] == result["claim_comment"]["comment"]["id"])
         self.assertIn(result["claim"]["session"], re.sub(r"<!--.*?-->", "", posted["body"], flags=re.S))
 

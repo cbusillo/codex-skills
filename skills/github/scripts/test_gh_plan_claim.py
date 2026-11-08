@@ -5515,13 +5515,20 @@ class ClaimTests(unittest.TestCase):
             self.run_claim()
         self.assert_no_writes()
 
-    def test_human_request_remains_unchanged_and_uses_comment(self):
-        self.issue["user"] = {"login": "contributor"}
-        self.issue["body"] = "Fix this please\n\n## Current Status\n\nState: Open, not started."
-        original = self.issue["body"]
-        self.run_claim()
-        self.assertEqual(self.issue["body"], original)
-        self.assertEqual(self.emitted.call_args.args[0]["current_status_location"], "claim_comment")
+    def test_human_request_remains_unchanged_and_uses_comment(self) -> None:
+        for body in (
+            "Fix this please",
+            "Fix this please\n\n## Current Status\n\nState: Open, not started.",
+            PLAN.github_plan_body.wrap_contributor_plan(
+                {"body": "Original report"}, "## Current Status\n\nState: Open, not started."
+            ),
+        ):
+            with self.subTest(body=body):
+                self.setUp()
+                self.issue.update(user={"login": "contributor"}, body=body)
+                self.run_claim()
+                self.assertEqual(self.issue["body"], body)
+                self.assertEqual(self.emitted.call_args.args[0]["current_status_location"], "claim_comment")
 
     def test_metadata_failure_can_resume_existing_claim(self):
         with patch.object(PLAN, "rest_edit_issue", side_effect=PLAN.PlanError("Unavailable")):
@@ -6018,12 +6025,6 @@ class ClaimTests(unittest.TestCase):
                     self.run_claim()
                     self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
-    def test_plain_human_request_is_not_adopted_by_claim(self):
-        self.issue["user"] = {"login": "contributor"}
-        self.issue["body"] = "Fix this please"
-        self.run_claim()
-        self.assertEqual(self.issue["body"], "Fix this please")
-
     def test_malformed_record_is_not_ignored(self):
         self.comments.append({"body": "<!-- github-plan:claim nope -->"})
         with self.assertRaises(PLAN.PlanError):
@@ -6153,32 +6154,33 @@ class ClaimTests(unittest.TestCase):
         with self.assertRaises(PLAN.PlanError): self.run_claim()
         self.assert_no_writes()
 
-    def test_embedded_release_recovers_reported_finished_session(self):
-        for role in ("Director", "Owner"):
-            self.setUp()
-            # The release follows a question/handoff, regardless of role spelling.
-            self.comments = [
-                {"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}},
-                {"id": 2, "body": f"{role} question: Verify live-host usage?\n\n"
-                 "Source session finished without implementation.\n\nReleased claim 1\n\n"
-                 "<!-- github-skill-operation:ebe51a4db859c979eaa963fb10af11b5 -->\n",
-                 "user": {"login": TEST_BOT}},
-                {"id": 3, "body": f"{role} decision: The later read-only inventory is approved; no host changes.",
-                 "user": {"login": "owner"}},
-            ]
-            self.run_claim()
-            self.assertEqual(len(self.comments), 4)
-            self.assertIn("claim_readback", self.emitted.call_args.args[0]["completed_steps"])
-            # Release is ownership proof. Task authority is verified by the caller;
-            # the helper gates recorded waits, not the presence of decision comments.
-            self.setUp()
-            self.comments = [
-                {"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}},
-                {"id": 2, "body": f"{role} question: Verify live-host usage?\n\nReleased claim 1",
-                 "user": {"login": TEST_BOT}},
-            ]
-            self.run_claim()
-            self.assertIn("metadata_readback", self.emitted.call_args.args[0]["completed_steps"])
+    def test_embedded_release_recovers_reported_finished_session(self) -> None:
+        for role, with_decision in product(("Director", "Owner"), (True, False)):
+            with self.subTest(role=role, with_decision=with_decision):
+                self.setUp()
+                release = (
+                    "Source session finished without implementation.\n\nReleased claim 1\n\n"
+                    "<!-- github-skill-operation:ebe51a4db859c979eaa963fb10af11b5 -->\n"
+                    if with_decision
+                    else "Released claim 1"
+                )
+                self.comments = [
+                    {"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}},
+                    {"id": 2, "body": f"{role} question: Verify live-host usage?\n\n" + release, "user": {"login": TEST_BOT}},
+                ]
+                if with_decision:
+                    self.comments.append(
+                        {
+                            "id": 3,
+                            "body": f"{role} decision: The later read-only inventory is approved; no host changes.",
+                            "user": {"login": "owner"},
+                        }
+                    )
+                self.run_claim()
+                self.assertEqual(len(self.comments), 4 if with_decision else 3)
+                self.assertIn(
+                    "claim_readback" if with_decision else "metadata_readback", self.emitted.call_args.args[0]["completed_steps"]
+                )
 
     def test_embedded_release_resumes_exact_status_with_retained_branch(self):
         self.released_status_fixture("Finished session handoff.\r\n\r\nReleased claim 1.")
@@ -6571,15 +6573,6 @@ class ClaimTests(unittest.TestCase):
         self.run_claim()
         self.assertTrue(self.emitted.call_args.args[0]["ok"])
         self.assertEqual(len(wait_record.records(self.issue["body"])), 1)
-
-    def test_existing_reporter_envelope_is_never_rewritten_by_claim(self):
-        self.issue["user"] = {"login": "contributor"}
-        self.issue["body"] = PLAN.github_plan_body.wrap_contributor_plan(
-            {"body": "Original report"}, "## Current Status\n\nState: Open, not started.")
-        envelope = self.issue["body"]
-        self.run_claim()
-        self.assertEqual(self.issue["body"], envelope)
-        self.assertEqual(self.emitted.call_args.args[0]["current_status_location"], "claim_comment")
 
     def test_reviewed_status_and_comment_prose_cannot_create_a_wait_or_an_owner(self):
         self.issue["body"] += "\nOwned by historical-worker\nWaiting for: None; Chris decides the scope"
