@@ -2021,7 +2021,7 @@ def _kill_command_group(pid_file: Path) -> None:
     try:
         os.killpg(int(pid_file.read_text()), gh_pr_watch.signal.SIGKILL)
     except ProcessLookupError:
-        pass
+        return
 
 
 def mock_pr_discussion(monkeypatch: pytest.MonkeyPatch, *, login: str) -> None:
