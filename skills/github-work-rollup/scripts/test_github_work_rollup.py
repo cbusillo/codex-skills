@@ -14,12 +14,15 @@ import argparse
 import base64
 import json
 import subprocess
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import github_work_rollup
 import pytest
+
+Responder = Callable[[list[str]], subprocess.CompletedProcess[str] | None]
 
 
 def completed(command: list[str], payload: object, returncode: int = 0) -> subprocess.CompletedProcess[str]:
@@ -80,18 +83,69 @@ def empty_enrichment_response(command: list[str]) -> subprocess.CompletedProcess
     return None
 
 
-def empty_repo_rollup_run(
-    command: list[str], calls: list[list[str]] | None = None,
-) -> subprocess.CompletedProcess[str]:
-    if calls is not None:
-        calls.append(command)
-    if response := preflight_response(command):
-        return response
+def empty_item_lists(command: list[str]) -> subprocess.CompletedProcess[str] | None:
     if command[1:3] in (["pr", "list"], ["issue", "list"]):
         return completed(command, [])
-    if response := empty_enrichment_response(command):
-        return response
-    raise AssertionError(f"unexpected command: {command}")
+    return None
+
+
+def gh_run(*responders: Responder, calls: list[list[str]] | None = None) -> Callable[[list[str]], subprocess.CompletedProcess[str]]:
+    def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
+        if calls is not None:
+            calls.append(command)
+        for responder in responders:
+            if response := responder(command):
+                return response
+        raise AssertionError(f"unexpected command: {command}")
+
+    return fake_run
+
+
+def empty_repo_rollup_run(calls: list[list[str]] | None = None) -> Callable[[list[str]], subprocess.CompletedProcess[str]]:
+    return gh_run(preflight_response, empty_item_lists, empty_enrichment_response, calls=calls)
+
+
+def issue_row(number: int, title: str, created_at: str, updated_at: str, **extra: str) -> dict[str, object]:
+    return {
+        "number": number,
+        "title": title,
+        "url": f"https://github.com/example-org/example-repo/issues/{number}",
+        "author": {"login": "example-user"},
+        "labels": [],
+        "assignees": [],
+        "createdAt": created_at,
+        "updatedAt": updated_at,
+        **extra,
+    }
+
+
+def search_item(number: int, title: str, **overrides: object) -> dict[str, object]:
+    return {
+        "number": number,
+        "title": title,
+        "html_url": f"https://github.com/example-org/example-repo/issues/{number}",
+        "repository_url": "https://api.github.com/repos/example-org/example-repo",
+        "state": "open",
+        "updated_at": "2026-06-02T15:00:00Z",
+        "user": {"login": "cli-user"},
+        "labels": [],
+        **overrides,
+    }
+
+
+DAY_WINDOW = {"since": "2026-06-01T16:00:00Z", "until": "2026-06-02T16:00:00Z", "label": "24h"}
+WEEK_WINDOW = {"since": "2026-06-05T16:00:00Z", "until": "2026-06-12T16:00:00Z", "label": "7d"}
+
+
+def executive_payload(window: dict[str, str], **fields: Any) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "window": dict(window),
+        "timezone": "America/New_York",
+        "report_recipient": "Justin",
+        "layout": "executive",
+        **fields,
+    }
 
 
 def write_people_index(tmp_path: Path) -> Path:
@@ -298,33 +352,12 @@ def test_preflight_rejects_success_without_actor(monkeypatch: pytest.MonkeyPatch
 def test_collect_rollup_allows_subject_only_scope(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[list[str]] = []
 
-    def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
-        calls.append(command)
-        if response := preflight_response(command):
-            return response
+    def subject_search(command: list[str]) -> subprocess.CompletedProcess[str] | None:
         if command[1:5] == ["api", "--method", "GET", "search/issues"]:
-            return completed(
-                command,
-                {
-                    "items": [
-                        {
-                            "number": 42,
-                            "title": "Follow-up needed",
-                            "html_url": "https://github.com/example-org/example-repo/issues/42",
-                            "repository_url": "https://api.github.com/repos/example-org/example-repo",
-                            "state": "open",
-                            "updated_at": "2026-06-02T15:00:00Z",
-                            "user": {"login": "cli-user"},
-                            "labels": [{"name": "needs-attention"}],
-                        }
-                    ]
-                },
-            )
-        if response := empty_enrichment_response(command):
-            return response
-        raise AssertionError(f"unexpected command: {command}")
+            return completed(command, {"items": [search_item(42, "Follow-up needed", labels=[{"name": "needs-attention"}])]})
+        return None
 
-    monkeypatch.setattr(github_work_rollup, "run", fake_run)
+    monkeypatch.setattr(github_work_rollup, "run", gh_run(preflight_response, subject_search, empty_enrichment_response, calls=calls))
     settings = github_work_rollup.resolve_settings(args(subject=["cli-user"]), {})
 
     payload = github_work_rollup.collect_rollup(settings)
@@ -340,7 +373,7 @@ def test_collect_rollup_allows_subject_only_scope(monkeypatch: pytest.MonkeyPatc
 def test_repo_scoped_rollup_does_not_search_external_subjects_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[list[str]] = []
 
-    monkeypatch.setattr(github_work_rollup, "run", lambda command: empty_repo_rollup_run(command, calls))
+    monkeypatch.setattr(github_work_rollup, "run", empty_repo_rollup_run(calls))
     settings = github_work_rollup.resolve_settings(args(repo=["example-org/example-repo"], subject=["cli-user"]), {})
 
     payload = github_work_rollup.collect_rollup(settings)
@@ -352,7 +385,7 @@ def test_repo_scoped_rollup_does_not_search_external_subjects_by_default(monkeyp
 
 def test_collect_rollup_attaches_recipient_profile(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     people_index = write_people_index(tmp_path)
-    monkeypatch.setattr(github_work_rollup, "run", empty_repo_rollup_run)
+    monkeypatch.setattr(github_work_rollup, "run", empty_repo_rollup_run())
     settings = github_work_rollup.resolve_settings(
         args(repo=["example-org/example-repo"], report_recipient="Example Owner", people_index=people_index),
         {},
@@ -373,12 +406,7 @@ def test_collect_rollup_attaches_derived_repo_context(monkeypatch: pytest.Monkey
         b"# Northwind Lab\n\nNorthwind Lab is a harness for agent workflows.\n\n## Details\nMore text."
     ).decode("ascii")
 
-    def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
-        calls.append(command)
-        if response := preflight_response(command):
-            return response
-        if command[1:3] == ["pr", "list"] or command[1:3] == ["issue", "list"]:
-            return completed(command, [])
+    def repo_context(command: list[str]) -> subprocess.CompletedProcess[str] | None:
         if command[1:3] == ["repo", "view"]:
             return completed(
                 command,
@@ -400,11 +428,11 @@ def test_collect_rollup_attaches_derived_repo_context(monkeypatch: pytest.Monkey
                     "html_url": "https://github.com/example-org/northwind-lab/blob/main/README.md",
                 },
             )
-        if response := empty_enrichment_response(command):
-            return response
-        raise AssertionError(f"unexpected command: {command}")
+        return None
 
-    monkeypatch.setattr(github_work_rollup, "run", fake_run)
+    monkeypatch.setattr(
+        github_work_rollup, "run", gh_run(preflight_response, empty_item_lists, repo_context, empty_enrichment_response, calls=calls),
+    )
     settings = github_work_rollup.resolve_settings(
         args(repo=["example-org/northwind-lab"], include_derived_context=True, context_repo_limit=5),
         {},
@@ -424,11 +452,7 @@ def test_collect_rollup_attaches_derived_repo_context(monkeypatch: pytest.Monkey
 
 
 def test_missing_readme_context_does_not_pollute_limitations(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
-        if response := preflight_response(command):
-            return response
-        if command[1:3] == ["pr", "list"] or command[1:3] == ["issue", "list"]:
-            return completed(command, [])
+    def repo_context(command: list[str]) -> subprocess.CompletedProcess[str] | None:
         if command[1:3] == ["repo", "view"]:
             return completed(
                 command,
@@ -441,11 +465,9 @@ def test_missing_readme_context_does_not_pollute_limitations(monkeypatch: pytest
             )
         if command[1] == "api" and command[2] == "repos/example-org/no-readme/readme":
             return completed(command, {"message": "Not Found"}, returncode=1)
-        if response := empty_enrichment_response(command):
-            return response
-        raise AssertionError(f"unexpected command: {command}")
+        return None
 
-    monkeypatch.setattr(github_work_rollup, "run", fake_run)
+    monkeypatch.setattr(github_work_rollup, "run", gh_run(preflight_response, empty_item_lists, repo_context, empty_enrichment_response))
     settings = github_work_rollup.resolve_settings(
         args(repo=["example-org/no-readme"], include_derived_context=True),
         {},
@@ -500,35 +522,13 @@ def test_bucket_items_orders_equal_priority_by_newest_first() -> None:
 
 
 def test_subject_search_filters_bots_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[list[str]] = []
-
-    def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
-        calls.append(command)
-        if response := preflight_response(command):
-            return response
+    def bot_search(command: list[str]) -> subprocess.CompletedProcess[str] | None:
         if command[1:3] == ["api", "--method"]:
-            return completed(
-                command,
-                {
-                    "items": [
-                        {
-                            "number": 1,
-                            "title": "Bot update",
-                            "html_url": "https://github.com/example-org/example-repo/issues/1",
-                            "repository_url": "https://api.github.com/repos/example-org/example-repo",
-                            "state": "open",
-                            "updated_at": "2026-06-02T15:00:00Z",
-                            "user": {"login": "dependabot[bot]", "type": "Bot"},
-                            "labels": [],
-                        }
-                    ]
-                },
-            )
-        if response := empty_enrichment_response(command):
-            return response
-        raise AssertionError(f"unexpected command: {command}")
+            bot_item = search_item(1, "Bot update", user={"login": "dependabot[bot]", "type": "Bot"})
+            return completed(command, {"items": [bot_item]})
+        return None
 
-    monkeypatch.setattr(github_work_rollup, "run", fake_run)
+    monkeypatch.setattr(github_work_rollup, "run", gh_run(preflight_response, bot_search, empty_enrichment_response))
     settings = github_work_rollup.resolve_settings(args(subject=["cli-user"]), {})
 
     payload = github_work_rollup.collect_rollup(settings)
@@ -540,42 +540,20 @@ def test_subject_search_filters_bots_when_disabled(monkeypatch: pytest.MonkeyPat
 def test_subject_search_pages_until_collection_limit(monkeypatch: pytest.MonkeyPatch, collection_limit: int) -> None:
     calls: list[list[str]] = []
 
-    def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
-        calls.append(command)
-        if response := preflight_response(command):
-            return response
-        if command[1:3] == ["api", "--method"]:
-            query = command[command.index("-f") + 1]
-            if not query.startswith("q=author:"):
-                return completed(command, {"total_count": 0, "items": []})
-            page_field = next(item for item in command if item.startswith("page="))
-            page = int(page_field.split("=", 1)[1])
-            start = (page - 1) * 100
-            count = min(100, collection_limit - start)
-            return completed(
-                command,
-                {
-                    "total_count": collection_limit,
-                    "items": [
-                        {
-                            "number": start + i,
-                            "title": f"Subject item {start + i}",
-                            "html_url": f"https://github.com/example-org/example-repo/issues/{start + i}",
-                            "repository_url": "https://api.github.com/repos/example-org/example-repo",
-                            "state": "open",
-                            "updated_at": "2026-06-02T15:00:00Z",
-                            "user": {"login": "cli-user"},
-                            "labels": [],
-                        }
-                        for i in range(count)
-                    ],
-                },
-            )
-        if response := empty_enrichment_response(command):
-            return response
-        raise AssertionError(f"unexpected command: {command}")
+    def paged_search(command: list[str]) -> subprocess.CompletedProcess[str] | None:
+        if command[1:3] != ["api", "--method"]:
+            return None
+        query = command[command.index("-f") + 1]
+        if not query.startswith("q=author:"):
+            return completed(command, {"total_count": 0, "items": []})
+        page_field = next(item for item in command if item.startswith("page="))
+        page = int(page_field.split("=", 1)[1])
+        start = (page - 1) * 100
+        count = min(100, collection_limit - start)
+        items = [search_item(start + i, f"Subject item {start + i}") for i in range(count)]
+        return completed(command, {"total_count": collection_limit, "items": items})
 
-    monkeypatch.setattr(github_work_rollup, "run", fake_run)
+    monkeypatch.setattr(github_work_rollup, "run", gh_run(preflight_response, paged_search, empty_enrichment_response, calls=calls))
     settings = github_work_rollup.resolve_settings(args(subject=["cli-user"], limit_items=10, collection_limit_items=collection_limit), {})
 
     payload = github_work_rollup.collect_rollup(settings)
@@ -588,16 +566,12 @@ def test_subject_search_pages_until_collection_limit(monkeypatch: pytest.MonkeyP
 
 
 def test_subject_search_surfaces_incomplete_results(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
-        if response := preflight_response(command):
-            return response
+    def incomplete_search(command: list[str]) -> subprocess.CompletedProcess[str] | None:
         if command[1:3] == ["api", "--method"]:
             return completed(command, {"total_count": 12, "incomplete_results": True, "items": []})
-        if response := empty_enrichment_response(command):
-            return response
-        raise AssertionError(f"unexpected command: {command}")
+        return None
 
-    monkeypatch.setattr(github_work_rollup, "run", fake_run)
+    monkeypatch.setattr(github_work_rollup, "run", gh_run(preflight_response, incomplete_search, empty_enrichment_response))
     settings = github_work_rollup.resolve_settings(args(subject=["cli-user"]), {})
 
     payload = github_work_rollup.collect_rollup(settings)
@@ -606,12 +580,7 @@ def test_subject_search_surfaces_incomplete_results(monkeypatch: pytest.MonkeyPa
 
 
 def test_repo_collection_filters_bots_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[list[str]] = []
-
-    def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
-        calls.append(command)
-        if response := preflight_response(command):
-            return response
+    def open_bot_pr(command: list[str]) -> subprocess.CompletedProcess[str] | None:
         if command[1:3] == ["pr", "list"] and "--state" in command and command[command.index("--state") + 1] == "open":
             return completed(
                 command,
@@ -628,13 +597,9 @@ def test_repo_collection_filters_bots_when_disabled(monkeypatch: pytest.MonkeyPa
                     }
                 ],
             )
-        if command[1:3] == ["pr", "list"] or command[1:3] == ["issue", "list"]:
-            return completed(command, [])
-        if response := empty_enrichment_response(command):
-            return response
-        raise AssertionError(f"unexpected command: {command}")
+        return None
 
-    monkeypatch.setattr(github_work_rollup, "run", fake_run)
+    monkeypatch.setattr(github_work_rollup, "run", gh_run(preflight_response, open_bot_pr, empty_item_lists, empty_enrichment_response))
     settings = github_work_rollup.resolve_settings(args(repo=["example-org/example-repo"]), {})
 
     payload = github_work_rollup.collect_rollup(settings)
@@ -651,17 +616,13 @@ def test_classify_pr_keeps_draft_approved_pr_in_progress() -> None:
 
 def test_subject_pr_search_uses_pr_classification() -> None:
     item = github_work_rollup.normalize_search_item(
-        {
-            "number": 3,
-            "title": "Blocked PR",
-            "html_url": "https://github.com/example-org/example-repo/pull/3",
-            "repository_url": "https://api.github.com/repos/example-org/example-repo",
-            "state": "open",
-            "updated_at": "2026-06-02T15:00:00Z",
-            "user": {"login": "cli-user"},
-            "labels": [{"name": "blocked"}],
-            "pull_request": {},
-        },
+        search_item(
+            3,
+            "Blocked PR",
+            html_url="https://github.com/example-org/example-repo/pull/3",
+            labels=[{"name": "blocked"}],
+            pull_request={},
+        ),
         "cli-user",
         "author",
         {"noise_filters": {}},
@@ -709,19 +670,14 @@ def test_render_operator_markdown_uses_display_timezone_and_action_links() -> No
 def test_github_commands_are_read_only(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[list[str]] = []
 
-    def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
-        calls.append(command)
-        if response := preflight_response(command):
-            return response
+    def owner_repos(command: list[str]) -> subprocess.CompletedProcess[str] | None:
         if command[1:3] == ["repo", "list"]:
             return completed(command, [{"nameWithOwner": "example-org/example-repo", "isArchived": False}])
-        if command[1:3] == ["pr", "list"] or command[1:3] == ["issue", "list"]:
-            return completed(command, [])
-        if response := empty_enrichment_response(command):
-            return response
-        raise AssertionError(f"unexpected command: {command}")
+        return None
 
-    monkeypatch.setattr(github_work_rollup, "run", fake_run)
+    monkeypatch.setattr(
+        github_work_rollup, "run", gh_run(preflight_response, owner_repos, empty_item_lists, empty_enrichment_response, calls=calls),
+    )
     settings = github_work_rollup.resolve_settings(args(repo_owner=["example-org"]), {})
 
     github_work_rollup.collect_rollup(settings)
@@ -754,16 +710,7 @@ def test_old_open_issue_collection_obeys_the_mode_window(
 
     def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
         calls.append(command)
-        return completed(command, [{
-            "number": 214,
-            "title": "Older open work",
-            "url": "https://github.com/example-org/example-repo/issues/214",
-            "author": {"login": "example-user"},
-            "labels": [],
-            "assignees": [],
-            "createdAt": "2026-05-20T12:00:00Z",
-            "updatedAt": "2026-05-21T12:00:00Z",
-        }])
+        return completed(command, [issue_row(214, "Older open work", "2026-05-20T12:00:00Z", "2026-05-21T12:00:00Z")])
 
     monkeypatch.setattr(github_work_rollup, "run", fake_run)
     settings = github_work_rollup.resolve_settings(args(repo=["example-org/example-repo"], mode=mode), {})
@@ -779,47 +726,14 @@ def test_old_open_issue_collection_obeys_the_mode_window(
 def test_standup_repo_collection_uses_backlog_and_recent_open_scans(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[list[str]] = []
 
-    def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
-        calls.append(command)
-        if command[1:3] == ["pr", "list"]:
-            return completed(command, [])
-        if command[1:3] == ["issue", "list"] and command[command.index("--state") + 1] == "open":
-            if "--search" in command:
-                return completed(
-                    command,
-                    [
-                        {
-                            "number": 50,
-                            "title": "Older item updated recently",
-                            "url": "https://github.com/example-org/example-repo/issues/50",
-                            "author": {"login": "example-user"},
-                            "labels": [],
-                            "assignees": [],
-                            "createdAt": "2026-05-01T12:00:00Z",
-                            "updatedAt": "2026-06-02T15:00:00Z",
-                        }
-                    ],
-                )
-            return completed(
-                command,
-                [
-                    {
-                        "number": 214,
-                        "title": "Open backlog item",
-                        "url": "https://github.com/example-org/example-repo/issues/214",
-                        "author": {"login": "example-user"},
-                        "labels": [],
-                        "assignees": [],
-                        "createdAt": "2026-05-20T12:00:00Z",
-                        "updatedAt": "2026-05-21T12:00:00Z",
-                    }
-                ],
-            )
-        if command[1:3] == ["issue", "list"]:
-            return completed(command, [])
-        raise AssertionError(f"unexpected command: {command}")
+    def open_issues(command: list[str]) -> subprocess.CompletedProcess[str] | None:
+        if command[1:3] != ["issue", "list"] or command[command.index("--state") + 1] != "open":
+            return None
+        if "--search" in command:
+            return completed(command, [issue_row(50, "Older item updated recently", "2026-05-01T12:00:00Z", "2026-06-02T15:00:00Z")])
+        return completed(command, [issue_row(214, "Open backlog item", "2026-05-20T12:00:00Z", "2026-05-21T12:00:00Z")])
 
-    monkeypatch.setattr(github_work_rollup, "run", fake_run)
+    monkeypatch.setattr(github_work_rollup, "run", gh_run(open_issues, empty_item_lists, calls=calls))
     settings = github_work_rollup.resolve_settings(args(repo=["example-org/example-repo"], mode="standup"), {})
 
     rows = github_work_rollup.collect_repo_items("example-org/example-repo", settings)
@@ -832,21 +746,7 @@ def test_standup_repo_collection_uses_backlog_and_recent_open_scans(monkeypatch:
 
 def test_standup_mode_marks_recent_open_items_as_recent_activity(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
-        return completed(
-            command,
-            [
-                {
-                    "number": 215,
-                    "title": "Recently updated open work",
-                    "url": "https://github.com/example-org/example-repo/issues/215",
-                    "author": {"login": "example-user"},
-                    "labels": [],
-                    "assignees": [],
-                    "createdAt": "2026-05-20T12:00:00Z",
-                    "updatedAt": "2026-06-02T15:00:00Z",
-                }
-            ],
-        )
+        return completed(command, [issue_row(215, "Recently updated open work", "2026-05-20T12:00:00Z", "2026-06-02T15:00:00Z")])
 
     monkeypatch.setattr(github_work_rollup, "run", fake_run)
     settings = github_work_rollup.resolve_settings(args(repo=["example-org/example-repo"], mode="standup"), {})
@@ -862,22 +762,8 @@ def test_standup_mode_keeps_closed_items_window_bound(monkeypatch: pytest.Monkey
 
     def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
         calls.append(command)
-        return completed(
-            command,
-            [
-                {
-                    "number": 100,
-                    "title": "Old closed issue",
-                    "url": "https://github.com/example-org/example-repo/issues/100",
-                    "author": {"login": "example-user"},
-                    "labels": [],
-                    "assignees": [],
-                    "createdAt": "2026-05-10T12:00:00Z",
-                    "updatedAt": "2026-05-12T12:00:00Z",
-                    "closedAt": "2026-05-12T12:00:00Z",
-                }
-            ],
-        )
+        old_closed = issue_row(100, "Old closed issue", "2026-05-10T12:00:00Z", "2026-05-12T12:00:00Z", closedAt="2026-05-12T12:00:00Z")
+        return completed(command, [old_closed])
 
     monkeypatch.setattr(github_work_rollup, "run", fake_run)
     settings = github_work_rollup.resolve_settings(args(repo=["example-org/example-repo"], mode="standup"), {})
@@ -1129,12 +1015,8 @@ def test_resolve_settings_rejects_removed_layout_aliases() -> None:
 
 def test_collect_releases_and_workflows(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = []
-    def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
-        calls.append(command)
-        if response := preflight_response(command):
-            return response
-        if command[1:3] == ["pr", "list"] or command[1:3] == ["issue", "list"]:
-            return completed(command, [])
+
+    def releases_and_runs(command: list[str]) -> subprocess.CompletedProcess[str] | None:
         if command[1:3] == ["release", "list"]:
             return completed(command, [
                 {
@@ -1184,9 +1066,9 @@ def test_collect_releases_and_workflows(monkeypatch: pytest.MonkeyPatch) -> None
                     "url": "https://github.com/example-org/example-repo/actions/runs/2"
                 }
             ])
-        raise AssertionError(f"unexpected command: {command}")
+        return None
 
-    monkeypatch.setattr(github_work_rollup, "run", fake_run)
+    monkeypatch.setattr(github_work_rollup, "run", gh_run(preflight_response, empty_item_lists, releases_and_runs, calls=calls))
     settings = github_work_rollup.resolve_settings(args(repo=["example-org/example-repo"], layout="executive", window="24h"), {})
     payload = github_work_rollup.collect_rollup(settings)
 
@@ -1207,38 +1089,15 @@ def test_collect_releases_and_workflows(monkeypatch: pytest.MonkeyPatch) -> None
 def test_collection_uses_deep_limits_before_render_limits(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[list[str]] = []
 
-    def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
-        calls.append(command)
-        if response := preflight_response(command):
-            return response
-        if command[1:3] == ["pr", "list"]:
+    def open_issues_and_empty_history(command: list[str]) -> subprocess.CompletedProcess[str] | None:
+        if command[1:3] in (["release", "list"], ["run", "list"]):
             return completed(command, [])
-        if command[1:3] == ["issue", "list"]:
-            if command[command.index("--state") + 1] != "open":
-                return completed(command, [])
-            return completed(
-                command,
-                [
-                    {
-                        "number": i,
-                        "title": f"Open issue {i}",
-                        "url": f"https://github.com/example-org/example-repo/issues/{i}",
-                        "author": {"login": "example-user"},
-                        "labels": [],
-                        "assignees": [],
-                        "createdAt": "2026-06-02T09:00:00Z",
-                        "updatedAt": "2026-06-02T10:00:00Z",
-                    }
-                    for i in range(3)
-                ],
-            )
-        if command[1:3] == ["release", "list"]:
-            return completed(command, [])
-        if command[1:3] == ["run", "list"]:
-            return completed(command, [])
-        raise AssertionError(f"unexpected command: {command}")
+        if command[1:3] == ["issue", "list"] and command[command.index("--state") + 1] == "open":
+            rows = [issue_row(i, f"Open issue {i}", "2026-06-02T09:00:00Z", "2026-06-02T10:00:00Z") for i in range(3)]
+            return completed(command, rows)
+        return None
 
-    monkeypatch.setattr(github_work_rollup, "run", fake_run)
+    monkeypatch.setattr(github_work_rollup, "run", gh_run(preflight_response, open_issues_and_empty_history, empty_item_lists, calls=calls))
     settings = github_work_rollup.resolve_settings(args(repo=["example-org/example-repo"], layout="manager", mode="backlog", limit_items=2), {})
 
     payload = github_work_rollup.collect_rollup(settings)
@@ -1255,11 +1114,7 @@ def test_collection_uses_deep_limits_before_render_limits(monkeypatch: pytest.Mo
 
 
 def test_collection_limit_warnings_only_at_deep_caps(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
-        if response := preflight_response(command):
-            return response
-        if command[1:3] == ["pr", "list"] or command[1:3] == ["issue", "list"]:
-            return completed(command, [])
+    def capped_releases_and_runs(command: list[str]) -> subprocess.CompletedProcess[str] | None:
         if command[1:3] == ["release", "list"]:
             return completed(
                 command,
@@ -1289,9 +1144,9 @@ def test_collection_limit_warnings_only_at_deep_caps(monkeypatch: pytest.MonkeyP
                     for i in range(4)
                 ],
             )
-        raise AssertionError(f"unexpected command: {command}")
+        return None
 
-    monkeypatch.setattr(github_work_rollup, "run", fake_run)
+    monkeypatch.setattr(github_work_rollup, "run", gh_run(preflight_response, empty_item_lists, capped_releases_and_runs))
     settings = github_work_rollup.resolve_settings(
         args(repo=["example-org/example-repo"], release_collection_limit=3, workflow_collection_limit=4),
         {},
@@ -1306,7 +1161,7 @@ def test_collection_limit_warnings_only_at_deep_caps(monkeypatch: pytest.MonkeyP
 def test_operator_layout_collects_same_enrichment_data(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = []
 
-    monkeypatch.setattr(github_work_rollup, "run", lambda command: empty_repo_rollup_run(command, calls))
+    monkeypatch.setattr(github_work_rollup, "run", empty_repo_rollup_run(calls))
     settings = github_work_rollup.resolve_settings(args(repo=["example-org/example-repo"], layout="operator"), {})
 
     payload = github_work_rollup.collect_rollup(settings)
@@ -1448,16 +1303,12 @@ def test_executive_activity_comparison_allows_truncation_warnings(monkeypatch: p
 
 
 def test_executive_collection_surfaces_release_and_workflow_warnings(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
-        if response := preflight_response(command):
-            return response
-        if command[1:3] == ["pr", "list"] or command[1:3] == ["issue", "list"]:
-            return completed(command, [])
+    def failing_history(command: list[str]) -> subprocess.CompletedProcess[str] | None:
         if command[1:3] in (["release", "list"], ["run", "list"]):
             return subprocess.CompletedProcess(command, 1, stdout="", stderr="API unavailable")
-        raise AssertionError(f"unexpected command: {command}")
+        return None
 
-    monkeypatch.setattr(github_work_rollup, "run", fake_run)
+    monkeypatch.setattr(github_work_rollup, "run", gh_run(preflight_response, empty_item_lists, failing_history))
     settings = github_work_rollup.resolve_settings(args(repo=["example-org/example-repo"], layout="executive"), {})
 
     payload = github_work_rollup.collect_rollup(settings)
@@ -1525,18 +1376,15 @@ def test_json_payload_does_not_publish_private_profile_fields() -> None:
 
 
 def test_render_executive_brief_markdown() -> None:
-    payload: dict[str, Any] = {
-        "ok": True,
-        "window": {"since": "2026-06-01T16:00:00Z", "until": "2026-06-02T16:00:00Z", "label": "24h"},
-        "timezone": "America/New_York",
-        "report_recipient": "Example leader",
-        "recipient_profile": {
+    payload = executive_payload(
+        DAY_WINDOW,
+        report_recipient="Example leader",
+        recipient_profile={
             "technical_depth": "low-to-medium",
             "trust_handling": "Private note that should not be rendered.",
         },
-        "repositories": ["example-org/code", "example-org/example-skills"],
-        "layout": "executive",
-        "buckets": {
+        repositories=["example-org/code", "example-org/example-skills"],
+        buckets={
             "needs_attention": [
                 {
                     "repo": "example-org/code",
@@ -1575,8 +1423,8 @@ def test_render_executive_brief_markdown() -> None:
                 },
             ],
         },
-        "releases": [{"repo": "example-org/code", "tag_name": "v1.0.0", "name": "First Release"}],
-        "workflows": [
+        releases=[{"repo": "example-org/code", "tag_name": "v1.0.0", "name": "First Release"}],
+        workflows=[
             {
                 "repo": "example-org/code",
                 "name": "Deploy production",
@@ -1585,7 +1433,7 @@ def test_render_executive_brief_markdown() -> None:
                 "url": "https://github.com/example-org/example-repo/actions/runs/1",
             }
         ],
-        "priority_sections": [
+        priority_sections=[
             {
                 "name": "Northwind / Skills",
                 "workstream": "Northwind skill reporting",
@@ -1605,8 +1453,8 @@ def test_render_executive_brief_markdown() -> None:
                 "recently_completed_count": 1,
             }
         ],
-        "limitations": ["Read-only mode"],
-    }
+        limitations=["Read-only mode"],
+    )
 
     rendered = github_work_rollup.render_payload(payload, "markdown")
 
@@ -1658,14 +1506,7 @@ def test_executive_workstream_identity(title: str, section_fields: dict[str, Any
         "state": "open" if item_field == "items" else "closed",
     }
     section = {"name": "Northwind Product Issues", item_field: [item], **section_fields}
-    payload = {
-        "ok": True,
-        "window": {"since": "2026-06-05T16:00:00Z", "until": "2026-06-12T16:00:00Z", "label": "7d"},
-        "timezone": "America/New_York",
-        "report_recipient": "Example leader",
-        "layout": "executive",
-        "priority_sections": [section],
-    }
+    payload = executive_payload(WEEK_WINDOW, report_recipient="Example leader", priority_sections=[section])
 
     rendered = github_work_rollup.render_payload(payload, "markdown")
     workstream = github_work_rollup.executive_section_workstream(section)
@@ -1720,17 +1561,7 @@ def test_executive_theme_titles_preserve_key_phrases_and_per_item_fallbacks(titl
         for number, title in enumerate(titles, 1)
     ]
     assert github_work_rollup.executive_theme_titles(items, 2) == expected
-    rendered = github_work_rollup.render_payload(
-        {
-            "ok": True,
-            "window": {"since": "2026-06-05T16:00:00Z", "until": "2026-06-12T16:00:00Z", "label": "7d"},
-            "timezone": "America/New_York",
-            "report_recipient": "Justin",
-            "layout": "executive",
-            "buckets": {"in_progress": items},
-        },
-        "markdown",
-    )
+    rendered = github_work_rollup.render_payload(executive_payload(WEEK_WINDOW, buckets={"in_progress": items}), "markdown")
     summary = rendered.split("\n## ", 2)[1]
     assert expected in summary
     assert ";" not in summary
@@ -1759,14 +1590,7 @@ def test_workstream_analysis_changes_with_active_and_completed_work() -> None:
 
 
 def test_render_executive_brief_thin_workstream_avoids_validation_claim() -> None:
-    payload = {
-        "ok": True,
-        "window": {"since": "2026-06-05T16:00:00Z", "until": "2026-06-12T16:00:00Z", "label": "7d"},
-        "timezone": "America/New_York",
-        "report_recipient": "Justin",
-        "layout": "executive",
-        "priority_sections": [{"name": "Northwind Product Issues", "workstream": "Northwind Lab"}],
-    }
+    payload = executive_payload(WEEK_WINDOW, priority_sections=[{"name": "Northwind Product Issues", "workstream": "Northwind Lab"}])
 
     rendered = github_work_rollup.render_payload(payload, "markdown")
     bullet = next(line for line in rendered.splitlines() if line.startswith("- **Northwind Lab**"))
@@ -1780,22 +1604,13 @@ def test_render_executive_brief_thin_workstream_avoids_validation_claim() -> Non
 @pytest.mark.parametrize("has_product_signal", [False, True])
 def test_render_executive_brief_surfaces_configured_repo_coverage_gap(has_product_signal: bool) -> None:
     limitation = "Could not collect issues for example-org/missing: API unavailable"
-    payload: dict[str, Any] = {
-        "ok": True,
-        "window": {"since": "2026-06-01T16:00:00Z", "until": "2026-06-02T16:00:00Z", "label": "24h"},
-        "timezone": "America/New_York",
-        "report_recipient": "Justin",
-        "layout": "executive",
-        "buckets": {
-            "recently_completed": [
-                {"repo": "example-org/example-repo", "number": 2, "title": "Ship useful summary", "kind": "pr", "state": "merged"}
-            ]
-        }
-        if has_product_signal
-        else {},
-        "limitations": [limitation],
-        "coverage_gaps": ["example-org/missing"],
-    }
+    shipped = {"repo": "example-org/example-repo", "number": 2, "title": "Ship useful summary", "kind": "pr", "state": "merged"}
+    payload = executive_payload(
+        DAY_WINDOW,
+        buckets={"recently_completed": [shipped]} if has_product_signal else {},
+        limitations=[limitation],
+        coverage_gaps=["example-org/missing"],
+    )
     rendered = github_work_rollup.render_payload(payload, "markdown")
 
     assert limitation in rendered
@@ -1818,24 +1633,11 @@ def test_render_executive_brief_uses_reporting_window_language(
     window: str,
     heading: str,
 ) -> None:
-    payload: dict[str, Any] = {
-        "ok": True,
-        "window": {"since": f"{since}T16:00:00Z", "until": "2026-06-02T16:00:00Z", "label": window},
-        "timezone": "America/New_York",
-        "report_recipient": "Justin",
-        "layout": "executive",
-        "buckets": {
-            "recently_completed": [
-                {
-                    "repo": "example-org/example-repo",
-                    "number": 4,
-                    "title": "Clarify report cadence",
-                    "kind": "issue",
-                    "state": "closed",
-                }
-            ]
-        },
-    }
+    closed_issue = {"repo": "example-org/example-repo", "number": 4, "title": "Clarify report cadence", "kind": "issue", "state": "closed"}
+    payload = executive_payload(
+        {"since": f"{since}T16:00:00Z", "until": "2026-06-02T16:00:00Z", "label": window},
+        buckets={"recently_completed": [closed_issue]},
+    )
     rendered = github_work_rollup.render_payload(payload, "markdown")
 
     assert rendered.splitlines()[0].startswith(f"# {heading}")
@@ -1883,14 +1685,7 @@ def test_render_executive_brief_distinguishes_non_product_activity(
     expected_detail: str,
     expected_cleared: int,
 ) -> None:
-    payload: dict[str, Any] = {
-        "ok": True,
-        "window": {"since": "2026-06-01T16:00:00Z", "until": "2026-06-02T16:00:00Z", "label": "24h"},
-        "timezone": "America/New_York",
-        "report_recipient": "Justin",
-        "layout": "executive",
-        **extra_payload,
-    }
+    payload = executive_payload(DAY_WINDOW, **extra_payload)
 
     rendered = github_work_rollup.render_payload(payload, "markdown")
     repo_data = github_work_rollup.get_repo_data(payload)
