@@ -3114,7 +3114,8 @@ class TerminalTests(unittest.TestCase):
                                        capture_output=True, text=True, check=True)
                 self.assertEqual(after.stdout, "unlabelled")
 
-    def setUp(self):
+    def setUp(self) -> None:
+        self.enterContext(patch.dict("sys.modules", {"iterm2": SimpleNamespace()}))
         self.enterContext(patch.object(iterm_tab, "check_launch_issue"))
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
@@ -3330,8 +3331,7 @@ class TerminalTests(unittest.TestCase):
             brief = "--Google brief\nKeep $(touch injected) literal.\n" + BRIEF
             args.brief_file[0].write_text(brief)
             terminal, window, app = launch_terminal_fixture()
-            with (patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
-                  patch.object(account_choice, "read_snapshot", return_value=(google_snapshot(), None)),
+            with (patch.object(account_choice, "read_snapshot", return_value=(google_snapshot(), None)),
                   patch.object(iterm_tab.claude_trust, "plan", return_value=[]),
                   patch.object(account_choice, "receipt_route", return_value={"storage_root": root})):
                 result = asyncio.run(iterm_tab.operate(app, args))
@@ -3357,7 +3357,6 @@ class TerminalTests(unittest.TestCase):
                 args = account_launch_args(launch)
                 args.account_provider = "google"
                 with (self.subTest(command=command),
-                      patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
                       patch.object(account_choice, "select", return_value=choice),
                       patch.object(account_choice, "prepare_launch") as prepare,
                       patch.object(account_choice, "record_launch") as receipt,
@@ -3404,7 +3403,6 @@ class TerminalTests(unittest.TestCase):
             args.brief_file = [brief]
             terminal, window, app = launch_terminal_fixture()
             with (
-                patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
                 patch.object(account_choice, "select", return_value={"provider": "anthropic", "env": {}}),
                 patch.object(account_choice, "prepare_launch"),
                 patch.object(account_choice, "record_launch"),
@@ -3427,7 +3425,6 @@ class TerminalTests(unittest.TestCase):
             args.brief_file[1].write_text("")
             _, window, app = launch_terminal_fixture()
             with (
-                patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
                 patch.object(account_choice, "select_batch") as select,
                 patch.object(account_choice, "record_launch") as receipt,
             ):
@@ -3450,7 +3447,6 @@ class TerminalTests(unittest.TestCase):
                                       brief_file=[brief], account_provider="openai",
                                       account=None, account_config=None)
             with (
-                patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
                 patch.object(account_choice, "select", return_value={"provider": "openai", "env": {}}) as select,
                 patch.object(account_choice, "prepare_launch") as prepare,
                 patch.object(account_choice, "record_launch") as receipt,
@@ -3506,7 +3502,6 @@ class TerminalTests(unittest.TestCase):
             args = argparse.Namespace(command="new", window_id="chosen", command_file=launch, brief_file=fixture_briefs(launch),
                                       account_provider="openai", account=None, account_config=None)
             with (
-                patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
                 patch.dict(os.environ, {"CODEX_HOME": str(root / "inherited")}),
                 patch.object(account_choice, "select", return_value=choice),
                 patch.object(account_choice, "prepare_launch") as prepare,
@@ -3562,7 +3557,6 @@ class TerminalTests(unittest.TestCase):
                                       account_provider="openai", account=None, account_config=None)
             with (
                 socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as daemon,
-                patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
                 patch.object(account_choice, "select_batch", return_value=choices),
                 patch.object(account_choice, "prepare_launch") as prepare,
                 patch.object(account_choice, "record_launch") as receipt,
@@ -3631,7 +3625,6 @@ class TerminalTests(unittest.TestCase):
                 probe = Mock()
                 with (
                     self.subTest(reason=reason),
-                    patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
                     patch.object(account_choice, "select", return_value=choice),
                     patch.object(account_choice, "prepare_launch") as prepare,
                     patch.object(account_choice, "record_launch") as receipt,
@@ -3734,8 +3727,7 @@ class TerminalTests(unittest.TestCase):
             args = argparse.Namespace(
                 command="new", window_id="chosen", command_file=command, brief_file=fixture_briefs(command)
             )
-            with patch.dict("sys.modules", {"iterm2": SimpleNamespace()}):
-                result = asyncio.run(iterm_tab.operate(app, args))
+            result = asyncio.run(iterm_tab.operate(app, args))
         self.assertEqual(result["session_id"], "new")
         window.async_create_tab.assert_awaited_once_with(select=False)
         previous.async_select.assert_not_awaited()
@@ -3761,8 +3753,7 @@ class TerminalTests(unittest.TestCase):
             command = Path(folder) / "launch.txt"
             command.write_text("codex\n")
             args = argparse.Namespace(command="new", window_id="chosen", command_file=command, brief_file=fixture_briefs(command))
-            with patch.dict("sys.modules", {"iterm2": SimpleNamespace()}):
-                result = asyncio.run(iterm_tab.operate(app, args))
+            result = asyncio.run(iterm_tab.operate(app, args))
         self.assertEqual(result["session_id"], "late")
         self.assertEqual(app.async_refresh.await_count, 2)
         self.assertTrue(all(call.args == ("newtab",) for call in app.get_tab_by_id.call_args_list))
@@ -3806,7 +3797,6 @@ class TerminalTests(unittest.TestCase):
             command.write_text("codex\n")
             args = argparse.Namespace(command="new", window_id="chosen", command_file=command, brief_file=fixture_briefs(command))
             with (
-                patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
                 patch.object(iterm_tab, "wait_for_session", side_effect=short_wait),
                 patch.object(iterm_tab, "send", new_callable=AsyncMock) as send,
                 self.assertRaisesRegex(ValueError, "newtab.*no session after"),
@@ -3866,7 +3856,6 @@ class TerminalTests(unittest.TestCase):
             command.write_text("cd / && " + shlex.quote(str(child)) + "\n")
             args = account_launch_args(command)
             with (
-                patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
                 patch.object(account_choice, "select", return_value=choice),
                 patch.object(account_choice, "record_launch") as receipt,
                 patch.object(account_choice, "prepare_launch"),
@@ -3902,7 +3891,7 @@ class TerminalTests(unittest.TestCase):
             window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock(side_effect=tabs))
             app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
             args = account_launch_args(files)
-            with patch.dict("sys.modules", {"iterm2": SimpleNamespace()}), patch.object(account_choice, "load_config", return_value=config), patch.object(account_choice, "read_snapshot", return_value=(snapshot, None)):
+            with patch.object(account_choice, "load_config", return_value=config), patch.object(account_choice, "read_snapshot", return_value=(snapshot, None)):
                 results = asyncio.run(iterm_tab.operate(app, args))
             self.assertEqual([r["account"]["name"] for r in results], ["spare", "main"])
             self.assertEqual(counts_at_send, [1, 1, 2, 2])
@@ -3982,7 +3971,7 @@ class TerminalTests(unittest.TestCase):
                                       account_provider=None, account=None, account_config=None)
             for command in ("env CODEX_HOME=/manual codex brief", "export CLAUDE_CONFIG_DIR=/manual && claude brief"):
                 path.write_text(command)
-                with patch.dict("sys.modules", {"iterm2": SimpleNamespace()}), self.assertRaisesRegex(ValueError, "account settings need --account-provider"):
+                with self.assertRaisesRegex(ValueError, "account settings need --account-provider"):
                     asyncio.run(iterm_tab.operate(app, args))
             window.async_create_tab.assert_not_awaited()
 
@@ -3994,7 +3983,7 @@ class TerminalTests(unittest.TestCase):
                                       account_provider=None, account=None, account_config=None)
             for command in ("codex --remote unix:///daemon.sock -C /work", "cd /work && exec codex --remote=unix://"):
                 path.write_text(command)
-                with patch.dict("sys.modules", {"iterm2": SimpleNamespace()}), self.assertRaisesRegex(ValueError, "--account-provider openai"):
+                with self.assertRaisesRegex(ValueError, "--account-provider openai"):
                     asyncio.run(iterm_tab.operate(app, args))
             window.async_create_tab.assert_not_awaited()
 
@@ -4008,7 +3997,6 @@ class TerminalTests(unittest.TestCase):
             _, window, app = launch_terminal_fixture()
             args = account_launch_args(path)
             with (
-                patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
                 patch.object(account_choice, "select", return_value=choice),
                 self.assertRaises(ValueError) as failed,
             ):
@@ -4052,7 +4040,7 @@ class TerminalTests(unittest.TestCase):
             window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock(side_effect=tabs))
             app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
             args = account_launch_args(files)
-            with patch.dict("sys.modules", {"iterm2": SimpleNamespace()}), patch.object(account_choice, "select_batch", return_value=choices), patch.object(account_choice, "record_launch", side_effect=[root / "receipt.json", PermissionError("private-root")]):
+            with patch.object(account_choice, "select_batch", return_value=choices), patch.object(account_choice, "record_launch", side_effect=[root / "receipt.json", PermissionError("private-root")]):
                 try:
                     asyncio.run(iterm_tab.operate(app, args))
                     self.fail("second launch must fail")
@@ -4074,7 +4062,7 @@ class TerminalTests(unittest.TestCase):
             path = Path(folder) / "launch.txt"
             path.write_text("claude brief")
             args = account_launch_args(path)
-            with patch.dict("sys.modules", {"iterm2": SimpleNamespace()}), patch.object(account_choice, "select", return_value=choice), patch.object(account_choice, "record_launch", side_effect=OSError("disk full")), patch.object(account_choice, "prepare_launch"), self.assertRaises(iterm_tab.LaunchFailure):
+            with patch.object(account_choice, "select", return_value=choice), patch.object(account_choice, "record_launch", side_effect=OSError("disk full")), patch.object(account_choice, "prepare_launch"), self.assertRaises(iterm_tab.LaunchFailure):
                 asyncio.run(iterm_tab.operate(app, args))
             terminal.async_send_text.assert_not_awaited()
 
@@ -4089,7 +4077,6 @@ class TerminalTests(unittest.TestCase):
             terminal.async_send_text.side_effect = Exception("private RPC payload")
             args = account_launch_args(path)
             with (
-                patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
                 patch.object(account_choice, "select", return_value=choice),
                 self.assertRaises(iterm_tab.LaunchFailure) as failed,
             ):
@@ -4109,7 +4096,6 @@ class TerminalTests(unittest.TestCase):
             args = account_launch_args(files)
             choices = account_choice.choose_batch("anthropic", accounts_config(), AccountChoiceTests().snapshot(), None, count=2)
             with (
-                patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
                 patch.object(account_choice, "select_batch", return_value=choices),
                 patch.object(account_choice, "record_launch") as receipt,
                 patch.object(account_choice, "prepare_launch"),
@@ -4118,7 +4104,7 @@ class TerminalTests(unittest.TestCase):
                 asyncio.run(iterm_tab.operate(app, args))
             window.async_create_tab.assert_not_awaited()
             receipt.assert_not_called()
-            with patch.dict("sys.modules", {"iterm2": SimpleNamespace()}), patch.object(account_choice, "select_batch", side_effect=ValueError("no choice")), self.assertRaises(ValueError):
+            with patch.object(account_choice, "select_batch", side_effect=ValueError("no choice")), self.assertRaises(ValueError):
                 asyncio.run(iterm_tab.operate(app, args))
             window.async_create_tab.assert_not_awaited()
 
@@ -4133,7 +4119,6 @@ class TerminalTests(unittest.TestCase):
                 path.write_text("codex --remote unix://" + control)
                 with (
                     self.subTest(control=control),
-                    patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
                     self.assertRaises(ValueError),
                 ):
                     asyncio.run(iterm_tab.operate(app, args))
@@ -4157,10 +4142,7 @@ class TerminalTests(unittest.TestCase):
         app = SimpleNamespace(terminal_windows=[], current_terminal_window=None)
         args = argparse.Namespace(command="new", window_id="missing")
         # Import is only needed by actual window creation, not target validation.
-        with (
-            patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
-            self.assertRaises(ValueError),
-        ):
+        with self.assertRaises(ValueError):
             asyncio.run(iterm_tab.operate(app, args))
 
     def test_process_verification_preserves_scripts_missing_tty_and_malformed_inventory(self):
