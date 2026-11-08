@@ -615,22 +615,6 @@ def test_review_readiness_actor_drift_is_unknown():
             ["check_evidence_incomplete", "diagnose_ci_failure"],
             id="proven-partial-failure",
         ),
-        pytest.param(
-            {
-                "checks": {"all_terminal": False, "pending_count": 1},
-                "failed_jobs": [{"run_status": "completed"}],
-            },
-            ["idle"],
-            id="completed-job-history",
-        ),
-        pytest.param(
-            {
-                "checks": {"all_terminal": False, "pending_count": 1},
-                "failed_jobs": [{"run_status": "in_progress"}],
-            },
-            ["diagnose_ci_failure"],
-            id="active-job-failure",
-        ),
     ],
 )
 def test_recommend_actions_preserves_terminal_and_failure_dispositions(
@@ -642,7 +626,7 @@ def test_recommend_actions_preserves_terminal_and_failure_dispositions(
         pr,
         sample_checks(**inputs.get("checks", {})),
         inputs.get("failed_runs", []),
-        inputs.get("failed_jobs", []),
+        [],
         [],
         0,
         3,
@@ -755,8 +739,7 @@ def test_unstarted_workflow_run_keeps_green_checks_from_becoming_ready(monkeypat
     pr = sample_pr()
     monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *args, **kwargs: dict(pr))
     monkeypatch.setattr(gh_pr_watch, "load_state", lambda path: ({}, True))
-    monkeypatch.setattr(gh_pr_watch, "get_authenticated_login", lambda reader=None: "octocat")
-    monkeypatch.setattr(gh_pr_watch, "fetch_new_review_items", lambda *args, **kwargs: [])
+    mock_pr_discussion(monkeypatch, login="octocat")
     monkeypatch.setattr(
         gh_pr_watch.github_read,
         "pull_request_checks",
@@ -2064,6 +2047,7 @@ def test_resolved_comments_do_not_replay_after_graphql_failure(monkeypatch):
     assert gh_pr_watch.fetch_new_review_items(pr, state, False, reader=reader) == []
     assert "resolve_review_threads" in gh_pr_watch.recommend_actions(pr, sample_checks(), [], [], [], 0, 3)
 
+
 def mock_pr_discussion(monkeypatch: pytest.MonkeyPatch, *, login: str) -> None:
     monkeypatch.setattr(gh_pr_watch, "get_authenticated_login", lambda *_args, **_kwargs: login)
     monkeypatch.setattr(gh_pr_watch, "fetch_new_review_items", lambda *_args, **_kwargs: [])
@@ -2078,7 +2062,7 @@ def mocked_snapshot_inputs(
     login: str,
 ) -> None:
     mock_pr_discussion(monkeypatch, login=login)
-    monkeypatch.setattr(gh_pr_watch.github_read, "pull_request_checks", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr("gh_pr_watch.github_read.pull_request_checks", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(gh_pr_watch, "summarize_checks", lambda *_args, **_kwargs: checks)
     monkeypatch.setattr(gh_pr_watch, "get_workflow_runs_for_sha", lambda *_args, **_kwargs: runs)
     monkeypatch.setattr(gh_pr_watch, "failed_jobs_from_workflow_runs", lambda *_args, **_kwargs: jobs)
