@@ -357,6 +357,7 @@ def run_agent_inspect(args: argparse.Namespace) -> int:
         result = unknown_agent_result(reason, str(error), str(next_action),
                                       {key: value for key, value in payload.items()
                                        if key not in {"status", "hint", "next_action", "error", "command", "exit_code"}})
+        result["backend_selection"] = selection
         log_assessment(result)
     except Exception as error:
         result = unknown_agent_result(normalize_reason(error.__class__.__name__), str(error) or error.__class__.__name__,
