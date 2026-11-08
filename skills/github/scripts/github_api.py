@@ -3268,6 +3268,7 @@ def call_gh(
     conditional_cache: bool = True,
     cache_body_filter: Optional[Callable[[Any], bool]] = None,
     response_observer: Optional[Callable[[subprocess.CompletedProcess], None]] = None,
+    repository: Optional[str] = None,
 ) -> ApiResult:
     """Execute a fresh GET, reusing its body only after same-identity HTTP 304.
 
@@ -3278,21 +3279,36 @@ def call_gh(
     mutation = bool(is_write) or reader_request_is_write(method, path, body)
     try:
         actor, expected_actor, gh_prefix_args = request_identity(
-            operation=operation or "github.api.call", is_write=mutation, gh_cmd=gh_cmd,
-            gh_prefix_args=gh_prefix_args, actor=actor, expected_actor=expected_actor,
-            repository=github_http_cache.repository_from_path(path),
+            operation=operation or "github.api.call",
+            is_write=mutation,
+            gh_cmd=gh_cmd,
+            gh_prefix_args=gh_prefix_args,
+            actor=actor,
+            expected_actor=expected_actor,
+            repository=github_http_cache.repository_from_path(path) or repository,
         )
     except github_identity.GitHubAppError as error:
         return _identity_failure(error, operation=operation or "github.api.call", is_write=mutation,
                                  actor=actor, expected_actor=expected_actor, host=host,
                                  bucket=bucket or infer_api_bucket(path))
     kwargs = dict(
-        gh_cmd=gh_cmd, gh_prefix_args=gh_prefix_args, api_version=api_version,
-        extra_headers=extra_headers, completed_steps=completed_steps,
-        failed_step=failed_step, is_write=is_write, operation=operation,
-        actor=actor, expected_actor=expected_actor, host=host, bucket=bucket,
-        graphql_operation=graphql_operation, timeout_seconds=timeout_seconds,
-        allow_escape_sequences=allow_escape_sequences, response_observer=response_observer,
+        gh_cmd=gh_cmd,
+        gh_prefix_args=gh_prefix_args,
+        api_version=api_version,
+        extra_headers=extra_headers,
+        completed_steps=completed_steps,
+        failed_step=failed_step,
+        is_write=is_write,
+        operation=operation,
+        actor=actor,
+        expected_actor=expected_actor,
+        host=host,
+        bucket=bucket,
+        graphql_operation=graphql_operation,
+        timeout_seconds=timeout_seconds,
+        allow_escape_sequences=allow_escape_sequences,
+        response_observer=response_observer,
+        repository=repository,
     )
     def transport(headers: dict[str, str]) -> ApiResult:
         return _call_gh_uncached(method, path, body, **{**kwargs, "extra_headers": headers})
@@ -3328,6 +3344,7 @@ def _call_gh_uncached(
     timeout_seconds: Optional[float] = None,
     allow_escape_sequences: bool = False,
     response_observer: Optional[Callable[[subprocess.CompletedProcess], None]] = None,
+    repository: Optional[str] = None,
 ) -> ApiResult:
     """
     Execute a single GitHub REST API call via gh CLI.
@@ -3443,6 +3460,7 @@ def _call_gh_uncached(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=timeout_seconds,
+            **({"env": {**os.environ, "GH_REPO": repository}} if repository is not None and is_graphql_path(path) else {}),
         )
     except subprocess.TimeoutExpired as exc:
         return subprocess_timeout_result(
@@ -3697,15 +3715,14 @@ def call_gh_with_retry(
     host: Optional[str] = None,
     bucket: Optional[str] = None,
     graphql_operation: Optional[GraphQLOperation] = None,
-    reconcile: Optional[
-        Callable[[ApiResult, ReconciliationContext], ReconciliationDecision]
-    ] = None,
+    reconcile: Optional[Callable[[ApiResult, ReconciliationContext], ReconciliationDecision]] = None,
     retry_policy: Optional[RetryPolicy] = None,
     retry_runtime: Optional[RetryRuntime] = None,
     deadline_at: Optional[float] = None,
     matrix_path: pathlib.Path = DEFAULT_OPERATION_MATRIX,
     allow_escape_sequences: bool = False,
     conditional_cache: bool = True,
+    repository: Optional[str] = None,
 ) -> ApiResult:
     resolved_graphql_operation = graphql_operation
     if is_graphql_path(path) and resolved_graphql_operation is None:
@@ -3724,8 +3741,12 @@ def call_gh_with_retry(
         actor, expected_actor, gh_prefix_args = request_identity(
             operation=resolved_operation,
             is_write=reader_mutation,
-            gh_cmd=gh_cmd, gh_prefix_args=gh_prefix_args, actor=actor, expected_actor=expected_actor,
-            repository=github_http_cache.repository_from_path(path), matrix_path=matrix_path,
+            gh_cmd=gh_cmd,
+            gh_prefix_args=gh_prefix_args,
+            actor=actor,
+            expected_actor=expected_actor,
+            repository=github_http_cache.repository_from_path(path) or repository,
+            matrix_path=matrix_path,
         )
     except github_identity.GitHubAppError as error:
         return _identity_failure(error, operation=resolved_operation, is_write=reader_mutation,
@@ -3751,6 +3772,7 @@ def call_gh_with_retry(
             timeout_seconds=timeout_seconds,
             allow_escape_sequences=allow_escape_sequences,
             conditional_cache=conditional_cache,
+            **({"repository": repository} if repository is not None else {}),
         )
 
     return run_with_retry(
@@ -3767,7 +3789,7 @@ def call_gh_with_retry(
         deadline_at=deadline_at,
         matrix_path=matrix_path,
         attempt_with_timeout=lambda timeout: attempt(timeout),
-        repository=github_http_cache.repository_from_path(path),
+        repository=github_http_cache.repository_from_path(path) or repository,
     )
 
 

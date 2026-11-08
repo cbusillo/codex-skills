@@ -55,7 +55,7 @@ def scan(reader: GitHubReader, repositories: list[str]) -> dict[str, list[dict[s
             "head": {
                 "sha": node["headRefOid"],
                 "ref": node["headRefName"],
-                "repo": {"full_name": (node["headRepository"] or {}).get("nameWithOwner")},
+                "repo": batch.rest_repository(node["headRepository"]),
             },
             "base": {"ref": node["baseRefName"]},
         }

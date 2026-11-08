@@ -1539,7 +1539,7 @@ class ReleaseTests(unittest.TestCase):
                     }
                     cause = causes.get(mode)
                     failure = api.FailureDetail(cause, mode, False, False, "stop") if cause else None
-                    reader.graphql_json.return_value = api.ApiResult(ok=False, status=503, body=None, failure=failure)
+                    reader.graphql_json.return_value = api.ApiResult(ok=False, status=503, body=None, bucket="graphql", failure=failure)
                     if mode in {"identity", "cancelled", "context"}:
                         with self.assertRaises(helper.GitHubReadError):
                             helper.discover(reader, "test", [self.entry], ["test/a", "test/b"])
@@ -1597,6 +1597,31 @@ class ReleaseTests(unittest.TestCase):
                 if mode == "paginated":
                     expected.insert(1, ("test/a", 10))
                 self.assertEqual(helper.discover(reader, "test", [self.entry], ["test/a", "test/b"])[0], expected)
+
+    def test_hidden_status_repository_preserves_other_repository_coverage(self):
+        api = importlib.import_module("github_api")
+        for kind in ("NOT_FOUND", "FORBIDDEN"):
+            reader = Mock()
+            reader.batch_diagnostic = {}
+            reader.graphql_json.return_value = api.ApiResult(
+                ok=True,
+                status=200,
+                bucket="graphql",
+                body={
+                    "data": {
+                        "r0": None,
+                        "r1": {
+                            "nameWithOwner": "test/b",
+                            "issues": {"totalCount": 0, "nodes": [], "pageInfo": {"hasNextPage": False}},
+                        },
+                    },
+                    "errors": [{"path": ["r0"], "type": kind}],
+                },
+            )
+            result = helper.read_status_batch(reader, ["test/a", "test/b"], "2026-01-01T00:00:00Z")
+            self.assertIsInstance(result["test/a"], helper.GitHubReadError)
+            self.assertEqual(result["test/b"], [])
+            reader.paged_json.assert_not_called()
 
     def test_complete_inventory_failure_does_not_become_empty(self):
         self.pages.side_effect = helper.GitHubReadShapeError("partial page")

@@ -137,26 +137,28 @@ class NextReads:
                 future.set_result(copy.deepcopy(value))
                 self.observations[path] = future
 
-    def request(self, read: Callable[[], T]) -> T:
+    def request(self, read: Callable[[], T], *, count_request: bool = True) -> T:
         if self.expired:
             raise ReadDeadline(f"{self.label} time budget exhausted; evidence unread")
-        with self.lock:
-            self.requests += 1
+        if count_request:
+            with self.lock:
+                self.requests += 1
         return self._read(read)
 
-    def observe(self, path: str, read: Callable[[], T]) -> T:
+    def observe(self, path: str, read: Callable[[], T], *, count_request: bool = True) -> T:
         path = observation_key(path)
         with self.lock:
             future = self.observations.get(path)
-            first = future is None
-            if first:
+            first = False
+            if future is None:
+                first = True
                 future = Future()
                 self.observations[path] = future
             else:
                 self.reused += 1
         if first:
             try:
-                future.set_result(self.request(read))
+                future.set_result(self.request(read, count_request=count_request))
             except BaseException as exc:
                 future.set_exception(exc)
         # Consumers may annotate their own copy, never another observation.
