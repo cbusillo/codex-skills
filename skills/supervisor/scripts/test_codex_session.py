@@ -39,10 +39,11 @@ class ResumeTests(unittest.TestCase):
     def assert_managed_worker_queue(self, harness: str) -> None:
         worker = str(uuid.uuid4())
         ledger = self.root / "launch-ledger.json"
-        # A nested lead keeps every unrecorded-caller case below a refusal.
+        nested_lead_unreachable_without_a_worker_row = {
+            "session_id": self.native, "harness": "codex", "supervisor_owned": True, "codex_home": str(self.home),
+            "lead_session_id": str(uuid.uuid4())}
         rows = [{"session_id": worker, "harness": harness, "supervisor_owned": True, "lead_session_id": self.native},
-                {"session_id": self.native, "harness": "codex", "supervisor_owned": True, "codex_home": str(self.home),
-                 "lead_session_id": str(uuid.uuid4())}]
+                nested_lead_unreachable_without_a_worker_row]
         argv = ["codex-session.py", "queue", "--session-id", self.native, "--message", "https://github.com/fixture/repo/issues/7"]
         self.thread_state = "idle"
 
@@ -173,11 +174,12 @@ class ResumeTests(unittest.TestCase):
                     ([lead, "malformed"], root)):
                 with self.subTest(rows=rows, caller=caller):
                     self.assertFalse(execute(rows, caller))
-            # A worker of another lead stays recorded even if the ledger vanishes after the first read.
-            rows = [lead, {"session_id": supervisor, "harness": "codex", "supervisor_owned": True, "lead_session_id": other}]
-            ledger.write_text(json.dumps(rows))
-            reads = MagicMock(side_effect=[rows, [], [], []])
-            with patch.dict(SESSION.__dict__, {"read_ledger": reads}), patch.object(session_record, "read_ledger", reads):
+            other_leads_worker = {"session_id": supervisor, "harness": "codex", "supervisor_owned": True,
+                                  "lead_session_id": other}
+            rows = [lead, other_leads_worker]
+            ledger_vanishing_after_first_read = MagicMock(side_effect=[rows, [], [], []])
+            with patch.dict(SESSION.__dict__, {"read_ledger": ledger_vanishing_after_first_read}), \
+                    patch.object(session_record, "read_ledger", ledger_vanishing_after_first_read):
                 self.assertFalse(execute(rows, root))
             reused_home = self.root / "reused"
             reused_home.mkdir()

@@ -40,21 +40,21 @@ def recorded_lead_home(session: str, ledger: Path | None = None) -> Path:
     identities = set(github_agent.native_sessions(agent).values())
     if ledger is None or not ledger.is_absolute() or len(identities) != 1:
         raise ValueError("queue needs --codex-home or a managed launch ledger with one current native session")
-    caller = identities.pop()
-    entries = read_ledger(ledger)  # one snapshot for both rows
-    lead = terminal_entry(ledger, "session_id", session, entries)
+    snapshot = read_ledger(ledger)
+    lead = terminal_entry(ledger, "session_id", session, snapshot)
     home = lead.get("codex_home")
-    # A recorded worker reaches only its lead. A caller with no row, such as the
-    # Supervisor that keeps this ledger, reaches only a top-level lead.
-    if isinstance(entries, list) and any(entry.get("session_id") == caller for entry in entries):
-        worker = terminal_entry(ledger, "session_id", caller, entries)
-        routed = worker.get("harness") == agent and worker.get("lead_session_id") == session
-    else:
-        routed = lead.get("lead_session_id") is None
-    if not routed or lead.get("harness") != "codex" or not isinstance(home, str) or not Path(home).is_absolute():
+    if (not caller_may_reach_lead(ledger, snapshot, identities.pop(), agent, lead) or lead.get("harness") != "codex"
+            or not isinstance(home, str) or not Path(home).is_absolute()):
         raise ValueError("queue without --codex-home requires a recorded Codex lead with a source home:"
                          " this worker's own lead, or a top-level lead for a caller with no ledger row")
     return Path(home)
+
+
+def caller_may_reach_lead(ledger: Path, snapshot: object, caller: str, agent: str | None, lead: dict) -> bool:
+    if not (isinstance(snapshot, list) and any(entry.get("session_id") == caller for entry in snapshot)):
+        return lead.get("lead_session_id") is None
+    worker = terminal_entry(ledger, "session_id", caller, snapshot)
+    return worker.get("harness") == agent and worker.get("lead_session_id") == lead["session_id"]
 
 
 def run(args) -> int:
