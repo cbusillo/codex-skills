@@ -22,13 +22,13 @@ from check_operation import (
     GitHubReadError,
     GitHubReadShapeError,
     Operation,
-    receipt,
     automation_only_gh_prefix_args,
     claim_release,
     closure,
     github_identity,
     native,
     observation_homes,
+    receipt,
     release,
 )
 from session_record import load_ledger, normalize_ledger_entry, session_status
@@ -36,11 +36,15 @@ from session_record import load_ledger, normalize_ledger_entry, session_status
 SCRIPTS = Path(__file__).resolve().parent
 
 if TYPE_CHECKING:
-    from skills.github.scripts.github_plan_claim import live_lines, unquoted_text, session_fields
     from skills.github.scripts.github_catalog_health import MARKER as OPERATION_MARKER
+    from skills.github.scripts.github_plan_claim import (
+        live_lines,
+        session_fields,
+        unquoted_text,
+    )
 else:
-    from github_plan_claim import live_lines, unquoted_text, session_fields
     from github_catalog_health import MARKER as OPERATION_MARKER
+    from github_plan_claim import live_lines, session_fields, unquoted_text
 
 
 def require(condition: bool, gate: str, reason: str) -> None:
@@ -372,9 +376,18 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
     def wait_for_exit() -> None:
         operation.gate = "process_exit"
         deadline = time.monotonic() + args.exit_seconds
-        while not session_liveness.process_absent(entry.get("pid")) and time.monotonic() < deadline:
-            time.sleep(0.25)
-        require(session_liveness.process_absent(entry.get("pid")), "process_exit", "process remains; terminal kept")
+        while True:
+            current = [row for row in load_ledger(args.ledger) if row["session_id"] == args.session_id]
+            require(current == [entry], "identity", "active source changed; preserve the ledger")
+            try:
+                require(session_liveness.process_absent(entry.get("pid")), "process_exit", "process remains; terminal kept")
+                native.verify_source_process(entry)
+                return
+            except (ValueError, OSError, SubprocessError) as error:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise GateFailed("process_exit", str(error)) from error
+                time.sleep(min(0.25, remaining))
 
     with closure.ownership(args.session_id, create=True):
         claims()
@@ -389,15 +402,13 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
             asyncio.run(native_idle(entry))
             prompt("final")
             call("quit", "send", "--text", "/quit" if entry["harness"] == "codex" else "/exit", "--verified-target", once=True)
-            wait_for_exit()
         elif not session_liveness.process_absent(entry.get("pid")):
             require(
                 operation.state["steps"]["quit"].get("complete") is True,
                 "quit",
                 "previous send is uncertain; preserve the session for reconciliation",
             )
-            wait_for_exit()
-    require(session_liveness.process_absent(entry.get("pid")), "process_exit", "process remains; terminal kept")
+        wait_for_exit()
     ready(entry, args.supervisor_session)
     finish = operation.run(
         "finish",
