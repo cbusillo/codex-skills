@@ -1342,8 +1342,11 @@ Codex lead from the catalog with
 Fresh local launches supply their ledger pointer. Existing, resumed or remote
 workers can pass `--ledger <shared-ledger>` when that pointer is unavailable.
 The helper requires this native worker's unique Supervisor-owned row to name
-the unique Supervisor-owned Codex lead, then reads its home. Other callers use
-`--codex-home <source-home>` instead. Existing native delivery checks still apply.
+the unique Supervisor-owned Codex lead, then reads its home. A caller with no
+row, such as the Supervisor, uses the same command with `--ledger` to reach a
+top-level lead, one whose row has no `lead_session_id`. Absence from the ledger
+only scopes this home lookup; it does not prove who the caller is. Other callers
+use `--codex-home <source-home>`. Existing native delivery checks still apply.
 Antigravity workers supply their native `tool.conversationId` through
 `ANTIGRAVITY_SOURCE_METADATA`; inherited Claude/Codex markers retain precedence.
 Claude leads use the tmux backend and `review_notifications.send(lead_entry,

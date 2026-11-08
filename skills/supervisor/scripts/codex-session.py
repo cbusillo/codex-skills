@@ -18,7 +18,7 @@ import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
 import github_plan_closure as closure
-from session_record import LAUNCH_LEDGER_ENV, terminal_entry
+from session_record import LAUNCH_LEDGER_ENV, read_ledger, terminal_entry
 github_agent = importlib.import_module("github_agent")
 native_operations = importlib.import_module("github_plan_native")
 queue_input = native_operations.queue_input
@@ -39,14 +39,22 @@ def recorded_lead_home(session: str, ledger: Path | None = None) -> Path:
         agent = "agy"
     identities = set(github_agent.native_sessions(agent).values())
     if ledger is None or not ledger.is_absolute() or len(identities) != 1:
-        raise ValueError("queue needs --codex-home or a managed launch ledger with one current native worker")
-    worker = terminal_entry(ledger, "session_id", identities.pop())
-    lead = terminal_entry(ledger, "session_id", session)
+        raise ValueError("queue needs --codex-home or a managed launch ledger with one current native session")
+    snapshot = read_ledger(ledger)
+    lead = terminal_entry(ledger, "session_id", session, snapshot)
     home = lead.get("codex_home")
-    if (worker.get("harness") != agent or worker.get("lead_session_id") != session
-            or lead.get("harness") != "codex" or not isinstance(home, str) or not Path(home).is_absolute()):
-        raise ValueError("queue without --codex-home requires this worker's recorded Codex lead and source home")
+    if (not caller_may_reach_lead(ledger, snapshot, identities.pop(), agent, lead) or lead.get("harness") != "codex"
+            or not isinstance(home, str) or not Path(home).is_absolute()):
+        raise ValueError("queue without --codex-home requires a recorded Codex lead with a source home:"
+                         " this worker's own lead, or a top-level lead for a caller with no ledger row")
     return Path(home)
+
+
+def caller_may_reach_lead(ledger: Path, snapshot: object, caller: str, agent: str | None, lead: dict) -> bool:
+    if not (isinstance(snapshot, list) and any(entry.get("session_id") == caller for entry in snapshot)):
+        return lead.get("lead_session_id") is None
+    worker = terminal_entry(ledger, "session_id", caller, snapshot)
+    return worker.get("harness") == agent and worker.get("lead_session_id") == lead["session_id"]
 
 
 def run(args) -> int:
