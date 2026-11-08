@@ -27,6 +27,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from launchplane_reply_schema import (  # noqa: E402
     CONTROLLER_REPLY_SCHEMA_PATH,
+    check_or_write_pin,
     check_schema,
 )
 from launchplane_safety import safe_urlopen  # noqa: E402
@@ -57,11 +58,6 @@ def fetch_upstream(ref: str) -> bytes:
     return bytes(body)
 
 
-def _enforceable(body: bytes) -> bytes:
-    check_schema(json.loads(body))
-    return body
-
-
 def run(argv: list[str], *, fetch: Fetch = fetch_upstream, pin: Path = CONTROLLER_REPLY_SCHEMA_PATH) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("command", choices=("check", "sync"))
@@ -72,24 +68,14 @@ def run(argv: list[str], *, fetch: Fetch = fetch_upstream, pin: Path = CONTROLLE
     except (OSError, ValueError, urllib.error.URLError) as exc:
         print(f"unavailable: could not read {upstream_url(args.ref)} ({type(exc).__name__})", file=sys.stderr)
         return 2
-    if args.command == "check":
-        if pin.read_bytes() == upstream:
-            print(f"current: {pin.name} matches Launchplane {args.ref}")
-            return 0
-        print(
-            f"drift: {pin.name} differs from Launchplane {args.ref}. Run "
-            "`uv run skills/launchplane/scripts/sync-merge-train-reply-schema.py sync` "
-            "and name the Launchplane commit in the commit message.",
-            file=sys.stderr,
-        )
-        return 1
-    try:
-        pin.write_bytes(_enforceable(upstream))
-    except ValueError as exc:
-        print(f"refused: Launchplane's schema cannot be enforced here ({exc})", file=sys.stderr)
-        return 1
-    print(f"synced: {pin.name} from Launchplane {args.ref}")
-    return 0
+    if args.command == "sync":
+        try:
+            check_schema(json.loads(upstream))
+        except ValueError as exc:
+            print(f"refused: Launchplane's schema cannot be enforced here ({exc})", file=sys.stderr)
+            return 1
+    sync_steps = "`uv run skills/launchplane/scripts/sync-merge-train-reply-schema.py sync`"
+    return check_or_write_pin(args.command, pin, upstream, f"Launchplane {args.ref}", sync_steps)
 
 
 if __name__ == "__main__":
