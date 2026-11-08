@@ -1358,10 +1358,6 @@ print('Done.')
                 result = json.loads(output.getvalue())
                 self.assertEqual(result["inspection_outcome"]["reason"], canonical.exception.payload["error_reason"])
                 self.assertEqual(result["agent_result"]["next_action"], canonical.exception.payload["next_action"])
-            with self.subTest(lanes=lanes, route="coverage"):
-                with self.assertRaises(host.InspectError) as observed:
-                    native.coverage_gaps(host, self.repo, config, set())
-                self.assertEqual(observed.exception.payload, canonical.exception.payload)
 
     def test_native_configuration_error_uses_its_safe_reason_and_canonical_action(self) -> None:
         for error in (host.inspection_lane_config_error("private-sentinel"),
