@@ -1009,8 +1009,6 @@ def test_attachment_route_enforces_limits_through_real_wrapper() -> None:
               "    open(os.environ['FIXTURE_UPLOAD'], 'w').write(body)\n"
               "    assert any(value == '--attach' for value in args)\n"
               "    print(f'https://github.com/{owner}/catalog/issues/42#issuecomment-20')\n"
-              "    if os.environ.get('FIXTURE_LOSE_COUNTER'):\n"
-              "        github_comment.question_id.counter_path().unlink()\n"
               "    raise SystemExit(int(os.environ.get('FIXTURE_ATTACH_EXIT', '0')))\n"
               "else:\n"
               "    assert os.environ.get('GH_TOKEN') == 'installation-token'\n"
@@ -1075,20 +1073,28 @@ def test_attachment_route_enforces_limits_through_real_wrapper() -> None:
                                 input=body, text=True, capture_output=True, timeout=15)
         assert failed.returncode != 0
         assert github_comment.attachment_write_outcome(failed.stderr, nonce) == "unknown", failed.stderr
-        refused = subprocess.run(
-            [sys.executable, str(SCRIPT.with_name("github_comment.py")), "issue", "42", "--repo", repo,
-             "--body-file", "-", "--attach", str(image)], env={**env, "FIXTURE_LOGIN": "another-person"},
-            input="proof", text=True, capture_output=True, timeout=15,
-        )
-        assert refused.returncode != 0
-        partial = json.loads(refused.stdout)
-        assert partial["write_outcome"] == "applied", partial
-        assert partial["attachment_write_outcome"] == "not_started", partial
-        assert partial["url"] == bot_url, partial
-        assert partial["retry_eligible"] is False, partial
+        for comment_command in (
+            [sys.executable, str(SCRIPT.with_name("github_comment.py")), "issue", "42", "--repo", repo],
+            [sys.executable, str(SCRIPT.with_name("gh-pr.py")), "--repo", repo, "comment", "42"],
+        ):
+            calls_file.write_text("")
+            refused = subprocess.run(
+                [*comment_command, "--body-file", "-", "--attach", str(image)],
+                env={**env, "FIXTURE_LOGIN": "another-person"}, input="proof", text=True, capture_output=True, timeout=15,
+            )
+            assert refused.returncode != 0
+            partial = json.loads(refused.stdout)
+            assert partial["write_outcome"] == "applied", partial
+            assert partial["attachment_write_outcome"] == "not_started", partial
+            assert partial["url"] == bot_url, partial
+            assert partial["retry_eligible"] is False, partial
+            assert partial["outcome_certainty"] == "confirmed_partially_applied", partial
+            assert partial["recommended_next_action"] == "follow_operation_reconciliation_strategy", partial
+            assert partial["reconciliation"]["url"] == bot_url, partial
+            effects = [json.loads(line)[0] for line in calls_file.read_text().splitlines()]
+            assert effects.count("bot_body") == 1 and effects.count("upload_body") == 0, effects
         cases = [
             (args, "ordinary text", {}),
-            (args, github_comment.AGENT_POSTED_LINE + "\r\n\r\nOwner question: Q123. Decide about @outside?", {}),
             ([*args[:-1], str(pdf)], body, {}),
             ([*args, "--edit-last"], body, {}),
             ([*args[:5], "--body", "replacement", *args[5:]], body, {}),
@@ -1106,18 +1112,6 @@ def test_attachment_route_enforces_limits_through_real_wrapper() -> None:
             result = subprocess.run([str(SCRIPT), *command], env={**env, **changes}, input=requested_body,
                                     text=True, capture_output=True, timeout=15)
             assert result.returncode != 0, (command, changes, result.stdout)
-            calls = [json.loads(line)[0] for line in calls_file.read_text().splitlines()]
-            assert not any(call[:2] == ["issue", "comment"] for call in calls), calls
-        from skills.direction.scripts import question_id
-        with patch.dict(os.environ, env, clear=True), patch.object(question_id, "configured_queue", return_value=None):
-            counter_file = question_id.counter_path()
-            question_id.update(counter_file, seed=(10, ["fixture"]), allocate=False)
-            reserved = question_id.update(counter_file)
-        numbered = github_comment.AGENT_POSTED_LINE + f"\n\nDirector question: Q{reserved}. Continue?"
-        for requested_body in (numbered, github_comment.AGENT_POSTED_LINE + "\n\nDirector question: Q9999. Invented?"):
-            calls_file.write_text("")
-            result = subprocess.run([str(SCRIPT), *args], env=env, input=requested_body, text=True, capture_output=True, timeout=15)
-            assert result.returncode != 0
             calls = [json.loads(line)[0] for line in calls_file.read_text().splitlines()]
             assert not any(call[:2] == ["issue", "comment"] for call in calls), calls
         original_env = env_file.read_text()

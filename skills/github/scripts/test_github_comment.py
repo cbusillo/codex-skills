@@ -1516,7 +1516,7 @@ def test_attachment_passthrough_and_failures_never_replay() -> None:
         modes = (
             "success", "old_cli", "failed_upload", "bad_readback", "wrong_author", "missing_author",
             "canonical_case", "prewrite_refusal", "forged_receipt", "help_failure", "crlf_body", "readback_failure",
-            "attributed_question", "bind_failure", "bot_failure", "bot_actor", "extra_prose",
+            "attributed_question", "question_binding_failure", "bot_failure", "bot_actor", "extra_prose",
         )
         successful_modes = {"success", "canonical_case", "crlf_body", "attributed_question"}
         def exercise(kind: str, mode: str) -> None:
@@ -1538,15 +1538,15 @@ def test_attachment_passthrough_and_failures_never_replay() -> None:
                 if mode == "bad_readback":
                     readback["body"] = "no uploaded image"
                 if mode == "extra_prose":
-                    readback["body"] = readback["body"].replace("/image)", "/image) Unexpected report prose ![extra](https://github.com/user-attachments/assets/other)")
+                    readback["body"] = readback["body"].replace("/image)", "/image) Unexpected report prose")
                 if mode == "crlf_body":
                     readback["body"] = readback["body"].replace("\n", "\r\n")
                 if mode in ("wrong_author", "missing_author"):
                     readback["user"] = {"login": "someone-else" if mode == "wrong_author" else None}
-                if mode in ("prewrite_refusal", "forged_receipt", "bind_failure"):
+                if mode in ("prewrite_refusal", "forged_receipt"):
                     nonce = kwargs["env"]["GH_WITH_ENV_TOKEN_RECEIPT_NONCE"] if mode != "forged_receipt" else "forged"
-                    receipt = {"schema_version": 1, "nonce": nonce, "write_outcome": "applied" if mode == "bind_failure" else "not_started"}
-                    return subprocess.CompletedProcess(command, 1, url if mode == "bind_failure" else "", json.dumps(receipt))
+                    receipt = {"schema_version": 1, "nonce": nonce, "write_outcome": "not_started"}
+                    return subprocess.CompletedProcess(command, 1, "", json.dumps(receipt))
                 return subprocess.CompletedProcess(command, 1 if mode == "failed_upload" else 0, url, "upload failed")
 
             def read_api(method: str, path: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
@@ -1569,14 +1569,22 @@ def test_attachment_passthrough_and_failures_never_replay() -> None:
 
             requested = (github_comment.AGENT_POSTED_LINE + "\r\n\r\nproof") if mode == "crlf_body" else "proof"
             counter_file = pathlib.Path(directory) / f"question-{kind}-{mode}.json"
-            if mode == "attributed_question":
+            if mode in ("attributed_question", "question_binding_failure"):
                 with patch.object(question_counter, "configured_queue", return_value=None):
                     question_counter.update(counter_file, seed=(10, ["fixture"]), allocate=False)
                     reserved = question_counter.update(counter_file)
                 requested = github_comment.AGENT_POSTED_LINE + f"\n\nOwner question: Q{reserved}. Decide about <code>@outside</code>?"
+            original_update = question_counter.update
+
+            def update_question(*args: Any, **kwargs: Any) -> Any:
+                if mode == "question_binding_failure" and kwargs.get("question_url"):
+                    raise OSError("Question source unavailable")
+                return original_update(*args, **kwargs)
+
             requested_repo = repo.upper() if mode == "canonical_case" else repo
             with patch.object(question_counter, "counter_path", return_value=counter_file), \
                     patch.object(question_counter, "configured_queue", return_value=None), \
+                    patch.object(question_counter, "update", side_effect=update_question), \
                     patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_OWN_USER": "1", "GH_WITH_ENV_TOKEN_OWN_USER_LOGIN": github_comment.ATTACHMENT_OWNER}), \
                     patch.object(github_api.github_catalog_health, "marker_fields", return_value="catalog=fixture"), \
                     patch.object(github_comment.subprocess, "run", side_effect=run), \
@@ -1589,7 +1597,7 @@ def test_attachment_passthrough_and_failures_never_replay() -> None:
                     assert error.failure.write_outcome == ("not_started" if before_post else "unknown" if mode == "bot_failure" else "applied")
                     if not before_post and mode != "bot_failure":
                         assert error.payload["url"] == bot_url
-                        assert error.payload["attachment_write_outcome"] == ("not_started" if mode == "prewrite_refusal" else
+                        assert error.payload["attachment_write_outcome"] == ("not_started" if mode in ("prewrite_refusal", "question_binding_failure") else
                                                                           "unknown" if mode in ("failed_upload", "forged_receipt") else "applied")
                 else:
                     assert mode in successful_modes
@@ -1599,7 +1607,7 @@ def test_attachment_passthrough_and_failures_never_replay() -> None:
                     if mode == "attributed_question":
                         question_counter.verify_number(counter_file, reserved, bot_url)
                 assert len(posted) == (0 if mode in ("old_cli", "help_failure", "bot_actor") else 1)
-            assert len(calls) == (1 if mode in ("old_cli", "help_failure", "bot_actor", "bot_failure") else 2)
+            assert len(calls) == (1 if mode in ("old_cli", "help_failure", "bot_actor", "bot_failure", "question_binding_failure") else 2)
 
         for comment_kind in ("issue", "pr"):
             for failure_mode in modes:

@@ -166,6 +166,9 @@ def main() -> int:
                 envelope[key] = api_result[key]
         if CURRENT_RETRY_FIELDS:
             envelope.update(CURRENT_RETRY_FIELDS)
+        if "attachment_write_outcome" in exc.payload:
+            for field in ("outcome_certainty", "recommended_next_action", "reconciliation", "retry_eligible"):
+                envelope[field] = exc.payload[field]
         return github_api_core.emit_terminal(
             envelope,
             stderr_message=f"error: {exc}",

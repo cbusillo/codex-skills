@@ -1307,15 +1307,6 @@ def validate_own_attachment_command(arguments: list[str], body: str) -> str:
     return args.repo
 
 
-def bind_attachment_source(body: str, url: str) -> None:
-    question = question_id.heading_id(body.removeprefix(AGENT_POSTED_LINE).lstrip())
-    if question is None:
-        return
-    if not re.fullmatch(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/(?:issues|pull)/[1-9][0-9]*#issuecomment-[1-9][0-9]*", url):
-        raise ValueError("Attachment creation returned no exact source URL; reconcile the saved comment")
-    question_id.update(question_id.counter_path(), question_url=url, question_number=int(question[1:]))
-
-
 def attachment_write_outcome(stderr: str, nonce: str) -> str:
     for line in stderr.splitlines():
         try:
@@ -1339,7 +1330,7 @@ def attached_comment(
         validate_attachment_files(resolved_repo, attachments)
         validate_question_mentions(body, resolved_repo)
         if question_id.QUESTION_HEADING.match(body) and not question_id.heading_id(body):
-            raise ValueError("Personal-identity questions need an existing Q ID; allocate with question_id.py next first")
+            raise ValueError("Attachment questions need an existing Q ID; allocate with question_id.py next first")
         verify_question_number(body)
     except (ValueError, OSError) as error:
         raise _local_error(
@@ -1373,14 +1364,21 @@ def attached_comment(
             "Attachments require GitHub CLI with the official --attach flag (2.103.2 or newer)",
             operation=operation, cause="attachment_cli_unavailable", failed_step="attachment_preflight",
         )
-    verify_attachment_owner(resolved_repo, gh_cmd=gh_cmd)
-    agent_comment = comment(
+    try:
+        verify_attachment_owner(resolved_repo, gh_cmd=gh_cmd)
+    except (ValueError, OSError) as error:
+        raise _local_error(str(error), operation=operation, cause="validation_error", failed_step="attachment_preflight") from error
+    agent_comment = _comment_impl(
         kind, number, body, repo=resolved_repo, gh_cmd=gh_cmd, operation=operation,
         validate_actor=validate_attachment_bot, retry_summaries=retry_summaries,
     )
     upload_body = f"[{AGENT_POSTED_LINE}]({agent_comment['url']})"
+    upload_started = False
     try:
+        agent_comment = bind_comment_question(agent_comment, body, gh_cmd=gh_cmd, operation=operation,
+                                             retry_summaries=retry_summaries)
         attachment_source_url(resolved_repo, number, upload_body)
+        upload_started = True
         uploaded = upload_attachment_comment(
             kind, number, upload_body, attachments, repo=resolved_repo, gh_cmd=gh_cmd,
             operation=operation, retry_summaries=retry_summaries,
@@ -1390,9 +1388,10 @@ def attached_comment(
             str(error), operation=operation, cause="invalid_response", failed_step="verify_attachment_source",
         )
         failure = upload_error.failure
-        raise _local_error(
+        partial_error = _local_error(
             "The automation report is saved. Do not replay the combined attachment command; "
-            "reconcile the upload, then use gh-with-env-token issue comment with --attach and only the linked agent line. "
+            f"Reconcile the upload and question source before using GH_WITH_ENV_TOKEN_OWN_USER=1 gh-with-env-token {kind} comment {number} "
+            f"--repo {resolved_repo} --body-file FILE --attach IMAGE; FILE must contain only {upload_body}. "
             f"{error}",
             operation=operation, cause=failure.cause,
             actor=agent_comment["actor"], expected_actor=agent_comment["expected_actor"],
@@ -1400,13 +1399,18 @@ def attached_comment(
             failed_step=failure.failed_step or "attach_comment",
             write_outcome="applied", payload={
                 "url": agent_comment["url"], "agent_comment": agent_comment,
-                "attachment_write_outcome": failure.write_outcome, "attachment_error": upload_error.payload,
+                "attachment_write_outcome": failure.write_outcome if upload_started else "not_started",
+                "attachment_error": upload_error.payload,
                 "outcome_certainty": "unknown" if failure.write_outcome == "unknown" else "confirmed_partially_applied",
                 "recommended_next_action": "follow_operation_reconciliation_strategy", "retry_eligible": False,
                 "reconciliation": {"strategy": "read_comment_by_url", "required_before_retry": True,
                                    "url": upload_error.payload.get("url") or agent_comment["url"]},
             },
-        ) from error
+        )
+        if partial_error.api_result is not None:
+            for field in ("outcome_certainty", "recommended_next_action", "reconciliation", "retry_eligible"):
+                partial_error.api_result[field] = partial_error.payload[field]
+        raise partial_error from error
     return {**agent_comment, "attachment_comment": uploaded,
             "completed_steps": [*agent_comment["completed_steps"], *uploaded["completed_steps"]]}
 
@@ -1434,13 +1438,6 @@ def upload_attachment_comment(
     match = re.fullmatch(
         rf"https://github\.com/{re.escape(repo)}/(?:issues|pull)/{number}#issuecomment-(\d+)", url, re.IGNORECASE,
     )
-    if result.returncode and match and attachment_write_outcome(result.stderr, receipt_nonce) == "applied":
-        raise _local_error(
-            "Attachment saved, but source-number binding failed; read the saved question before repairing it",
-            operation=operation, cause="question_numbering_failed", actor=actor, expected_actor=actor,
-            completed_steps=["attach_comment"], failed_step="bind_question_source", write_outcome="applied",
-            payload={"url": url},
-        )
     if result.returncode or not match:
         raise _local_error(
             "GitHub CLI attachment comment failed using the opted-in personal account; no replay or identity fallback. "
@@ -1557,18 +1554,8 @@ def comment(
                 validate_actor=validate_actor,
                 client_logins=client_logins,
             )
-        question_body = body.removeprefix(AGENT_POSTED_LINE).lstrip()
-        if question_id.QUESTION_HEADING.match(question_body):
-            if assigned := question_id.heading_id(question_body):
-                try:
-                    question_id.update(question_id.counter_path(), question_url=payload["url"], question_number=int(assigned[1:]))
-                except (OSError, ValueError) as error:
-                    raise _local_error(str(error), operation=operation or f"github.comment.{kind}",
-                                       cause="question_numbering_failed", failed_step="bind_question_source",
-                                       write_outcome="applied", payload={"url": payload["url"], "question_id": assigned}) from error
-                payload["question_id"] = assigned
-            else:
-                payload = _number_saved_question(payload, body, gh_cmd=gh_cmd, retry_summaries=collected_retry_summaries)
+            payload = bind_comment_question(payload, body, gh_cmd=gh_cmd, operation=operation,
+                                            retry_summaries=collected_retry_summaries)
         if not include_body:
             payload["comment"].pop("body", None)
         return payload
@@ -1578,6 +1565,25 @@ def comment(
     except CommentError as error:
         _enrich_error_with_retry_summaries(error, collected_retry_summaries)
         raise
+
+
+def bind_comment_question(
+    payload: dict[str, Any], body: str, *, gh_cmd: str, operation: str | None,
+    retry_summaries: list[github_api_core.RetrySummary],
+) -> dict[str, Any]:
+    question_body = body.removeprefix(AGENT_POSTED_LINE).lstrip()
+    if question_id.QUESTION_HEADING.match(question_body):
+        if assigned := question_id.heading_id(question_body):
+            try:
+                question_id.update(question_id.counter_path(), question_url=payload["url"], question_number=int(assigned[1:]))
+            except (OSError, ValueError) as error:
+                raise _local_error(str(error), operation=operation or f"github.comment.{payload['kind']}",
+                                   cause="question_numbering_failed", failed_step="bind_question_source",
+                                   write_outcome="applied", payload={"url": payload["url"], "question_id": assigned}) from error
+            payload["question_id"] = assigned
+        else:
+            payload = _number_saved_question(payload, body, gh_cmd=gh_cmd, retry_summaries=retry_summaries)
+    return payload
 
 
 def verify_question_number(body: str, source: str | None = None) -> None:
