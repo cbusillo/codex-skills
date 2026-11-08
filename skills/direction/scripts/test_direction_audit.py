@@ -2296,7 +2296,6 @@ def test_audit_cli_includes_stale_wait_report_without_changing_exit_status() -> 
     row = issue(41, "Parked on an agent", labels=("plan:waiting",),
                 body="## Current Status\nWaiting for: Next agent.\n")
     with (tempfile.TemporaryDirectory() as tmp,
-          patch.dict("os.environ", {"DIRECTION_MARKER": str(Path(tmp) / "marker.json")}),
           patch.dict(vars(module), {
               "merged_direction": lambda *_args, **_kwargs: DIRECTION,
               "fetch_audit_issues": lambda *_args, **_kwargs: ([row], []),
@@ -2305,19 +2304,14 @@ def test_audit_cli_includes_stale_wait_report_without_changing_exit_status() -> 
                   if "/milestones" in args[1] else []),
               "fetch_rulesets": lambda *_args, **_kwargs: (None, False),
           })):
-        # Ruleset absence is already an audit finding; stale waits must not add
-        # a new exit-status gate. Compare the same audit without parked records.
-        output = StringIO()
-        with redirect_stdout(output):
-            code = module.main(["--repo", "owner/catalog", "--automation", "bot", "--gh", "fixture-gh"])
-        result = json.loads(output.getvalue())
+        marker = Path(tmp) / "marker.json"
+        argv = ["--repo", "owner/catalog", "--automation", "bot", "--gh", "fixture-gh"]
+        code, result = run_cli(module, argv, marker)
         assert result["stale_wait_report"]["items"][0]["number"] == 41
         with patch.dict(vars(module), {"fetch_audit_issues": lambda *_args, **_kwargs: ([], [])}):
-            clean_output = StringIO()
-            with redirect_stdout(clean_output):
-                clean_code = module.main(["--repo", "owner/catalog", "--automation", "bot", "--gh", "fixture-gh"])
+            clean_code, clean_result = run_cli(module, argv, marker)
         assert code == clean_code
-        assert result["findings"] == json.loads(clean_output.getvalue())["findings"]
+        assert result["findings"] == clean_result["findings"]
 
 
 def test_stale_wait_report_requires_all_holds_and_all_references_to_be_met() -> None:
@@ -2416,13 +2410,14 @@ def test_stale_wait_report_only_cli_never_reads_or_advances_audit_marker() -> No
                 return {"archived": False}
             assert args[1].startswith("repos/owner/catalog/issues?state=open&")
             return [row]
-        with (patch.dict("os.environ", {"DIRECTION_MARKER": str(marker)}),
-              patch.dict(vars(module), {"gh_json": fetch, "previous_audit_stamp": forbidden,
-                                       "record_audit": forbidden, "merged_direction": forbidden})):
-            output = StringIO()
-            with redirect_stdout(output):
-                assert module.main(["--repo", "owner/catalog", "--stale-waits-only", "--gh", "fixture-gh"]) == 0
-            report = json.loads(output.getvalue())["stale_wait_report"]
+
+        with patch.dict(
+            vars(module),
+            {"gh_json": fetch, "previous_audit_stamp": forbidden, "record_audit": forbidden, "merged_direction": forbidden},
+        ):
+            code, result = run_cli(module, ["--repo", "owner/catalog", "--stale-waits-only", "--gh", "fixture-gh"], marker)
+            assert code == 0
+            report = result["stale_wait_report"]
             assert report["complete"] and report["items"][0]["number"] == 41
         assert marker.read_text() == original
 
