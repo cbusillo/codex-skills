@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from functools import cache
 from pathlib import Path
 from typing import Any
@@ -109,6 +110,21 @@ def _resolve(root: dict[str, Any], reference: object) -> dict[str, Any]:
     if not isinstance(target, dict):
         raise ReplySchemaError("unresolved_schema_reference")
     return target
+
+
+def check_or_write_pin(command: str, pin: Path, upstream: bytes, source: str, sync_steps: str) -> int:
+    if command == "sync":
+        pin.write_bytes(upstream)
+        print(f"synced: {pin.name} from {source}")
+        return 0
+    if pin.read_bytes() == upstream:
+        print(f"current: {pin.name} matches {source}")
+        return 0
+    print(
+        f"drift: {pin.name} differs from {source}. Run {sync_steps} and name the Launchplane commit in the commit message.",
+        file=sys.stderr,
+    )
+    return 1
 
 
 @cache

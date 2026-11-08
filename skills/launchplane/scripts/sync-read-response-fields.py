@@ -13,6 +13,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from launchplane_contract import BOUNDED_READ_RESPONSE_FIELDS, bounded_read_path  # noqa: E402
+from launchplane_reply_schema import check_or_write_pin  # noqa: E402
 
 PIN_PATH = Path(__file__).resolve().parent.parent / "references" / "launchplane-read-response-fields.json"
 MAX_OPENAPI_BYTES = 16 * 1024 * 1024
@@ -52,21 +53,11 @@ def run(argv: list[str], *, pin: Path = PIN_PATH) -> int:
     except (OSError, ValueError, KeyError, TypeError) as exc:
         print(f"unavailable: could not derive read fields from {args.openapi} ({type(exc).__name__}: {exc})", file=sys.stderr)
         return 2
-    if args.command == "check":
-        if pin.read_bytes() == upstream:
-            print(f"current: {pin.name} matches {args.openapi}")
-            return 0
-        print(
-            f"drift: {pin.name} differs from {args.openapi}. Run "
-            "`uv run skills/launchplane/scripts/sync-read-response-fields.py sync --openapi <generated-schema>`, "
-            "add each new field to its read in BOUNDED_READ_RESPONSE_FIELDS, "
-            "and name the Launchplane commit in the commit message.",
-            file=sys.stderr,
-        )
-        return 1
-    pin.write_bytes(upstream)
-    print(f"synced: {pin.name} from {args.openapi}")
-    return 0
+    sync_steps = (
+        "`uv run skills/launchplane/scripts/sync-read-response-fields.py sync --openapi <generated-schema>`, "
+        "add each new field to its read in BOUNDED_READ_RESPONSE_FIELDS,"
+    )
+    return check_or_write_pin(args.command, pin, upstream, str(args.openapi), sync_steps)
 
 
 if __name__ == "__main__":
