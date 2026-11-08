@@ -2077,8 +2077,15 @@ def cmd_show(args: argparse.Namespace) -> None:
     ]
     seed_decision_discussion(issue["repo"], issue["number"],
         github_direction_next.discussion_snapshot(issue, comments, complete=True))
-    if not args.full and "Current Status" in result["sections"] and not issue_body_is_fully_managed(issue):
-        result["sections"]["Current Status"] = effective_current_status(issue, comments)
+    if not args.full and "Current Status" in result["sections"]:
+        provenance["current_status_managed"] = provenance["section_updates_allowed"]
+        if not issue_body_is_fully_managed(issue):
+            discussion = github_direction_next.discussion_snapshot(issue, comments, complete=True)
+            trusted = wait_authors(issue["repo"])
+            record = github_plan_status.discussion.current_status_record(discussion, trusted,
+                body_recorded_at=next_status_body_time({**issue, "discussion": discussion}, trusted), preserve_content=True)
+            result["sections"]["Current Status"] = record.text.strip()
+            provenance["current_status_managed"] = issue_body_is_fully_managed({"user": {"login": record.author}})
     try:
         wait = current_wait(issue, comments, issue["repo"])
     except (PlanError, ValueError) as exc:
