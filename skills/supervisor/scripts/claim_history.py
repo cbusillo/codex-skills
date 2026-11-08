@@ -12,7 +12,7 @@ import re
 import sqlite3
 import sys
 from typing import Any
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 
 
 def protobuf_fields(data: bytes) -> dict[int, Any]:
@@ -327,7 +327,7 @@ def agy_step_records(
     fields = protobuf_fields
     metadata = fields(step.get(5, b""))
     clock = fields(metadata.get(8) or metadata.get(1, b""))
-    timestamp = datetime.fromtimestamp(clock[1] + clock.get(2, 0) / 1e9, timezone.utc).isoformat()
+    timestamp = datetime.fromtimestamp(clock[1] + clock.get(2, 0) / 1e9, UTC).isoformat()
     row: dict[str, Any] = {"sessionId": session, "timestamp": timestamp, "type": "user", "message": {"content": ""}}
     pending = ("native child history is unavailable" if children else
                "native step kind is unknown" if kind not in {14, 15, 17, 23, 101, 132} else
