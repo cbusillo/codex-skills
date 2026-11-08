@@ -17,8 +17,10 @@ from urllib.parse import parse_qs, urlsplit
 
 import director_waits
 if TYPE_CHECKING:
+    from skills.github.scripts import github_plan_graph
     from skills.github.scripts.test_github_plan_graph import fixture_search_query
 else:
+    import github_plan_graph
     from test_github_plan_graph import fixture_search_query
 
 NOW = datetime(2026, 10, 9, tzinfo=timezone.utc)
@@ -33,7 +35,7 @@ def fixture_discussion(reader, repo, number):
 
 # noinspection PyUnresolvedReferences
 DISCUSSION = patch.object(director_waits.github_read, "read_discussion", fixture_discussion)
-SEARCH = patch.object(director_waits.github_plan_graph, "query_data", fixture_search_query)
+SEARCH = patch.object(github_plan_graph, "query_data", fixture_search_query)
 
 
 def start_module_fixtures() -> None:
