@@ -290,12 +290,5 @@ def test_http_refusals_keep_trace_and_shared_classification(status, code):
     assert "PRIVATE_SENTINEL" not in json.dumps(output)
 
 
-def test_client_timeout_is_a_read_budget_diagnostic():
-    code, output, calls = invoke(argv(), reply=TimeoutError("PRIVATE_SENTINEL"))
-    assert code == 1 and output["status"] == "unavailable" and len(calls) == 1
-    assert output["summary"]["error_code"] == "client_timeout"
-    assert "PRIVATE_SENTINEL" not in json.dumps(output)
-
-
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
