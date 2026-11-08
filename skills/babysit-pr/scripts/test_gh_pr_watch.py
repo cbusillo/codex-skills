@@ -18,12 +18,17 @@ import sys
 from datetime import datetime
 from types import SimpleNamespace
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 os.environ["CODEX_SKILLS_ENV_FILE"] = "/definitely/missing/codex-skills-test.env"
 
 import gh_pr_watch
 import pytest
+
+if TYPE_CHECKING:
+    from skills.github.scripts import github_read
+else:
+    github_read = gh_pr_watch.github_read
 
 
 @pytest.fixture(autouse=True)
@@ -2062,7 +2067,7 @@ def mocked_snapshot_inputs(
     login: str,
 ) -> None:
     mock_pr_discussion(monkeypatch, login=login)
-    monkeypatch.setattr(vars(gh_pr_watch)["github_read"], "pull_request_checks", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(github_read, "pull_request_checks", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(gh_pr_watch, "summarize_checks", lambda *_args, **_kwargs: checks)
     monkeypatch.setattr(gh_pr_watch, "get_workflow_runs_for_sha", lambda *_args, **_kwargs: runs)
     monkeypatch.setattr(gh_pr_watch, "failed_jobs_from_workflow_runs", lambda *_args, **_kwargs: jobs)
