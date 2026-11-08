@@ -2062,7 +2062,7 @@ def mocked_snapshot_inputs(
     login: str,
 ) -> None:
     mock_pr_discussion(monkeypatch, login=login)
-    monkeypatch.setattr("gh_pr_watch.github_read.pull_request_checks", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(vars(gh_pr_watch)["github_read"], "pull_request_checks", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(gh_pr_watch, "summarize_checks", lambda *_args, **_kwargs: checks)
     monkeypatch.setattr(gh_pr_watch, "get_workflow_runs_for_sha", lambda *_args, **_kwargs: runs)
     monkeypatch.setattr(gh_pr_watch, "failed_jobs_from_workflow_runs", lambda *_args, **_kwargs: jobs)
