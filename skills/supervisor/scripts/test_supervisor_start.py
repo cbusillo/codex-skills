@@ -203,6 +203,7 @@ class SupervisorStartTests(unittest.TestCase):
             if argv[-1] == "window":
                 return subprocess.CompletedProcess(argv, 0, json.dumps({"window_id": "$1"}), "")
             command = Path(argv[argv.index("--command-file") + 1]).read_text().rstrip("\n")
+            brief = Path(argv[argv.index("--brief-file") + 1]).read_text()
             words = iterm_tab.launch_words(command)
             if self.args.harness == "codex":
                 codex_session_proxy.managed_argv(self.root, words)
@@ -213,6 +214,7 @@ class SupervisorStartTests(unittest.TestCase):
             wrapped = iterm_tab.with_account(
                 command,
                 {"provider": "openai" if self.args.harness == "codex" else "anthropic", "env": {account_key: account}},
+                brief,
                 coordinate=self.args.harness == "codex",
             )
             observed = run_fixture(
@@ -235,8 +237,10 @@ class SupervisorStartTests(unittest.TestCase):
             else:
                 parser = argparse.ArgumentParser(add_help=False)
                 parser.add_argument("--permission-mode", action="append", required=True)
-                options, _ = parser.parse_known_args(effective["argv"])
+                separator = effective["argv"].index("--")
+                options, _ = parser.parse_known_args(effective["argv"][:separator])
                 self.assertEqual(options.permission_mode, ["auto"])
+                self.assertEqual(effective["argv"][separator + 1:], [brief])
             commands.append(words)
             registration = Path(argv[argv.index("--ledger") + 1])
             self.assertNotEqual(registration, ledger)

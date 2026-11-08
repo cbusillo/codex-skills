@@ -3002,6 +3002,7 @@ class TerminalTests(unittest.TestCase):
             "--permission-mode",
             "--permission-mode auto --permission-mode manual",
             "--dangerously-skip-permissions",
+            "-- legacy prompt",
         ):
             with self.subTest(option=option), self.assertRaises(ValueError):
                 iterm_tab.append_brief(f"claude {option}", "brief")

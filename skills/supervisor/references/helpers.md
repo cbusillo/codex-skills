@@ -8,9 +8,8 @@ macOS and its existing Python API; connection failure never authorizes changing
 personal settings.
 
 The launcher owns scoped unattended settings: worker memory and suggestions
-off, native question picker disabled, automatic compaction selected. Claude's
-session permission mode is explicitly `auto`. The Director's own settings
-are unchanged. It merges inline JSON without losing
+off, native question picker disabled, automatic compaction selected. The
+Director's own settings are unchanged. It merges inline JSON without losing
 other keys; settings files retain their private values and relative-rule base.
 Fix required file values through the reported preflight remedy, never by
 rewriting/inlining the file or changing personal settings. Relative settings
@@ -727,7 +726,6 @@ A configured identity failure never switches to that login. The same nonsecret
 configuration selectors are retained for the reader, Supervisor and routine command.
 Shell-only GitHub tokens cannot be copied into a service: use the normal
 `gh auth login` or the existing `local.env` credential route instead.
-Claude starts with `--permission-mode auto` through the supported launcher.
 No hand-written Supervisor configuration, ledger or recipient is needed.
 
 The command creates missing state under the shared Code home's

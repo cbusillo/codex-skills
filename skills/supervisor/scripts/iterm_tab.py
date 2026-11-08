@@ -474,6 +474,8 @@ def append_brief(command_text, brief):
     words = launch_words(command_text)
     agent = Path(words[0]).name
     if agent == "claude":
+        if "--" in words[1:]:
+            raise ValueError("Claude launches need --permission-mode auto before the prompt; put the prompt in --brief-file")
         for index, word in enumerate(words[1:], 1):
             if (
                 word == "--dangerously-skip-permissions"
