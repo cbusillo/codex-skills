@@ -61,6 +61,16 @@ def event(kind, **extra):
     }
 
 
+def write_jsonl(path: Path, records: list[dict[str, Any]], **fields: Any) -> None:
+    path.write_text("".join(json.dumps({**record, **fields}) + "\n" for record in records))
+
+
+def fixture_executable(path: Path, script: str) -> Path:
+    path.write_text(script)
+    path.chmod(0o700)
+    return path
+
+
 class CloudPassTests(unittest.TestCase):
     def test_cloud_launch_example_keeps_logs_out_of_repository(self) -> None:
         template = (Path(__file__).parents[1] / "references" / "brief-rules.md").read_text()
@@ -72,9 +82,7 @@ class CloudPassTests(unittest.TestCase):
             checkout.mkdir()
             scratch = root / "scratch"
             scratch.mkdir()
-            binary = root / "codex"
-            binary.write_text("#!/bin/sh\nprintf fixture > error.log\npwd\n")
-            binary.chmod(0o700)
+            fixture_executable(root / "codex", "#!/bin/sh\nprintf fixture > error.log\npwd\n")
             shell = shutil.which("sh")
             mktemp = shutil.which("mktemp")
             assert shell is not None and mktemp is not None
@@ -110,9 +118,7 @@ class TranscriptTests(unittest.TestCase):
             entry = {"harness": "claude", "session_id": "fixture", "transcript": str(transcript)}
 
             def read(records):
-                transcript.write_text("".join(
-                    json.dumps({**record, "sessionId": "fixture"}) + "\n" for record in records
-                ))
+                write_jsonl(transcript, records, sessionId="fixture")
                 return session_record.session_status(entry)
 
             for farewell in ("Catch you later!", "Goodbye!\nSee you soon.", "(no content)"):
@@ -348,7 +354,7 @@ class TranscriptTests(unittest.TestCase):
             ledger.write_text(json.dumps([{"session_id": "source", "harness": "claude", "supervisor_owned": True, "transcript": "native.jsonl"}]))
 
             def candidate() -> dict[str, Any]:
-                transcript.write_text("".join(json.dumps({**r, "sessionId": "source"}) + "\n" for r in [*records, claude("Safe to exit: yes")]))
+                write_jsonl(transcript, [*records, claude("Safe to exit: yes")], sessionId="source")
                 return finished_map.candidates(ledger)[0]
 
             before = candidate()
@@ -581,14 +587,14 @@ class LedgerTests(unittest.TestCase):
         )
 
     def write(self, records):
-        records = [
-            {"type": "session_meta", "payload": {"id": self.entry["session_id"]}}
-        ] + records
-        self.transcript.write_text(
-            "".join(json.dumps(record) + "\n" for record in records)
-        )
+        write_jsonl(self.transcript, [{"type": "session_meta", "payload": {"id": self.entry["session_id"]}}, *records])
         self.ledger.write_text(json.dumps([self.entry]))
         os.utime(self.transcript, (1000, 1000))
+
+    def write_claude(self, records: list[dict[str, Any]]) -> None:
+        self.entry["harness"] = "claude"
+        write_jsonl(self.transcript, records, sessionId=self.entry["session_id"])
+        self.ledger.write_text(json.dumps([self.entry]))
 
     def test_bad_watched_transcript_does_not_hide_healthy_session(self):
         bad = {**self.entry, "session_id": "bad", "transcript": "missing.jsonl"}
@@ -932,9 +938,8 @@ class LedgerTests(unittest.TestCase):
     def test_certainly_unsent_busy_recipient_is_rechecked_without_spending_delivery(self) -> None:
         import review_notifications
         other_transcript = self.root / "other.jsonl"
-        other_transcript.write_text(json.dumps({"type": "session_meta", "payload": {"id": "other-worker"}}) + "\n"
-                                    + json.dumps(event("agent_message", message="Still working.")) + "\n"
-                                    + json.dumps(event("task_complete")) + "\n")
+        write_jsonl(other_transcript, [{"type": "session_meta", "payload": {"id": "other-worker"}},
+                                       event("agent_message", message="Still working."), event("task_complete")])
         os.utime(other_transcript, (1000, 1000))
         self.ledger.write_text(json.dumps([self.entry, {**self.entry, "session_id": "other-worker", "transcript": str(other_transcript)}]))
         args = self.persistent_args(deadline_seconds=180)
@@ -1071,19 +1076,13 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual(sleeps, [])
 
     def test_watch_selects_claude_sessions_for_closeout(self):
-        self.entry["harness"] = "claude"
-        self.transcript.write_text(json.dumps(
-            {**claude("Safe to exit: yes"), "sessionId": self.entry["session_id"]}) + "\n")
-        self.ledger.write_text(json.dumps([self.entry]))
+        self.write_claude([claude("Safe to exit: yes")])
         self.assertTrue(codex_idle_watch.poll(self.ledger, {}, 90, 1001)[0]["skipped"])
         notice = codex_idle_watch.poll(self.ledger, {}, 90, 1001, harness="claude")[0]
         self.assertEqual(notice["closeout_request"]["harness"], "claude")
 
     def test_claude_native_notice_uses_exact_session_and_shared_route(self):
-        self.entry["harness"] = "claude"
-        records = [{**claude("Safe to exit: yes"), "sessionId": self.entry["session_id"]}]
-        self.transcript.write_text("".join(json.dumps(r) + "\n" for r in records))
-        self.ledger.write_text(json.dumps([self.entry]))
+        self.write_claude([claude("Safe to exit: yes")])
         command = [sys.executable, str(Path(finished_map.__file__)),
                    "--ledger", str(self.ledger), "--session-id", self.entry["session_id"]]
         result = subprocess.run(command, capture_output=True, text=True, check=True)
@@ -1100,14 +1099,7 @@ class LedgerTests(unittest.TestCase):
         self.assertIn("error", json.loads(ctx.exception.stdout))
 
     def test_claude_closeout_with_live_background_task_stays_open(self):
-        self.entry["harness"] = "claude"
-        records = [
-            {"type": "user", "toolUseResult": {"taskId": "running-ci"}},
-            claude("Safe to exit: yes"),
-        ]
-        self.transcript.write_text("".join(json.dumps({**r, "sessionId": self.entry["session_id"]}) + "\n"
-                                          for r in records))
-        self.ledger.write_text(json.dumps([self.entry]))
+        self.write_claude([{"type": "user", "toolUseResult": {"taskId": "running-ci"}}, claude("Safe to exit: yes")])
         candidate = finished_map.candidates(self.ledger)[0]
         self.assertFalse(candidate["candidate"])
         self.assertIsNone(candidate["closeout_request"])
@@ -1130,7 +1122,7 @@ class LedgerTests(unittest.TestCase):
                 records[1]["payload"]["content"][0]["text"] = text.replace(
                     "Safe to exit: yes", preface + "Safe to exit: yes"
                 )
-                self.transcript.write_text("".join(json.dumps(record) + "\n" for record in records))
+                write_jsonl(self.transcript, records)
                 result = status.snapshot(self.ledger)[0]
                 self.assertTrue(result["safe_verdict"])
                 self.assertIn("<oai-mem-citation>", result["last_text"])
@@ -1690,9 +1682,7 @@ class AccountChoiceTests(unittest.TestCase):
     def test_app_group_receipts_route_through_the_readers_record_launch(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
-            app = root / "Context Panel"
-            app.write_text("#!/bin/sh\nexit 0\n")
-            app.chmod(0o700)
+            app = fixture_executable(root / "Context Panel", "#!/bin/sh\nexit 0\n")
             config = accounts_config()
             config["snapshot_command"] = [str(app), "--account-snapshot"]
             with patch.object(account_choice, "load_config", return_value=config), \
@@ -2077,8 +2067,8 @@ class TabCloseTests(unittest.TestCase):
         self.addCleanup(self.folder.cleanup)
         self.enterContext(patch.object(iterm_tab, "CHROME_OPT_IN", Path(self.folder.name) / "absent"))
         self.ledger = Path(self.folder.name) / "ledger.json"
-        self.entry = {"supervisor_owned": True, "iterm_session_id": "owned", "pid": 123,
-                      "tty": "ttys001", "window_id": "supervisor", "tab_id": "tab"}
+        self.entry: dict[str, Any] = {"supervisor_owned": True, "iterm_session_id": "owned", "pid": 123,
+                                      "tty": "ttys001", "window_id": "supervisor", "tab_id": "tab"}
         self.ledger.write_text(json.dumps([self.entry]))
         self.session = SimpleNamespace(session_id="owned", async_close=AsyncMock(),
                                        async_get_variable=AsyncMock(return_value="/dev/ttys001"))
@@ -2099,6 +2089,13 @@ class TabCloseTests(unittest.TestCase):
 
     def close(self, identity="owned"):
         return asyncio.run(iterm_tab.close_session(self.app, identity, self.ledger))
+
+    @staticmethod
+    def verify_exit(entry: dict[str, Any], command: str, *, tty: str = "other", source_ended: bool = False, **options: Any) -> Any:
+        if source_ended:
+            ended_at = datetime.now(UTC) - timedelta(minutes=2)
+            options = {"ended_at": ended_at, "started_at": lambda _pid: ended_at + timedelta(seconds=1), **options}
+        return session_liveness.verify_process_exit(entry, rows=[(456, tty, command)], **options)
 
     def test_only_owned_idle_empty_exact_tab_closes_nonforce(self) -> None:
         self.assertTrue(self.close()["close_requested"])
@@ -2141,26 +2138,21 @@ class TabCloseTests(unittest.TestCase):
 
     def test_resume_candidates_do_not_prove_an_unrelated_session(self):
         entry = {**self.entry, "pid": 123, "session_id": "source", "harness": "codex"}
-        cutoff = datetime.now(UTC) - timedelta(minutes=2)
         for command in ("codex please resume notes", "codex resume --last", "claude --continue", "claude -c"):
             with self.subTest(command=command), self.assertRaises(ValueError):
-                session_liveness.verify_process_exit(
-                    {**entry, "harness": "claude" if command.startswith("claude") else "codex"},
-                    rows=[(456, entry["tty"], command)], ended_at=cutoff,
-                    started_at=lambda _pid: cutoff + timedelta(seconds=1), replacement_owner=lambda _pid: True)
+                self.verify_exit({**entry, "harness": "claude" if command.startswith("claude") else "codex"}, command,
+                                 tty=self.entry["tty"], source_ended=True, replacement_owner=lambda _pid: True)
         for command in ("codex-aarch64-apple-darwin resume source", "codex-aarch64-apple-darwin exec resume source"):
             with self.subTest(command=command), self.assertRaisesRegex(ValueError, "resumed harness"):
-                session_liveness.verify_process_exit(entry, rows=[(456, "other", command)])
+                self.verify_exit(entry, command)
 
     def test_native_uuid_alias_resumes_are_the_source_on_every_tty(self):
         source = "01a1514c-fa7f-7be3-95ba-4d25df73d07e"
         entry = {**self.entry, "session_id": source, "harness": "codex"}
-        cutoff = datetime.now(UTC) - timedelta(minutes=2)
         for alias in (source.upper(), source.replace("-", ""), "{" + source.upper() + "}", "urn:uuid:" + source.upper()):
             for tty in (entry["tty"], "other"):
                 with self.subTest(alias=alias, tty=tty), self.assertRaisesRegex(ValueError, "resumed harness"):
-                    session_liveness.verify_process_exit(entry, rows=[(456, tty, "codex resume " + alias)],
-                        ended_at=cutoff, started_at=lambda _pid: cutoff + timedelta(seconds=1))
+                    self.verify_exit(entry, "codex resume " + alias, tty=tty, source_ended=True)
 
     def test_codex_resume_options_keep_source_ids_separate_from_option_values(self):
         source = "01a1514c-fa7f-7be3-95ba-4d25df73d07e"
@@ -2173,53 +2165,40 @@ class TabCloseTests(unittest.TestCase):
             f'codex resume -c notify=true {source}',
         ):
             with self.subTest(command=command), self.assertRaises(ValueError):
-                session_liveness.verify_process_exit(entry, rows=[(456, "other", command)])
+                self.verify_exit(entry, command)
         for command in (
             f"codex resume -m {source} {other}", f"codex resume --model={source} {other}",
             f"codex resume -i {source} --last", f"codex resume --json {other} -- {source}",
             f"codex exec -- resume --json {source}",
         ):
             with self.subTest(command=command):
-                session_liveness.verify_process_exit(entry, rows=[(456, "other", command)])
-        cutoff = datetime.now(UTC) - timedelta(minutes=2)
+                self.verify_exit(entry, command)
         for command in (f"codex resume -m {other} --last", f"codex resume --unknown-value {other} --last"):
             with self.subTest(command=command), self.assertRaises(ValueError):
-                session_liveness.verify_process_exit(entry, rows=[(456, entry["tty"], command)],
-                    ended_at=cutoff, started_at=lambda _pid: cutoff + timedelta(seconds=1))
-        session_liveness.verify_process_exit(entry, rows=[(456, entry["tty"], f"codex resume -m {source} {other}")],
-            ended_at=cutoff, started_at=lambda _pid: cutoff + timedelta(seconds=1))
+                self.verify_exit(entry, command, tty=entry["tty"], source_ended=True)
+        self.verify_exit(entry, f"codex resume -m {source} {other}", tty=entry["tty"], source_ended=True)
 
     def test_disappeared_tty_process_needs_kernel_absence_for_session_proof(self) -> None:
         entry = {**self.entry, "pid": 123, "session_id": "source", "harness": "codex"}
-        cutoff = datetime.now(UTC) - timedelta(minutes=2)
         for scope, absent in (("session", True), ("session", False), ("terminal", True)):
             with self.subTest(scope=scope, absent=absent), \
                     patch.object(session_liveness, "process_arguments", return_value=([], True)), \
                     patch.object(session_liveness, "process_absent", return_value=absent):
                 started = Mock(side_effect=subprocess.CalledProcessError(1, ["ps"]))
                 if scope == "session" and absent:
-                    session_liveness.verify_process_exit(entry, rows=[(456, entry["tty"], "short-helper")],
-                        ended_at=cutoff, started_at=started, scope=scope)
+                    self.verify_exit(entry, "short-helper", tty=self.entry["tty"], source_ended=True, started_at=started, scope=scope)
                 else:
                     with self.assertRaises(ValueError):
-                        session_liveness.verify_process_exit(entry, rows=[(456, entry["tty"], "short-helper")],
-                            ended_at=cutoff, started_at=started, scope=scope)
+                        self.verify_exit(entry, "short-helper", tty=self.entry["tty"], source_ended=True, started_at=started, scope=scope)
 
     def test_managed_wrapper_needs_its_guard_on_the_source_tty(self) -> None:
-        cutoff = datetime.now(UTC) - timedelta(minutes=2)
+        entry = {**self.entry, "harness": "codex"}
         for name in ("codex-session.py", "codex_session_proxy.py"):
-            for guarded in (False, True):
-                with self.subTest(name=name, guarded=guarded):
-                    rows = [(456, self.entry["tty"], f"python /repo/{name} launch")]
-                    if guarded:
-                        session_liveness.verify_process_exit(
-                            {**self.entry, "harness": "codex"}, rows=rows, ended_at=cutoff,
-                            started_at=lambda _pid: cutoff + timedelta(seconds=1), independent_harness=lambda *_args: True)
-                    else:
-                        with self.assertRaisesRegex(ValueError, "unidentified harness"):
-                            session_liveness.verify_process_exit(
-                                {**self.entry, "harness": "codex"}, rows=rows, ended_at=cutoff,
-                                started_at=lambda _pid: cutoff + timedelta(seconds=1), independent_harness=lambda *_args: False)
+            command = f"python /repo/{name} launch"
+            with self.subTest(name=name, guarded=False), self.assertRaisesRegex(ValueError, "unidentified harness"):
+                self.verify_exit(entry, command, tty=entry["tty"], source_ended=True, independent_harness=lambda *_args: False)
+            with self.subTest(name=name, guarded=True):
+                self.verify_exit(entry, command, tty=entry["tty"], source_ended=True, independent_harness=lambda *_args: True)
 
     def test_inventory_keeps_long_resume_operands(self):
         source = "01a1514c-fa7f-7be3-95ba-4d25df73d07e"
@@ -2242,13 +2221,13 @@ class TabCloseTests(unittest.TestCase):
             with self.subTest(row=row), patch.object(tmux_terminal.Terminal, "list", return_value=[row]):
                 self.assertIsNone(session_liveness.native_exit_cutoff(entry))
                 with self.assertRaises(ValueError):
-                    session_liveness.verify_process_exit(entry, rows=[(456, entry["tty"], "codex exec -- new task")])
+                    self.verify_exit(entry, "codex exec -- new task", tty=self.entry["tty"])
 
     def test_unknown_peers_on_other_ttys_remain_the_callers_confirmation(self) -> None:
         entry = {**self.entry, "pid": 123, "session_id": "source"}
         for command, harness in (("codex resume --last", "codex"), ("claude --continue", "claude")):
             with self.subTest(command=command):
-                session_liveness.verify_process_exit({**entry, "harness": harness}, rows=[(456, "other", command)])
+                self.verify_exit({**entry, "harness": harness}, command)
         self.assertEqual(session_liveness.invocation(["claude", "--continue"]), ([], "resume", None))
         self.assertEqual(session_liveness.invocation(["claude", "-c"]), ([], "resume", None))
         for value in (None, False, 0, -1, "123"):
@@ -2263,26 +2242,22 @@ class TabCloseTests(unittest.TestCase):
         entry = {**self.entry, "session_id": "source", "pid": 123}
         for command in ("echo codex resume source", "python worker.py resume source", "codex -- resume source", "codex exec -- resume source"):
             with self.subTest(command=command):
-                session_liveness.verify_process_exit(entry, rows=[(456, "other", command)])
+                self.verify_exit(entry, command)
         for command in ("codex resume source -- prompt", "bun /bin/claude.js --resume=source", "node /bin/claude --resume source",
                         'codex -c notify=true resume source',
                         "codex exec resume source", "codex e resume source", "node /bin/codex.js exec resume source"):
             with self.subTest(command=command), self.assertRaisesRegex(ValueError, "resumed harness"):
-                session_liveness.verify_process_exit(entry, rows=[(456, "other", command)])
+                self.verify_exit(entry, command)
 
     def test_resume_picker_is_not_fresh_exec_and_explicit_prompt_is_unrelated(self) -> None:
         entry = {**self.entry, "harness": "codex", "session_id": "source"}
-        cutoff = datetime.now(UTC) - timedelta(minutes=2)
-        born = cutoff + timedelta(seconds=1)
         for command in ("codex exec resume --last", "codex e resume --last", "node /bin/codex.js exec resume --last"):
             with self.subTest(command=command), self.assertRaises(ValueError):
-                session_liveness.verify_process_exit(entry, rows=[(456, self.entry["tty"], command)],
-                                                     ended_at=cutoff, started_at=lambda _pid: born)
+                self.verify_exit(entry, command, tty=entry["tty"], source_ended=True)
         for command in ("codex exec -- resume source", "codex e -- resume source",
                         "python /repo/codex_idle_watch.py", "sh /repo/codex-watch.sh"):
             with self.subTest(command=command):
-                session_liveness.verify_process_exit(entry, rows=[(456, self.entry["tty"], command)],
-                                                     ended_at=cutoff, started_at=lambda _pid: born)
+                self.verify_exit(entry, command, tty=entry["tty"], source_ended=True)
 
     def test_refuses_missing_duplicate_director_or_moved_identity(self) -> None:
         for entries in ([], [self.entry, self.entry],
@@ -2342,9 +2317,8 @@ class TabCloseTests(unittest.TestCase):
     def test_claude_exec_replaces_launch_shell(self) -> None:
         choice = {"provider": "anthropic", "env": {}}
         env = {k: v for k, v in os.environ.items() if k != "CLAUDE_ACCOUNT_MOVE_ENABLED"}
-        probe = Path(self.folder.name) / "claude"
-        probe.write_text('#!/bin/sh\nprintf "%s\\n" "$$" "$CLAUDE_ACCOUNT_MOVE_ENABLED" "$1"\n')
-        probe.chmod(0o700)
+        probe = fixture_executable(Path(self.folder.name) / "claude",
+                                   '#!/bin/sh\nprintf "%s\\n" "$$" "$CLAUDE_ACCOUNT_MOVE_ENABLED" "$1"\n')
         brief = "brief has && ; exec in text"
         command = iterm_tab.with_account(f"cd / && exec {shlex.quote(str(probe))} {shlex.quote(brief)}", choice)
         child = subprocess.Popen(["/bin/sh", "-c", command], stdout=subprocess.PIPE, text=True, env=env)
@@ -2527,15 +2501,14 @@ class CodexProjectTests(unittest.TestCase):
             root = Path(folder).resolve()
             repository = root / "brief's repository"
             repository.mkdir()
-            fake_codex = root / "codex"
-            fake_codex.write_text(
+            fake_codex = fixture_executable(
+                root / "codex",
                 f'#!{sys.executable}\nimport argparse, json, os\n'
                 'parser = argparse.ArgumentParser()\n'
                 'parser.add_argument("--remote")\nparser.add_argument("-C", "--cd")\n'
                 'parser.add_argument("-c", action="append")\nparser.add_argument("prompt")\nargs = parser.parse_args()\n'
                 'os.chdir(args.cd)\nprint(json.dumps([os.getcwd(), args.prompt]))\n'
             )
-            fake_codex.chmod(0o700)
             home = root / "selected"
             write_codex_project_fixture(repository, home)
             endpoint = iterm_tab.codex_daemon_endpoint(home)
@@ -2916,9 +2889,7 @@ class TerminalTests(unittest.TestCase):
 
     def test_account_launch_label_preserves_exec_and_does_not_escape_a_returning_worker(self) -> None:
         for harness, provider in (("claude", "anthropic"), ("codex", "openai")):
-            agent = self.root / harness
-            agent.write_text('#!/bin/sh\nprintf "%s" "$DISCORD_BLUE_SESSION_KIND"\n')
-            agent.chmod(0o700)
+            agent = fixture_executable(self.root / harness, '#!/bin/sh\nprintf "%s" "$DISCORD_BLUE_SESSION_KIND"\n')
             choice = {"provider": provider, "env": {}}
             for replace in (True, False):
                 invocation = ("exec " if replace else "") + shlex.quote(str(agent))
@@ -2967,16 +2938,14 @@ class TerminalTests(unittest.TestCase):
     def test_every_claude_account_home_launches_without_the_question_picker_or_auto_memory(self) -> None:
         default_home = ACCOUNTS_TOML.replace('env = { CLAUDE_CONFIG_DIR = "~/claude-main" }', 'env = {}')
         homes = [(text, name) for text in (ACCOUNTS_TOML, default_home) for name in ("main", "spare")]
-        fake_claude = self.root / "claude"
-        fake_claude.write_text(f"#!{sys.executable}\nimport json, sys\nprint(json.dumps(sys.argv[1:]))\n")
-        fake_claude.chmod(0o700)
+        fake_claude = fixture_executable(self.root / "claude", f"#!{sys.executable}\nimport json, sys\nprint(json.dumps(sys.argv[1:]))\n")
         brief = "--permission-mode plan\nKeep $(touch injected) literal."
         commands = []
         for option in ("", "--allow-dangerously-skip-permissions", "--permission-mode auto", "--permission-mode=auto"):
             launch = f"cd / && exec {shlex.quote(str(fake_claude))} {option}"
             commands.append(iterm_tab.append_brief(launch, brief))
             for text, name in homes:
-                choice = account_choice.choose("anthropic", accounts_config(text), AccountChoiceTests().snapshot(), None, name=name)
+                choice = account_choice.choose("anthropic", accounts_config(text), AccountChoiceTests.snapshot(), None, name=name)
                 commands.append(iterm_tab.with_account(launch, choice, brief))
         for command in commands:
             with self.subTest(command=command):
@@ -3056,9 +3025,8 @@ class TerminalTests(unittest.TestCase):
         self.assertIn(shlex.quote(str(path)), iterm_tab.append_brief(f"claude --settings {shlex.quote(str(path))}", "brief"))
 
     def test_claude_launch_overrides_inherited_suggestion_environment(self) -> None:
-        child = self.root / "claude"
-        child.write_text(f'#!{sys.executable}\nimport os\nprint(os.getenv({iterm_tab.CLAUDE_SUGGESTION_ENV!r}))\n')
-        child.chmod(0o700)
+        child = fixture_executable(self.root / "claude",
+                                   f'#!{sys.executable}\nimport os\nprint(os.getenv({iterm_tab.CLAUDE_SUGGESTION_ENV!r}))\n')
         with patch.dict(os.environ, {iterm_tab.CLAUDE_SUGGESTION_ENV: "true"}):
             command = iterm_tab.with_account(f"exec {shlex.quote(str(child))}", {"provider": "anthropic", "env": {}}, "brief")
             result = subprocess.run(["/bin/sh", "-c", command], check=True, capture_output=True, text=True)
@@ -3108,13 +3076,11 @@ class TerminalTests(unittest.TestCase):
     def test_google_launch_loads_config_preserves_brief_and_writes_receipt(self) -> None:
         config_path = self.root / "supervisor.toml"
         config_path.write_text(GOOGLE_TOML)
-        child = self.root / "agy"
-        child.write_text(f'#!{sys.executable}\nimport argparse\n'
-                         'parser = argparse.ArgumentParser()\n'
-                         'parser.add_argument("--dangerously-skip-permissions", action="store_true", required=True)\n'
-                         'parser.add_argument("--prompt-interactive", required=True)\n'
-                         'print(parser.parse_args().prompt_interactive, end="")\n')
-        child.chmod(0o700)
+        child = fixture_executable(self.root / "agy", f'#!{sys.executable}\nimport argparse\n'
+                                   'parser = argparse.ArgumentParser()\n'
+                                   'parser.add_argument("--dangerously-skip-permissions", action="store_true", required=True)\n'
+                                   'parser.add_argument("--prompt-interactive", required=True)\n'
+                                   'print(parser.parse_args().prompt_interactive, end="")\n')
         launch = self.root / "launch.txt"
         launch.write_text("cd / && exec " + shlex.quote(str(child)))
         args = account_launch_args(launch, "google", account_config=config_path)
@@ -3166,12 +3132,10 @@ class TerminalTests(unittest.TestCase):
                 self.assertEqual(shlex.split(iterm_tab.append_brief(settings, "task"))[-1], "task")
 
     def test_brief_reaches_agent_as_one_literal_argument(self) -> None:
-        child = self.root / "claude"
-        child.write_text(f'#!{sys.executable}\nimport sys\n'
-                         'args = sys.argv[1:]\n'
-                         'prompt = args[args.index("--") + 1:]\n'
-                         'print(len(prompt))\nprint(prompt[0])\n')
-        child.chmod(0o700)
+        child = fixture_executable(self.root / "claude", f'#!{sys.executable}\nimport sys\n'
+                                   'args = sys.argv[1:]\n'
+                                   'prompt = args[args.index("--") + 1:]\n'
+                                   'print(len(prompt))\nprint(prompt[0])\n')
         launch = self.root / "launch.txt"
         launch.write_text("cd / && exec " + shlex.quote(str(child)))
         brief = self.root / "brief.txt"
@@ -3401,10 +3365,8 @@ class TerminalTests(unittest.TestCase):
 
     def test_default_claude_launch_clears_inherited_profile_after_cd(self) -> None:
         config = accounts_config(ACCOUNTS_TOML.replace('env = { CLAUDE_CONFIG_DIR = "~/claude-main" }', 'env = {}'))
-        choice = account_choice.choose("anthropic", config, AccountChoiceTests().snapshot(), None, name="main")
-        fake_claude = self.root / "claude"
-        fake_claude.write_text('#!/bin/sh\nprintf "%s\\n" "${CLAUDE_CONFIG_DIR+set}" "$1"\n')
-        fake_claude.chmod(0o700)
+        choice = account_choice.choose("anthropic", config, AccountChoiceTests.snapshot(), None, name="main")
+        fake_claude = fixture_executable(self.root / "claude", '#!/bin/sh\nprintf "%s\\n" "${CLAUDE_CONFIG_DIR+set}" "$1"\n')
         command = iterm_tab.with_account(f'cd / && {shlex.quote(str(fake_claude))} brief', choice)
         launched = subprocess.run(
             ["/bin/sh", "-c", command], capture_output=True, text=True, check=True,
@@ -3524,9 +3486,7 @@ class TerminalTests(unittest.TestCase):
             "accounts": rows,
             "answers": {"useNext": [{"provider": "openai", "accountID": "openai-def"}]},
         }, None, now=NOW)
-        fake_codex = self.root / "codex"
-        fake_codex.write_text('#!/bin/sh\nprintf "%s\\n" "$CODEX_HOME" "$@"\n')
-        fake_codex.chmod(0o700)
+        fake_codex = fixture_executable(self.root / "codex", '#!/bin/sh\nprintf "%s\\n" "$CODEX_HOME" "$@"\n')
         settings = ["--remote", "unix://", "-c", 'model="test-model"', "-c", "model_reasoning_effort=medium"]
         command = iterm_tab.with_account(f"cd / && {shlex.quote(str(fake_codex))} {shlex.join(settings)}", choice)
         launched = subprocess.run(["/bin/sh", "-c", command], capture_output=True, text=True, check=True)
@@ -3536,13 +3496,11 @@ class TerminalTests(unittest.TestCase):
         terminal, window, app = launch_terminal_fixture()
         choice = account_choice.decision(accounts_config()["accounts"][1], "context-panel", "resets soonest")
         command = self.root / "launch.txt"
-        child = self.root / "claude"
-        child.write_text(f'#!{sys.executable}\nimport os, sys\n'
-                         'args = sys.argv[1:]\n'
-                         'print(os.getenv("CLAUDE_CONFIG_DIR"))\n'
-                         'print(os.getenv("CLAUDE_ACCOUNT_MOVE_ENABLED"))\n'
-                         'print(args[args.index("--") + 1])\n')
-        child.chmod(0o700)
+        child = fixture_executable(self.root / "claude", f'#!{sys.executable}\nimport os, sys\n'
+                                   'args = sys.argv[1:]\n'
+                                   'print(os.getenv("CLAUDE_CONFIG_DIR"))\n'
+                                   'print(os.getenv("CLAUDE_ACCOUNT_MOVE_ENABLED"))\n'
+                                   'print(args[args.index("--") + 1])\n')
         command.write_text("cd / && " + shlex.quote(str(child)) + "\n")
         args = account_launch_args(command)
         with (patch.object(account_choice, "select", return_value=choice),
@@ -3564,7 +3522,7 @@ class TerminalTests(unittest.TestCase):
         files = [self.root / "first.txt", self.root / "second.txt"]
         for index, path in enumerate(files):
             path.write_text(f"claude brief-{index}")
-        snapshot = AccountChoiceTests().snapshot()
+        snapshot = AccountChoiceTests.snapshot()
         config = accounts_config()
         config["snapshot_command"] = ["reader", "--storage-root", str(self.root)]
         counts_at_send: list[int] = []
@@ -3648,9 +3606,7 @@ class TerminalTests(unittest.TestCase):
                 self.assertFalse(iterm_tab.account_settings(command, account_choice.ACCOUNT_VARIABLES.values()))
         with self.assertRaisesRegex(ValueError, "already sets CODEX_HOME"):
             iterm_tab.with_account("CODEX_HOME=/manual codex brief", choice)
-        cli = self.root / "claude"
-        cli.write_text('#!/bin/sh\nprintf "%s\\n" "$CLAUDE_CONFIG_DIR" "$1"\n')
-        cli.chmod(0o700)
+        fixture_executable(self.root / "claude", '#!/bin/sh\nprintf "%s\\n" "$CLAUDE_CONFIG_DIR" "$1"\n')
         env = {**os.environ, "PATH": f"{self.root}:{os.environ['PATH']}"}
         command = "MY_CLAUDE_CONFIG_DIR=example claude 'Discuss CLAUDE_CONFIG_DIR=/example and CODEX_HOME=/example'"
         result = subprocess.run(["/bin/sh", "-c", iterm_tab.with_account(command, choice)], env=env, capture_output=True, text=True, check=True)
@@ -3665,7 +3621,7 @@ class TerminalTests(unittest.TestCase):
     def test_unwritable_receipt_root_refuses_before_any_tab_and_creates_no_receipt(self) -> None:
         path = self.root / "launch.txt"
         path.write_text("claude brief")
-        choice = account_choice.choose("anthropic", accounts_config(), AccountChoiceTests().snapshot(), None)
+        choice = account_choice.choose("anthropic", accounts_config(), AccountChoiceTests.snapshot(), None)
         choice["storage_root"] = self.root / "missing-store"
         _, window, app = launch_terminal_fixture()
         args = account_launch_args(path)
@@ -3694,7 +3650,7 @@ class TerminalTests(unittest.TestCase):
         files = [self.root / "first.txt", self.root / "second.txt"]
         for path in files:
             path.write_text("claude brief")
-        choices = account_choice.choose_batch("anthropic", accounts_config(), AccountChoiceTests().snapshot(), None, count=2)
+        choices = account_choice.choose_batch("anthropic", accounts_config(), AccountChoiceTests.snapshot(), None, count=2)
         for choice in choices:
             choice["storage_root"] = self.root
         terminals = [SimpleNamespace(session_id=f"session-{i}", async_send_text=AsyncMock()) for i in range(2)]
@@ -3718,7 +3674,7 @@ class TerminalTests(unittest.TestCase):
 
     def test_receipt_failure_prevents_command_submission(self) -> None:
         terminal, window, app = launch_terminal_fixture()
-        choice = account_choice.choose("anthropic", accounts_config(), AccountChoiceTests().snapshot(), None)
+        choice = account_choice.choose("anthropic", accounts_config(), AccountChoiceTests.snapshot(), None)
         choice["storage_root"] = self.root
         path = self.root / "launch.txt"
         path.write_text("claude brief")
@@ -3744,7 +3700,7 @@ class TerminalTests(unittest.TestCase):
         files[0].write_text("claude brief")
         files[1].write_text("env CLAUDE_CONFIG_DIR=/other claude")
         args = account_launch_args(files)
-        choices = account_choice.choose_batch("anthropic", accounts_config(), AccountChoiceTests().snapshot(), None, count=2)
+        choices = account_choice.choose_batch("anthropic", accounts_config(), AccountChoiceTests.snapshot(), None, count=2)
         with (patch.object(account_choice, "select_batch", return_value=choices),
               patch.object(account_choice, "record_launch") as receipt,
               patch.object(account_choice, "prepare_launch"),
