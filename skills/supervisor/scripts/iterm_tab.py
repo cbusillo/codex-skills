@@ -1859,10 +1859,30 @@ def append_launch_ledger(path: Path, entry: dict) -> None:
         if any(row.get("session_id") == entry["session_id"] for row in entries):
             raise ValueError("native session is already in the launch ledger; inspect before retry")
         if entry.get("lead_session_id") is not None:
-            pending = lead_row(entries, entry["lead_session_id"])["worker_launches"]
+            lead = lead_row(entries, entry["lead_session_id"])
+            pending = lead["worker_launches"]
             launch = entry.get("lead_launch_id")
-            if launch not in pending:
+            source = github_plan_closure.source_records({entry["session_id"]}).get(entry["session_id"])
+            if source is None and launch not in pending:
                 raise ValueError("lead worker registration needs its retained launch reservation; preserve the receipt")
+            if source is not None:
+                import release_session_claims
+                import session_record
+                from codex_session_proxy import source_endpoint
+
+                with github_plan_closure.ownership(entry["session_id"], create=True):
+                    source = github_plan_closure.source_records({entry["session_id"]}).get(entry["session_id"])
+                    if source != session_record.normalize_ledger_entry(path, entry) or source is None or source.get("harness") != "codex":
+                        raise ValueError("lead restoration requires the unchanged canonical closed Codex source")
+                    github_plan_closure.resume_record(entry["session_id"], [source], check_claims=False)
+                    release_session_claims.validate_closure(source, entry["lead_session_id"])
+                    source_endpoint(entry["session_id"], Path(source["codex_home"]).expanduser().resolve(),
+                                    transcript=source["transcript"], for_resume=True)
+                    active = sum(row.get("lead_session_id") == entry["lead_session_id"] for row in entries)
+                    if active + sum(pending.values()) + 1 > lead["worker_cap"]:
+                        raise ValueError(f"lead worker cap {lead['worker_cap']} exceeded by closed-source restoration")
+                    save_state(path, [*entries, entry])
+                    return
             count = pending.pop(launch) - 1
             if count:
                 pending[launch] = count

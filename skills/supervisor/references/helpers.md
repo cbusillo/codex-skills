@@ -2267,6 +2267,12 @@ its original account. After retirement, verify its exact canonical closed-log
 source row and export that unchanged row to private JSON, preserving absolute
 native paths and original custody. Re-register it with `iterm_tab.py register
 --entry-file <verified-closed-source.json> --ledger <original-ledger.json>`.
+For a lead worker, registration verifies the unchanged canonical closed source
+under its ownership lease and the ledger lock, rechecks closure, exited process
+and original native account, and counts it with active workers and pending
+reservations against the lead's existing cap. It does not consume another fresh
+launch reservation or resume the source. Fresh workers still need their retained
+launch reservation; caller JSON alone never authorizes restoration.
 Then use the original owned ledger, with no command/brief/browser files:
 
 ```sh
