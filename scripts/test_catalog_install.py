@@ -73,6 +73,18 @@ class InstallTests(unittest.TestCase):
         mock.patch.object(installer, "ROOT", self.catalog).start()
         mock.patch.object(installer, "load_sync", return_value=self.sync).start()
 
+    def test_configured_artifact_roots_reach_installed_instructions(self) -> None:
+        roots = {"evidenceRoot": str(self.root / "task-evidence"), "retainedRoot": str(self.root / "retained")}
+        config = self.root / "worktrees.json"
+        config.write_text(json.dumps(roots))
+        shipped = Path(__file__).resolve().parents[1] / "instructions" / "global.md"
+        (self.catalog / "instructions" / "global.md").write_bytes(shipped.read_bytes())
+        with mock.patch.dict(os.environ, {"DEV_WORKTREE_CONFIG": str(config)}):
+            self.install()
+        installed = (self.claude / "CLAUDE.md").read_text()
+        for configured in roots.values():
+            self.assertIn(configured, installed)
+
     def test_health_opt_in_survives_refresh_and_can_be_disabled(self) -> None:
         with mock.patch.object(installer.github_catalog_health, "self_check", return_value={"approval": "unknown"}) as check:
             self.install()
@@ -461,6 +473,9 @@ class InstallTests(unittest.TestCase):
             for name in ("sync-global-instructions.py", "install-catalog.py", "chrome_mcp.py"):
                 shutil.copyfile(Path(__file__).with_name(name), scripts / name)
             shutil.copyfile(Path(hook.__file__), self.catalog / "hooks/direction_check_hook.py")
+            worktree_helper = self.catalog / "skills/github/scripts/dev_worktree.py"
+            worktree_helper.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(Path(__file__).resolve().parents[1] / "skills/github/scripts/dev_worktree.py", worktree_helper)
             warning = startup()
             self.assertIn(str(destination), warning)
             repair = shlex.split(re.search(r"uv run [^\n]+?;", warning).group()[:-1])
@@ -1912,6 +1927,7 @@ class UpdateTests(unittest.TestCase):
         health_target = self.seed / "skills/github/scripts/github_catalog_health.py"
         health_target.parent.mkdir(parents=True)
         shutil.copyfile(health_source, health_target)
+        shutil.copyfile(source.parent / "skills/github/scripts/dev_worktree.py", health_target.with_name("dev_worktree.py"))
         (self.seed / "skills" / "original").write_text("first")
         command("git", "add", ".", cwd=self.seed)
         command("git", "commit", "-qm", "install sources", cwd=self.seed)
