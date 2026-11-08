@@ -3143,7 +3143,7 @@ GraphQL. Comment IDs and exact authored releases continue to decide custody;
 changing transport grants no ownership or mutation authority. Planning reads
 reuse complete observations already obtained by global `next`, and source
 repository context reaches the same shared transport and selected App even
-when the command's default repository belongs to another owner.
+when the command's default repository belongs to another account.
 
 Metadata reads request labels and scalar state without paging unrelated
 discussions. Consumers request their bounded comment and native relationship
