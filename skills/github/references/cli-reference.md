@@ -1671,8 +1671,8 @@ dash separators and vertical field/value tables are supported. Explicit fields
 remain identity evidence even when malformed. Prose references, including wrapped
 continuations, need a native session ID; human browser/administrator sessions and
 horizontal tables do not establish agent identity. Non-UUID labels need an explicit
-field. Use the canonical
-Session field or authored exact-ID recovery for those older formats. A distinct structured claim needs its own closure
+field. Use the canonical Session field or authored exact-ID recovery for older
+prose or horizontal-table formats. A distinct structured claim needs its own closure
 evidence; an unstructured claim needs an exact-ID release by its author.
 
 A claim without `--resume-from` never retries itself as a successor. When the

@@ -26,7 +26,10 @@ except ModuleNotFoundError:
 
 LEASE_TAKEOVER_PREFIX = "Lease takeover: claim "
 NATIVE_SESSION_ID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", re.IGNORECASE)
-HISTORICAL_SESSION_PREFIX = re.compile(r"\b(?:previous|prior|earlier|original|superseded)\b[^:|;\n]*$", re.IGNORECASE)
+HISTORICAL_SESSION_PREFIX = re.compile(
+    r"(?:^|[;:.(,])[ \t]*(?:[-*+]|\d+[.)])?[ \t]*(?i:previous|prior|earlier|original|superseded)\b"
+    r"(?:[ \t]+(?:(?i:native)|[A-Z][\w-]*))*[ \t_-]*$",
+)
 EMPTY_HOLDERS = {"none", "unassigned", "unclaimed", "not assigned", "n/a", "-", "nobody", "no one", "no-one"}
 
 
@@ -276,7 +279,7 @@ def prose_session_reference(text: str, position: int, value: str) -> bool:
         return False
     if (not line_prefix.strip() and text[position].islower() and previous.strip()
             and not re.search(r"^\s*(?:[-*+>#`~]|\d+[.)]\s|(?:claimed by|handoff from|continuing from)\b|"
-                              r"[\w /-]+[:=])|[.:;!?|]\s*$", previous, re.IGNORECASE)):
+                              r"[\w /-]+[:=]\s*\S+\s*$)|[.:;!?|]\s*$", previous, re.IGNORECASE)):
         return True
     return not (
         re.fullmatch(r"\s*(?:[-*+]|\d+[.)])?\s*\(?", line_prefix)

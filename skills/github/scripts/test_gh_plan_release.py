@@ -1150,8 +1150,12 @@ class ReleaseTests(ReleaseHarness):
             require_explicit=True,
         ))
 
-    def test_human_session_link_is_not_a_standalone_ownership_assertion(self) -> None:
+    def test_session_prose_is_not_a_standalone_ownership_assertion(self) -> None:
         for prose in (
+            "Tooling landed this session: https://github.com/owner/repo/pull/3510",
+            "Earlier in this session: the IDE records landed.",
+            "Summary: tooling landed during this\nsession: https://github.com/owner/repo/pull/3510",
+            "Summary: we did\nthe work in this\nsession: all green",
             "Next actor: Chris uses his existing administrator session: https://example.test/admin",
             "Chris uses his administrator session: [comment](https://example.test/admin)",
             "Chris uses his administrator session: <https://example.test/admin>",
