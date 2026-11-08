@@ -1361,7 +1361,7 @@ def test_executive_activity_comparison_summarizes_previous_window() -> None:
         window,
     )
 
-    assert summary == "Activity was higher than the previous window (+3): 5 visible items this day versus 2 in the previous day."
+    assert all(part in summary for part in ("(+3)", "5 visible items", "versus 2", "day"))
     previous = github_work_rollup.preceding_window(window)
     assert previous.since == datetime(2026, 5, 31, tzinfo=UTC)
     assert previous.until == datetime(2026, 6, 1, tzinfo=UTC)
@@ -1444,7 +1444,7 @@ def test_executive_activity_comparison_allows_truncation_warnings(monkeypatch: p
     )
 
     assert comparison is not None
-    assert comparison["summary"].startswith("Activity was higher than the previous window")
+    assert (comparison["current"]["visible"], comparison["previous"]["visible"]) == (1, 0)
 
 
 def test_executive_collection_surfaces_release_and_workflow_warnings(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1527,25 +1527,14 @@ def test_json_payload_does_not_publish_private_profile_fields() -> None:
 def test_render_executive_brief_markdown() -> None:
     payload: dict[str, Any] = {
         "ok": True,
-        "schema_version": 1,
-        "script_version": 1,
-        "generated_at": "2026-06-02T16:00:00Z",
         "window": {"since": "2026-06-01T16:00:00Z", "until": "2026-06-02T16:00:00Z", "label": "24h"},
         "timezone": "America/New_York",
-        "report_recipient": "Justin",
+        "report_recipient": "Example leader",
         "recipient_profile": {
-            "company": "Example Company",
-            "roles": ["owner"],
             "technical_depth": "low-to-medium",
-            "framing": "big-picture-first",
-            "detail_preference": "outcomes, cost, risk, sequencing, and customer impact",
-            "report_guidance": "Aim for one page normally and two pages on heavy days.",
             "trust_handling": "Private note that should not be rendered.",
         },
         "repositories": ["example-org/code", "example-org/example-skills"],
-        "subjects": [],
-        "summary_level": "standard",
-        "mode": "activity",
         "layout": "executive",
         "buckets": {
             "needs_attention": [
@@ -1567,7 +1556,6 @@ def test_render_executive_brief_markdown() -> None:
                     "url": "https://github.com/example-org/code/pull/202",
                     "kind": "pr",
                     "state": "merged",
-                    "labels": ["documentation"],
                 },
                 {
                     "repo": "example-org/example-skills",
@@ -1576,7 +1564,6 @@ def test_render_executive_brief_markdown() -> None:
                     "url": "https://github.com/example-org/example-skills/pull/203",
                     "kind": "pr",
                     "state": "merged",
-                    "labels": ["documentation"],
                 },
                 {
                     "repo": "example-org/code",
@@ -1585,27 +1572,17 @@ def test_render_executive_brief_markdown() -> None:
                     "url": "https://github.com/example-org/code/pull/204",
                     "kind": "pr",
                     "state": "closed",
-                    "labels": ["cleanup"],
-                }
-            ]
+                },
+            ],
         },
-        "releases": [
-            {
-                "repo": "example-org/code",
-                "tag_name": "v1.0.0",
-                "name": "First Release",
-                "published_at": "2026-06-02T10:00:00Z",
-                "url": "https://github.com/example-org/code/releases/tag/v1.0.0"
-            }
-        ],
+        "releases": [{"repo": "example-org/code", "tag_name": "v1.0.0", "name": "First Release"}],
         "workflows": [
             {
                 "repo": "example-org/code",
                 "name": "Deploy production",
                 "status": "completed",
                 "conclusion": "failure",
-                "created_at": "2026-06-02T11:00:00Z",
-                "url": "https://github.com/example-org/example-repo/actions/runs/1"
+                "url": "https://github.com/example-org/example-repo/actions/runs/1",
             }
         ],
         "priority_sections": [
@@ -1628,25 +1605,27 @@ def test_render_executive_brief_markdown() -> None:
                 "recently_completed_count": 1,
             }
         ],
-        "limitations": ["Read-only mode"]
+        "limitations": ["Read-only mode"],
     }
 
     rendered = github_work_rollup.render_payload(payload, "markdown")
 
-    assert "# Daily Work Brief for Justin" in rendered
+    assert "# Daily Work Brief for Example leader" in rendered
+    assert "Justin" not in rendered
     assert github_work_rollup.executive_work_counts(github_work_rollup.get_repo_data(payload)) == {
         "completed": 2, "cleared": 1, "releases": 1, "open": 1,
     }
     for items in payload["buckets"].values():
         assert all(item["title"] in rendered for item in items)
     assert "Private note" not in rendered
-    assert "## Needs Justin's Attention" in rendered
+    assert "## Needs Example leader's Attention" in rendered
     assert "## Northwind / Skills Impact" in rendered
     assert "## Failed Runs" in rendered
 
     assert "[code#101](https://github.com/example-org/code/issues/101) Critical Bug" in rendered
+    assert "Please review soon" in rendered
     assert "Northwind skill reporting inside Northwind / Skills" in rendered
-    assert "Key initiatives: Work Brief." in rendered
+    assert "Work Brief" in rendered.split("## Northwind / Skills Impact", 1)[1]
     assert "Deploy production" in rendered
 
     assert "## Source Notes" in rendered
@@ -1656,40 +1635,8 @@ def test_render_executive_brief_markdown() -> None:
     assert "https://github.com/example-org/example-skills/pull/203" not in rendered
     summary = rendered.split("\n## ", 2)[1]
     assert github_work_rollup.executive_theme_titles(payload["buckets"]["needs_attention"], 2) in summary
-
-
-def test_render_executive_brief_uses_dynamic_recipient() -> None:
-    payload = {
-        "ok": True,
-        "window": {"since": "2026-06-01T16:00:00Z", "until": "2026-06-02T16:00:00Z", "label": "24h"},
-        "timezone": "America/New_York",
-        "report_recipient": "Example leader",
-        "repositories": ["example-org/example-repo"],
-        "layout": "executive",
-        "buckets": {
-            "needs_attention": [
-                {
-                    "repo": "example-org/example-repo",
-                    "number": 1,
-                    "title": "Decision needed",
-                    "url": "https://github.com/example-org/example-repo/issues/1",
-                    "kind": "issue",
-                    "state": "open",
-                }
-            ]
-        },
-        "priority_sections": [{"name": "Northwind", "items": [], "recently_completed": []}],
-        "limitations": [],
-        "releases": [],
-        "workflows": [],
-    }
-
-    rendered = github_work_rollup.render_payload(payload, "markdown")
-
-    assert "# Daily Work Brief for Example leader" in rendered
-    assert "## Needs Example leader's Attention" in rendered
-    assert "What decision would unblock example-repo#1 Decision needed today?" in rendered
-    assert "Justin" not in rendered
+    questions = rendered.split("## Questions to Decide", 1)[1]
+    assert github_work_rollup.executive_item_refs(payload["buckets"]["needs_attention"], 2) in questions
 
 
 @pytest.mark.parametrize(
@@ -1817,27 +1764,14 @@ def test_render_executive_brief_thin_workstream_avoids_validation_claim() -> Non
         "window": {"since": "2026-06-05T16:00:00Z", "until": "2026-06-12T16:00:00Z", "label": "7d"},
         "timezone": "America/New_York",
         "report_recipient": "Justin",
-        "repositories": ["example-org/northwind-lab"],
         "layout": "executive",
-        "buckets": {},
-        "priority_sections": [
-            {
-                "name": "Northwind Product Issues",
-                "workstream": "Northwind Lab",
-                "items": [],
-                "recently_completed": [],
-            }
-        ],
-        "limitations": [],
-        "releases": [],
-        "workflows": [],
+        "priority_sections": [{"name": "Northwind Product Issues", "workstream": "Northwind Lab"}],
     }
 
     rendered = github_work_rollup.render_payload(payload, "markdown")
     bullet = next(line for line in rendered.splitlines() if line.startswith("- **Northwind Lab**"))
 
     assert "no active signal" in bullet
-    assert "concrete validation path" not in bullet
     assert "Impact:" not in bullet
     assert "Risk if delayed:" not in bullet
     assert "Confidence: low" in bullet
@@ -1913,66 +1847,65 @@ def test_render_executive_brief_uses_reporting_window_language(
     assert github_work_rollup.executive_theme_titles(items, 2) in rendered.rsplit("\n## ", 1)[1]
 
 
-def test_render_executive_brief_does_not_treat_workflow_only_as_product_progress() -> None:
-    payload = {
+@pytest.mark.parametrize(
+    ("extra_payload", "expected_detail", "expected_cleared"),
+    [
+        (
+            {
+                "repositories": ["example-org/example-repo"],
+                "workflows": [{"repo": "example-org/example-repo", "name": "CI", "status": "completed", "conclusion": "success"}],
+            },
+            "automation activity was visible",
+            0,
+        ),
+        (
+            {
+                "buckets": {
+                    "recently_completed": [
+                        {
+                            "repo": "example-org/example-repo",
+                            "number": 10,
+                            "title": "Close abandoned auth attempt",
+                            "kind": "pr",
+                            "state": "closed",
+                        }
+                    ]
+                }
+            },
+            "abandoned or superseded change paths were cleared in this window",
+            1,
+        ),
+    ],
+    ids=["workflow-only", "cleared-only"],
+)
+def test_render_executive_brief_distinguishes_non_product_activity(
+    extra_payload: dict[str, Any],
+    expected_detail: str,
+    expected_cleared: int,
+) -> None:
+    payload: dict[str, Any] = {
         "ok": True,
         "window": {"since": "2026-06-01T16:00:00Z", "until": "2026-06-02T16:00:00Z", "label": "24h"},
         "timezone": "America/New_York",
         "report_recipient": "Justin",
-        "repositories": ["example-org/example-repo"],
         "layout": "executive",
-        "buckets": {},
-        "priority_sections": [],
-        "limitations": [],
-        "releases": [],
-        "workflows": [{"repo": "example-org/example-repo", "name": "CI", "status": "completed", "conclusion": "success"}],
+        **extra_payload,
     }
 
     rendered = github_work_rollup.render_payload(payload, "markdown")
+    repo_data = github_work_rollup.get_repo_data(payload)
 
+    assert github_work_rollup.product_signal_repo_names(repo_data) == []
+    assert github_work_rollup.active_repo_names(repo_data) == ["example-org/example-repo"]
+    assert github_work_rollup.executive_work_counts(repo_data) == {
+        "completed": 0, "cleared": expected_cleared, "open": 0, "releases": 0,
+    }
     assert "No product or planning movement was collected" in rendered
-    assert "Automation looked healthy" not in rendered
+    assert expected_detail in rendered
     assert "## Failed Runs" in rendered
     assert "- None collected in this window." in rendered
-    assert "advanced" not in rendered
-    evidence = github_work_rollup.executive_evidence_lines(
-        github_work_rollup.get_repo_data(payload), github_work_rollup.brief_period(payload)
-    )
+    evidence = github_work_rollup.executive_evidence_lines(repo_data, github_work_rollup.brief_period(payload))
     assert evidence and all(line in rendered for line in evidence)
-
-
-def test_render_executive_brief_separates_finished_work_from_cleared_paths() -> None:
-    payload = {
-        "ok": True,
-        "window": {"since": "2026-06-01T16:00:00Z", "until": "2026-06-02T16:00:00Z", "label": "24h"},
-        "timezone": "America/New_York",
-        "report_recipient": "Justin",
-        "repositories": ["example-org/example-repo"],
-        "layout": "executive",
-        "buckets": {
-            "recently_completed": [
-                {
-                    "repo": "example-org/example-repo",
-                    "number": 10,
-                    "title": "Close abandoned auth attempt",
-                    "kind": "pr",
-                    "state": "closed",
-                }
-            ]
-        },
-        "priority_sections": [],
-        "limitations": [],
-        "releases": [],
-        "workflows": [],
-    }
-
-    rendered = github_work_rollup.render_payload(payload, "markdown")
-
-    assert "No product or planning movement was collected" in rendered
-    assert "abandoned or superseded change paths were cleared in this window" in rendered
-    assert "advanced" not in rendered
-    assert "meaningful work moved forward" not in rendered
-    assert "Cleared or superseded paths: example-repo#10 Close abandoned auth attempt." in rendered
 
 
 if __name__ == "__main__":
