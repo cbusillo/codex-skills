@@ -128,6 +128,23 @@ def review_document(pr: dict[str, Any], **overrides: Any) -> dict[str, Any]:
     }
 
 
+def _check_summary(**overrides: Any) -> dict[str, Any]:
+    return {
+        "checkRunCount": 0,
+        "statusCount": 0,
+        "failingCount": 0,
+        "pendingCount": 0,
+        "countsComplete": True,
+        "countsAreLowerBounds": False,
+        "unavailableComponents": [],
+        **overrides,
+    }
+
+
+def _snapshot_args(state_file: Path, **overrides: Any) -> argparse.Namespace:
+    return argparse.Namespace(**{"pr": "123", "repo": None, "state_file": str(state_file), "max_flaky_retries": 3, **overrides})
+
+
 class ReviewReader:
     def __init__(self, body=None, *, degraded_reasons=None):
         self.body = body
@@ -330,18 +347,7 @@ def test_pr_helper_json_accepts_partial_check_envelope(monkeypatch):
 
 
 def test_mismatched_check_head_never_becomes_terminal_or_reruns(monkeypatch):
-    payload = {
-        "headSha": "c" * 40,
-        "summary": {
-            "checkRunCount": 0,
-            "statusCount": 0,
-            "failingCount": 0,
-            "pendingCount": 0,
-            "countsComplete": True,
-            "countsAreLowerBounds": False,
-            "unavailableComponents": [],
-        },
-    }
+    payload = {"headSha": "c" * 40, "summary": _check_summary()}
 
     summary = gh_pr_watch.summarize_checks(payload, expected_head_sha="b" * 40)
 
@@ -383,19 +389,8 @@ def test_mismatched_check_head_never_becomes_terminal_or_reruns(monkeypatch):
     ],
 )
 def test_each_incomplete_check_axis_fails_closed(summary_overrides):
-    summary = {
-        "checkRunCount": 0,
-        "statusCount": 0,
-        "failingCount": 0,
-        "pendingCount": 0,
-        "countsComplete": True,
-        "countsAreLowerBounds": False,
-        "unavailableComponents": [],
-        **summary_overrides,
-    }
-
     checks = gh_pr_watch.summarize_checks(
-        {"headSha": "b" * 40, "summary": summary},
+        {"headSha": "b" * 40, "summary": _check_summary(**summary_overrides)},
         expected_head_sha="b" * 40,
     )
 
@@ -724,14 +719,7 @@ def test_collect_snapshot_fetches_review_items_before_ci(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(gh_pr_watch, "save_state", lambda *args, **kwargs: None)
 
-    watcher_args = argparse.Namespace(
-        pr="123",
-        repo=None,
-        state_file=str(tmp_path / "watcher-state.json"),
-        max_flaky_retries=3,
-    )
-
-    gh_pr_watch.collect_snapshot(watcher_args)
+    gh_pr_watch.collect_snapshot(_snapshot_args(tmp_path / "watcher-state.json"))
 
     assert call_order.index("review") < call_order.index("checks")
     assert call_order.index("review") < call_order.index("workflow")
@@ -750,11 +738,9 @@ def test_unstarted_workflow_run_keeps_green_checks_from_becoming_ready(monkeypat
         "pull_request_checks",
         lambda *args, **kwargs: {
             "headSha": pr["head_sha"],
-            "summary": {
-                "checkRunCount": 8, "statusCount": 0, "failingCount": 0, "pendingCount": 0,
-                "countsComplete": True, "countsAreLowerBounds": False, "unavailableComponents": [],
-                "unfinishedWorkflowRunCount": int(runs[1]["status"] != "completed"),
-            },
+            "summary": _check_summary(
+                checkRunCount=8, unfinishedWorkflowRunCount=int(runs[1]["status"] != "completed")
+            ),
         },
     )
     runs = [
@@ -766,18 +752,14 @@ def test_unstarted_workflow_run_keeps_green_checks_from_becoming_ready(monkeypat
     monkeypatch.setattr(gh_pr_watch, "failed_jobs_from_workflow_runs", lambda *args, **kwargs: [])
     monkeypatch.setattr(gh_pr_watch, "save_state", lambda *args, **kwargs: None)
 
-    snapshot, _ = gh_pr_watch.collect_snapshot(argparse.Namespace(
-        pr="123", repo=None, state_file=str(tmp_path / "state.json"), max_flaky_retries=3
-    ))
+    snapshot, _ = gh_pr_watch.collect_snapshot(_snapshot_args(tmp_path / "state.json"))
 
     assert snapshot["checks"]["all_terminal"] is False
     assert snapshot["checks"]["unfinished_workflow_run_count"] == 1
     assert "ready_to_merge" not in snapshot["actions"]
 
     runs[1].update(status="completed", conclusion="success")
-    snapshot, _ = gh_pr_watch.collect_snapshot(argparse.Namespace(
-        pr="123", repo=None, state_file=str(tmp_path / "state.json"), max_flaky_retries=3
-    ))
+    snapshot, _ = gh_pr_watch.collect_snapshot(_snapshot_args(tmp_path / "state.json"))
 
     assert snapshot["checks"]["all_terminal"] is True
     assert snapshot["actions"] == ["ready_to_merge"]
@@ -806,9 +788,7 @@ def test_collect_snapshot_emits_review_request_and_session_degradation(monkeypat
         }, reader.requests[-1]),
     )
 
-    snapshot, _ = gh_pr_watch.collect_snapshot(argparse.Namespace(
-        pr="123", repo=None, state_file=str(tmp_path / "state.json"), max_flaky_retries=3
-    ))
+    snapshot, _ = gh_pr_watch.collect_snapshot(_snapshot_args(tmp_path / "state.json"))
     review_diagnostic = snapshot["read_diagnostics"]["review"]
     assert review_diagnostic["request"] == reader.requests[-1]
     assert review_diagnostic["readiness"] == {
@@ -819,64 +799,36 @@ def test_collect_snapshot_emits_review_request_and_session_degradation(monkeypat
     assert snapshot["minimum_poll_seconds"] == 90
 
 
-def test_fetch_new_review_items_surfaces_unknown_external_human(monkeypatch):
-    external_comment = {
+@pytest.mark.parametrize(
+    ("login", "association", "body", "expected"),
+    [
+        pytest.param("new-contributor", "NONE", "I can help test this.", [("new-contributor", "NONE")], id="unknown-external-human"),
+        pytest.param("fixture-automation", "COLLABORATOR", "Completed through PR #123.", [], id="own-automation"),
+    ],
+)
+def test_fetch_new_review_items_filters_by_comment_author(
+    monkeypatch: pytest.MonkeyPatch, login: str, association: str, body: str, expected: list[tuple[str, str]],
+) -> None:
+    comment = {
         "id": 10,
-        "user": {"login": "new-contributor"},
-        "author_association": "NONE",
+        "user": {"login": login},
+        "author_association": association,
         "created_at": "2026-07-26T12:00:00Z",
-        "body": "I can help test this.",
+        "body": body,
         "html_url": "https://github.com/openai/codex/pull/123#issuecomment-10",
     }
 
-    def fake_api(endpoint, repo=None):
+    def fake_api(endpoint: str, repo: str | None = None) -> list[dict[str, Any]]:
         assert repo == "openai/codex"
         if endpoint.endswith("/issues/123/comments"):
-            return [external_comment]
+            return [comment]
         return []
 
     monkeypatch.setattr(gh_pr_watch, "gh_api_list_paginated", fake_api)
 
-    state = {}
-    items = gh_pr_watch.fetch_new_review_items(
-        sample_pr(),
-        state,
-        fresh_state=True,
-        authenticated_login="fixture-automation",
-    )
+    items = gh_pr_watch.fetch_new_review_items(sample_pr(), {}, fresh_state=True, authenticated_login="fixture-automation")
 
-    assert [(item["author"], item["author_association"]) for item in items] == [
-        ("new-contributor", "NONE")
-    ]
-
-
-def test_fetch_new_review_items_ignores_own_automation_comment(monkeypatch):
-    automation_comment = {
-        "id": 10,
-        "user": {"login": "fixture-automation"},
-        "author_association": "COLLABORATOR",
-        "created_at": "2026-07-26T12:00:00Z",
-        "body": "Completed through PR #123.",
-        "html_url": "https://github.com/openai/codex/pull/123#issuecomment-10",
-    }
-
-    def fake_api(endpoint, repo=None):
-        assert repo == "openai/codex"
-        if endpoint.endswith("/issues/123/comments"):
-            return [automation_comment]
-        return []
-
-    monkeypatch.setattr(gh_pr_watch, "gh_api_list_paginated", fake_api)
-
-    assert (
-        gh_pr_watch.fetch_new_review_items(
-            sample_pr(),
-            {},
-            fresh_state=True,
-            authenticated_login="fixture-automation",
-        )
-        == []
-    )
+    assert [(item["author"], item["author_association"]) for item in items] == expected
 
 
 SUPERVISOR_APP = "fixture-app[bot]"
@@ -1376,11 +1328,8 @@ def pending_snapshot():
 def test_wait_ci_empty_inventory_requires_explicit_complete_ci_free_case(
     monkeypatch, summary_change, allow_no_checks,
 ):
-    summary = {"pendingCount": 0, "failingCount": 0, "checkRunCount": 0,
-               "statusCount": 0, "countsComplete": True, "countsAreLowerBounds": False,
-               "unavailableComponents": [], **summary_change}
     pr = sample_pr()
-    checks = gh_pr_watch.summarize_checks({"headSha": pr["head_sha"], "summary": summary}, pr["head_sha"])
+    checks = gh_pr_watch.summarize_checks({"headSha": pr["head_sha"], "summary": _check_summary(**summary_change)}, pr["head_sha"])
     snapshot = {**pending_snapshot(), "checks": checks}
     clock, events = wait_ci_harness(monkeypatch, [snapshot] * 4)
     args = argparse.Namespace(poll_seconds=60, max_wait_seconds=60, allow_no_checks=allow_no_checks)
@@ -1769,17 +1718,7 @@ def test_watch_main_emits_structured_read_error(monkeypatch, watcher_transport, 
 @pytest.mark.parametrize("entrypoint", ["reader", "main"])
 def test_watcher_auth_failure_does_not_fall_back_inside_wrapper(monkeypatch, tmp_path, capsys, status, message, cause, entrypoint):
     """Run the real credential wrapper with a fake gh, never real credentials."""
-    for name in ("GITHUB_APP_ID", "GITHUB_APP_INSTALLATION_ID", "GITHUB_APP_PRIVATE_KEY_PATH",
-                 "GH_TOKEN", "GITHUB_TOKEN", "GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK",
-                 "GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH", "GH_PR_WATCH_GH",
-                 "GH_WITH_ENV_TOKEN_OWN_USER", "GH_WITH_ENV_TOKEN_CLASSIFIER",
-                 "GH_WITH_ENV_TOKEN_IDENTITY_HELPER", "GITHUB_RETRY_DEADLINE_AT"):
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(gh_pr_watch, "GH_COMMAND", str(gh_pr_watch.DEFAULT_GH))
     monkeypatch.setattr(gh_pr_watch, "PR_HELPER", str(gh_pr_watch.DEFAULT_PR_HELPER))
-    monkeypatch.setenv("CODEX_AUTOMATION_LOGIN", "fixture-bot")
-    monkeypatch.setenv("CODEX_GITHUB_TOKEN", "offline-fixture-token")
-    monkeypatch.setenv("GH_WITH_ENV_TOKEN_PYTHON", sys.executable)
     monkeypatch.setenv("GITHUB_RETRY_MAX_ATTEMPTS", "4")
     call_log = tmp_path / "gh-calls"
     monkeypatch.setenv("WATCHER_FIXTURE_CALL_LOG", str(call_log))
@@ -1795,8 +1734,7 @@ def test_watcher_auth_failure_does_not_fall_back_inside_wrapper(monkeypatch, tmp
         f"printf 'gh: HTTP {status}\\n' >&2\nexit 1\n",
         encoding="utf-8",
     )
-    fake_gh.chmod(0o700)
-    monkeypatch.setenv("GH_WITH_ENV_TOKEN_GH", str(fake_gh))
+    _offline_credential_wrapper(monkeypatch, fake_gh)
     if entrypoint == "reader":
         reader = gh_pr_watch.watcher_reader()
         with pytest.raises(gh_pr_watch.github_read.GitHubReadError) as raised:
@@ -2053,6 +1991,39 @@ def test_resolved_comments_do_not_replay_after_graphql_failure(monkeypatch):
     assert "resolve_review_threads" in gh_pr_watch.recommend_actions(pr, sample_checks(), [], [], [], 0, 3)
 
 
+def _offline_credential_wrapper(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_gh: Path,
+    *,
+    login: str | None = "fixture-bot",
+    token: str | None = "offline-fixture-token",
+) -> None:
+    for name in ("GITHUB_APP_ID", "GITHUB_APP_INSTALLATION_ID", "GITHUB_APP_PRIVATE_KEY_PATH",
+                 "GH_TOKEN", "GITHUB_TOKEN", "CODEX_GITHUB_TOKEN", "CODEX_AUTOMATION_LOGIN",
+                 "GH_WITH_ENV_TOKEN_EXPECTED_LOGIN", "GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK",
+                 "GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH", "GH_PR_WATCH_GH",
+                 "GH_WITH_ENV_TOKEN_OWN_USER", "GH_WITH_ENV_TOKEN_CLASSIFIER",
+                 "GH_WITH_ENV_TOKEN_IDENTITY_HELPER", "GITHUB_RETRY_DEADLINE_AT"):
+        monkeypatch.delenv(name, raising=False)
+    if login is not None:
+        monkeypatch.setenv("CODEX_AUTOMATION_LOGIN", login)
+    if token is not None:
+        monkeypatch.setenv("CODEX_GITHUB_TOKEN", token)
+    monkeypatch.setenv("GH_WITH_ENV_TOKEN_PYTHON", sys.executable)
+    fake_gh.chmod(0o700)
+    monkeypatch.setenv("GH_WITH_ENV_TOKEN_GH", str(fake_gh))
+    monkeypatch.setattr(gh_pr_watch, "GH_COMMAND", str(gh_pr_watch.DEFAULT_GH))
+
+
+def _kill_command_group(pid_file: Path) -> None:
+    if not pid_file.exists():
+        return
+    try:
+        os.killpg(int(pid_file.read_text()), gh_pr_watch.signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
 def mock_pr_discussion(monkeypatch: pytest.MonkeyPatch, *, login: str) -> None:
     monkeypatch.setattr(gh_pr_watch, "get_authenticated_login", lambda *_args, **_kwargs: login)
     monkeypatch.setattr(gh_pr_watch, "fetch_new_review_items", lambda *_args, **_kwargs: [])
@@ -2215,7 +2186,7 @@ def test_snapshot_reconciles_write_intent_before_recommending_retry(monkeypatch,
         runs=[{"id": 1, "head_sha": "abc123", "run_attempt": run_attempt, "status": "completed", "conclusion": "failure"}],
         jobs=[failed_job(1)],
     )
-    args = argparse.Namespace(pr="123", repo=None, state_file=str(path), max_flaky_retries=max_retries)
+    args = _snapshot_args(path, max_flaky_retries=max_retries)
 
     snapshot, _ = gh_pr_watch.collect_snapshot(args)
 
@@ -2317,7 +2288,7 @@ def test_snapshot_cannot_overwrite_retry_intent(monkeypatch, tmp_path):
     finish_read = ctx.Event()
     retry_started = ctx.Event()
     snapshot = {"pr": sample_pr(), "retry_state": {"max_flaky_retries": 3}}
-    args = argparse.Namespace(pr="123", repo=None, state_file=str(path), max_flaky_retries=3)
+    args = _snapshot_args(path)
     monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *a, **kw: sample_pr())
     mocked_snapshot_inputs(monkeypatch, checks=sample_checks(failed_count=1), runs=[], jobs=[], login="octocat")
 
@@ -2679,8 +2650,7 @@ def test_pending_lifecycle_snapshot_and_watch_stop(monkeypatch, tmp_path, outcom
                                  "retries_by_sha": {"abc123": 1}})
     monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *_a, **_kw: sample_pr())
     mocked_snapshot_inputs(monkeypatch, checks=sample_checks(), runs=inventory, jobs=[], login="fixture-bot")
-    args = argparse.Namespace(pr="123", repo=None, state_file=str(path), max_flaky_retries=3,
-                              poll_seconds=60, green_poll_seconds=300)
+    args = _snapshot_args(path, poll_seconds=60, green_poll_seconds=300)
     snapshot, _ = gh_pr_watch.collect_snapshot(args)
     assert action in snapshot["actions"]
     assert "ready_to_merge" not in snapshot["actions"]
@@ -2789,11 +2759,7 @@ def test_hung_command_releases_lock_and_preserves_unknown_intent(monkeypatch, tm
         if worker.is_alive():
             worker.terminate()
             worker.join()
-        if pid_file.exists():
-            try:
-                os.killpg(int(pid_file.read_text()), gh_pr_watch.signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+        _kill_command_group(pid_file)
         results.close()
 
 
@@ -3029,14 +2995,6 @@ def test_confirmation_save_failure_reports_completed_write(monkeypatch, tmp_path
 @pytest.mark.parametrize("failed_stage", ["preflight", "write"])
 def test_real_wrapper_distinguishes_preflight_refusal_from_unknown_write(monkeypatch, tmp_path, failed_stage):
     _, path = retry_snapshot(monkeypatch, tmp_path, [failed_run(1)], [failed_job(1)])
-    for name in ("GITHUB_APP_ID", "GITHUB_APP_INSTALLATION_ID", "GITHUB_APP_PRIVATE_KEY_PATH",
-                 "GH_TOKEN", "GITHUB_TOKEN", "GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK",
-                 "GH_WITH_ENV_TOKEN_OWN_USER", "GH_WITH_ENV_TOKEN_CLASSIFIER",
-                 "GH_WITH_ENV_TOKEN_IDENTITY_HELPER", "GITHUB_RETRY_DEADLINE_AT"):
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("CODEX_AUTOMATION_LOGIN", "fixture-bot")
-    monkeypatch.setenv("CODEX_GITHUB_TOKEN", "offline-fixture-token")
-    monkeypatch.setenv("GH_WITH_ENV_TOKEN_PYTHON", sys.executable)
     monkeypatch.setenv("GITHUB_RETRY_MAX_WAIT_SECONDS", "120")
     calls = tmp_path / "calls"
     command = tmp_path / "fake-gh"
@@ -3047,9 +3005,7 @@ def test_real_wrapper_distinguishes_preflight_refusal_from_unknown_write(monkeyp
                        "    sys.exit(0)\n"
                        "print('HTTP/2 503\\nRetry-After: 70\\ncontent-type: application/json\\n\\n{\"message\":\"Service unavailable\"}')\n"
                        "sys.exit(1)\n")
-    command.chmod(0o700)
-    monkeypatch.setenv("GH_WITH_ENV_TOKEN_GH", str(command))
-    monkeypatch.setattr(gh_pr_watch, "GH_COMMAND", str(gh_pr_watch.DEFAULT_GH))
+    _offline_credential_wrapper(monkeypatch, command)
     monkeypatch.setattr(gh_pr_watch, "COMMAND_TIMEOUT_SECONDS", 5.0)
     result = gh_pr_watch.retry_failed_now(argparse.Namespace())
     actual_calls = calls.read_text().splitlines()
@@ -3175,36 +3131,24 @@ def test_parent_termination_cleans_catchable_commands_and_preserves_unknown(monk
         if worker.is_alive():
             worker.kill()
             worker.join(timeout=2)
-        if pid_file.exists():
-            try:
-                os.killpg(int(pid_file.read_text()), gh_pr_watch.signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+        _kill_command_group(pid_file)
 
 
 @pytest.mark.parametrize("refusal", ["missing_login", "missing_identity", "missing_token", "user_mismatch",
                                     "app_mismatch", "incomplete_app", "app_failure", "malformed_app", "contributor"])
 def test_real_wrapper_prewrite_receipts_release_only_unsent_intent(monkeypatch, tmp_path, refusal):
     _, path = retry_snapshot(monkeypatch, tmp_path, [failed_run(1)], [failed_job(1)])
-    for name in ("GITHUB_APP_ID", "GITHUB_APP_INSTALLATION_ID", "GITHUB_APP_PRIVATE_KEY_PATH",
-                 "GH_TOKEN", "GITHUB_TOKEN", "CODEX_GITHUB_TOKEN", "CODEX_AUTOMATION_LOGIN",
-                 "GH_WITH_ENV_TOKEN_EXPECTED_LOGIN", "GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK",
-                 "GH_WITH_ENV_TOKEN_OWN_USER", "GH_WITH_ENV_TOKEN_CLASSIFIER",
-                 "GH_WITH_ENV_TOKEN_IDENTITY_HELPER", "GITHUB_RETRY_DEADLINE_AT"):
-        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("CODEX_SKILLS_ENV_FILE", str(tmp_path / "missing.env"))
-    if refusal not in {"missing_login", "missing_identity"}:
-        monkeypatch.setenv("CODEX_AUTOMATION_LOGIN", "fixture-bot")
-    if refusal not in {"missing_token", "missing_identity"}:
-        monkeypatch.setenv("CODEX_GITHUB_TOKEN", "offline-fixture-token")
-    monkeypatch.setenv("GH_WITH_ENV_TOKEN_PYTHON", sys.executable)
     calls = tmp_path / "calls"
     command = tmp_path / "fake-gh"
     command.write_text(f"#!{sys.executable}\nimport sys\n"
                        f"open({str(calls)!r}, 'a').write(' '.join(sys.argv[1:]) + '\\n')\n"
                        "print('HTTP/2 200\\ncontent-type: application/json\\n\\n{\"login\":\"other-fixture\"}')\n")
-    command.chmod(0o700)
-    monkeypatch.setenv("GH_WITH_ENV_TOKEN_GH", str(command))
+    _offline_credential_wrapper(
+        monkeypatch, command,
+        login=None if refusal in {"missing_login", "missing_identity"} else "fixture-bot",
+        token=None if refusal in {"missing_token", "missing_identity"} else "offline-fixture-token",
+    )
     if refusal.startswith("app_") or refusal in {"incomplete_app", "malformed_app", "contributor"}:
         monkeypatch.setenv("GITHUB_APP_ID", "1")
         if refusal != "incomplete_app":
@@ -3220,7 +3164,6 @@ def test_real_wrapper_prewrite_receipts_release_only_unsent_intent(monkeypatch, 
         else:
             identity.write_text("print('other-fixture'); print('offline-fixture-token')\n")
         monkeypatch.setenv("GH_WITH_ENV_TOKEN_IDENTITY_HELPER", str(identity))
-    monkeypatch.setattr(gh_pr_watch, "GH_COMMAND", str(gh_pr_watch.DEFAULT_GH))
     result = gh_pr_watch.retry_failed_now(argparse.Namespace())
     assert result["reason"] == "rerun_rejected"
     assert result["not_sent_run_ids"] == [1]
@@ -3360,11 +3303,7 @@ def test_ignored_hangup_keeps_running_command_and_confirms_write(monkeypatch, tm
         if worker.is_alive():
             worker.kill()
             worker.join(timeout=2)
-        if pid_file.exists():
-            try:
-                os.killpg(int(pid_file.read_text()), gh_pr_watch.signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+        _kill_command_group(pid_file)
         results.close()
 
 
@@ -3478,9 +3417,7 @@ def execution_snapshot(monkeypatch, tmp_path, runs, checks, *, allow_no_checks=F
     monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *a, **kw: sample_pr())
     mock_pr_discussion(monkeypatch, login="octocat")
     monkeypatch.setattr(gh_pr_watch, "watcher_reader", lambda **_kwargs: reader)
-    args = argparse.Namespace(pr="123", repo=None, state_file=str(tmp_path / "state.json"), max_flaky_retries=3,
-                              allow_no_checks=allow_no_checks)
-    snapshot, _ = gh_pr_watch.collect_snapshot(args)
+    snapshot, _ = gh_pr_watch.collect_snapshot(_snapshot_args(tmp_path / "state.json", allow_no_checks=allow_no_checks))
     return snapshot, reader
 
 
@@ -4135,11 +4072,7 @@ def test_outside_check_wait_preserves_workflow_retry_admission(
     monkeypatch.setattr(gh_pr_watch, "watcher_reader", lambda **_kwargs: reader)
     writes = []
     monkeypatch.setattr(gh_pr_watch, "gh_text", lambda command_args, **_kw: writes.append(command_args))
-    args = argparse.Namespace(
-        pr="123", repo=None, state_file=str(tmp_path / "state.json"), max_flaky_retries=3,
-    )
-
-    result = gh_pr_watch.retry_failed_now(args)
+    result = gh_pr_watch.retry_failed_now(_snapshot_args(tmp_path / "state.json"))
 
     snapshot = result["snapshot"]
     assert snapshot["checks"]["all_terminal"] is False
