@@ -8,8 +8,9 @@ macOS and its existing Python API; connection failure never authorizes changing
 personal settings.
 
 The launcher owns scoped unattended settings: worker memory and suggestions
-off, native question picker disabled, automatic compaction selected. The
-Director's own settings are unchanged. It merges inline JSON without losing
+off, native question picker disabled, automatic compaction selected. Claude's
+session permission mode is explicitly `auto`. The Director's own settings
+are unchanged. It merges inline JSON without losing
 other keys; settings files retain their private values and relative-rule base.
 Fix required file values through the reported preflight remedy, never by
 rewriting/inlining the file or changing personal settings. Relative settings
@@ -726,6 +727,7 @@ A configured identity failure never switches to that login. The same nonsecret
 configuration selectors are retained for the reader, Supervisor and routine command.
 Shell-only GitHub tokens cannot be copied into a service: use the normal
 `gh auth login` or the existing `local.env` credential route instead.
+Claude starts with `--permission-mode auto` through the supported launcher.
 No hand-written Supervisor configuration, ledger or recipient is needed.
 
 The command creates missing state under the shared Code home's
@@ -1287,7 +1289,11 @@ and appends it as one quoted prompt argument. For example, a launch file can
 contain `cd /absolute/repository && exec codex --remote unix:// -C /absolute/repository`, with the task
 text in the brief file. The supported form is a direct `codex`, `claude` or
 `agy` invocation, optionally preceded by `cd PATH &&` and simple command or
-environment prefixes. `agy` uses its native `--prompt-interactive` option;
+environment prefixes. A Claude launch file can contain
+`cd /absolute/repository && exec claude --permission-mode auto`.
+The launcher supplies auto mode when absent, including old allow-only skip
+flags; conflicting permission modes or bypass flags refuse with an auto-mode remedy.
+`agy` uses its native `--prompt-interactive` option;
 Codex and Claude take one positional prompt after `--`. Keep prompt options
 out of the command file. Shell wrappers, extra commands, trailing shell punctuation
 and shell comments refuse because they may discard the prompt.
@@ -1417,7 +1423,7 @@ launch object, including `file_native`, for the same `register --receipt-file`
 recovery.
 For fresh Google workers, use `--account-provider google --ledger` with the
 same direct interactive `agy` launch.
-The launcher adds session-only `--dangerously-skip-permissions`, so file edits
+For AGY, the launcher adds session-only `--dangerously-skip-permissions`, so file edits
 and commands need no per-action approvals; it does not change saved permissions.
 The shared file-session registrar binds the conversation from a dedicated native
 log to its SQLite transcript and exact

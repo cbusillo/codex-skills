@@ -4,6 +4,7 @@
 # ///
 from __future__ import annotations
 
+import argparse
 import importlib
 import json
 import os
@@ -231,6 +232,11 @@ class SupervisorStartTests(unittest.TestCase):
             self.assertEqual(effective["account"], account)
             if self.args.harness == "codex":
                 self.assertIn(str(supervisor.SCRIPTS / "codex-session.py"), effective["argv"])
+            else:
+                parser = argparse.ArgumentParser(add_help=False)
+                parser.add_argument("--permission-mode", action="append", required=True)
+                options, _ = parser.parse_known_args(effective["argv"])
+                self.assertEqual(options.permission_mode, ["auto"])
             commands.append(words)
             registration = Path(argv[argv.index("--ledger") + 1])
             self.assertNotEqual(registration, ledger)

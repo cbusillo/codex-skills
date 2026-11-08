@@ -231,7 +231,7 @@ def launch_supervisor(args: argparse.Namespace, root: Path, config_path: Path, l
             ]
         )
         + " "
-        + ("codex --remote unix://" if args.harness == "codex" else "claude")
+        + ("codex --remote unix://" if args.harness == "codex" else "claude --permission-mode auto")
         + "\n"
     )
     recovery = (

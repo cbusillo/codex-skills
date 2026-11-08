@@ -474,6 +474,17 @@ def append_brief(command_text, brief):
     words = launch_words(command_text)
     agent = Path(words[0]).name
     if agent == "claude":
+        for index, word in enumerate(words[1:], 1):
+            if (
+                word == "--dangerously-skip-permissions"
+                or word == "--permission-mode"
+                and words[index + 1 : index + 2] != ["auto"]
+                or word.startswith("--permission-mode=")
+                and word != "--permission-mode=auto"
+            ):
+                raise ValueError("Claude launches require --permission-mode auto; remove conflicting permission flags")
+        if not any(word == "--permission-mode" or word.startswith("--permission-mode=") for word in words[1:]):
+            command_text += " --permission-mode auto"
         settings = claude_settings(command_text, words)
         if settings is not None:
             command_text += " --settings " + shlex.quote(json.dumps(settings))
