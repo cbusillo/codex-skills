@@ -203,10 +203,10 @@ def args(**overrides: object) -> argparse.Namespace:
     return argparse.Namespace(**defaults)
 
 
-SCAN_END = datetime(2026, 7, 26, 20, 0, tzinfo=timezone.utc)
+SCAN_END = datetime(2026, 7, 26, 20, tzinfo=timezone.utc)
 
 
-def thread_settings(config: dict[str, object] | None = None, now: datetime = SCAN_END, **overrides: object) -> dict[str, Any]:
+def thread_settings(config: dict[str, Any] | None = None, now: datetime = SCAN_END, **overrides: object) -> dict[str, Any]:
     return github_unanswered_comments.resolve_settings(
         args(**{"thread": ["example/repo#42"], "until": "2026-07-26T20:00:00Z", **overrides}), config or {}, now=now,
     )
@@ -215,8 +215,8 @@ def thread_settings(config: dict[str, object] | None = None, now: datetime = SCA
 def classify(
     comments: list[github_unanswered_comments.Comment],
     candidates: list[github_unanswered_comments.Comment],
-    reactions: dict[tuple[str, int], list[github_unanswered_comments.Reaction] | None] | None = None,
-    discussion: dict[str, object] | None = None,
+    reactions: dict[tuple[str, int], Any] | None = None,
+    discussion: dict[str, Any] | None = None,
 ) -> list[dict[str, object]]:
     reaction_map = reactions if reactions is not None else {candidate.key: [] for candidate in candidates}
     return github_unanswered_comments.comment_states_for_thread(
@@ -235,7 +235,7 @@ def patch_radar(monkeypatch: pytest.MonkeyPatch, name: str, value: Any) -> None:
 
 def patch_thread(
     monkeypatch: pytest.MonkeyPatch,
-    discussion: dict[str, object],
+    discussion: dict[str, Any],
     thread_comments: list[github_unanswered_comments.Comment],
     reactions: dict[tuple[str, int, str, int], list[github_unanswered_comments.Reaction]],
     edits: dict[tuple[str, int, str, int], github_unanswered_comments.Edit] | None = None,
@@ -1112,7 +1112,7 @@ def portfolio_settings(**overrides: object) -> dict[str, object]:
 
 
 def fake_payload(
-    monkeypatch: pytest.MonkeyPatch, routes: dict[str, object], settings_for: Any = portfolio_settings, **overrides: object,
+    monkeypatch: pytest.MonkeyPatch, routes: dict[str, Any], settings_for: Any = portfolio_settings, **overrides: object,
 ) -> dict[str, Any]:
     patch_radar(monkeypatch, "run_json", FakeGitHub(routes))
     return github_unanswered_comments.collect_payload(settings_for(**overrides))
