@@ -5068,43 +5068,100 @@ class ClaimTests(unittest.TestCase):
         self.assertTrue(caught.exception.payload["review_required"])
         self.assert_no_writes()
 
-    def test_sweep_disclaimers_allow_a_fresh_claim(self):
-        for status in SWEEP_DISCLAIMERS:
+    def test_ownership_denials_allow_a_fresh_claim(self) -> None:
+        statuses = (
+            *SWEEP_DISCLAIMERS,
+            BD_SWEEP_STATUS,
+            *format_ownership(SWEEP_DISCLAIMERS[0]),
+            *format_ownership("no implementation ownership is claimed by this sweep."),
+            *(
+                f"Not claimed by {holder}.\n\n{definition}: https://example.com/status"
+                for holder, definition in (
+                    ("[this sweep][Prior Sweep]", "[prior sweep]"),
+                    ("[this sweep][]", "[THIS SWEEP]"),
+                    ("[this sweep]", "[THIS SWEEP]"),
+                )
+            ),
+            *(
+                f"Not claimed by [this sweep]({destination})."
+                for destination in (
+                    "https://example.com/status",
+                    "https://example.com/status_(prior)",
+                    'https://example.com/status "prior sweep"',
+                    "https://example.com/status 'prior sweep'",
+                    "<https://example.com/prior sweep>",
+                    "",
+                )
+            ),
+            "This issue has not been claimed by the sweep.",
+            "Implementation has never been owned by the audit session.",
+            "This task isn't claimed by this sweep.",
+            "This issue is not currently claimed by a worker.",
+            "The repair is no longer owned by the audit session.",
+            "No ownership claimed by this sweep.",
+            "**Scope:** No implementation ownership is claimed by this sweep.",
+            "Current status: No work is claimed by the sweep.",
+            "Sweep note: No implementation ownership is claimed by this sweep.",
+            "* No ownership is claimed by this sweep.",
+            "Worker: nobody\nSession: no one",
+            "Worker: none Session: none",
+            "**Not** claimed by this sweep.",
+            "No longer owned by this sweep.",
+            "No implementation ownership is claimed by the direction sweep.",
+            "Not claimed by this sweep run.",
+            "Unclaimed by this sweep.",
+            "Work remains unowned by the sweep.",
+            "Disowned by this sweep.",
+        )
+        for status in statuses:
             with self.subTest(status=status):
                 self.setUp()
                 self.issue["body"] += "\n" + status
                 self.run_claim()
-                self.assertTrue(self.emitted.call_args.args[0]["ok"])
+                result = self.emitted.call_args.args[0]
+                self.assertTrue(result["ok"])
                 self.assertIn("post", self.events)
+                self.assertIn("metadata_readback", result["completed_steps"])
 
-    def test_real_sweep_statuses_allow_claims_with_markdown(self):
-        for status in (BD_SWEEP_STATUS, SWEEP_DISCLAIMERS[0],
-                       "no implementation ownership is claimed by this sweep."):
-            variants = (status,) if status == BD_SWEEP_STATUS else format_ownership(status)
-            for formatted in variants:
-                with self.subTest(status=formatted):
-                    self.setUp()
-                    self.issue["body"] += "\n" + formatted
+    def test_denials_never_clear_real_ownership(self) -> None:
+        cases = [
+            (BD_SWEEP_STATUS, "legacy", text)
+            for text in format_ownership("Claimed by another-worker\nSession: another-session")
+            if not text.startswith("> ")
+        ]
+        cases += [("", "legacy", text) for text in ("**Claimed by:** another-worker", "**claimed by:** unknown")]
+        cases += [
+            (status, holder, "")
+            for status, holder in product(
+                format_ownership("No implementation ownership is claimed by this sweep."), ("status_marker", "comment")
+            )
+        ]
+        cases += [
+            (SWEEP_DISCLAIMERS[0], holder, "")
+            for holder in ("status_marker", "comment", "legacy_comment", "branch", "worktree", "pr")
+        ]
+        for status, holder, comment in cases:
+            with self.subTest(status=status, holder=holder, comment=comment):
+                self.setUp()
+                if status:
+                    self.issue["body"] += "\n" + status
+                if holder == "legacy":
+                    self.comments = [{"id": 1, "body": comment, "user": {"login": TEST_BOT}}]
+                elif holder == "status_marker":
+                    self.issue["body"] += "\n" + CLAIM.marker(OTHER)
+                elif holder == "comment":
+                    self.compete()
+                elif holder == "legacy_comment":
+                    self.comments = [{"id": 1, "body": "Claimed by another-worker\nSession: another-session"}]
+                elif holder == "branch":
+                    self.inventory["remote_branches"] = ["work/issue-42-other"]
+                elif holder == "worktree":
+                    self.inventory["worktrees"] = [{"branch": "work/issue-42-other", "path": "/retained/repair"}]
+                else:
+                    self.pulls = [{"number": 99, "state": "open", "body": "Fixes #42", "head": {"ref": "work/repair"}}]
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
                     self.run_claim()
-                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
-                    self.assertIn("metadata_readback", self.emitted.call_args.args[0]["completed_steps"])
-
-    def test_formatted_legacy_claim_comments_still_refuse(self):
-        for formatted in format_ownership("Claimed by another-worker\nSession: another-session"):
-            if formatted.startswith("> "):
-                continue
-            with self.subTest(comment=formatted):
-                self.setUp()
-                self.issue["body"] += "\n" + BD_SWEEP_STATUS
-                self.comments = [{"id": 1, "body": formatted, "user": {"login": TEST_BOT}}]
-                with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
-                self.assert_no_writes()
-
-        for comment in ("**Claimed by:** another-worker", "**claimed by:** unknown"):
-            with self.subTest(comment=comment):
-                self.setUp()
-                self.comments = [{"id": 1, "body": comment, "user": {"login": TEST_BOT}}]
-                with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_conflict")
                 self.assert_no_writes()
 
     def test_quote_does_not_claim_on_behalf_of_comment_author(self):
@@ -5115,57 +5172,6 @@ class ClaimTests(unittest.TestCase):
         ]
         self.run_claim()
         self.assertTrue(self.emitted.call_args.args[0]["ok"])
-
-    def test_defined_reference_link_denials_allow_fresh_claim(self):
-        for holder, definition in (("[this sweep][Prior Sweep]", "[prior sweep]"),
-                                   ("[this sweep][]", "[THIS SWEEP]"),
-                                   ("[this sweep]", "[THIS SWEEP]")):
-            with self.subTest(holder=holder):
-                self.setUp()
-                self.issue["body"] += f"\nNot claimed by {holder}.\n\n{definition}: https://example.com/status"
-                self.run_claim()
-                self.assertTrue(self.emitted.call_args.args[0]["ok"])
-
-    def test_linked_denial_preserves_valid_destinations_and_titles(self):
-        for destination in (
-            'https://example.com/status', 'https://example.com/status_(prior)',
-            'https://example.com/status "prior sweep"', "https://example.com/status 'prior sweep'",
-            '<https://example.com/prior sweep>', '',
-        ):
-            with self.subTest(destination=destination):
-                self.setUp()
-                self.issue["body"] += f"\nNot claimed by [this sweep]({destination})."
-                self.run_claim()
-                self.assertTrue(self.emitted.call_args.args[0]["ok"])
-
-    def test_formatted_denial_never_releases_structured_claims(self):
-        for formatted in format_ownership("No implementation ownership is claimed by this sweep."):
-            for source in ("status", "comment"):
-                with self.subTest(status=formatted, source=source):
-                    self.setUp()
-                    self.issue["body"] += "\n" + formatted
-                    if source == "status": self.issue["body"] += "\n" + CLAIM.marker(OTHER)
-                    else: self.compete()
-                    with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
-                    self.assert_no_writes()
-
-    def test_disclaimer_does_not_clear_independent_ownership(self):
-        for source in ("status_marker", "comment", "legacy_comment", "branch", "worktree", "pr"):
-            with self.subTest(source=source):
-                self.setUp()
-                self.issue["body"] += "\n" + SWEEP_DISCLAIMERS[0]
-                if source == "status_marker": self.issue["body"] += "\n" + CLAIM.marker(OTHER)
-                elif source == "comment": self.compete()
-                elif source == "legacy_comment":
-                    self.comments = [{"id": 1, "body": "Claimed by another-worker\nSession: another-session"}]
-                elif source == "branch": self.inventory["remote_branches"] = ["work/issue-42-other"]
-                elif source == "worktree":
-                    self.inventory["worktrees"] = [{"branch": "work/issue-42-other", "path": "/retained/repair"}]
-                else: self.pulls = [{"number": 99, "state": "open", "body": "Fixes #42", "head": {"ref": "work/repair"}}]
-                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
-                    self.run_claim()
-                self.assertEqual(caught.exception.code, "claim_conflict")
-                self.assert_no_writes()
 
     def test_non_ownership_comment_is_not_a_claim_or_release(self):
         for comment in ("Claimed by no one\n\nThe sweep only reconciled stale waits.",
@@ -5201,32 +5207,6 @@ class ClaimTests(unittest.TestCase):
                     self.run_claim()
                     self.assertTrue(self.emitted.call_args.args[0]["ok"])
                     self.assertIn("metadata_readback", self.emitted.call_args.args[0]["completed_steps"])
-
-    def test_common_sweep_negations_and_formatting_allow_fresh_claims(self):
-        for status in (
-            "This issue has not been claimed by the sweep.",
-            "Implementation has never been owned by the audit session.",
-            "This task isn't claimed by this sweep.",
-            "This issue is not currently claimed by a worker.",
-            "The repair is no longer owned by the audit session.",
-            "No ownership claimed by this sweep.",
-            "**Scope:** No implementation ownership is claimed by this sweep.",
-            "Current status: No work is claimed by the sweep.",
-            "Sweep note: No implementation ownership is claimed by this sweep.",
-            "* No ownership is claimed by this sweep.",
-            "Worker: nobody\nSession: no one", "Worker: none Session: none",
-            "**Not** claimed by this sweep.",
-            "No longer owned by this sweep.",
-            "No implementation ownership is claimed by the direction sweep.",
-            "Not claimed by this sweep run.",
-            "Unclaimed by this sweep.", "Work remains unowned by the sweep.",
-            "Disowned by this sweep.",
-        ):
-            with self.subTest(status=status):
-                self.setUp()
-                self.issue["body"] += "\n" + status
-                self.run_claim()
-                self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
     def test_crlf_current_status_supports_structured_and_legacy_recovery(self):
         for structured in (True, False):
