@@ -9494,9 +9494,9 @@ def _domain_inspect(operation: str, after: bool = False) -> dict[str, Any]:
     return response
 
 
-def test_compose_domain_review_apply_and_read_back() -> None:
+def test_compose_domain_review_apply_and_read_back(tmp_path: Path) -> None:
     for operation in ("reconcile-compose-domain", "prune-compose-domain"):
-        with TemporaryDirectory(dir=Path.home()) as directory:
+        with TemporaryDirectory(dir=tmp_path) as directory:
             private: dict[str, Any] = {"context": "example", "instance": "prod", "reason": "Adjust private.example.invalid routes",
                        "domains": ["public.example.invalid"]}
             if operation == "reconcile-compose-domain":
