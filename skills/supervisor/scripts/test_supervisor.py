@@ -4141,7 +4141,6 @@ class TerminalTests(unittest.TestCase):
     def test_missing_window_refuses_without_launch(self):
         app = SimpleNamespace(terminal_windows=[], current_terminal_window=None)
         args = argparse.Namespace(command="new", window_id="missing")
-        # Import is only needed by actual window creation, not target validation.
         with self.assertRaises(ValueError):
             asyncio.run(iterm_tab.operate(app, args))
 
