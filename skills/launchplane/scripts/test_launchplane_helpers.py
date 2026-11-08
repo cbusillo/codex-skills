@@ -2537,11 +2537,10 @@ def test_product_config_secret_copy_keeps_the_source_through_dry_run_apply_and_r
     ]
     calls: list[dict[str, Any]] = []
 
-    def fake_request(**kwargs: Any) -> dict[str, object]:
+    def fake_request(kwargs: dict[str, Any]) -> dict[str, object]:
         calls.append(kwargs)
         return responses[len(calls) - 1]
 
-    settings = {"service_url": "https://launchplane.example.invalid", "token": "t"}
     payload_path = _write_json(tmp_path, "copy.json", _copy_reference_payload())
     apply_argv = [
         "product-config-apply",
@@ -2557,16 +2556,9 @@ def test_product_config_secret_copy_keeps_the_source_through_dry_run_apply_and_r
         apply_argv,
         apply_argv,
     ):
-        output = io.StringIO()
-        with (
-            temporary_attribute(
-                write_action, "prepare_operator_settings", lambda **_kwargs: settings
-            ),
-            temporary_attribute(write_action, "request_launchplane", fake_request),
-            redirect_stdout(output),
-        ):
-            assert write_action.main(argv) == 0, output.getvalue()
-        outputs.append(json.loads(output.getvalue()))
+        status, payload, _posts, _reads = _run_main(argv, post=fake_request)
+        assert status == 0, payload
+        outputs.append(payload)
 
     assert [call["body"]["mode"] for call in calls] == ["dry-run", "apply", "apply"]
     for call in calls:
@@ -3061,7 +3053,6 @@ def _saved_dry_run_output(operation: str, response: dict[str, object]) -> dict[s
 
 
 def test_testing_hold_read_sends_lane_query_and_projects_hold() -> None:
-    calls: list[dict[str, Any]] = []
     response = {
         "status": "accepted",
         "trace_id": "launchplane_req_testing_hold_read",
@@ -3076,38 +3067,17 @@ def test_testing_hold_read_sends_lane_query_and_projects_hold() -> None:
         },
     }
 
-    def fake_read(**kwargs: Any) -> dict[str, Any]:
-        calls.append(kwargs)
-        return response
-
-    settings = {"service_url": "https://launchplane.example.invalid", "token": "t"}
-    output = io.StringIO()
-    with (
-        patch.object(write_action, "prepare_operator_settings", return_value=settings),
-        patch.object(write_action, "request_launchplane_read", side_effect=fake_read),
-        redirect_stdout(output),
-    ):
-        status = write_action.main(
-            ["testing-hold-read", "--product", "example-product", "--context", "example", "--instance", "testing"]
-        )
+    argv = ["testing-hold-read", "--product", "example-product", "--context", "example", "--instance", "testing"]
+    status, payload, calls = _run_product_read(argv, response)
     assert status == 0
     assert calls[0]["path"] == contract.LOCAL_EXTENSION_ROUTES["testing-hold-read"]["path"]
     assert calls[0]["query"] == {"product": "example-product", "context": "example", "instance": "testing"}
-    payload = json.loads(output.getvalue())
     assert payload["result"]["hold"] == {"reason": "Staff are testing."}
 
     response["result"] = {**cast(dict[str, object], response["result"]), "hold": {"reason": "x", "value": "y"}}
-    output = io.StringIO()
-    with (
-        patch.object(write_action, "prepare_operator_settings", return_value=settings),
-        patch.object(write_action, "request_launchplane_read", side_effect=fake_read),
-        redirect_stdout(output),
-    ):
-        status = write_action.main(
-            ["testing-hold-read", "--product", "example-product", "--context", "example", "--instance", "testing"]
-        )
+    status, payload, _calls = _run_product_read(argv, response)
     assert status == 1
-    assert "result" not in json.loads(output.getvalue()) or not json.loads(output.getvalue())["result"]
+    assert not payload.get("result")
 
 
 @pytest.mark.parametrize("purpose", [None, "staff_testing", "isolation_staging"])
@@ -3288,9 +3258,12 @@ def _product_environment_response() -> dict[str, object]:
 
 
 def _run_product_read(
-    argv: list[str], response: object
+    argv: list[str],
+    response: object,
+    *,
+    settings: dict[str, str] | None = None,
 ) -> tuple[int, dict[str, Any], list[dict[str, Any]]]:
-    status, payload, posts, reads = _run_main(argv, read=response, post=AssertionError("unexpected POST"))
+    status, payload, posts, reads = _run_main(argv, read=response, post=AssertionError("unexpected POST"), settings=settings)
     assert not posts
     return status, payload, reads
 
@@ -5705,7 +5678,7 @@ def test_testing_hold_cli_binds_purpose_and_preserves_apply_key(
     evidence_path = tmp_path / "hold.json"
     calls: list[dict[str, Any]] = []
 
-    def fake_post(**kwargs: Any) -> dict[str, object]:
+    def fake_post(kwargs: dict[str, Any]) -> dict[str, object]:
         calls.append(kwargs)
         applying = kwargs["body"]["mode"] == "apply"
         return _testing_hold_response({
@@ -5715,47 +5688,38 @@ def test_testing_hold_cli_binds_purpose_and_preserves_apply_key(
             "reconcile_requested": applying and direction != "set" and purpose == "staff_testing",
         })
 
-    def run(argv: list[str]) -> tuple[int, dict[str, Any]]:
-        output = io.StringIO()
-        with redirect_stdout(output):
-            status = write_action.main(argv)
-        return status, json.loads(output.getvalue())
+    status, evidence, _posts, _reads = _run_main(["testing-hold-dry-run", *lane, *intent, "--purpose", purpose], post=fake_post)
+    assert status == 0
+    evidence_path.write_text(json.dumps(evidence))
+    apply_args = [
+        "testing-hold-apply",
+        *lane,
+        *intent,
+        "--purpose",
+        purpose,
+        *_reviewed_apply_argv(str(plan["plan_sha256"]), str(evidence_path), "original-hold-key"),
+    ]
+    status, receipt, _posts, _reads = _run_main(apply_args, post=fake_post)
+    assert status == 0
+    assert receipt["result"]["reconcile_requested"] == (direction != "set" and purpose == "staff_testing")
+    assert calls[-1]["idempotency_key"] == "original-hold-key"
+    assert all(call["body"].get("purpose", "staff_testing") == purpose for call in calls)
+    if purpose == "staff_testing":
+        # The server fingerprints raw JSON: default staff retries must keep the legacy payload.
+        assert all("purpose" not in call["body"] for call in calls)
+    assert receipt["request"]["purpose"] == evidence["request"]["purpose"]
+    other_purpose = "staff_testing" if purpose == "isolation_staging" else "isolation_staging"
+    mismatched = [other_purpose if value == purpose else value for value in apply_args]
+    previous_calls = len(calls)
+    status, _, _posts, _reads = _run_main(mismatched, post=fake_post)
+    assert status != 0 and len(calls) == previous_calls
 
-    with (
-        patch.object(write_action, "prepare_operator_settings", return_value=SETTINGS),
-        patch.object(write_action, "request_launchplane", side_effect=fake_post),
-    ):
-        status, evidence = run(["testing-hold-dry-run", *lane, *intent, "--purpose", purpose])
-        assert status == 0
+    # Even edited request metadata cannot reinterpret a concrete reviewed hold.
+    if direction != "unchanged":
+        evidence["request"]["purpose"] = other_purpose
         evidence_path.write_text(json.dumps(evidence))
-        apply_args = [
-            "testing-hold-apply", *lane, *intent, "--purpose", purpose,
-            "--reviewed-dry-run", "--expected-plan-digest", str(plan["plan_sha256"]),
-            "--dry-run-evidence-file", str(evidence_path), "--idempotency-key", "original-hold-key",
-        ]
-        status, receipt = run(apply_args)
-        assert status == 0
-        assert receipt["result"]["reconcile_requested"] == (
-            direction != "set" and purpose == "staff_testing"
-        )
-        assert calls[-1]["idempotency_key"] == "original-hold-key"
-        assert all(call["body"].get("purpose", "staff_testing") == purpose for call in calls)
-        if purpose == "staff_testing":
-            # The server fingerprints raw JSON: default staff retries must keep the legacy payload.
-            assert all("purpose" not in call["body"] for call in calls)
-        assert receipt["request"]["purpose"] == evidence["request"]["purpose"]
-        other_purpose = "staff_testing" if purpose == "isolation_staging" else "isolation_staging"
-        mismatched = [other_purpose if value == purpose else value for value in apply_args]
-        previous_calls = len(calls)
-        status, _ = run(mismatched)
+        status, _, _posts, _reads = _run_main(mismatched, post=fake_post)
         assert status != 0 and len(calls) == previous_calls
-
-        # Even edited request metadata cannot reinterpret a concrete reviewed hold.
-        if direction != "unchanged":
-            evidence["request"]["purpose"] = other_purpose
-            evidence_path.write_text(json.dumps(evidence))
-            status, _ = run(mismatched)
-            assert status != 0 and len(calls) == previous_calls
 
 
 SERVICE_SETTING_VALUE = '{"synthetic-execution-host":5368709120}'
@@ -7269,7 +7233,7 @@ def test_expected_config_review_binds_metadata_and_never_prints_owner_instructio
         payload_path.write_text(json.dumps(body))
         calls: list[dict[str, Any]] = []
 
-        def post(**kwargs: Any) -> dict[str, Any]:
+        def post(kwargs: dict[str, Any]) -> dict[str, Any]:
             calls.append(kwargs)
             return {
                 "status": "accepted", "trace_id": "launchplane_req_expected_config",
@@ -7283,39 +7247,41 @@ def test_expected_config_review_binds_metadata_and_never_prints_owner_instructio
                 },
             }
 
-        with (
-            temporary_attribute(write_action, "prepare_operator_settings", lambda **_kwargs: {"service_url": "https://launchplane.example.invalid", "token": "fixture-only"}),
-            temporary_attribute(write_action, "request_launchplane", post),
-        ):
-            output = io.StringIO()
-            with redirect_stdout(output):
-                assert write_action.main(["product-expected-config-dry-run", "--payload-file", str(payload_path)]) == 0
-            evidence = json.loads(output.getvalue())
-            assert "private-account-context" not in output.getvalue()
-            assert "fixture-only" not in output.getvalue()
-            assert evidence["result"]["managed_secret_bindings_added_count"] == 1
-            evidence_path.write_text(output.getvalue())
-            apply_args = ["product-expected-config-apply", "--payload-file", str(payload_path), "--dry-run-evidence-file", str(evidence_path), "--reviewed-dry-run", "--idempotency-key", "example-config-apply"]
-            body["reason"] = "A different reviewed change."
-            payload_path.write_text(json.dumps(body))
-            with redirect_stdout(io.StringIO()):
-                assert write_action.main(apply_args) == 2
-            assert len(calls) == 1, "Changed metadata must not reach the service"
-            body["reason"] = "Configure mail input."
-            payload_path.write_text(json.dumps(body))
-            with redirect_stdout(io.StringIO()):
-                assert write_action.main(apply_args) == 0
-            assert len(calls) == 2
-            assert calls[-1]["path"] == "/v1/product-profiles/expected-config/apply"
-            assert calls[-1]["body"]["mode"] == "apply"
-            assert calls[-1]["body"]["managed_secret_bindings"] == [requirement]
-            requirement["value"] = "must-never-be-metadata"
-            payload_path.write_text(json.dumps(body))
-            output = io.StringIO()
-            with redirect_stdout(output):
-                assert write_action.main(["product-expected-config-dry-run", "--payload-file", str(payload_path)]) == 2
-            assert len(calls) == 2, "Credential values must not reach the metadata endpoint"
-            assert "must-never-be-metadata" not in output.getvalue()
+        settings = {"service_url": "https://launchplane.example.invalid", "token": "fixture-only"}
+        dry_argv = ["product-expected-config-dry-run", "--payload-file", str(payload_path)]
+        status, evidence, _posts, _reads = _run_main(dry_argv, post=post, settings=settings)
+        assert status == 0, evidence
+        assert "private-account-context" not in json.dumps(evidence)
+        assert "fixture-only" not in json.dumps(evidence)
+        assert evidence["result"]["managed_secret_bindings_added_count"] == 1
+        _write_json(directory, "review.json", evidence)
+        apply_args = [
+            "product-expected-config-apply",
+            "--payload-file",
+            str(payload_path),
+            "--dry-run-evidence-file",
+            str(evidence_path),
+            "--reviewed-dry-run",
+            "--idempotency-key",
+            "example-config-apply",
+        ]
+        body["reason"] = "A different reviewed change."
+        payload_path.write_text(json.dumps(body))
+        assert _run_main(apply_args, post=post, settings=settings)[0] == 2
+        assert len(calls) == 1, "Changed metadata must not reach the service"
+        body["reason"] = "Configure mail input."
+        payload_path.write_text(json.dumps(body))
+        assert _run_main(apply_args, post=post, settings=settings)[0] == 0
+        assert len(calls) == 2
+        assert calls[-1]["path"] == "/v1/product-profiles/expected-config/apply"
+        assert calls[-1]["body"]["mode"] == "apply"
+        assert calls[-1]["body"]["managed_secret_bindings"] == [requirement]
+        requirement["value"] = "must-never-be-metadata"
+        payload_path.write_text(json.dumps(body))
+        status, receipt, _posts, _reads = _run_main(dry_argv, post=post, settings=settings)
+        assert status == 2
+        assert len(calls) == 2, "Credential values must not reach the metadata endpoint"
+        assert "must-never-be-metadata" not in json.dumps(receipt)
 
 
 def test_expected_config_removal_shape_is_bound_to_the_request() -> None:
@@ -7342,7 +7308,7 @@ def test_expected_config_removal_shape_is_bound_to_the_request() -> None:
         }
         calls: list[dict[str, Any]] = []
 
-        def post(**kwargs: Any) -> dict[str, Any]:
+        def post(kwargs: dict[str, Any]) -> dict[str, Any]:
             calls.append(kwargs)
             return {
                 "status": "accepted", "trace_id": "launchplane_req_expected_config",
@@ -7350,44 +7316,54 @@ def test_expected_config_removal_shape_is_bound_to_the_request() -> None:
                 "result": {**result, "mode": kwargs["body"]["mode"]},
             }
 
-        def dry_run() -> tuple[int, str]:
-            captured = io.StringIO()
-            with redirect_stdout(captured):
-                status = write_action.main(["product-expected-config-dry-run", "--payload-file", str(payload_path)])
-            return status, captured.getvalue()
+        settings = {"service_url": "https://launchplane.example.invalid", "token": "fixture-only"}
+        dry_argv = ["product-expected-config-dry-run", "--payload-file", str(payload_path)]
+        exit_code, receipt, _posts, _reads = _run_main(dry_argv, post=post, settings=settings)
+        assert exit_code == 0
+        projected = receipt["result"]
+        assert calls[-1]["body"]["remove_runtime_environment_keys"] == [removal]
+        assert projected["runtime_environment_keys_removed_count"] == 1
+        assert projected["managed_secret_bindings_absent_count"] == 1
+        assert projected["managed_secret_bindings_still_bound_count"] == 0
 
-        with (
-            temporary_attribute(write_action, "prepare_operator_settings", lambda **_kwargs: {"service_url": "https://launchplane.example.invalid", "token": "fixture-only"}),
-            temporary_attribute(write_action, "request_launchplane", post),
-        ):
-            exit_code, output = dry_run()
-            assert exit_code == 0
-            projected = json.loads(output)["result"]
-            assert calls[-1]["body"]["remove_runtime_environment_keys"] == [removal]
-            assert projected["runtime_environment_keys_removed_count"] == 1
-            assert projected["managed_secret_bindings_absent_count"] == 1
-            assert projected["managed_secret_bindings_still_bound_count"] == 0
+        # An older service ignores removals and answers with the add-only shape.
+        result["runtime_environment_keys"] = {"added": [], "unchanged": []}
+        result["managed_secret_bindings"] = {"added": [], "unchanged": []}
+        result["summary"] = {
+            key: 0
+            for key in (
+                "runtime_environment_key_add_count",
+                "managed_secret_binding_add_count",
+                "runtime_environment_key_unchanged_count",
+                "managed_secret_binding_unchanged_count",
+            )
+        }
+        exit_code, receipt, _posts, _reads = _run_main(dry_argv, post=post, settings=settings)
+        assert exit_code != 0
+        _write_json(directory, "review.json", receipt)
+        status, _receipt, _posts, _reads = _run_main(
+            [
+                "product-expected-config-apply",
+                "--payload-file",
+                str(payload_path),
+                "--dry-run-evidence-file",
+                str(evidence_path),
+                "--reviewed-dry-run",
+                "--idempotency-key",
+                "example-remove",
+            ],
+            post=post,
+            settings=settings,
+        )
+        assert status == 2
+        assert all(call["body"]["mode"] == "dry-run" for call in calls), "Unverified removal evidence must not apply"
 
-            # An older service ignores removals and answers with the add-only shape.
-            result["runtime_environment_keys"] = {"added": [], "unchanged": []}
-            result["managed_secret_bindings"] = {"added": [], "unchanged": []}
-            result["summary"] = {key: 0 for key in ("runtime_environment_key_add_count", "managed_secret_binding_add_count", "runtime_environment_key_unchanged_count", "managed_secret_binding_unchanged_count")}
-            exit_code, output = dry_run()
-            assert exit_code != 0
-            evidence_path.write_text(output)
-            with redirect_stdout(io.StringIO()):
-                assert write_action.main([
-                    "product-expected-config-apply", "--payload-file", str(payload_path),
-                    "--dry-run-evidence-file", str(evidence_path), "--reviewed-dry-run", "--idempotency-key", "example-remove",
-                ]) == 2
-            assert all(call["body"]["mode"] == "dry-run" for call in calls), "Unverified removal evidence must not apply"
-
-            # An add-only request still requires exactly added/unchanged.
-            del body["remove_runtime_environment_keys"], body["remove_managed_secret_bindings"]
-            body["runtime_environment_keys"] = [removal]
-            payload_path.write_text(json.dumps(body))
-            result["runtime_environment_keys"] = {"added": [removal], "unchanged": [], "removed": [], "absent": []}
-            assert dry_run()[0] != 0
+        # An add-only request still requires exactly added/unchanged.
+        del body["remove_runtime_environment_keys"], body["remove_managed_secret_bindings"]
+        body["runtime_environment_keys"] = [removal]
+        payload_path.write_text(json.dumps(body))
+        result["runtime_environment_keys"] = {"added": [removal], "unchanged": [], "removed": [], "absent": []}
+        assert _run_main(dry_argv, post=post, settings=settings)[0] != 0
 
 
 def test_expected_config_removal_items_are_plain_identities() -> None:
@@ -7476,6 +7452,7 @@ def _run_main(
     *,
     post: object = None,
     read: object = None,
+    settings: dict[str, str] | None = None,
 ) -> tuple[int, dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
     """Run the helper with its HTTP calls replaced; returns status, output, POSTs and GETs."""
     posts: list[dict[str, Any]] = []
@@ -7496,7 +7473,7 @@ def _run_main(
 
     output = io.StringIO()
     with (
-        temporary_attribute(write_action, "prepare_operator_settings", lambda **_kwargs: SETTINGS),
+        temporary_attribute(write_action, "resolve_settings", lambda _args: dict(SETTINGS if settings is None else settings)),
         temporary_attribute(write_action, "request_launchplane", fake_post),
         temporary_attribute(write_action, "request_launchplane_read", fake_read),
         redirect_stdout(output),
@@ -9933,7 +9910,7 @@ def test_privileged_policy_propose_sends_private_envelope_and_only_returns_revie
     }
     calls: list[dict[str, object]] = []
 
-    def post(**kwargs: Any) -> dict[str, object]:
+    def post(kwargs: dict[str, Any]) -> dict[str, object]:
         calls.append(kwargs)
         assert kwargs["path"] == contract.helper_command_path("privileged-policy-propose")
         assert kwargs["body"] == envelope
@@ -9950,35 +9927,13 @@ def test_privileged_policy_propose_sends_private_envelope_and_only_returns_revie
         ):
             response["summary"]["status"] = state
             response["write_status"] = write_status
-            output = io.StringIO()
-            with (
-                patch.object(
-                    write_action,
-                    "resolve_settings",
-                    return_value={
-                        "service_url": service_url,
-                        "token": "private-token",
-                    },
-                ),
-                patch.object(write_action, "request_launchplane", side_effect=post),
-                patch.object(
-                    write_action,
-                    "request_launchplane_read",
-                    side_effect=AssertionError("No import or preflight read"),
-                ),
-                redirect_stdout(output),
-            ):
-                assert (
-                    write_action.main(
-                        [
-                            "privileged-policy-propose",
-                            "--payload-file",
-                            str(payload_path),
-                        ]
-                    )
-                    == 0
-                )
-            payload = json.loads(output.getvalue())
+            status, payload, _posts, reads = _run_main(
+                ["privileged-policy-propose", "--payload-file", str(payload_path)],
+                post=post,
+                read=AssertionError("No import or preflight read"),
+                settings={"service_url": service_url, "token": "private-token"},
+            )
+            assert status == 0 and not reads
             assert payload["status"] == "accepted"
             result = payload["result"]
             assert result["expires_at"] == expected_expiry
@@ -10006,13 +9961,13 @@ def test_privileged_policy_propose_sends_private_envelope_and_only_returns_revie
                 "never-emit-this",
                 str(request_body),
             ):
-                assert private not in output.getvalue()
+                assert private not in json.dumps(payload)
             retirement = request_body.get("workflow_rule_retirement")
             if isinstance(retirement, dict):
                 for private_field in ("policy_record_id", "policy_sha256"):
-                    assert retirement[private_field] not in output.getvalue()
+                    assert retirement[private_field] not in json.dumps(payload)
                 for selection in retirement["selection"]:
-                    assert selection["rule_sha256"] not in output.getvalue()
+                    assert selection["rule_sha256"] not in json.dumps(payload)
     assert calls[0]["body"] == calls[1]["body"]
 
 
@@ -11778,7 +11733,7 @@ def _run_merge_train_proposal(
 ) -> tuple[int, dict[str, Any], list[dict[str, object]]]:
     posted: list[dict[str, object]] = []
 
-    def post(**kwargs: Any) -> dict[str, object]:
+    def post(kwargs: dict[str, Any]) -> dict[str, object]:
         assert kwargs["path"] == contract.helper_command_path("privileged-policy-propose")
         posted.append(kwargs["body"])
         if post_error is not None:
@@ -11799,23 +11754,17 @@ def _run_merge_train_proposal(
             },
         }
 
-    def read(**kwargs: Any) -> dict[str, object]:
+    def read(kwargs: dict[str, Any]) -> dict[str, object]:
         assert kwargs["path"] == contract.helper_command_path("merge-train-policy-read")
         return copy.deepcopy(read_payload)
 
-    output = io.StringIO()
-    with (
-        patch.object(
-            write_action,
-            "resolve_settings",
-            return_value={"service_url": "https://private.example.invalid", "token": "private-token"},
-        ),
-        patch.object(write_action, "request_launchplane", side_effect=post),
-        patch.object(write_action, "request_launchplane_read", side_effect=read),
-        redirect_stdout(output),
-    ):
-        exit_code = write_action.main(argv)
-    return exit_code, json.loads(output.getvalue()), posted
+    exit_code, payload, _posts, _reads = _run_main(
+        argv,
+        post=post,
+        read=read,
+        settings={"service_url": "https://private.example.invalid", "token": "private-token"},
+    )
+    return exit_code, payload, posted
 
 
 def _trusted_automation_argv(change: str, *repositories: str) -> list[str]:
@@ -12027,21 +11976,21 @@ def test_governance_read_uses_get_and_bounds_evidence(tmp_path: Path, availabili
         response["projection"]["requested_target"] = {"repository": "example/repo", "pull_request_number": 42}
         response["projection"]["merge_admission"]["status"] = "admitted_unknown_target"
         response["projection"]["landing_outcome"]["target_status"] = "unknown"
-    output = io.StringIO()
-    with patch.object(write_action, "prepare_operator_settings", return_value={"service_url": "https://service.example.invalid"}), patch.object(
-        write_action, "request_launchplane_read", return_value=response,
-    ) as read, patch.object(write_action, "request_launchplane", side_effect=AssertionError("write attempted")), redirect_stdout(output):
-        status = write_action.main(["governance-projection-read", "--repository", "example/repo", "--base-branch", "main", "--pr", "42"])
+    status, payload, reads = _run_product_read(
+        ["governance-projection-read", "--repository", "example/repo", "--base-branch", "main", "--pr", "42"],
+        response,
+        settings={"service_url": "https://service.example.invalid", "token": "t"},
+    )
     assert status == 0
-    assert read.call_args.kwargs["path"] == contract.helper_command_path("governance-projection-read")
-    assert read.call_args.kwargs["query"] == {"repository": "example/repo", "base_branch": "main", "pull_request_number": "42"}
-    result = json.loads(output.getvalue())["result"]
+    assert reads[0]["path"] == contract.helper_command_path("governance-projection-read")
+    assert reads[0]["query"] == {"repository": "example/repo", "base_branch": "main", "pull_request_number": "42"}
+    result = payload["result"]
     assert result["merge_readiness"]["availability"] == availability
     assert result["merge_readiness"]["state"] == ("blocked_checks" if availability == "available" else None)
     assert result["merge_admission"]["record"]["admission_id"] == "admission-fixture"
     assert result["landing_outcome"]["record"]["outcome_id"] == "outcome-fixture"
     assert result["landing_outcome"]["record"]["merge_commit_sha"] == "a" * 40
-    assert "do-not-print" not in output.getvalue()
+    assert "do-not-print" not in json.dumps(payload)
     assert result["authorizes"] == [] and result["authoritative"] is False
 
 
