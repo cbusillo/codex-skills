@@ -17,6 +17,7 @@ import re
 import subprocess
 import sys
 import time
+from copy import deepcopy
 from datetime import UTC, datetime, timezone
 from functools import partial
 from types import SimpleNamespace
@@ -202,14 +203,24 @@ def args(**overrides: object) -> argparse.Namespace:
     return argparse.Namespace(**defaults)
 
 
+SCAN_END = datetime(2026, 7, 26, 20, 0, tzinfo=timezone.utc)
+
+
+def thread_settings(config: dict[str, object] | None = None, now: datetime = SCAN_END, **overrides: object) -> dict[str, Any]:
+    return github_unanswered_comments.resolve_settings(
+        args(**{"thread": ["example/repo#42"], "until": "2026-07-26T20:00:00Z", **overrides}), config or {}, now=now,
+    )
+
+
 def classify(
     comments: list[github_unanswered_comments.Comment],
     candidates: list[github_unanswered_comments.Comment],
     reactions: dict[tuple[str, int], list[github_unanswered_comments.Reaction] | None] | None = None,
+    discussion: dict[str, object] | None = None,
 ) -> list[dict[str, object]]:
     reaction_map = reactions if reactions is not None else {candidate.key: [] for candidate in candidates}
     return github_unanswered_comments.comment_states_for_thread(
-        thread(),
+        discussion if discussion is not None else thread(),
         comments,
         {candidate.key for candidate in candidates},
         {"cbusillo"},
@@ -220,6 +231,22 @@ def classify(
 
 def patch_radar(monkeypatch: pytest.MonkeyPatch, name: str, value: Any) -> None:
     monkeypatch.setattr(github_unanswered_comments, name, value)
+
+
+def patch_thread(
+    monkeypatch: pytest.MonkeyPatch,
+    discussion: dict[str, object],
+    thread_comments: list[github_unanswered_comments.Comment],
+    reactions: dict[tuple[str, int, str, int], list[github_unanswered_comments.Reaction]],
+    edits: dict[tuple[str, int, str, int], github_unanswered_comments.Edit] | None = None,
+    errors: list[dict[str, str]] | None = None,
+    login: str = "fixture-automation",
+) -> None:
+    patch_radar(monkeypatch, "authenticated_login", lambda: login)
+    patch_radar(monkeypatch, "collect_thread", lambda repo, number, _sources=None, _issue_id=None: (
+        deepcopy((discussion, thread_comments, []))))
+    patch_radar(monkeypatch, "collect_candidate_reactions", lambda comments, deadline: (
+        deepcopy((reactions, edits or {}, errors or []))))
 
 
 @pytest.mark.parametrize("state", ["open", "closed"])
@@ -234,18 +261,10 @@ def test_radar_flags_only_comments_without_a_targeted_reply(
                          created_at="2026-07-25T10:30:00Z")
     reply = comment(comment_id=3, author=reply_author, body=f"Yes, please: {answered.url}",
                     created_at="2026-07-25T11:00:00Z")
-    patch_radar(monkeypatch, "authenticated_login", lambda: "fixture-automation")
-    patch_radar(monkeypatch, "collect_thread", lambda repo, number, _sources=None, _issue_id=None: (
-        {**thread(), "state": state, "closed_at": "2026-07-25T09:00:00Z" if state == "closed" else None},
-        [answered, unanswered, reply], [],
-    ))
-    patch_radar(monkeypatch, "collect_candidate_reactions", lambda comments, deadline: (
-        {answered.global_key: [], unanswered.global_key: []}, {}, [],
-    ))
-    settings = github_unanswered_comments.resolve_settings(
-        args(thread=["example/repo#42"], self_login=["cbusillo"], bot_login=["fixture-automation"],
-             until="2026-07-26T20:00:00Z", include_handled=True, people_index=people_index(tmp_path)), {},
-    )
+    patch_thread(monkeypatch, {**thread(), "state": state, "closed_at": "2026-07-25T09:00:00Z" if state == "closed" else None},
+                 [answered, unanswered, reply], {answered.global_key: [], unanswered.global_key: []})
+    settings = thread_settings(self_login=["cbusillo"], bot_login=["fixture-automation"], include_handled=True,
+                               people_index=people_index(tmp_path))
 
     payload = github_unanswered_comments.collect_payload(settings)
 
@@ -511,14 +530,7 @@ def test_bot_inline_reply_handles_comment_without_owner_awareness() -> None:
         in_reply_to_id=10,
     )
 
-    [result] = github_unanswered_comments.comment_states_for_thread(
-        {**thread(), "pull_request": {}},
-        [external, response],
-        {external.key},
-        {"cbusillo"},
-        {"fixture-automation"},
-        {external.key: []},
-    )
+    [result] = classify([external, response], [external], discussion={**thread(), "pull_request": {}})
 
     assert result["attention_state"] == "handled"
 
@@ -548,14 +560,7 @@ def test_inline_reply_does_not_clear_multiple_external_comments_in_same_thread()
         in_reply_to_id=10,
     )
 
-    results = github_unanswered_comments.comment_states_for_thread(
-        {**thread(), "pull_request": {}},
-        [first, second, response],
-        {first.key, second.key},
-        {"cbusillo"},
-        {"fixture-automation"},
-        {first.key: [], second.key: []},
-    )
+    results = classify([first, second, response], [first, second], discussion={**thread(), "pull_request": {}})
 
     assert {result["attention_state"] for result in results} == {"needs_your_eyes"}
 
@@ -828,7 +833,7 @@ def test_resolve_repositories_does_not_fallback_after_empty_owner_scope(monkeypa
     settings = github_unanswered_comments.resolve_settings(
         args(repo_owner=["missing-owner"], outbound=outbound),
         {},
-        now=datetime(2026, 7, 26, 20, 0, tzinfo=timezone.utc),
+        now=SCAN_END,
     )
 
     if outbound:
@@ -847,7 +852,7 @@ def test_resolve_repositories_marks_owner_limit_as_incomplete(monkeypatch) -> No
     settings = github_unanswered_comments.resolve_settings(
         args(repo_owner=["example"], limit_repos=1),
         {},
-        now=datetime(2026, 7, 26, 20, 0, tzinfo=timezone.utc),
+        now=SCAN_END,
     )
 
     with pytest.raises(github_unanswered_comments.rollup.RollupError, match="coverage is incomplete"):
@@ -855,11 +860,6 @@ def test_resolve_repositories_marks_owner_limit_as_incomplete(monkeypatch) -> No
 
 
 def test_full_history_thread_includes_old_review_body(monkeypatch) -> None:
-    settings = github_unanswered_comments.resolve_settings(
-        args(thread=["example/repo#42"], until="2026-07-26T20:00:00Z"),
-        {},
-        now=datetime(2026, 7, 26, 20, 0, tzinfo=timezone.utc),
-    )
     old_review = comment(
         comment_id=80,
         author="outside-reviewer",
@@ -867,19 +867,9 @@ def test_full_history_thread_includes_old_review_body(monkeypatch) -> None:
         created_at="2026-05-01T12:00:00Z",
         kind="review",
     )
-    monkeypatch.setattr(github_unanswered_comments, "authenticated_login", lambda: "fixture-automation")
-    monkeypatch.setattr(
-        github_unanswered_comments,
-        "collect_thread",
-        lambda repo, number, _sources=None, _issue_id=None: ({**thread(), "pull_request": {}}, [old_review], []),
-    )
-    monkeypatch.setattr(
-        github_unanswered_comments,
-        "collect_candidate_reactions",
-        lambda comments, deadline: ({old_review.global_key: []}, {}, []),
-    )
+    patch_thread(monkeypatch, {**thread(), "pull_request": {}}, [old_review], {old_review.global_key: []})
 
-    payload = github_unanswered_comments.collect_payload(settings)
+    payload = github_unanswered_comments.collect_payload(thread_settings())
 
     assert payload["coverage"]["full_history_thread_count"] == 1
     assert payload["counts"]["needs_your_eyes"] == 1
@@ -887,11 +877,6 @@ def test_full_history_thread_includes_old_review_body(monkeypatch) -> None:
 
 
 def test_graphql_last_edit_reopens_review_body_after_reaction(monkeypatch) -> None:
-    settings = github_unanswered_comments.resolve_settings(
-        args(thread=["example/repo#42"], until="2026-07-26T20:00:00Z"),
-        {},
-        now=datetime(2026, 7, 26, 20, 0, tzinfo=timezone.utc),
-    )
     review = comment(
         comment_id=80,
         author="outside-reviewer",
@@ -899,39 +884,23 @@ def test_graphql_last_edit_reopens_review_body_after_reaction(monkeypatch) -> No
         created_at="2026-07-25T12:00:00Z",
         kind="review",
     )
-    monkeypatch.setattr(github_unanswered_comments, "authenticated_login", lambda: "fixture-automation")
-    monkeypatch.setattr(
-        github_unanswered_comments,
-        "collect_thread",
-        lambda repo, number, _sources=None, _issue_id=None: ({**thread(), "pull_request": {}}, [review], []),
-    )
-    monkeypatch.setattr(
-        github_unanswered_comments,
-        "collect_candidate_reactions",
-        lambda comments, deadline: (
-            {review.global_key: [reaction(created_at="2026-07-25T13:00:00Z")]},
-            {review.global_key: github_unanswered_comments.Edit("2026-07-25T14:00:00Z", "outside-reviewer")},
-            [],
-        ),
-    )
+    patch_thread(monkeypatch, {**thread(), "pull_request": {}}, [review],
+                 {review.global_key: [reaction(created_at="2026-07-25T13:00:00Z")]},
+                 edits={review.global_key: github_unanswered_comments.Edit("2026-07-25T14:00:00Z", "outside-reviewer")})
 
-    payload = github_unanswered_comments.collect_payload(settings)
+    payload = github_unanswered_comments.collect_payload(thread_settings())
 
     assert payload["attention"][0]["attention_state"] == "needs_your_eyes"
 
 
 def test_no_cutoff_classifies_comments_fetched_after_the_scan_end(monkeypatch) -> None:
-    def payload(**overrides: object) -> dict[str, Any]:
-        settings = github_unanswered_comments.resolve_settings(
-            args(thread=["example/repo#42"], **overrides), {}, now=datetime(2026, 7, 25, 18, tzinfo=timezone.utc))
+    def payload(**overrides: Any) -> dict[str, Any]:
+        settings = thread_settings(now=datetime(2026, 7, 25, 18, tzinfo=timezone.utc), until=None, **overrides)
         return github_unanswered_comments.collect_payload(settings)
     reply = comment(comment_id=1, author="fixture-automation", body="Send it whenever.", created_at="2026-07-25T17:00:00Z")
     posted = comment(comment_id=2, author="outside-user", body="Correction: use the new sheet.",
                      created_at="2026-07-25T18:00:01Z")
-    monkeypatch.setattr(github_unanswered_comments, "authenticated_login", lambda: "fixture-automation")
-    patch_radar(monkeypatch, "collect_thread", lambda repo, number, _sources=None, _issue_id=None: (thread(), [reply, posted], []))
-    monkeypatch.setattr(github_unanswered_comments, "collect_candidate_reactions",
-                        lambda comments, deadline: ({posted.global_key: []}, {}, []))
+    patch_thread(monkeypatch, thread(), [reply, posted], {posted.global_key: []})
 
     assert payload()["attention"] == []
     [row] = payload(no_cutoff=True)["attention"]
@@ -940,26 +909,15 @@ def test_no_cutoff_classifies_comments_fetched_after_the_scan_end(monkeypatch) -
 
 
 def test_reaction_failure_degrades_and_keeps_comment_visible(monkeypatch) -> None:
-    settings = github_unanswered_comments.resolve_settings(
-        args(thread=["example/repo#42"], until="2026-07-26T20:00:00Z"),
-        {},
-        now=datetime(2026, 7, 26, 20, 0, tzinfo=timezone.utc),
-    )
     external = comment(
         comment_id=1,
         author="outside-user",
         body="A useful suggestion.",
         created_at="2026-07-25T14:59:27Z",
     )
-    monkeypatch.setattr(github_unanswered_comments, "authenticated_login", lambda: "fixture-automation")
-    patch_radar(monkeypatch, "collect_thread", lambda repo, number, _sources=None, _issue_id=None: (thread(), [external], []))
-    monkeypatch.setattr(
-        github_unanswered_comments,
-        "collect_candidate_reactions",
-        lambda comments, deadline: ({}, {}, [{"repo": "example/repo", "lane": "reactions", "error": "denied"}]),
-    )
+    patch_thread(monkeypatch, thread(), [external], {}, errors=[{"repo": "example/repo", "lane": "reactions", "error": "denied"}])
 
-    payload = github_unanswered_comments.collect_payload(settings)
+    payload = github_unanswered_comments.collect_payload(thread_settings())
 
     assert payload["status"] == "degraded"
     assert payload["attention"][0]["attention_state"] == "coverage_unknown"
@@ -1149,8 +1107,15 @@ def portfolio_settings(**overrides: object) -> dict[str, object]:
             **overrides,
         ),
         {},
-        now=datetime(2026, 7, 26, 20, 0, tzinfo=timezone.utc),
+        now=SCAN_END,
     )
+
+
+def fake_payload(
+    monkeypatch: pytest.MonkeyPatch, routes: dict[str, object], settings_for: Any = portfolio_settings, **overrides: object,
+) -> dict[str, Any]:
+    patch_radar(monkeypatch, "run_json", FakeGitHub(routes))
+    return github_unanswered_comments.collect_payload(settings_for(**overrides))
 
 
 @pytest.mark.parametrize("scope", ["portfolio", "thread", "outbound"])
@@ -1407,10 +1372,8 @@ def test_scan_state_from_other_identities_is_not_reused(tmp_path: Path, bot_logi
 def test_outside_pull_request_opened_in_window_needs_attention(monkeypatch) -> None:
     # Reproduces BD_to_AVP#880: an outside contributor opens a PR and nobody comments.
     pull = opening()
-    fake = FakeGitHub({"repos/example/repo/issues": [pull], "repos/example/repo/issues/880": pull})
-    monkeypatch.setattr(github_unanswered_comments, "run_json", fake)
 
-    payload = github_unanswered_comments.collect_payload(portfolio_settings())
+    payload = fake_payload(monkeypatch, {"repos/example/repo/issues": [pull], "repos/example/repo/issues/880": pull})
 
     assert payload["status"] == "attention"
     [item] = payload["attention"]
@@ -1424,10 +1387,8 @@ def test_own_openings_are_excluded_and_non_own_bot_openings_need_attention(monke
     own = opening(number=1, author="cbusillo", pull_request=False)
     automation = opening(number=2, author="fixture-automation")
     app = opening(number=3, author="dependency-updates[bot]", author_type="Bot")
-    fake = FakeGitHub({"repos/example/repo/issues": [own, automation, app], "repos/example/repo/issues/3": app})
-    monkeypatch.setattr(github_unanswered_comments, "run_json", fake)
 
-    payload = github_unanswered_comments.collect_payload(portfolio_settings())
+    payload = fake_payload(monkeypatch, {"repos/example/repo/issues": [own, automation, app], "repos/example/repo/issues/3": app})
 
     assert payload["status"] == "attention"
     [item] = payload["attention"]
@@ -1515,15 +1476,7 @@ def test_commentless_openings_resolve_only_external_identities(
 
 def test_full_history_thread_includes_outside_opening_post(monkeypatch) -> None:
     pull = opening(created_at="2026-01-01T00:00:00Z")
-    fake = FakeGitHub({"repos/example/repo/issues/880": pull})
-    monkeypatch.setattr(github_unanswered_comments, "run_json", fake)
-    settings = github_unanswered_comments.resolve_settings(
-        args(thread=["example/repo#880"], until="2026-07-26T20:00:00Z"),
-        {},
-        now=datetime(2026, 7, 26, 20, 0, tzinfo=timezone.utc),
-    )
-
-    payload = github_unanswered_comments.collect_payload(settings)
+    payload = fake_payload(monkeypatch, {"repos/example/repo/issues/880": pull}, thread_settings, thread=["example/repo#880"])
 
     assert [item["comment_kind"] for item in payload["attention"]] == ["issue_body"]
 
@@ -1575,14 +1528,7 @@ def test_owner_reaction_and_bot_mention_handle_opening_post() -> None:
         created_at="2026-07-21T00:00:00Z",
     )
 
-    [result] = github_unanswered_comments.comment_states_for_thread(
-        opening(),
-        [post, reply],
-        {post.key},
-        {"cbusillo"},
-        {"fixture-automation"},
-        {post.key: [reaction(created_at="2026-07-21T01:00:00Z")]},
-    )
+    [result] = classify([post, reply], [post], {post.key: [reaction(created_at="2026-07-21T01:00:00Z")]}, opening())
 
     assert result["attention_state"] == "handled"
 
@@ -1604,10 +1550,7 @@ def test_owner_link_to_another_comment_does_not_answer_opening_post() -> None:
     )
 
     def state(responses: list[github_unanswered_comments.Comment]) -> object:
-        results = github_unanswered_comments.comment_states_for_thread(
-            opening(), [post, other, *responses], {post.key}, {"cbusillo"}, {"fixture-automation"}, {post.key: []},
-        )
-        return results[0]["attention_state"]
+        return classify([post, other, *responses], [post], discussion=opening())[0]["attention_state"]
 
     assert state([reply]) == "needs_your_eyes"
     assert state([reply, exact]) == "handled"
@@ -1670,18 +1613,15 @@ def test_own_automation_is_excluded_without_answering_people(
         issue_url=human["issue_url"],
         user={"login": "director-code-bot", "type": author_type},
     )
-    fake = FakeGitHub(
-        {
-            "repos/example/repo/issues": [by_director_bot, by_client_bot],
-            "repos/example/repo/issues/comments": [human, app_notice],
-            "repos/example/repo/issues/1": by_director_bot,
-            "repos/example/repo/issues/1/comments": [human, app_notice],
-            "repos/example/repo/issues/2": by_client_bot,
-        }
-    )
-    monkeypatch.setattr(github_unanswered_comments, "run_json", fake)
+    routes = {
+        "repos/example/repo/issues": [by_director_bot, by_client_bot],
+        "repos/example/repo/issues/comments": [human, app_notice],
+        "repos/example/repo/issues/1": by_director_bot,
+        "repos/example/repo/issues/1/comments": [human, app_notice],
+        "repos/example/repo/issues/2": by_client_bot,
+    }
 
-    payload = github_unanswered_comments.collect_payload(portfolio_settings(people_index=people_index(tmp_path)))
+    payload = fake_payload(monkeypatch, routes, people_index=people_index(tmp_path))
 
     attention = {item["author"]: item for item in payload["attention"]}
     assert set(attention) == {"casey-client", "client-code-bot"}
@@ -1694,9 +1634,8 @@ def test_own_automation_is_excluded_without_answering_people(
 def test_invalid_people_index_degrades_coverage(monkeypatch, tmp_path: Path) -> None:
     index = tmp_path / "people.yaml"
     index.write_text("people: [{id: Not A Slug}]\n", encoding="utf-8")
-    monkeypatch.setattr(github_unanswered_comments, "run_json", FakeGitHub({}))
 
-    payload = github_unanswered_comments.collect_payload(portfolio_settings(people_index=index))
+    payload = fake_payload(monkeypatch, {}, people_index=index)
 
     assert payload["status"] == "degraded"
     assert payload["coverage"]["errors"][0]["lane"] == "people_index"
@@ -1766,13 +1705,10 @@ def test_unasked_wait_on_director_is_reported(monkeypatch, tmp_path: Path) -> No
         "user": {"login": "fixture-automation", "type": "User"}, "body": "Owner question: Q48, delete the hooks?",
         "created_at": "2026-07-24T00:00:00Z", "html_url": "https://github.com/example/repo/issues/2887#issuecomment-99",
     }
-    fake = FakeGitHub({
+    payload = structured_wait_rows(monkeypatch, tmp_path, {
         "repos/example/repo/issues": lambda endpoint: [asked, unasked] if "state=open" in endpoint else [],
         "repos/example/repo/issues/2887/comments": [question],
     })
-    monkeypatch.setattr(github_unanswered_comments, "run_json", fake)
-
-    payload = github_unanswered_comments.collect_payload(portfolio_settings(people_index=people_index(tmp_path)))
 
     assert payload["status"] == "attention"
     assert [(row["number"], row["question_gap"]) for row in payload["unasked_director_waits"]] == [(141, "no_question")]
@@ -1825,10 +1761,8 @@ def test_open_issue_inventory_pages_every_repository_and_isolates_a_failed_one(m
 
 def test_director_hold_is_listed_without_raising_attention(monkeypatch, tmp_path: Path) -> None:
     held = waiting_issue("Pat to resume the parked workstream.", number=31)
-    fake = FakeGitHub({"repos/example/repo/issues": lambda endpoint: [held] if "state=open" in endpoint else []})
-    monkeypatch.setattr(github_unanswered_comments, "run_json", fake)
-
-    payload = github_unanswered_comments.collect_payload(portfolio_settings(people_index=people_index(tmp_path)))
+    payload = structured_wait_rows(
+        monkeypatch, tmp_path, {"repos/example/repo/issues": lambda endpoint: [held] if "state=open" in endpoint else []})
 
     assert payload["status"] == "clear"
     assert [(row["number"], row["wait_kind"]) for row in payload["unasked_director_waits"]] == [(31, "director_hold")]
@@ -1836,18 +1770,14 @@ def test_director_hold_is_listed_without_raising_attention(monkeypatch, tmp_path
 
 
 def test_named_people_index_that_is_missing_degrades_coverage(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(github_unanswered_comments, "run_json", FakeGitHub({}))
-
-    payload = github_unanswered_comments.collect_payload(portfolio_settings(people_index=tmp_path / "typo.yaml"))
+    payload = fake_payload(monkeypatch, {}, people_index=tmp_path / "typo.yaml")
 
     assert payload["status"] == "degraded"
     assert payload["coverage"]["errors"][0]["lane"] == "people_index"
 
 
 def test_missing_default_people_index_is_normal_but_reported(monkeypatch) -> None:
-    monkeypatch.setattr(github_unanswered_comments, "run_json", FakeGitHub({}))
-
-    payload = github_unanswered_comments.collect_payload(portfolio_settings())
+    payload = fake_payload(monkeypatch, {})
 
     assert payload["status"] == "clear"
     assert "does not name the Director" in github_unanswered_comments.render_markdown(payload)
@@ -1862,7 +1792,7 @@ def test_scanning_a_client_repository_uses_no_director_names(monkeypatch, tmp_pa
     settings = github_unanswered_comments.resolve_settings(
         args(repo=["example/repo", "casey-client/project"], self_login=["cbusillo"], people_index=people_index(tmp_path)),
         {},
-        now=datetime(2026, 7, 26, 20, 0, tzinfo=timezone.utc),
+        now=SCAN_END,
     )
 
     payload = github_unanswered_comments.collect_payload(settings)
@@ -1931,24 +1861,15 @@ def test_include_handled_lists_closed_thread_comments_apart_from_attention(monke
     external = comment(comment_id=1, author="outside-user", body="Corrected sheet attached.",
                        created_at="2026-07-25T10:00:00Z")
     closed = {**thread(), "state": "closed", "closed_at": "2026-07-25T09:00:00Z"}
-    monkeypatch.setattr(github_unanswered_comments, "authenticated_login", lambda: "fixture-automation")
     reply = comment(comment_id=2, author="example", body=f"Thanks: {external.url}",
                     created_at="2026-07-25T11:00:00Z")
-    patch_radar(monkeypatch, "collect_thread", lambda repo, number, _sources=None, _issue_id=None: (closed, [external, reply], []))
-    monkeypatch.setattr(github_unanswered_comments, "collect_candidate_reactions",
-                        lambda comments, deadline: ({external.global_key: []}, {}, []))
+    patch_thread(monkeypatch, closed, [external, reply], {external.global_key: []})
 
-    def payload(**overrides: object) -> dict[str, Any]:
-        settings = github_unanswered_comments.resolve_settings(
-            args(thread=["example/repo#42"], until="2026-07-26T20:00:00Z", **overrides), {},
-            now=datetime(2026, 7, 26, 20, 0, tzinfo=timezone.utc))
-        return github_unanswered_comments.collect_payload(settings)
-
-    included = payload(include_handled=True)
+    included = github_unanswered_comments.collect_payload(thread_settings(include_handled=True))
     assert included["attention"] == []
     assert [row["comment_url"] for row in included["handled"]] == [external.url]
     assert included["handled"][0]["handled_reason"] == "closed_with_response"
-    assert "handled" not in payload()
+    assert "handled" not in github_unanswered_comments.collect_payload(thread_settings())
 
 
 @pytest.mark.parametrize("config,authenticated", [
@@ -1960,16 +1881,10 @@ def test_include_handled_lists_closed_thread_comments_apart_from_attention(monke
 def test_director_login_keeps_another_accounts_own_comment_outside(monkeypatch, config, authenticated) -> None:
     by_thread_owner = comment(comment_id=1, author="example", body="Corrected sheet attached.",
                               created_at="2026-07-25T10:00:00Z")
-    monkeypatch.setattr(github_unanswered_comments, "authenticated_login", lambda: authenticated)
-    patch_radar(monkeypatch, "collect_thread",
-                        lambda repo, number, _sources=None, _issue_id=None: (thread(), [by_thread_owner], []))
-    monkeypatch.setattr(github_unanswered_comments, "collect_candidate_reactions",
-                        lambda comments, deadline: ({by_thread_owner.global_key: []}, {}, []))
+    patch_thread(monkeypatch, thread(), [by_thread_owner], {by_thread_owner.global_key: []}, login=authenticated)
 
     def attention(**overrides: object) -> list[object]:
-        settings = github_unanswered_comments.resolve_settings(
-            args(thread=["example/repo#42"], until="2026-07-26T20:00:00Z", **overrides), config,
-            now=datetime(2026, 7, 26, 20, 0, tzinfo=timezone.utc))
+        settings = thread_settings(config, **overrides)
         return [row["comment_url"] for row in github_unanswered_comments.collect_payload(settings)["attention"]]
 
     assert attention(director_login="cbusillo") == [by_thread_owner.url]
@@ -1978,10 +1893,7 @@ def test_director_login_keeps_another_accounts_own_comment_outside(monkeypatch, 
 
 def test_closed_bot_answer_is_handled_without_personal_awareness(app_ready_discussion):
     external, reply, *_ = app_ready_discussion
-    [result] = github_unanswered_comments.comment_states_for_thread(
-        {**thread(), "state": "closed"}, [external, reply], {external.key},
-        {"cbusillo"}, {"fixture-automation"}, {external.key: []},
-    )
+    [result] = classify([external, reply], [external], discussion={**thread(), "state": "closed"})
     assert result["attention_state"] == "handled"
     assert result["owner_seen"] is False
     assert result["publicly_addressed"] is True
@@ -2073,8 +1985,7 @@ def test_outbound_lists_mentions_outside_scope_including_private_and_mention_onl
     director_search["items"] = [search_item("outside/project", 2), search_item("outside/project", 1),
                                 search_item("client/private", 4),
                                 search_item("client/private", 5, updated="2026-07-27T00:00:00Z")]
-    monkeypatch.setattr(github_unanswered_comments, "run_json", FakeGitHub(outbound_fixture))
-    payload = github_unanswered_comments.collect_payload(outbound_settings())
+    payload = fake_payload(monkeypatch, outbound_fixture, outbound_settings)
     assert payload["status"] == "attention"
     assert [(row["repository"], row["number"]) for row in payload["director_mentions"]] == [
         ("outside/project", 2), ("client/private", 4)]
@@ -2091,8 +2002,7 @@ def test_outbound_withdrawn_mention_approval_reports_the_gap(monkeypatch, outbou
     question = "Q100"
     outbound_fixture["repos/cbusillo/codex-skills/issues/2073/comments"] += [
         {"id": 100, "user": {"login": "cbusillo"}, "created_at": "2026-07-21T00:00:00Z", "body": f"{question} no"}]
-    monkeypatch.setattr(github_unanswered_comments, "run_json", FakeGitHub(outbound_fixture))
-    payload = github_unanswered_comments.collect_payload(outbound_settings())
+    payload = fake_payload(monkeypatch, outbound_fixture, outbound_settings)
     assert payload["status"] == "degraded"
     assert [error["lane"] for error in payload["coverage"]["errors"]] == ["director_mentions"]
     assert director_search["calls"] == []
@@ -2129,8 +2039,7 @@ def test_outbound_lists_authored_and_commented_threads_after_last_human_activity
 
 def test_outbound_settles_a_reply_posted_before_the_pull_request_merged(monkeypatch, outbound_fixture):
     outbound_fixture["repos/outside/project/issues/1"].update(state="closed", closed_at="2026-07-23T12:00:00Z")
-    patch_radar(monkeypatch, "run_json", FakeGitHub(outbound_fixture))
-    payload = github_unanswered_comments.collect_payload(outbound_settings())
+    payload = fake_payload(monkeypatch, outbound_fixture, outbound_settings)
     assert {item["comment_id"] for item in payload["attention"]} == {1, 7, 8}
 
 
@@ -2156,8 +2065,7 @@ def test_outbound_last_human_edit_clears_earlier_replies(monkeypatch, outbound_f
     {"unexpected": []},
 ])
 def test_outbound_partial_or_malformed_search_is_degraded(monkeypatch, search_result):
-    monkeypatch.setattr(github_unanswered_comments, "run_json", FakeGitHub({"search/issues": search_result}))
-    payload = github_unanswered_comments.collect_payload(outbound_settings())
+    payload = fake_payload(monkeypatch, {"search/issues": search_result}, outbound_settings)
     assert payload["status"] == "degraded"
     assert payload["coverage"]["errors"]
 
@@ -2211,13 +2119,12 @@ def test_closed_thread_settles_only_what_was_written_before_it_closed(monkeypatc
         7, "outside", "2026-07-25T10:00:00Z", body="Still broken on 2.1.",
         issue_url="https://api.github.com/repos/example/repo/issues/33",
         html_url="https://github.com/example/repo/issues/33#issuecomment-7")
-    patch_radar(monkeypatch, "run_json", FakeGitHub({
+    payload = fake_payload(monkeypatch, {
         "repos/example/repo/issues": [merged_bot_pr, closed_issue],
         "repos/example/repo/issues/35": merged_bot_pr, "repos/example/repo/issues/33": closed_issue,
         "repos/example/repo/issues/comments": [reopen_request],
         "repos/example/repo/issues/33/comments": [reopen_request],
-    }))
-    payload = github_unanswered_comments.collect_payload(portfolio_settings())
+    })
     assert [row["comment_url"] for row in payload["attention"]] == [reopen_request["html_url"]]
 
 
@@ -2317,8 +2224,7 @@ def labeled_waiting(endpoint: str) -> list[dict[str, object]]:
 
 
 def structured_wait_rows(monkeypatch, tmp_path: Path, routes: dict[str, object]) -> dict[str, Any]:
-    monkeypatch.setattr(github_unanswered_comments, "run_json", FakeGitHub(routes))
-    return github_unanswered_comments.collect_payload(portfolio_settings(people_index=people_index(tmp_path)))
+    return fake_payload(monkeypatch, routes, people_index=people_index(tmp_path))
 
 
 def test_comment_only_structured_hold_without_waiting_label_is_reported(monkeypatch, tmp_path: Path) -> None:
