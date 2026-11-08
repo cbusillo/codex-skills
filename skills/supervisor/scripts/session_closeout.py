@@ -172,9 +172,14 @@ def verify_handoff(entry: dict, args: argparse.Namespace, operation: Operation, 
     try:
         saved = closure.source_records({entry["session_id"]}).get(entry["session_id"]) if not retired else None
         inherited = release.inherited_handoff(entry, saved, reader=reader, actor=actor)
+        canonical = saved.get("handoff_url") if saved else None
+        if canonical and (inherited if canonical == recorded else release.inherited_handoff(
+                {**entry, "handoff_url": canonical}, saved, reader=reader, actor=actor)):
+            canonical = None
     except ValueError as error:
         raise GateFailed("handoff", str(error)) from error
-    selected = getattr(args, "handoff_url", None) or operation.state.get("handoff", {}).get("url") or (None if inherited else recorded)
+    selected = getattr(args, "handoff_url", None) or operation.state.get("handoff", {}).get("url") or canonical or (None if inherited else recorded)
+    require(not canonical or canonical == selected, "handoff", "canonical handoff differs; preserve it")
     require(not recorded or inherited or recorded == selected, "handoff", "recorded handoff differs; preserve it")
     evidence = None
     if not selected:

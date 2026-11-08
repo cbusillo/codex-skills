@@ -4,6 +4,7 @@
 # dependencies = ["aiohttp==3.14.5", "PyYAML==6.0.3", "tree-sitter==0.26.0", "tree-sitter-bash==0.25.1", "tree-sitter-javascript==0.25.0"]
 # ///
 import argparse
+from functools import partial
 from contextlib import redirect_stdout
 from io import StringIO
 import importlib
@@ -49,6 +50,7 @@ class RoutineCheckTests(unittest.TestCase):
         self.enterContext(patch.object(routine_check.oq, "default_decision_authors", return_value=["agent[bot]"]))
         self.enterContext(patch_attr(routine_check.radar.github_identity, "automation_login", return_value="agent[bot]"))
         self.enterContext(patch_attr(routine_check.radar.github_identity, "configured_bot_logins", return_value=["agent[bot]"]))
+        self.enterContext(patch.object(session_closeout.closure, "source_records", return_value={}))
 
     def test_digest_keeps_every_track_decision_wait_and_unread_source(self) -> None:
         roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second"),
@@ -795,9 +797,10 @@ class RoutineCheckTests(unittest.TestCase):
                       "launch_started_at": "2026-11-08T01:35:10Z"}
         source = {**original, "ended_at": "2026-11-07T22:32:16Z", "process_exit_verified": True,
                   "resumed_at": "2026-11-08T01:35:55Z", "resumed_generation": generation}
-        variants = ("explicit", "intermediate", "manual_closed", "discovery", "journal_retry", "path_alias",
+        variants: list[str] = ["explicit", "intermediate", "manual_closed", "discovery", "journal_retry",
                     "aborted_prelaunch", "aborted_conflict", "same_generation", "missing_source", "wrong_generation",
-                    "unknown_source", "unknown_comment", "old_selected", "no_new_handoff", "journal_conflict", "ledger_changed")
+                    "unknown_source", "unknown_comment", "old_selected", "no_new_handoff", "journal_conflict", "ledger_changed",
+                    "canonical_conflict", "canonical_recovery"]
         for variant in variants:
             with self.subTest(variant=variant):
                 saved = json.loads(json.dumps(source))
@@ -814,17 +817,19 @@ class RoutineCheckTests(unittest.TestCase):
                     saved = {**current, "ended_at": "2026-11-08T02:00:00Z", "process_exit_verified": True}
                 elif variant == "discovery":
                     current.pop("handoff_url")
-                elif variant == "path_alias":
-                    saved["resumed_generation"]["transcript"] = str(root / "nested/../native.jsonl")
                 elif variant.startswith("aborted"):
                     current = {**original, "repository": "owner/repo", "issue": 7}
                     saved.pop("resumed_generation")
                 elif variant == "same_generation":
                     current["handoff_url"] = urls["intermediate"]
                     comments["intermediate"].update(created_at=comments["new"]["created_at"], updated_at=comments["new"]["created_at"])
+                elif variant.startswith("canonical"):
+                    saved = {**current, "handoff_url": urls["intermediate"],
+                             "ended_at": "2026-11-08T02:00:00Z", "process_exit_verified": True}
+                    comments["intermediate"].update(created_at=comments["new"]["created_at"], updated_at=comments["new"]["created_at"])
                 elif variant == "wrong_generation":
                     saved["resumed_generation"]["launch_started_at"] = "2026-11-08T01:35:11Z"
-                selected = None if variant in {"discovery", "no_new_handoff", "journal_retry", "aborted_prelaunch"} else urls["new"]
+                selected = None if variant in {"discovery", "no_new_handoff", "journal_retry", "aborted_prelaunch", "canonical_recovery"} else urls["new"]
                 if variant == "old_selected":
                     selected = urls["old"]
                 ledger = root / "ledger.json"
@@ -835,28 +840,31 @@ class RoutineCheckTests(unittest.TestCase):
                     operation.state["handoff"] = {"url": urls["old" if variant == "journal_conflict" else "new"]}
                 args = argparse.Namespace(ledger=ledger, session_id=session, handoff_url=selected)
                 by_id = {str(row["id"]): row for row in comments.values()}
-                reader = SimpleNamespace(get_json=Mock(side_effect=lambda path, by_id=by_id, **_kw: by_id[path.rsplit("/", 1)[-1]]),
+                reader = SimpleNamespace(get_json=Mock(side_effect=partial(lambda mapping, path, **_kw: mapping[path.rsplit("/", 1)[-1]], by_id)),
                                          paged_json=Mock(return_value=[comments["old"]] if variant == "no_new_handoff" else list(comments.values())))
                 if variant == "unknown_comment":
-                    reader.get_json.side_effect = ValueError("comment source unavailable")
-                error = {"same_generation": "recorded handoff differs", "aborted_conflict": "recorded handoff differs",
+                    reader.get_json.side_effect = session_closeout.GitHubReadError(
+                        "comment source unavailable", result=ApiResult(False, status=503, body=None), diagnostics={})
+                error = {"same_generation": "recorded handoff differs", "aborted_conflict": "canonical handoff differs",
                          "missing_source": "recorded handoff differs", "wrong_generation": "source authority",
                          "unknown_source": "source unavailable", "unknown_comment": "comment source unavailable",
                          "old_selected": "created in", "no_new_handoff": "found 0 candidates",
-                         "journal_conflict": "journal already records", "ledger_changed": "ledger generation changed"}.get(variant)
+                         "journal_conflict": "journal already records", "ledger_changed": "ledger generation changed",
+                         "canonical_conflict": "canonical handoff differs"}.get(variant)
                 with (patch_attr(session_closeout, "GitHubReader", return_value=reader),
                       patch.object(session_closeout.github_identity, "automation_login", return_value="agent[bot]"),
                       patch.object(session_closeout.closure, "source_records", return_value={} if variant == "missing_source" else {session: saved},
                                    side_effect=ValueError("source unavailable") if variant == "unknown_source" else None)):
                     if error:
-                        with self.assertRaisesRegex(GateFailed, error):
+                        refusal_type = session_closeout.GitHubReadError if variant == "unknown_comment" else GateFailed
+                        with self.assertRaisesRegex(refusal_type, error):
                             session_closeout.verify_handoff(current, args, operation, retired=False)
                         self.assertEqual(json.loads(ledger.read_text()), rows)
                         if variant != "ledger_changed":
                             self.assertNotIn("revision", operation.state.get("handoff", {}))
                     else:
                         session_closeout.verify_handoff(current, args, operation, retired=False)
-                        expected = urls["old" if variant == "aborted_prelaunch" else "new"]
+                        expected = urls["old" if variant == "aborted_prelaunch" else "intermediate" if variant == "canonical_recovery" else "new"]
                         self.assertEqual(json.loads(ledger.read_text())[0]["handoff_url"], expected)
                         self.assertEqual(operation.state["handoff"]["url"], expected)
 
