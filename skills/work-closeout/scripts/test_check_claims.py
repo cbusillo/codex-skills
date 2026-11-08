@@ -14,7 +14,7 @@ import sqlite3
 import tempfile
 import time
 import unittest
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -209,14 +209,21 @@ class ClaimCloseoutTests(unittest.TestCase):
     def check(self):
         return helper.check_record(self.reader, REPO, 1, SESSION, ACTOR)
 
-    def entry(self, session: str = SESSION, timestamp: str | None = SOURCE["claimed_at"], cli_version: str | None = None) -> dict:
+    def entry(
+        self,
+        session: str = SESSION,
+        timestamp: str | None = SOURCE["claimed_at"],
+        cli_version: str | None = None,
+        *,
+        rows: Iterable[dict] = (),
+    ) -> dict:
         path = self.folder / (session + ".jsonl")
         row = {"type": "session_meta", "payload": {"id": session}}
         if cli_version is not None:
             row["payload"]["cli_version"] = cli_version
         if timestamp is not None:
             row["timestamp"] = timestamp
-        path.write_text(json.dumps(row) + "\n")
+        path.write_text("".join(json.dumps(record) + "\n" for record in (row, *rows)))
         return {"session_id": session, "transcript": str(path)}
 
     def test_held_claim_blocks_without_an_exact_release(self):
@@ -503,25 +510,21 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.reader.post_json.assert_not_called()
 
     def receipt_entry(self, session: str = SESSION, records: tuple = ((REPO, 1),)) -> dict:
-        entry = self.entry(session)
-        with Path(entry["transcript"]).open("a") as stream:
-            for repo, number in records:
-                receipt = {
-                    "operation": "github.plan.claim",
-                    "claim": {**SOURCE, "session": session},
-                    "issue": {"repo": repo, "number": number},
-                    "ok": True,
+        rows = []
+        for repo, number in records:
+            receipt = {
+                "operation": "github.plan.claim",
+                "claim": {**SOURCE, "session": session},
+                "issue": {"repo": repo, "number": number},
+                "ok": True,
+            }
+            rows.append(
+                {
+                    "type": "response_item",
+                    "payload": {"type": "function_call_output", "output": json.dumps({"output": json.dumps(receipt)})},
                 }
-                stream.write(
-                    json.dumps(
-                        {
-                            "type": "response_item",
-                            "payload": {"type": "function_call_output", "output": json.dumps({"output": json.dumps(receipt)})},
-                        }
-                    )
-                    + "\n"
-                )
-        return entry
+            )
+        return self.entry(session, rows=rows)
 
     def test_recorded_claims_never_inventory_other_repositories(self) -> None:
         self.comments.append(self.release)
@@ -573,9 +576,7 @@ class ClaimCloseoutTests(unittest.TestCase):
             {"type": "assistant", "message": {"content": json.dumps(receipt)}},
         ]
         for row in rows:
-            entry = self.entry()
-            with Path(entry["transcript"]).open("a") as stream:
-                stream.write(json.dumps(row) + "\n")
+            entry = self.entry(rows=[row])
             with self.subTest(row=row), patch.object(helper, "repository_reader") as reader:
                 report = helper.check([entry])
                 self.assertTrue(report["claims_clear"], report)
@@ -583,24 +584,19 @@ class ClaimCloseoutTests(unittest.TestCase):
                 reader.assert_not_called()
 
     def test_direct_legacy_helper_receipts_remain_recorded(self) -> None:
-        entry = self.entry()
-        with Path(entry["transcript"]).open("a") as stream:
-            stream.write(json.dumps({"claim": SOURCE, "issue": {"repo": REPO, "number": 1}}) + "\n")
+        entry = self.entry(rows=[{"claim": SOURCE, "issue": {"repo": REPO, "number": 1}}])
         self.assertEqual(helper.recorded_targets(entry)["targets"], {(REPO, 1)})
 
     def test_projected_receipt_binds_its_canonical_release_target(self) -> None:
         command = helper.claim_log.release_command(Path("/catalog/gh-plan.py"), REPO, 1, self.source["id"], SESSION)
         projection = {"claim": SOURCE, "completed_steps": ["post_claim"], "release_command": command}
         self.assertEqual(helper.history.claim_target({"claim": SOURCE, "release_command": command}, SESSION), (REPO, 1))
-        entry = self.entry()
         claim_command = f"uv run gh-plan.py --repo {REPO} claim 1 --session {SESSION}"
         rows = [
             code_call("projection", "text(await tools.exec_command({cmd:" + json.dumps(claim_command) + "}));"),
             {"payload": {"type": "custom_tool_call_output", "call_id": "projection", "output": json.dumps(projection)}},
         ]
-        with Path(entry["transcript"]).open("a") as stream:
-            for row in rows:
-                stream.write(json.dumps(row) + "\n")
+        entry = self.entry(rows=rows)
         self.assertEqual(helper.recorded_targets(entry)["targets"], {(REPO, 1)})
         self.assertFalse(helper.check([entry])["claims_clear"])
         self.comments.append(self.release)
@@ -708,9 +704,7 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.assertFalse(report["claims_clear"], report)
 
     def test_malformed_nested_claim_data_returns_a_json_failure(self) -> None:
-        entry = self.entry()
-        with Path(entry["transcript"]).open("a") as stream:
-            stream.write(json.dumps({"claim": SOURCE, "issue": "unreadable"}) + "\n")
+        entry = self.entry(rows=[{"claim": SOURCE, "issue": "unreadable"}])
         with contextlib.redirect_stdout(io.StringIO()) as output:
             code = helper.main(["--session", SESSION, "--transcript", entry["transcript"]])
         self.assertNotEqual(code, 0)
@@ -825,7 +819,6 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.assertTrue(report["unresolved_invocations"])
 
     def test_legacy_yielded_claim_receipt_is_recovered_from_later_native_output(self) -> None:
-        root = self.entry()
         receipt = {"operation": "github.plan.claim", "claim": SOURCE, "issue": {"repo": REPO, "number": 1}}
         rows = [
             {
@@ -851,8 +844,7 @@ class ClaimCloseoutTests(unittest.TestCase):
                 "output": [{"type": "input_text", "text": json.dumps({"exit_code": 0, "output": json.dumps(receipt)})}],
             },
         ]
-        with Path(root["transcript"]).open("a") as stream:
-            stream.write("\n".join(json.dumps({"type": "response_item", "payload": row}) for row in rows) + "\n")
+        root = self.entry(rows=({"type": "response_item", "payload": row} for row in rows))
         self.assertFalse(helper.check([root])["claims_clear"])
         self.comments.append(self.release)
         self.assertTrue(helper.check([root])["claims_clear"])
@@ -872,47 +864,38 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.assertLessEqual(sum(map(len, outputs.values())), (1 + polls) ** 2)
 
     def test_literal_repository_target_survives_a_truncated_claim_result(self) -> None:
-        root = self.entry(cli_version=SUPPORTED_CLI_VERSION)
-        with Path(root["transcript"]).open("a") as stream:
-            stream.write(
-                json.dumps(
-                    {
-                        "type": "response_item",
-                        "payload": {
-                            "type": "custom_tool_call",
-                            "name": "exec",
-                            "call_id": "claim-call",
-                            "input": 'text(await tools.exec_command({cmd:"uv run gh-plan.py --repo test/a claim 1 --session native-session"}));',
-                        },
-                    }
-                )
-                + "\n"
-            )
-            stream.write(
-                json.dumps(
-                    {
-                        "type": "response_item",
-                        "payload": {
-                            "type": "custom_tool_call_output",
-                            "call_id": "claim-call",
-                            "output": 'Warning: truncated output (original token count: 3000)\nWall time: 1.0 seconds\nProcess exited with code 0\nOutput:\n{"claim":',
-                        },
-                    }
-                )
-                + "\n"
-            )
+        root = self.entry(
+            cli_version=SUPPORTED_CLI_VERSION,
+            rows=[
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "custom_tool_call",
+                        "name": "exec",
+                        "call_id": "claim-call",
+                        "input": 'text(await tools.exec_command({cmd:"uv run gh-plan.py --repo test/a claim 1 --session native-session"}));',
+                    },
+                },
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "custom_tool_call_output",
+                        "call_id": "claim-call",
+                        "output": 'Warning: truncated output (original token count: 3000)\nWall time: 1.0 seconds\nProcess exited with code 0\nOutput:\n{"claim":',
+                    },
+                },
+            ],
+        )
         self.assertFalse(helper.check([root])["claims_clear"])
         self.comments.append(self.release)
         self.assertTrue(helper.check([root])["claims_clear"])
 
     def test_known_target_without_terminal_output_stays_pending_after_release(self) -> None:
-        root = self.entry(cli_version=SUPPORTED_CLI_VERSION)
         call = code_call(
             "unfinished",
             'text(await tools.exec_command({cmd:"uv run gh-plan.py --repo test/a claim 1 --session native-session"}));',
         )
-        with Path(root["transcript"]).open("a") as stream:
-            stream.write(json.dumps(call) + "\n")
+        root = self.entry(cli_version=SUPPORTED_CLI_VERSION, rows=[call])
         self.comments.append(self.release)
         report = helper.check([root])
         self.assertFalse(report["claims_clear"])
@@ -921,7 +904,6 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.assertEqual([item["call_id"] for item in report["unresolved_invocations"]], ["unfinished"])
 
     def test_real_codex_activity_requires_the_child_transcript(self) -> None:
-        entry = self.entry()
         activity = {
             "type": "event_msg",
             "payload": {
@@ -930,17 +912,12 @@ class ClaimCloseoutTests(unittest.TestCase):
                 "item": {"type": "SubAgentActivity", "kind": "started", "agent_thread_id": "child", "agent_path": "/root/child"},
             },
         }
-        with Path(entry["transcript"]).open("a") as stream:
-            stream.write(json.dumps(activity) + "\n")
-            stream.write(
-                json.dumps(
-                    {
-                        "type": "response_item",
-                        "payload": {"type": "function_call_output", "output": json.dumps({"task_name": "/root/child"})},
-                    }
-                )
-                + "\n"
-            )
+        entry = self.entry(
+            rows=[
+                activity,
+                {"type": "response_item", "payload": {"type": "function_call_output", "output": json.dumps({"task_name": "/root/child"})}},
+            ]
+        )
         with patch.object(helper, "repository_reader") as reader, self.assertRaises(ValueError):
             helper.check([entry])
         reader.assert_not_called()
@@ -1027,35 +1004,27 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.assertTrue(helper.check([entry])["claims_clear"])
 
     def test_truncated_legacy_claim_result_cannot_mean_no_claims(self) -> None:
-        entry = self.entry()
-        with Path(entry["transcript"]).open("a") as stream:
-            stream.write(
-                json.dumps(
-                    {
-                        "type": "response_item",
-                        "payload": {
-                            "type": "custom_tool_call",
-                            "name": "exec",
-                            "call_id": "claim-call",
-                            "input": 'text(await tools.exec_command({cmd:"uv run gh-plan.py claim 1 --session native-session"}));',
-                        },
-                    }
-                )
-                + "\n"
-            )
-            stream.write(
-                json.dumps(
-                    {
-                        "type": "response_item",
-                        "payload": {
-                            "type": "custom_tool_call_output",
-                            "call_id": "claim-call",
-                            "output": 'Warning: truncated output\n{"claim":',
-                        },
-                    }
-                )
-                + "\n"
-            )
+        entry = self.entry(
+            rows=[
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "custom_tool_call",
+                        "name": "exec",
+                        "call_id": "claim-call",
+                        "input": 'text(await tools.exec_command({cmd:"uv run gh-plan.py claim 1 --session native-session"}));',
+                    },
+                },
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "custom_tool_call_output",
+                        "call_id": "claim-call",
+                        "output": 'Warning: truncated output\n{"claim":',
+                    },
+                },
+            ]
+        )
         with patch.object(helper, "repository_reader") as reader:
             report = helper.check([entry])
         self.assertFalse(report["claims_clear"])
@@ -1310,12 +1279,9 @@ class ClaimCloseoutTests(unittest.TestCase):
 
     def test_released_loop_claims_clear_and_a_computed_loop_stays_conditional(self) -> None:
         for values, clear in (("1 2", True), ("$(cat issues)", False)):
-            root = self.entry()
             command = f"for i in {values}; do uv run gh-plan.py --repo {REPO} claim $i --session {SESSION} | tail -c 900; done"
             call = {"type": "function_call", "name": "shell_command", "call_id": "loop", "arguments": json.dumps({"command": command})}
-            with Path(root["transcript"]).open("a") as stream:
-                stream.write(json.dumps({"payload": call}) + "\n")
-                stream.write(json.dumps(native_terminal_result("loop")) + "\n")
+            root = self.entry(rows=[{"payload": call}, native_terminal_result("loop")])
             with self.subTest(values=values), patch.object(helper, "check_record", return_value=[]) as check:
                 self.assertEqual(helper.check([root])["claims_clear"], clear)
                 if clear:
@@ -1750,7 +1716,6 @@ class ClaimCloseoutTests(unittest.TestCase):
                 self.assertIn("start", {item["call_id"] for item in report["unresolved_invocations"]})
 
     def test_mixed_raw_header_poll_preserves_its_own_claim_receipt(self) -> None:
-        root = self.entry()
         receipt = {"operation": "github.plan.claim", "claim": SOURCE, "issue": {"repo": REPO, "number": 1}}
         rows = [{"payload": payload} for payload in (
             {"type": "custom_tool_call", "name": "exec", "call_id": "start",
@@ -1763,8 +1728,7 @@ class ClaimCloseoutTests(unittest.TestCase):
                 {"type": "input_text", "text": "Chunk ID: fixture\nWall time: 0.1 seconds\nProcess exited with code 0\nOutput:\n" + json.dumps(receipt)},
             ]},
         )]
-        with Path(root["transcript"]).open("a") as stream:
-            stream.write("\n".join(json.dumps(row) for row in rows) + "\n")
+        root = self.entry(rows=rows)
         self.comments.append(self.release)
         report = helper.check([root])
         self.assertTrue(report["claims_clear"])
@@ -2006,11 +1970,8 @@ class ClaimCloseoutTests(unittest.TestCase):
                 self.assertFalse(report["claims_clear"], report)
                 self.assertTrue(report["blocked"], report)
                 self.comments.append(self.release)
-                legacy = self.entry()
                 legacy_call = shell_call("history", "uv run gh-plan.py claim 8")
-                with Path(legacy["transcript"]).open("a") as stream:
-                    for row in (legacy_call, native_terminal_result("history", json.dumps(quoted))):
-                        stream.write(json.dumps(row) + "\n")
+                legacy = self.entry(rows=(legacy_call, native_terminal_result("history", json.dumps(quoted))))
                 uncertain = helper.check([legacy])
                 self.assertFalse(uncertain["claims_clear"], uncertain)
                 self.assertFalse(uncertain["blocked"], uncertain)
@@ -2345,10 +2306,7 @@ class ClaimCloseoutTests(unittest.TestCase):
             'const prompt="Read gh-plan.py claim examples."; '
             'text(await tools.exec_command({cmd:"cat <<EOF\\n"+prompt+"\\nEOF"}));',
         ]
-        root = self.entry(cli_version=SUPPORTED_CLI_VERSION)
-        with Path(root["transcript"]).open("a") as stream:
-            for index, source in enumerate(sources):
-                stream.write(json.dumps(code_call(str(index), source)) + "\n")
+        root = self.entry(cli_version=SUPPORTED_CLI_VERSION, rows=(code_call(str(index), source) for index, source in enumerate(sources)))
         with patch.object(helper, "repository_reader") as reader:
             report = helper.check([root])
         self.assertTrue(report["claims_clear"], report["unresolved_invocations"])
@@ -2380,10 +2338,8 @@ class ClaimCloseoutTests(unittest.TestCase):
                     self.assertTrue(helper.history.literal_targets(rows, SESSION)["unresolved_invocations"])
 
     def test_javascript_patch_text_is_not_a_shell_claim(self) -> None:
-        root = self.entry()
         source = "text(await tools.apply_patch(`*** Begin Patch\n uv run gh-plan.py claim 5\n director's note\n*** End Patch`));"
-        with Path(root["transcript"]).open("a") as stream:
-            stream.write(json.dumps(code_call("patch", source)) + "\n")
+        root = self.entry(rows=[code_call("patch", source)])
         with patch.object(helper, "repository_reader") as reader:
             self.assertTrue(helper.check([root])["claims_clear"])
         reader.assert_not_called()
@@ -2395,18 +2351,13 @@ class ClaimCloseoutTests(unittest.TestCase):
             'const run = tools.exec_command; text(await run({cmd:"uv run gh-plan.py claim 5"}));',
         ]
         for source in sources:
-            root = self.entry()
-            with Path(root["transcript"]).open("a") as stream:
-                stream.write(json.dumps(code_call("alias", source)) + "\n")
+            root = self.entry(rows=[code_call("alias", source)])
             with self.subTest(source=source):
                 self.assertFalse(helper.check([root])["claims_clear"])
 
     def test_stored_command_cannot_hide_a_later_computed_claim(self) -> None:
-        root = self.entry()
         sources = ['store("c", "uv run gh-plan.py claim 5");', 'text(await tools.exec_command({cmd:load("c")}));']
-        with Path(root["transcript"]).open("a") as stream:
-            for index, source in enumerate(sources):
-                stream.write(json.dumps(code_call(str(index), source)) + "\n")
+        root = self.entry(rows=(code_call(str(index), source) for index, source in enumerate(sources)))
         self.assertFalse(helper.check([root])["claims_clear"])
 
     def test_fresh_javascript_cells_do_not_inherit_earlier_local_command_values(self) -> None:
@@ -2493,13 +2444,11 @@ class ClaimCloseoutTests(unittest.TestCase):
             )
         )
         for command, result in cases:
-            root = self.entry()
             rows = [
                 {"type": "function_call", "name": "exec_command", "call_id": "batch", "arguments": json.dumps({"cmd": command})},
                 {"type": "function_call_output", "call_id": "batch", "output": json.dumps(result)},
             ]
-            with Path(root["transcript"]).open("a") as stream:
-                stream.write("\n".join(json.dumps({"payload": row}) for row in rows) + "\n")
+            root = self.entry(rows=({"payload": row} for row in rows))
             with self.subTest(command=command), patch.object(helper, "check_record", return_value=[]):
                 self.assertFalse(helper.check([root])["claims_clear"])
 
@@ -2599,10 +2548,8 @@ class ClaimCloseoutTests(unittest.TestCase):
                     [("copies", "unfinished_claim")],
                 )
 
-        root = self.entry(cli_version=SUPPORTED_CLI_VERSION)
         source = "for (const n of [1,2]) { const r=await tools.exec_command({cmd:`uv run gh-plan.py --repo test/a claim ${n}`}); text(r); }"
-        with Path(root["transcript"]).open("a") as stream:
-            stream.write(json.dumps(code_call("claims", source)) + "\n")
+        root = self.entry(cli_version=SUPPORTED_CLI_VERSION, rows=[code_call("claims", source)])
         report = helper.check([root])
         self.assertFalse(report["claims_clear"])
         self.assertEqual(report["coverage"]["repositories"], [REPO])
@@ -3520,20 +3467,17 @@ print(root)"""
         self.assertEqual(report["unresolved_invocations"], [])
 
     def test_single_wrapped_claim_receipt_still_needs_its_exact_release(self) -> None:
-        root = self.entry()
         rows = [
             code_call("single", 'text(await tools.exec_command({cmd:"uv run gh-plan.py claim 1"}));'),
             {"payload": {"type": "custom_tool_call_output", "call_id": "single",
                          "output": json.dumps({"claim": SOURCE, "issue": {"repo": REPO, "number": 1}})}},
         ]
-        with Path(root["transcript"]).open("a") as stream:
-            stream.write("\n".join(json.dumps(row) for row in rows) + "\n")
+        root = self.entry(rows=rows)
         self.assertFalse(helper.check([root])["claims_clear"])
         self.comments.append(self.release)
         self.assertTrue(helper.check([root])["claims_clear"])
 
     def test_completed_stored_command_still_needs_its_exact_release(self) -> None:
-        root = self.entry(cli_version=SUPPORTED_CLI_VERSION)
         command = f"uv run gh-plan.py --repo {REPO} claim 1 --session {SESSION}"
         source = f'store("command",{json.dumps(command)});text(await tools.exec_command({{cmd:load("command")}}));'
         source += "text(await tools.wait?tools.clock__curr_time({}):tools.clock__curr_time({}));"
@@ -3572,8 +3516,7 @@ print(root)"""
                 },
             },
         ]
-        with Path(root["transcript"]).open("a") as stream:
-            stream.write("\n".join(json.dumps(row) for row in rows) + "\n")
+        root = self.entry(cli_version=SUPPORTED_CLI_VERSION, rows=rows)
         report = helper.check([root])
         self.assertFalse(report["claims_clear"], report)
         self.assertTrue(report["blocked"], report)
@@ -3592,7 +3535,6 @@ print(root)"""
         self.assertTrue(report["claims_clear"], report)
 
     def test_metadata_regex_filter_still_requires_exact_claim_release(self) -> None:
-        root = self.entry(cli_version=SUPPORTED_CLI_VERSION)
         source = f'text(await tools.exec_command({{cmd:"uv run gh-plan.py --repo {REPO} claim 1",tty:true}}));'
         rows = [
             code_call("metadata", source),
@@ -3612,8 +3554,7 @@ print(root)"""
             code_call("poll", 'text(await tools.write_stdin({session_id:41,chars:""}));'),
             native_terminal_result("poll", javascript=True),
         ]
-        with Path(root["transcript"]).open("a") as stream:
-            stream.write("\n".join(json.dumps(row) for row in rows) + "\n")
+        root = self.entry(cli_version=SUPPORTED_CLI_VERSION, rows=rows)
         report = helper.check([root])
         self.assertEqual(report["unresolved_invocations"], [], report)
         self.assertTrue(report["blocked"], report)
@@ -3640,7 +3581,6 @@ print(root)"""
                 self.assertTrue(report["unresolved_invocations"], report)
 
     def stored_claim_entry(self, following: str, *, first: str | None = None) -> dict:
-        root = self.entry(cli_version=SUPPORTED_CLI_VERSION)
         inputs = [first if first is not None else f'store("c","uv run gh-plan.py --repo {REPO} claim 1");', following]
         rows = []
         for index, source in enumerate(inputs):
@@ -3648,8 +3588,7 @@ print(root)"""
                 code_call(str(index), source),
                 native_terminal_result(str(index), javascript=True),
             ])
-        with Path(root["transcript"]).open("a") as stream:
-            stream.write("\n".join(json.dumps(row) for row in rows) + "\n")
+        root = self.entry(cli_version=SUPPORTED_CLI_VERSION, rows=rows)
         return root
 
     def test_bounded_diagnostics_after_stored_claim_data_stay_clear(self) -> None:
@@ -3707,10 +3646,7 @@ print(root)"""
             "text(await tools.wait?tools.clock__curr_time({}):tools.clock__curr_time({}));",
         ):
             with self.subTest(source=source):
-                entry = self.entry()
-                with Path(entry["transcript"]).open("a") as stream:
-                    stream.write(json.dumps(code_call("read", source)) + "\n")
-                    stream.write(json.dumps(native_terminal_result("read", javascript=True)) + "\n")
+                entry = self.entry(rows=[code_call("read", source), native_terminal_result("read", javascript=True)])
                 with patch.object(helper, "repository_reader") as reader, contextlib.redirect_stdout(io.StringIO()) as output:
                     code = helper.main(["--owner", "test", "--session", SESSION, "--transcript", entry["transcript"]])
                 report = json.loads(output.getvalue())
