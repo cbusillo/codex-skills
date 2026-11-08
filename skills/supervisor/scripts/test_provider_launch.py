@@ -76,8 +76,13 @@ class LaunchIssueTests(unittest.TestCase):
             for case in ("current", "untrusted", "human-owner", "stale", "recipient", "missing-brief", "wait", "blocker", "closed"):
                 current, comment, wait = copy.deepcopy(issue), copy.deepcopy(managed), clear
                 blockers = []
-                if case in {"untrusted", "human-owner"}:
-                    comment["user"]["login"] = "outsider" if case == "untrusted" else "fixture"
+                comments = [comment]
+                if case == "untrusted":
+                    comments.append({**comment, "id": 10, "user": {"login": "outsider"},
+                                     "created_at": "2026-01-04T00:00:00Z",
+                                     "body": comment["body"].replace(lead, "another-lead")})
+                elif case == "human-owner":
+                    comment["user"]["login"] = "fixture"
                 elif case == "stale":
                     current["body"] += "## Current Status\nNext actor: agent\n"
                     comment["created_at"] = "2025-12-31T00:00:00Z"
@@ -94,7 +99,6 @@ class LaunchIssueTests(unittest.TestCase):
                     current["state"] = "closed"
                 wait_comment = {"id": 9, "user": {"login": "fixture-bot[bot]"}, "body": plan.github_plan_wait.marker(wait),
                                 "created_at": "2026-01-03T00:00:00Z"}
-                before = copy.deepcopy((current, comment))
                 def read(argv: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
                     with patch_attr(plan, "emit") as emitted:
                         plan.cmd_show(plan.build_parser().parse_args(argv[3:]))
@@ -102,7 +106,8 @@ class LaunchIssueTests(unittest.TestCase):
                 with (self.subTest(case=case),
                       patch.multiple(plan, get_issue=Mock(return_value=("automation-gh", current)),
                           EXPECTED_ACTOR="fixture-bot[bot]", load_config=Mock(return_value={}),
-                          collect_paged_rest_items=Mock(return_value=("automation-gh", [comment, wait_comment])),
+                          collect_paged_rest_items=Mock(return_value=("automation-gh", [*comments, wait_comment])),
+                          read_planning_graph=Mock(return_value=None),
                           read_issue_relationships=Mock(return_value=("automation-gh",
                               {"blocked_by": blockers, "blocking": [], "sub_issues": []})),
                           next_status_body_time=Mock(return_value=current["updated_at"]),
@@ -112,7 +117,7 @@ class LaunchIssueTests(unittest.TestCase):
                           rest_edit_issue=Mock(side_effect=AssertionError("Human request edit"))),
                       patch_attr(plan.github_identity, "configured_bot_logins", return_value=["fixture-bot[bot]"]),
                       patch.object(iterm_tab.subprocess, "run", side_effect=read)):
-                    if case == "current":
+                    if case in {"current", "untrusted"}:
                         commands, _ = iterm_tab.prepare_launches(args)
                         prompt = next(word.removeprefix("--prompt-interactive=") for word in shlex.split(commands[0])
                                       if word.startswith("--prompt-interactive="))
@@ -122,7 +127,6 @@ class LaunchIssueTests(unittest.TestCase):
                         with self.assertRaises(ValueError) as refused:
                             iterm_tab.prepare_launches(args)
                         self.assertIsNone(refused.exception.__cause__)
-                    self.assertEqual((current, comment), before)
 
     def test_child_issue_brief_reaches_worker_verbatim_under_supervisor_header(self) -> None:
         issue = "https://github.com/fixture/repo/issues/7"

@@ -2274,17 +2274,14 @@ def claim_current_status(issue: dict[str, Any], sections: dict[str, str], commen
     return claim_current_status_record(issue, sections, comments, preserve_content=preserve_content).text.strip()
 
 
-def effective_current_status(issue: dict[str, Any], comments: list[dict[str, Any]]) -> str:
-    status = claim_current_status(issue, issue_plan_sections(issue), comments)
-    return re.sub(r"<!--.*?-->", "", status, flags=re.S).strip()
-
-
 def comment_current_status(issue: dict[str, Any]) -> str:
     _, comments = collect_paged_rest_items(
         f"/repos/{issue['repo']}/issues/{issue['number']}/comments",
         query={}, bucket="rest_core", step_prefix="status_comments",
     )
-    return effective_current_status(issue, comments)
+    status = claim_current_status(issue, issue_plan_sections(issue), comments, preserve_content=True)
+    markers = {line.strip() for lines in section_machine_markers(status).values() for line in lines}
+    return "\n".join(line for line in status.splitlines() if line.strip() not in markers).strip()
 
 
 def claim_snapshot(ref: str, repo: str, *, allow_closed: bool = False,
