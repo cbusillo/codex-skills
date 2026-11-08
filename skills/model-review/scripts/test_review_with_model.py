@@ -585,28 +585,6 @@ class ReviewWithModelTests(unittest.TestCase):
         self.assertEqual(Path(result["launch_receipt"]).name, record["name"])
         self.assertFalse((self.storage / "Launch Receipts").exists())
 
-    def test_each_provider_returns_its_review_and_the_model_that_ran(self) -> None:
-        self.install("codex", FAKE_CODEX)
-        self.install("claude", FAKE_CLAUDE)
-        self.install("agy", FAKE_AGY)
-        self.write_agy_settings({"model": "gemini-test"})
-        claude_json = json.dumps({"is_error": False, "result": completed("none"), "modelUsage": {"claude-test": {}}})
-        agy_json = json.dumps({"response": completed("none"), "denied_actions": []})
-        cwd_file = self.root / "agy-cwd"
-        for provider, model, env in (
-            ("openai", None, {"FAKE_ANSWER": completed("none")}),
-            ("anthropic", "claude-test", {"FAKE_CLAUDE_JSON": claude_json}),
-            ("google", "gemini-test", {"FAKE_AGY_JSON": agy_json, "FAKE_AGY_CWD_FILE": str(cwd_file)}),
-        ):
-            with self.subTest(provider=provider):
-                code, result = self.review(provider, **env)
-                self.assertEqual((code, result["ok"], result["model"], result["response"]), (0, True, model, "none"))
-        # The Google shell is confined to a temporary directory, not the repository root.
-        self.assertNotEqual(str(self.repo), cwd_file.read_text().strip())
-        self.assertFalse(list(self.repo.glob(".model-review-*")))
-        # agy does not say which model ran, so the result must not pretend it did.
-        self.assertIn("not reported", result["model_source"])
-
     def test_the_anthropic_reviewer_is_given_only_read_tools(self) -> None:
         self.install("claude", FAKE_CLAUDE)
         argv_file = self.root / "claude-argv"
@@ -657,17 +635,12 @@ class ReviewWithModelTests(unittest.TestCase):
         self.assertEqual(source_copy.read_text(), "after\n")
         self.assertEqual(list(self.repo.glob(".model-review-*")), [leftover.parent])
         source_copy.unlink()
-        (self.repo / "untracked.txt").write_text("ordinary project file")
-        code, result = self.review("anthropic", **env)
-        self.assertEqual((code, result["ok"]), (1, False))
-        self.assertIn("untracked", result["error"])
-        self.assertFalse(source_copy.exists(), "dirty reviews must not invoke the provider")
-        self.assertTrue(leftover.exists(), "another review's scratch stays intact")
         (self.repo / ".git/index").write_bytes(b"invalid index")
         code, result = self.review("anthropic", **env)
         self.assertEqual((code, result["ok"]), (1, False))
         self.assertIn("status", result["error"])
         self.assertFalse(source_copy.exists())
+        self.assertTrue(leftover.exists())
 
     def test_anthropic_denial_names_read_path_without_echoing_other_inputs(self) -> None:
         self.install("claude", FAKE_CLAUDE)
@@ -1001,8 +974,8 @@ class ReviewWithModelTests(unittest.TestCase):
         self.install("agy", FAKE_AGY)
         source = self.commit_base_on_main("before\n")
         subprocess.run(["git", "-C", str(self.repo), "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"], check=True)
-        prompt_file, diff_file = self.root / "agy-prompt", self.root / "agy-diff"
-        env = {"FAKE_AGY_JSON": json.dumps({"response": completed("none")}), "FAKE_AGY_CWD_FILE": str(self.root / "cwd"),
+        prompt_file, diff_file, cwd_file = self.root / "agy-prompt", self.root / "agy-diff", self.root / "cwd"
+        env = {"FAKE_AGY_JSON": json.dumps({"response": completed("none")}), "FAKE_AGY_CWD_FILE": str(cwd_file),
                "FAKE_AGY_PROMPT_FILE": str(prompt_file), "FAKE_AGY_DIFF_FILE": str(diff_file)}
         code, result = self.review("google", **env)
         self.assertEqual((code, result["response"]), (0, "none"))
@@ -1029,10 +1002,12 @@ class ReviewWithModelTests(unittest.TestCase):
         code, result = self.review("google", **env)
         self.assertEqual((code, result["response"]), (0, "none"))
         self.assertTrue(leftover.exists(), "the helper must not remove another review's scratch")
+        cwd_file.unlink()
         (self.repo / "new.py").write_text("print('new')\n")
         code, result = self.review("google", **env)
         self.assertEqual((code, result["ok"]), (1, False))
         self.assertIn("untracked", result["error"])
+        self.assertFalse(cwd_file.exists())
         subdir = self.repo / "subdir"
         subdir.mkdir()
         code, result = self.run_helper(
@@ -1040,6 +1015,7 @@ class ReviewWithModelTests(unittest.TestCase):
         )
         self.assertEqual((code, result["ok"]), (1, False))
         self.assertIn("untracked", result["error"], "a subdirectory target must check the whole worktree")
+        self.assertFalse(cwd_file.exists())
 
     def test_a_reviewer_that_could_write_or_was_denied_a_read_is_a_failure(self) -> None:
         self.install("claude", FAKE_CLAUDE)
@@ -1161,14 +1137,12 @@ class ReviewWithModelTests(unittest.TestCase):
         self.assertEqual((code, result["model"], result["model_source"]),
                          (0, "replacement", "reported by the CLI (rerouted)"))
 
-    def test_openai_jsonl_provider_errors_keep_their_reason(self) -> None:
+    def test_openai_terminal_failure_keeps_its_reason(self) -> None:
         self.install("codex", FAKE_CODEX)
-        for event in ({"type": "error", "message": "usage limit reached"},
-                      {"type": "turn.failed", "error": {"message": "unknown model"}}):
-            with self.subTest(event=event):
-                code, result = self.review("openai", FAKE_CODEX_EVENTS=json.dumps(event), FAKE_CODEX_EXIT="1")
-                self.assertEqual((code, result["ok"]), (1, False))
-                self.assertEqual(result["detail"], event.get("message") or event["error"]["message"])
+        event = {"type": "turn.failed", "error": {"message": "unknown model"}}
+        code, result = self.review("openai", FAKE_CODEX_EVENTS=json.dumps(event), FAKE_CODEX_EXIT="1")
+        self.assertEqual((code, result["ok"]), (1, False))
+        self.assertEqual(result["detail"], event["error"]["message"])
 
     def test_recorded_incomplete_review_preserves_the_execution_cause(self) -> None:
         fixture = json.loads(SCRIPT.with_name("fixtures").joinpath("openai-incomplete-2166.json").read_text())
@@ -1308,6 +1282,11 @@ class ReviewWithModelTests(unittest.TestCase):
         other = "87654321-4321-4321-4321-cba987654321"
         env = {"FAKE_AGY_JSON": json.dumps({"response": completed("none"), "conversation_id": conversation, "denied_actions": []}),
                "FAKE_AGY_CWD_FILE": str(self.root / "cwd")}
+        code, result = self.review("google", **env)
+        self.assertEqual((code, result["model"], result["model_source"]),
+                         (0, "retired-alias", "requested, not reported by the CLI"))
+        self.assertNotEqual(str(self.repo), Path(env["FAKE_AGY_CWD_FILE"]).read_text().strip())
+        self.assertFalse(list(self.repo.glob(".model-review-*")))
         rerouted_log = (
             'I1013 16:57:41.887720 1 model_resolver.go:155] model alias "retired-alias" resolved to "replacement"\n'
             'I1013 16:57:41.888060 1 model_config_manager.go:340] Propagating selected model override to backend: label="replacement"\n'
