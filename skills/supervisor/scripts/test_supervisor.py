@@ -2968,25 +2968,46 @@ class TerminalTests(unittest.TestCase):
         default_home = ACCOUNTS_TOML.replace('env = { CLAUDE_CONFIG_DIR = "~/claude-main" }', 'env = {}')
         homes = [(text, name) for text in (ACCOUNTS_TOML, default_home) for name in ("main", "spare")]
         fake_claude = self.root / "claude"
-        fake_claude.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+        fake_claude.write_text(f"#!{sys.executable}\nimport json, sys\nprint(json.dumps(sys.argv[1:]))\n")
         fake_claude.chmod(0o700)
-        launch = f"cd / && exec {shlex.quote(str(fake_claude))}"
-        commands = [iterm_tab.append_brief(launch, "brief")]
-        for text, name in homes:
-            choice = account_choice.choose("anthropic", accounts_config(text), AccountChoiceTests().snapshot(), None, name=name)
-            commands.append(iterm_tab.with_account(launch, choice, "brief"))
+        brief = "--permission-mode plan\nKeep $(touch injected) literal."
+        commands = []
+        for option in ("", "--allow-dangerously-skip-permissions", "--permission-mode auto", "--permission-mode=auto"):
+            launch = f"cd / && exec {shlex.quote(str(fake_claude))} {option}"
+            commands.append(iterm_tab.append_brief(launch, brief))
+            for text, name in homes:
+                choice = account_choice.choose("anthropic", accounts_config(text), AccountChoiceTests().snapshot(), None, name=name)
+                commands.append(iterm_tab.with_account(launch, choice, brief))
         for command in commands:
             with self.subTest(command=command):
-                args = subprocess.run(["/bin/sh", "-c", command], capture_output=True, text=True, check=True).stdout.splitlines()
+                args = json.loads(subprocess.run(["/bin/sh", "-c", command], capture_output=True, text=True, check=True).stdout)
                 separator = args.index("--")
                 parser = argparse.ArgumentParser(add_help=False)
+                parser.add_argument("--permission-mode", action="append", required=True)
+                parser.add_argument("--dangerously-skip-permissions", action="store_true")
                 parser.add_argument("--disallowedTools", action="append")
                 parser.add_argument("--settings")
                 options, _ = parser.parse_known_args(args[:separator])
+                self.assertEqual(options.permission_mode, ["auto"])
+                self.assertFalse(options.dangerously_skip_permissions)
                 self.assertEqual(options.disallowedTools, [iterm_tab.CLAUDE_QUESTION_TOOL])
                 self.assertIs(json.loads(options.settings)[iterm_tab.CLAUDE_AUTO_MEMORY_SETTING], False)
-                self.assertEqual(args[separator + 1:], ["brief"])
+                self.assertEqual(args[separator + 1 :], [brief])
         self.assertNotIn(iterm_tab.CLAUDE_QUESTION_TOOL, iterm_tab.append_brief("codex --remote unix://", "brief"))
+
+    def test_claude_conflicting_or_incomplete_permission_modes_refuse_before_launch(self) -> None:
+        for option in (
+            "--permission-mode plan",
+            "--permission-mode=bypassPermissions",
+            "--permission-mode",
+            "--permission-mode auto --permission-mode manual",
+            "--dangerously-skip-permissions",
+            "-- legacy prompt",
+        ):
+            with self.subTest(option=option), self.assertRaises(ValueError):
+                iterm_tab.append_brief(f"claude {option}", "brief")
+        for launch in ("codex --remote unix://", "agy"):
+            self.assertNotIn("--permission-mode", iterm_tab.launch_words(iterm_tab.append_brief(launch, "brief")))
 
     def test_codex_launch_turns_off_memory_generation_over_the_command_file(self) -> None:
         for launch in ("codex --remote unix://", f"cd /work && exec codex -c {MEMORY_SETTING}=true"):

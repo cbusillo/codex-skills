@@ -1287,7 +1287,11 @@ and appends it as one quoted prompt argument. For example, a launch file can
 contain `cd /absolute/repository && exec codex --remote unix:// -C /absolute/repository`, with the task
 text in the brief file. The supported form is a direct `codex`, `claude` or
 `agy` invocation, optionally preceded by `cd PATH &&` and simple command or
-environment prefixes. `agy` uses its native `--prompt-interactive` option;
+environment prefixes. A Claude launch file can contain
+`cd /absolute/repository && exec claude --permission-mode auto`.
+The launcher supplies auto mode when absent, including old allow-only skip
+flags; conflicting permission modes or bypass flags refuse with an auto-mode remedy.
+`agy` uses its native `--prompt-interactive` option;
 Codex and Claude take one positional prompt after `--`. Keep prompt options
 out of the command file. Shell wrappers, extra commands, trailing shell punctuation
 and shell comments refuse because they may discard the prompt.
@@ -1417,7 +1421,7 @@ launch object, including `file_native`, for the same `register --receipt-file`
 recovery.
 For fresh Google workers, use `--account-provider google --ledger` with the
 same direct interactive `agy` launch.
-The launcher adds session-only `--dangerously-skip-permissions`, so file edits
+For AGY, the launcher adds session-only `--dangerously-skip-permissions`, so file edits
 and commands need no per-action approvals; it does not change saved permissions.
 The shared file-session registrar binds the conversation from a dedicated native
 log to its SQLite transcript and exact
