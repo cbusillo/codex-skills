@@ -974,8 +974,8 @@ class ReviewWithModelTests(unittest.TestCase):
         self.install("agy", FAKE_AGY)
         source = self.commit_base_on_main("before\n")
         subprocess.run(["git", "-C", str(self.repo), "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"], check=True)
-        prompt_file, diff_file = self.root / "agy-prompt", self.root / "agy-diff"
-        env = {"FAKE_AGY_JSON": json.dumps({"response": completed("none")}), "FAKE_AGY_CWD_FILE": str(self.root / "cwd"),
+        prompt_file, diff_file, cwd_file = self.root / "agy-prompt", self.root / "agy-diff", self.root / "cwd"
+        env = {"FAKE_AGY_JSON": json.dumps({"response": completed("none")}), "FAKE_AGY_CWD_FILE": str(cwd_file),
                "FAKE_AGY_PROMPT_FILE": str(prompt_file), "FAKE_AGY_DIFF_FILE": str(diff_file)}
         code, result = self.review("google", **env)
         self.assertEqual((code, result["response"]), (0, "none"))
@@ -1002,10 +1002,12 @@ class ReviewWithModelTests(unittest.TestCase):
         code, result = self.review("google", **env)
         self.assertEqual((code, result["response"]), (0, "none"))
         self.assertTrue(leftover.exists(), "the helper must not remove another review's scratch")
+        cwd_file.unlink()
         (self.repo / "new.py").write_text("print('new')\n")
         code, result = self.review("google", **env)
         self.assertEqual((code, result["ok"]), (1, False))
         self.assertIn("untracked", result["error"])
+        self.assertFalse(cwd_file.exists())
         subdir = self.repo / "subdir"
         subdir.mkdir()
         code, result = self.run_helper(
@@ -1013,6 +1015,7 @@ class ReviewWithModelTests(unittest.TestCase):
         )
         self.assertEqual((code, result["ok"]), (1, False))
         self.assertIn("untracked", result["error"], "a subdirectory target must check the whole worktree")
+        self.assertFalse(cwd_file.exists())
 
     def test_a_reviewer_that_could_write_or_was_denied_a_read_is_a_failure(self) -> None:
         self.install("claude", FAKE_CLAUDE)
