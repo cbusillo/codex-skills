@@ -1498,7 +1498,7 @@ def test_commentless_openings_resolve_only_external_identities(
         reader.get_json.side_effect = github_read.GitHubReadShapeError("identity unavailable")
     patch_radar(monkeypatch, "discussion_reader", lambda _repo: reader)
     monkeypatch.setattr(github_read, "read_repository_connections", REAL_READ_REPOSITORY_CONNECTIONS)
-    monkeypatch.setattr(github_unanswered_comments, "run_json", FakeGitHub({}))
+    patch_radar(monkeypatch, "run_json", FakeGitHub({}))
     candidates, errors = github_unanswered_comments.repository_activity(
         "example/repo", datetime(2026, 7, 1, tzinfo=UTC), datetime(2026, 7, 26, tzinfo=UTC), set(), {"own-app[bot]"},
     )
