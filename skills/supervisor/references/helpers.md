@@ -1330,6 +1330,8 @@ workers can pass `--ledger <shared-ledger>` when that pointer is unavailable.
 The helper requires this native worker's unique Supervisor-owned row to name
 the unique Supervisor-owned Codex lead, then reads its home. Other callers use
 `--codex-home <source-home>` instead. Existing native delivery checks still apply.
+Antigravity workers supply their native `tool.conversationId` through
+`ANTIGRAVITY_SOURCE_METADATA`; inherited Claude/Codex markers retain precedence.
 Claude leads use the tmux backend and `review_notifications.send(lead_entry,
 issue_url)`, which verifies the ledger identity, idle prompt and empty composer.
 On `NotSent`, retain the request and recheck when idle; never force terminal
