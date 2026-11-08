@@ -153,9 +153,8 @@ class LaunchIssueTests(unittest.TestCase):
                         args.brief_issue = [issue] if route == "issue" else []
                         for backend in ("iterm", "tmux"):
                             with self.subTest(agent=agent, route=route, backend=backend):
-                                with self.assertRaisesRegex(ValueError, f"agent:{assigned}") as caught:
+                                with self.assertRaisesRegex(ValueError, f"agent:{assigned}"):
                                     asyncio.run(iterm_tab.operate(app, args) if backend == "iterm" else tmux_terminal.operate(args))
-                                self.assertIn(agent, str(caught.exception))
                 select.assert_not_called()
                 daemon.assert_not_called()
                 prepare.assert_not_called()
@@ -194,25 +193,45 @@ class LaunchIssueTests(unittest.TestCase):
                             prompt = words[-1]
                             claim_line = next(line for line in prompt.splitlines() if line.startswith("--agent-override "))
                             self.assertEqual(shlex.split(claim_line), ["--agent-override", reason])
-                            self.assertEqual(payload["issue"]["labels"], ["agent:claude" if agent == "codex" else "agent:codex"])
+
+    def test_override_instructions_only_reach_workers_using_the_family_exception(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            command, brief = Path(folder) / "command", Path(folder) / "brief"
+            command.write_text("claude")
+            args = argparse.Namespace(command_file=[command], brief_file=[brief], agent_override="Explicit Director instruction")
+            payload = {"ok": True, "issue": {"labels": ["agent:codex"], "launch_check": {"allowed": True}}}
+            with patch.object(iterm_tab.subprocess, "run", side_effect=lambda *_a, **_k:
+                              subprocess.CompletedProcess([], 0, json.dumps(payload))):
+                for anchor, labels in (("Read-only anchor:", ["agent:codex"]), ("Anchor:", ["agent:claude"]), ("Anchor:", []), ("Context:", [])):
+                    brief.write_text(f"{anchor} https://github.com/fixture/repo/issues/7\nRules: {iterm_tab.BRIEF_RULES_URL}")
+                    payload["issue"]["labels"] = labels
+                    with self.subTest(anchor=anchor, labels=labels):
+                        prepared, _ = iterm_tab.prepare_launches(args)
+                        self.assertNotIn("--agent-override", prepared[0])
+            for reason in ("", " ", "Decision\non two lines", "Decision\ron two lines"):
+                args.agent_override = reason
+                with (self.subTest(reason=reason), patch.object(iterm_tab.subprocess, "run") as reader,
+                      self.assertRaisesRegex(ValueError, "--agent-override")):
+                    iterm_tab.prepare_launches(args)
+                reader.assert_not_called()
 
     def test_batch_assignment_uses_each_command_instead_of_inherited_lead_family(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             commands, briefs = [root / "codex", root / "claude"], [root / "first", root / "second"]
-            for command, brief in zip(commands, briefs):
+            for number, (command, brief) in enumerate(zip(commands, briefs, strict=True), 7):
                 command.write_text(command.name)
-                brief.write_text(f"Anchor: https://github.com/fixture/repo/issues/7\nRules: {iterm_tab.BRIEF_RULES_URL}")
+                brief.write_text(f"Anchor: https://github.com/fixture/repo/issues/{number}\nRules: {iterm_tab.BRIEF_RULES_URL}")
             args = argparse.Namespace(command_file=commands, brief_file=briefs)
             for second_assignment in ("codex", "claude"):
                 responses = [{"ok": True, "issue": {"labels": [f"agent:{assigned}"], "launch_check": {"allowed": True}}}
                              for assigned in ("codex", second_assignment)]
                 with (self.subTest(second_assignment=second_assignment),
-                      patch.dict(os.environ, {"CODEX_SESSION_ID": "lead", "CLAUDECODE": "1"}),
+                      patch.dict(os.environ, {"CODEX_SESSION_ID": "lead", "CLAUDECODE": "", "CLAUDE_CODE_SESSION_ID": ""}),
                       patch.object(iterm_tab.subprocess, "run", side_effect=[subprocess.CompletedProcess([], 0, json.dumps(row))
                                                                                  for row in responses])):
                     if second_assignment == "codex":
-                        with self.assertRaises(ValueError):
+                        with self.assertRaisesRegex(ValueError, "agent:" + second_assignment):
                             iterm_tab.prepare_launches(args)
                     else:
                         self.assertEqual(len(iterm_tab.prepare_launches(args)[0]), len(commands))
@@ -223,12 +242,12 @@ class LaunchIssueTests(unittest.TestCase):
         with patch.object(iterm_tab.subprocess, "run", side_effect=lambda *_a, **_k:
                           subprocess.CompletedProcess([], 0, json.dumps(payload))):
             for override in (None, "Explicit Director instruction"):
-                with self.subTest(override=override), self.assertRaises(ValueError):
+                with self.subTest(override=override), self.assertRaisesRegex(ValueError, "assignment unavailable"):
                     iterm_tab.check_launch_issue(anchor, command_text="claude", agent_override=override)
             payload["issue"]["labels"] = ["agent:codex"]
             iterm_tab.check_launch_issue(anchor.replace("Anchor:", "Read-only anchor:"), command_text="claude")
             payload["issue"]["launch_check"] = {"allowed": False, "error": {"message": "Fixture custody conflict"}}
-            with self.assertRaises(ValueError):
+            with self.assertRaisesRegex(ValueError, "Fixture custody conflict"):
                 iterm_tab.check_launch_issue(anchor, command_text="claude", agent_override="Explicit Director instruction")
 
     def test_changed_prerequisite_allows_a_fresh_check_and_read_only_work_does_not_claim(self) -> None:

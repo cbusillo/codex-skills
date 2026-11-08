@@ -1295,7 +1295,8 @@ Before native creation, execution anchors use the shared
 intended command, independently of the lead's harness. Matching assignments,
 unlabeled issues and read-only anchors remain available. For an explicit
 Director exception, pass `--agent-override "<recorded decision or instruction>"`;
-the launcher adds that same argument to the worker's own claim instructions.
+the launcher adds that same argument to the claim instructions of workers using
+the family exception.
 It never changes an assignment or waives admission, custody or other launch checks.
 For a worker's parallel-session request, its lead or the Supervisor adds
 `--brief-issue <child-issue-url>`

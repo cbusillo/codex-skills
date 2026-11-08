@@ -1378,7 +1378,7 @@ def launch_resume_source(brief: str) -> str | None:
 
 
 def check_launch_issue(brief: str, *, dispatch_recipient: str | None = None, dispatch_issue: str | None = None,
-                       wait_resolved: str | None = None, command_text: str | None = None, agent_override: str | None = None) -> None:
+                       wait_resolved: str | None = None, command_text: str | None = None, agent_override: str | None = None) -> bool:
     labels = re.findall(r"(?mi)^\s*(?:[-*] )?(?:\*\*)?(Read-only anchor|Anchor(?: and claim)?):(?:\*\*)?[^\S\n]*([^\n]*)", brief)
     anchors = []
     for mode, value in labels:
@@ -1388,7 +1388,8 @@ def check_launch_issue(brief: str, *, dispatch_recipient: str | None = None, dis
         elif not re.search(r"https://github\.com/[\w.-]+/[\w.-]+/pull/[1-9]\d*", value):
             raise ValueError("An explicit issue anchor needs its full https://github.com/OWNER/REPO/issues/N URL")
     if not anchors:
-        return
+        return False
+    override_used = False
     agent = launch_agent(command_text) if command_text is not None else None
     read_only_anchors = {anchor.casefold() for mode, anchor in anchors if mode.casefold() == "read-only anchor"}
     execution_anchors = {anchor.casefold() for mode, anchor in anchors if mode.casefold() != "read-only anchor"}
@@ -1456,12 +1457,14 @@ def check_launch_issue(brief: str, *, dispatch_recipient: str | None = None, dis
             if not isinstance(issue.get("labels"), list):
                 raise ValueError(f"Launch assignment unavailable for {anchor}; read its current labels before dispatch")
             mismatch = github_agent.exclusion(issue, agent)
+            override_used = override_used or bool(mismatch and agent_override)
             if mismatch and not agent_override:
                 names = ", ".join(mismatch["agent_labels"])
                 raise ValueError(f"Launch refused for {anchor}: issue carries {names}; intended command is {agent or 'unknown'}. "
                                  "Use a command file for the assigned codex or claude family with its matching --account-provider, "
                                  "or resolve conflicting assignment labels. Only an explicit Director override permits "
                                  "--agent-override REASON; the worker must pass that same reason to its own claim.")
+    return override_used
 
 
 def prepare_launches(args: argparse.Namespace) -> tuple[list[str], list[dict | None]]:
@@ -1521,10 +1524,10 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
         return prepare_resume(args)
     override = getattr(args, "agent_override", None)
     if override is not None:
-        override = override.strip()
-        if not override:
-            raise ValueError("--agent-override needs the explicit Director decision or instruction")
+        if not override.strip() or any(character in override for character in "\n\r"):
+            raise ValueError("--agent-override needs the explicit Director decision or instruction on one nonempty line")
         validate_text(override)
+        override = override.strip()
     provider = getattr(args, "account_provider", None)
     if getattr(args, "ledger", None) and provider not in account_choice.PROVIDERS:
         raise ValueError("fresh --ledger registration needs --account-provider")
@@ -1573,12 +1576,12 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
         validate_text(brief, allow_tabs=True)
     for index, brief in enumerate(headers):
         validate_brief_rules(brief)
-        check_launch_issue(brief, dispatch_recipient=getattr(args, "lead_session_id", None) if brief_issues else None,
+        override_used = check_launch_issue(brief, dispatch_recipient=getattr(args, "lead_session_id", None) if brief_issues else None,
                            dispatch_issue=brief_issues[index] if brief_issues else None, wait_resolved=resolutions[index],
                            command_text=command_texts[index], agent_override=override)
-    if override:
-        instruction = "\n\nFor this issue's own-identity gh-plan.py claim, pass the explicit Director override:\n"
-        briefs = [brief + instruction + shlex.join(["--agent-override", override]) + "\n" for brief in briefs]
+        if override and override_used:
+            instruction = "\n\nFor this issue's own-identity gh-plan.py claim, pass the explicit Director override:\n"
+            briefs[index] += instruction + shlex.join(["--agent-override", override]) + "\n"
     validate_computer_use_launch(args, command_texts, briefs)
     apps = [gui_launch.declared_app(brief) for brief in briefs]
     if (getattr(args, "ledger", None) and provider == "openai" and not any(apps)
