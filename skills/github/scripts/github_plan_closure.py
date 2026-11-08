@@ -334,8 +334,8 @@ def store_lock(path: Path, *, create: bool = False):
         yield
 
 
-def replace_rows(rows: list[dict]) -> None:
-    path = closed_log()
+def replace_rows(rows: list[dict], *, path: Path | None = None) -> None:
+    path = path if path is not None else closed_log()
     with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False) as stream:
         temporary = Path(stream.name)
         json.dump(rows, stream)

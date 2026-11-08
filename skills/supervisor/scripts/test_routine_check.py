@@ -4,6 +4,7 @@
 # dependencies = ["aiohttp==3.14.5", "PyYAML==6.0.3", "tree-sitter==0.26.0", "tree-sitter-bash==0.25.1", "tree-sitter-javascript==0.25.0"]
 # ///
 import argparse
+from functools import partial
 from contextlib import redirect_stdout
 from io import StringIO
 import importlib
@@ -49,6 +50,7 @@ class RoutineCheckTests(unittest.TestCase):
         self.enterContext(patch.object(routine_check.oq, "default_decision_authors", return_value=["agent[bot]"]))
         self.enterContext(patch_attr(routine_check.radar.github_identity, "automation_login", return_value="agent[bot]"))
         self.enterContext(patch_attr(routine_check.radar.github_identity, "configured_bot_logins", return_value=["agent[bot]"]))
+        self.enterContext(patch.object(session_closeout.closure, "source_records", return_value={}))
 
     def test_digest_keeps_every_track_decision_wait_and_unread_source(self) -> None:
         roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second"),
@@ -781,6 +783,95 @@ class RoutineCheckTests(unittest.TestCase):
                             self.assertEqual(entry["handoff_url"], comments[0]["html_url"])
                             self.assertEqual(operation.state["steps"], {})
                         mutation.assert_not_called()
+
+    def test_handoff_association_follows_the_canonical_launch_generation(self) -> None:
+        root = Path(os.environ["CODE_HOME"])
+        session = "fictional-native"
+        urls = {name: f"https://github.com/owner/repo/issues/7#issuecomment-{number}"
+                for name, number in (("old", 8), ("intermediate", 9), ("new", 10))}
+        original = {"session_id": session, "harness": "codex", "supervisor_owned": True,
+                    "pid": 12, "launch_pid": 12, "tty": "ttys010", "launch_generation": "original",
+                    "launch_started_at": "2026-11-07T22:00:00Z", "codex_home": str(root),
+                    "transcript": str(root / "native.jsonl"), "handoff_url": urls["old"]}
+        generation = {**original, "pid": 23, "launch_pid": 23, "tty": "ttys020", "launch_generation": "resumed",
+                      "launch_started_at": "2026-11-08T01:35:10Z"}
+        source = {**original, "ended_at": "2026-11-07T22:32:16Z", "process_exit_verified": True,
+                  "resumed_at": "2026-11-08T01:35:55Z", "resumed_generation": generation}
+        variants: list[str] = ["explicit", "intermediate", "manual_closed", "discovery", "journal_retry",
+                    "aborted_prelaunch", "aborted_conflict", "same_generation", "missing_source", "wrong_generation",
+                    "unknown_source", "unknown_comment", "old_selected", "no_new_handoff", "journal_conflict", "ledger_changed",
+                    "canonical_conflict", "canonical_recovery"]
+        for variant in variants:
+            with self.subTest(variant=variant):
+                saved = json.loads(json.dumps(source))
+                current = {**generation, "repository": "owner/repo", "issue": 7}
+                comments = {name: {"id": number, "html_url": urls[name], "body": f"Session: {session}",
+                                   "user": {"login": "agent[bot]"}, "issue_url": "https://api.github.com/repos/owner/repo/issues/7",
+                                   "created_at": stamp, "updated_at": stamp}
+                            for name, number, stamp in (("old", 8, "2026-11-07T22:31:00Z"),
+                                                       ("intermediate", 9, "2026-11-08T00:31:00Z"),
+                                                       ("new", 10, "2026-11-08T01:59:00Z"))}
+                if variant in {"intermediate", "unknown_comment"}:
+                    current["handoff_url"] = urls["intermediate"]
+                elif variant == "manual_closed":
+                    saved = {**current, "ended_at": "2026-11-08T02:00:00Z", "process_exit_verified": True}
+                elif variant == "discovery":
+                    current.pop("handoff_url")
+                elif variant.startswith("aborted"):
+                    current = {**original, "repository": "owner/repo", "issue": 7}
+                    saved.pop("resumed_generation")
+                elif variant == "same_generation":
+                    current["handoff_url"] = urls["intermediate"]
+                    comments["intermediate"].update(created_at=comments["new"]["created_at"], updated_at=comments["new"]["created_at"])
+                elif variant.startswith("canonical"):
+                    saved = {**current, "handoff_url": urls["intermediate"],
+                             "ended_at": "2026-11-08T02:00:00Z", "process_exit_verified": True}
+                    comments["intermediate"].update(created_at=comments["new"]["created_at"], updated_at=comments["new"]["created_at"])
+                elif variant == "wrong_generation":
+                    saved["resumed_generation"]["launch_started_at"] = "2026-11-08T01:35:11Z"
+                selected = None if variant in {"discovery", "no_new_handoff", "journal_retry", "aborted_prelaunch", "canonical_recovery"} else urls["new"]
+                if variant == "old_selected":
+                    selected = urls["old"]
+                ledger = root / "ledger.json"
+                rows = [{**current, "launch_generation": "changed"}] if variant == "ledger_changed" else [current]
+                ledger.write_text(json.dumps(rows))
+                operation = Operation(root / variant, [session])
+                if variant in {"journal_retry", "journal_conflict"}:
+                    operation.state["handoff"] = {"url": urls["old" if variant == "journal_conflict" else "new"]}
+                args = argparse.Namespace(ledger=ledger, session_id=session, handoff_url=selected)
+                by_id = {str(row["id"]): row for row in comments.values()}
+                if variant in {"explicit", "intermediate", "discovery", "journal_retry"}:
+                    by_id.pop("8")
+                if variant == "unknown_comment":
+                    by_id.pop("9")
+                def read_comment(mapping: dict[str, dict], path: str, **_kwargs: Any) -> dict:
+                    if path.rsplit("/", 1)[-1] not in mapping:
+                        raise session_closeout.GitHubReadError("prior handoff deleted", result=ApiResult(False, status=404, body=None), diagnostics={})
+                    return mapping[path.rsplit("/", 1)[-1]]
+
+                reader = SimpleNamespace(get_json=Mock(side_effect=partial(read_comment, by_id)),
+                                         paged_json=Mock(return_value=[comments["old"]] if variant == "no_new_handoff" else list(comments.values())))
+                error = {"same_generation": "current handoff differs", "aborted_conflict": "current handoff differs",
+                         "missing_source": "current handoff differs", "wrong_generation": "source authority",
+                         "unknown_source": "source unavailable", "unknown_comment": "prior handoff deleted",
+                         "old_selected": "created in", "no_new_handoff": "found 0 candidates",
+                         "journal_conflict": "journal already records", "ledger_changed": "ledger generation changed",
+                         "canonical_conflict": "current handoff differs"}.get(variant)
+                with (patch_attr(session_closeout, "GitHubReader", return_value=reader),
+                      patch.object(session_closeout.github_identity, "automation_login", return_value="agent[bot]"),
+                      patch.object(session_closeout.closure, "source_records", return_value={} if variant == "missing_source" else {session: saved},
+                                   side_effect=ValueError("source unavailable") if variant == "unknown_source" else None)):
+                    if error:
+                        with self.assertRaisesRegex(GateFailed, error):
+                            session_closeout.verify_handoff(current, args, operation, retired=False)
+                        self.assertEqual(json.loads(ledger.read_text()), rows)
+                        if variant != "ledger_changed":
+                            self.assertNotIn("revision", operation.state.get("handoff", {}))
+                    else:
+                        session_closeout.verify_handoff(current, args, operation, retired=False)
+                        expected = urls["old" if variant == "aborted_prelaunch" else "intermediate" if variant == "canonical_recovery" else "new"]
+                        self.assertEqual(json.loads(ledger.read_text())[0]["handoff_url"], expected)
+                        self.assertEqual(operation.state["handoff"]["url"], expected)
 
     def test_handoff_refusal_identifies_examined_comment_and_missing_proof(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

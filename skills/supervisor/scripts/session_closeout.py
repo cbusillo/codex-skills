@@ -167,8 +167,14 @@ def verify_handoff(entry: dict, args: argparse.Namespace, operation: Operation, 
     actor = github_identity.automation_login()
     if not actor:
         raise GateFailed("handoff", "configured automation identity is unknown")
-    selected = getattr(args, "handoff_url", None) or entry.get("handoff_url") or operation.state.get("handoff", {}).get("url")
-    require(not entry.get("handoff_url") or entry["handoff_url"] == selected, "handoff", "recorded handoff differs; preserve it")
+    started = claim_release.stamp(entry["launch_started_at"]) if entry.get("launch_started_at") else None
+    try:
+        saved = closure.source_records({entry["session_id"]}).get(entry["session_id"]) if not retired else None
+        associated = release.handoff_association(entry, saved, reader=reader, actor=actor)
+    except (ValueError, OSError, GitHubReadError) as error:
+        raise GateFailed("handoff", str(error)) from error
+    selected = getattr(args, "handoff_url", None) or operation.state.get("handoff", {}).get("url") or associated
+    require(not associated or associated == selected, "handoff", "current handoff differs; preserve it")
     evidence = None
     if not selected:
         repo, number = entry.get("repository"), entry.get("issue")
@@ -183,6 +189,7 @@ def verify_handoff(entry: dict, args: argparse.Namespace, operation: Operation, 
                   and row.get("number") == number]
         candidates = [comment for comment in comments
                       if (comment.get("user") or {}).get("login") == actor
+                      and (started is None or claim_release.stamp(comment["created_at"]) >= started)
                       and not live_lines(comment.get("body") or "")
                       and not re.match(r"(?i)^Claimed by\b", (comment.get("body") or "").strip())
                       and (explicit_session(comment.get("body") or "", args.session_id)
@@ -203,6 +210,8 @@ def verify_handoff(entry: dict, args: argparse.Namespace, operation: Operation, 
         handoff = release.handoff(reader, proposed, actor)
     except ValueError as error:
         raise GateFailed("handoff", f"{selected}: {error}") from error
+    require(started is None or claim_release.stamp(handoff["created_at"]) >= started,
+            "handoff", "handoff must be created in this launch generation")
     if not explicit_session(handoff.get("body") or "", args.session_id):
         evidence = evidence if evidence is not None else claim_evidence(entry, operation, "handoff_comments")
         require(projected_handoff(handoff, evidence, actor, args.session_id),

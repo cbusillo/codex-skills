@@ -723,7 +723,7 @@ def _cancel_saved(session):
     return closure.source_records({session}).get(session)
 
 
-def _cancel_generation(entry, saved):
+def source_generation(entry: dict, saved: dict | None) -> dict | None:
     """Return the matching current row as negative evidence, never ownership."""
     if saved is None:
         return
@@ -809,7 +809,7 @@ async def prove_crash_end(entry: dict, *, deadline: float | None = None, process
         if not entry.get("codex_home"):
             _primary, original_home, _configured, _known = _cancel_origin(entry, action)
             entry = {**entry, "codex_home": str(original_home)}
-        current = _cancel_generation(entry, saved)
+        current = source_generation(entry, saved)
         latest_pid = current.get("launch_pid") if current else None
         if process is None or latest_pid not in {None, entry.get("pid"), entry.get("launch_pid")}:
             process = termination._verify_queue_source(entry, session, latest_pid=latest_pid)
@@ -873,7 +873,7 @@ async def cancel_queue(home: Path, session: str, *, ledger: Path | None = None,
             reader = None if ledger is not None else lambda lines: termination.native_transcript_records(entry, lines)
             retained_homes = {Path(saved["codex_home"]).expanduser().resolve(strict=True)} if saved and saved.get("codex_home") else set()
             _primary, original_home, configured, _known = _cancel_origin(entry, action)
-            current = _cancel_generation({**entry, "codex_home": str(original_home)}, saved)
+            current = source_generation({**entry, "codex_home": str(original_home)}, saved)
             if Path(target) not in configured | retained_homes | {original_home}:
                 raise ValueError("target must be configured or a validated retained source home")
             process = _source_process(entry, saved) if ledger is not None else None

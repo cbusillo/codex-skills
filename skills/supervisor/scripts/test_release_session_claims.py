@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
 import tempfile
 import unittest
@@ -122,7 +123,7 @@ class ReleaseTests(unittest.TestCase):
                 "type": "agent_message", "message": "Finished.\nSafe to exit: yes"}},
             {"timestamp": "2026-01-01T00:01:01Z", "payload": {"type": "task_complete"}},
         ]) + "\n")
-        self.entry = {"session_id": SOURCE["session"], "harness": "codex",
+        self.entry: dict[str, Any] = {"session_id": SOURCE["session"], "harness": "codex",
                       "transcript": str(self.transcript), "pid": 123, "tty": "ttys123",
                       "supervisor_owned": True, "process_exit_verified": True,
                       "ended_at": "2026-01-01T00:02:00Z",
@@ -688,6 +689,8 @@ class ReleaseTests(unittest.TestCase):
                                             "resumed_at": (ended - timedelta(minutes=1)).isoformat(),
                                             "resumed_generation": metadata}]))
             with self.subTest(recovery=recovered), \
+                    patch_attribute(helper, "GitHubReader", return_value=self.reader), \
+                    patch_attribute(identity, "automation_login", return_value=ACTOR), \
                     patch.object(tmux_terminal.Terminal, "list", return_value=[pane]), \
                     patch.object(helper, "inventory", return_value=[(456, entry["tty"], "codex --remote unix:///new-client")]), \
                     patch.object(helper.closure, "process_started_at", return_value=ended + timedelta(seconds=22)), \
@@ -1379,6 +1382,76 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(helper.record_closure(log, self.entry, "supervisor", persist=False)["ended_at"], first["ended_at"])
         with self.assertRaisesRegex(ValueError, "identity changed"):
             helper.record_closure(log, {**self.entry, "pid": 789}, "supervisor")
+
+    def test_finish_binds_a_missing_handoff_without_replacing_a_current_one(self) -> None:
+        log = self.root / "late-handoff.json"
+        original = helper.record_closure(log, {**self.entry, "handoff_url": None}, "supervisor")
+        preview = helper.record_closure(log, self.entry, "supervisor", persist=False)
+        self.assertEqual(preview["handoff_url"], self.entry["handoff_url"])
+        self.assertIsNone(json.loads(log.read_text())[0]["handoff_url"])
+        bound = helper.record_closure(log, self.entry, "supervisor")
+        self.assertEqual(bound["ended_at"], original["ended_at"])
+        self.assertEqual(helper.closure_identity(bound), helper.closure_identity(self.entry))
+        with self.assertRaisesRegex(ValueError, "handoff_url"):
+            helper.record_closure(log, {**self.entry, "handoff_url": self.entry["handoff_url"].replace("-99", "-100")}, "supervisor")
+        self.assertEqual(json.loads(log.read_text())[0]["handoff_url"], self.entry["handoff_url"])
+        modern = {**self.entry, "launch_pid": self.entry["pid"], "launch_generation": "current",
+                  "launch_started_at": "2026-01-01T00:00:30Z", "codex_home": str(self.root)}
+        for current in (False, True):
+            with self.subTest(current=current):
+                log.write_text(json.dumps([{**modern, "handoff_url": None}]))
+                self.reader.get_json.return_value["created_at"] = (
+                    github_plan_release.stamp(modern["launch_started_at"]) + timedelta(seconds=1 if current else -1)).isoformat()
+                with patch_attribute(helper, "GitHubReader", return_value=self.reader), patch_attribute(identity, "automation_login", return_value=ACTOR):
+                    finished = helper.record_closure(log, modern, "supervisor")
+                self.assertEqual(finished["handoff_url"], modern["handoff_url"] if current else None)
+                self.assertEqual(finished["ended_at"], modern["ended_at"])
+
+    def test_finish_preserves_the_canonical_handoff_from_a_stale_ledger(self) -> None:
+        log = self.root / "stale-ledger.json"
+        metadata = {"launch_pid": self.entry["pid"], "launch_generation": "current",
+                    "launch_started_at": "2026-01-01T00:00:30Z", "codex_home": str(self.root)}
+        current = {**self.entry, **metadata, "handoff_url": self.entry["handoff_url"].replace("-99", "-100")}
+        log.write_text(json.dumps([current]))
+        posted = dict(self.reader.get_json.return_value)
+        self.reader.get_json.side_effect = lambda path, **_kw: {
+            **posted, "id": int(path.rsplit("/", 1)[-1]),
+            "created_at": "2026-01-01T00:00:45Z" if path.endswith("/100") else posted["created_at"]}
+        with patch_attribute(helper, "GitHubReader", return_value=self.reader), patch_attribute(identity, "automation_login", return_value=ACTOR):
+            retained = helper.record_closure(log, {**self.entry, **metadata}, "supervisor")
+        self.assertEqual(retained["handoff_url"], current["handoff_url"])
+        self.assertEqual(retained["ended_at"], current["ended_at"])
+        self.assertEqual(json.loads(log.read_text())[0]["handoff_url"], current["handoff_url"])
+        self.reader.get_json.side_effect = AssertionError("unchanged association must not need a handoff read")
+        self.assertEqual(helper.record_closure(log, current, "supervisor")["handoff_url"], current["handoff_url"])
+
+    def test_manual_finish_drops_prior_generation_handoffs_on_repeated_resume(self) -> None:
+        metadata = {"pid": self.entry["pid"], "launch_pid": self.entry["pid"], "tty": self.entry["tty"],
+                    "launch_generation": "resumed", "launch_started_at": "2026-01-01T00:00:30Z",
+                    "codex_home": str(self.root), "transcript": str(self.transcript)}
+        original_url = self.entry["handoff_url"]
+        for intermediate in (False, True):
+            with self.subTest(intermediate=intermediate):
+                log = self.root / f"manual-{intermediate}.json"
+                current = {**self.entry, **metadata,
+                           "handoff_url": original_url.replace("-99", "-98") if intermediate else original_url}
+                saved = {**self.entry, "resumed_at": "2026-01-01T00:00:40Z", "resumed_generation": metadata}
+                log.write_text(json.dumps([saved]))
+                posted = dict(self.reader.get_json.return_value)
+                self.reader.get_json.side_effect = partial(lambda evidence, path, **_kw: {
+                    **evidence, "id": int(path.rsplit("/", 1)[-1]),
+                    "created_at": "2026-01-01T00:00:20Z" if path.endswith("/98") else evidence["created_at"]}, posted)
+                if not intermediate:
+                    self.reader.get_json.side_effect = AssertionError("canonical prior handoff needs no read")
+                with patch_attribute(helper, "GitHubReader", return_value=self.reader), patch_attribute(identity, "automation_login", return_value=ACTOR):
+                    closed = helper.record_closure(log, current, "supervisor")
+                self.assertIsNone(closed.get("handoff_url"))
+                self.assertIsNone(json.loads(log.read_text())[0].get("handoff_url"))
+                self.reader.get_json.side_effect = None
+                with patch_attribute(helper, "GitHubReader", return_value=self.reader), patch_attribute(identity, "automation_login", return_value=ACTOR):
+                    retried = helper.record_closure(log, current, "supervisor")
+                self.assertIsNone(retried.get("handoff_url"))
+                self.assertEqual(retried["ended_at"], closed["ended_at"])
 
     def test_closure_selects_its_source_and_preserves_unrelated_rows(self):
         log = self.root / "selected-close.json"

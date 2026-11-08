@@ -182,8 +182,9 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                         await iterm_tab.register_fresh_launch(Namespace(ledger=ledger, resume_session_id=f.session), result, choice)
                         current, other = json.loads(ledger.read_text())
                         self.assertEqual(other, unrelated)
-                        for key in ("session_id", "harness", "supervisor_owned", "transcript", "codex_home", "handoff_url"):
+                        for key in ("session_id", "harness", "supervisor_owned", "transcript", "codex_home"):
                             self.assertEqual(current[key], source[key])
+                        self.assertIsNone(current.get("handoff_url"))
                         self.assertEqual(current["pid"], metadata["launch_pid"])
                         self.assertEqual(current["launch_generation"], metadata["launch_generation"])
                         self.assertEqual(current["iterm_session_id" if failure == "iterm" else "tmux_session_id"], result["session_id"])
