@@ -1295,6 +1295,70 @@ print('Done.')
             self.assertNotIn(sentinel, json.dumps(host.outcome_log_record(result)))
             self.assertEqual(result["cleanup"]["status"], "closed")
 
+    def test_nonzero_prerequisite_and_preparation_keep_distinct_remedies_and_cleanup(self) -> None:
+        sentinel = "private-sentinel-do-not-emit"
+        exit_code = 7
+        program = f"import sys; print({sentinel!r}); print({sentinel!r}, file=sys.stderr); sys.exit({exit_code})"
+        actions = []
+
+        def fail_snapshot(_repo: Path, _project: Path) -> None:
+            native.common.checked([sys.executable, "-c", program])
+
+        def fail_preparation(_settings: dict[str, Any], private: Path) -> list[str]:
+            script = private / "failed-preparation.py"
+            script.write_text(program)
+            return [sys.executable, str(script)]
+
+        self.declare_python_preparation()
+        for step, failure in (("snapshot", fail_snapshot), ("preparation", fail_preparation)):
+            with self.subTest(step=step):
+                with patch_attr(native.common, step, side_effect=failure):
+                    result = self.assess(direct=True)
+                reason = "native_prerequisite_failed" if step == "snapshot" else "native_preparation_failed"
+                self.assertEqual(result["inspection_outcome"]["reason"], reason)
+                self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+                self.assertIs(result["agent_result"]["retry_policy"]["retry"], False)
+                self.assertEqual(result["cleanup"]["status"], "closed")
+                receipt = result["diagnostic"]["native"]
+                self.assertNotIn("worker_pid", receipt)
+                if step == "preparation":
+                    self.assertEqual(receipt["preparation_exit_code"], exit_code)
+                    self.assertTrue(receipt["process_custody_closed"])
+                self.assertNotIn(sentinel, host.public_json(result))
+                self.assertNotIn(sentinel, json.dumps(host.outcome_log_record(result)))
+                action = result["agent_result"]["next_action"]
+                actions.append(action)
+                self.assertNotEqual(action, native.next_action_for_reason(host, {}, "unmapped"))
+        self.assertNotEqual(*actions)
+        self.assertNotEqual(actions[-1], native.next_action_for_reason(host, {"product": "webstorm"}, "native_preparation_failed"))
+
+    def test_invalid_lane_arrays_reach_safe_configuration_reports(self) -> None:
+        directory = self.repo / ".github"
+        directory.mkdir()
+        self.args.native_worker = None
+        self.args.ide_app = None
+        for lanes in ([], [{}]):
+            config = {"lanes": lanes}
+            (directory / "github.json").write_text(json.dumps({"qualityGate": {"inspection": config}}))
+            with self.assertRaises(host.InspectError) as canonical:
+                host.parse_inspection_lanes(config)
+            with self.subTest(lanes=lanes, route="native"):
+                result = self.assess(direct=True)
+                self.assertEqual(result["inspection_outcome"]["reason"], "native_" + canonical.exception.payload["error_reason"])
+                self.assertEqual(result["agent_result"]["next_action"], canonical.exception.payload["next_action"])
+                self.assertEqual(result["cleanup"]["status"], "closed")
+            with self.subTest(lanes=lanes, route="auto"), self.native_host(), \
+                    patch_attr(host, "native_backend_module", return_value=native), \
+                    patch_attr(host, "command_native") as worker, \
+                    patch.object(sys, "argv", ["jb-inspect", "agent-inspect", "--repo", str(self.repo),
+                                               "--scope", "files", "--file", "source.py"]), \
+                    redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(host.main(), 0)
+                worker.assert_not_called()
+                result = json.loads(output.getvalue())
+                self.assertEqual(result["inspection_outcome"]["reason"], canonical.exception.payload["error_reason"])
+                self.assertEqual(result["agent_result"]["next_action"], canonical.exception.payload["next_action"])
+
     def test_native_configuration_error_uses_its_safe_reason_and_canonical_action(self) -> None:
         for error in (host.inspection_lane_config_error("private-sentinel"),
                       host.repository_preparation_config_error("private-sentinel")):

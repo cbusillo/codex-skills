@@ -91,6 +91,19 @@ class NativeCommonTests(unittest.TestCase):
         nested = {"lanes": [{"id": "python", "ide": "PyCharm", "include": ["**/*.py"], "projectPath": "src"}]}
         self.assertTrue(common.lane_gaps(host, nested, {"src/a.py"}))
 
+    def test_absent_null_and_valid_lanes_keep_supported_selection(self) -> None:
+        (self.repo / "src/a.js").write_text("let value = 1;\n")
+        args = host.build_parser().parse_args(["agent-inspect", "--repo", str(self.repo), "--scope", "files", "--file", "src/a.js"])
+        for config in ({"ide": "WebStorm"}, {"ide": "WebStorm", "lanes": None},
+                       {"lanes": [{"id": "web", "ide": "WebStorm", "include": ["**/*.js"]}]}):
+            with self.subTest(config=config):
+                self.declare_inspection(config)
+                selected = common.scope_selection(args, host)[3]
+                self.assertEqual(selected, {"src/a.js"})
+                self.assertEqual(common.configured_product_key(host, config, selected), "webstorm")
+                self.assertEqual(common.lane_gaps(host, config, selected, "webstorm"), [])
+                self.assertEqual(common.web_project_path(host, self.repo, config, selected), Path("."))
+
     def test_snapshot_refuses_credential_locations_before_any_read_or_copy(self) -> None:
         for name in ("pycharm.key", "plugin_TEST.license", ".env", ".env.local",
                      ".ssh/id_ed25519", ".aws/credentials", "credentials.json", "account.json"):
