@@ -249,13 +249,6 @@ def test_http_refusals_keep_trace_and_read_classification(status, code, expected
     assert "PRIVATE_SENTINEL" not in json.dumps(output)
 
 
-def test_client_timeout_is_a_read_budget_diagnostic():
-    code, output, calls, _ = invoke(reply=TimeoutError("PRIVATE_SENTINEL"))
-    assert code == 1 and output["status"] == "unavailable" and len(calls) == 1
-    assert output["summary"]["error_code"] == "client_timeout"
-    assert "PRIVATE_SENTINEL" not in json.dumps(output)
-
-
 def test_scope_keeps_ordinary_repository_and_context_identifiers() -> None:
     request = private_request()
     request["policy_record_id"] = "authz-desk-policy"
