@@ -16,7 +16,7 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
@@ -29,6 +29,10 @@ import direction_audit
 import github_work_rollup as rollup
 import github_unanswered_comments as attention
 import github_read
+if TYPE_CHECKING:
+    from skills.github.scripts.test_github_plan_graph import fixture_search_query
+else:
+    from test_github_plan_graph import fixture_search_query
 from test_gh_with_env_token import run_wrapper, user_token_fixture, write
 
 SPEC = importlib.util.spec_from_file_location("archive_plan", SCRIPTS / "gh-plan.py")
@@ -114,7 +118,7 @@ print(json.dumps({{"items": rows, "total_count": len(rows), "incomplete_results"
             kwargs["page_metadata"].append({"total_count": len(rows), "incomplete_results": False})
             return "bot", rows
         args = PLAN.build_parser().parse_args(["search", "user:owner"])
-        with patch.object(PLAN, "collect_paged_rest_items", read), patch.object(PLAN, "repo_from_git", return_value=None), patch.object(PLAN, "emit") as emit:
+        with patch_attr(PLAN, "next_graph_reader", return_value=None), patch_attr(PLAN, "collect_paged_rest_items", read), patch_attr(PLAN, "repo_from_git", return_value=None), patch_attr(PLAN, "emit") as emit:
             PLAN.cmd_search(args)
         self.assertEqual(emit.call_args.args[0]["count"], 1)
         self.assertEqual(emit.call_args.args[0]["total_count"], 1)
@@ -133,7 +137,7 @@ print(json.dumps({{"items": rows, "total_count": len(rows), "incomplete_results"
                 return SimpleNamespace(body={"items": rows, "total_count": len(rows), "incomplete_results": False})
         # noinspection PyUnresolvedReferences
         unread_comments = patch.object(director_waits, "read_discussion", return_value=[])
-        with unread_comments:
+        with unread_comments, patch_attr(director_waits.github_plan_graph, "query_data", fixture_search_query):
             result = director_waits.collect(Reader(), "owner", ["Director"], NOW)
         self.assertEqual([row["repo"] for row in result["waits"]], ["owner/current"])
         self.assertTrue(result["complete"])
@@ -167,7 +171,7 @@ print(json.dumps({{"items": rows, "total_count": len(rows), "incomplete_results"
             rows = search_items(kwargs["query"]["q"])
             kwargs["page_metadata"].append({"total_count": len(rows), "incomplete_results": False})
             return "bot", rows
-        with patch.object(PLAN, "collect_paged_rest_items", read), patch.object(PLAN, "repo_from_git", return_value=None), patch.object(PLAN, "emit") as emit:
+        with patch_attr(PLAN, "next_graph_reader", return_value=None), patch_attr(PLAN, "collect_paged_rest_items", read), patch_attr(PLAN, "repo_from_git", return_value=None), patch_attr(PLAN, "emit") as emit:
             PLAN.cmd_search(args)
         self.assertEqual(emit.call_args.args[0]["count"], len(REPOS))
         self.assertEqual(emit.call_args.args[0]["total_count"], len(REPOS))
@@ -179,7 +183,7 @@ print(json.dumps({{"items": rows, "total_count": len(rows), "incomplete_results"
                 return SimpleNamespace(body={"items": rows, "total_count": len(rows), "incomplete_results": False})
         # noinspection PyUnresolvedReferences
         unread_comments = patch.object(director_waits, "read_discussion", return_value=[])
-        with unread_comments:
+        with unread_comments, patch_attr(director_waits.github_plan_graph, "query_data", fixture_search_query):
             report = director_waits.collect(Reader(), "owner", ["Director"], NOW, include_archived=True)
         self.assertEqual(len(report["waits"]), len(REPOS))
         self.assertTrue(report["complete"])
@@ -210,7 +214,7 @@ print(json.dumps({{"items": rows, "total_count": len(rows), "incomplete_results"
         for included in (False, True):
             with self.subTest(included=included):
                 args = PLAN.build_parser().parse_args(["--repo", "owner/retired", "index", *(["--include-archived"] if included else [])])
-                with patch.object(PLAN, "load_config", return_value={"labels": {"plan": "plan"}}), patch.object(PLAN, "collect_paged_rest_items", return_value=("bot", search_items(""))), patch.object(PLAN, "api_json", return_value=("bot", REPOS[1])), patch.object(PLAN, "emit") as emit:
+                with patch_attr(PLAN, "next_graph_reader", return_value=None), patch_attr(PLAN, "load_config", return_value={"labels": {"plan": "plan"}}), patch_attr(PLAN, "collect_paged_rest_items", return_value=("bot", search_items(""))), patch_attr(PLAN, "api_json", return_value=("bot", REPOS[1])), patch_attr(PLAN, "emit") as emit:
                     PLAN.cmd_index(args)
                 self.assertEqual(emit.call_args.args[0]["count"], len(REPOS) if included else 0)
                 self.assertEqual(emit.call_args.args[0]["repository"]["disposition"], "frozen_historical")
