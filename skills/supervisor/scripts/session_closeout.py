@@ -379,7 +379,6 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
         while True:
             current = [row for row in load_ledger(args.ledger) if row["session_id"] == args.session_id]
             require(current == [entry], "identity", "active source changed; preserve the ledger")
-            ready(entry, args.supervisor_session)
             try:
                 require(session_liveness.process_absent(entry.get("pid")), "process_exit", "process remains; terminal kept")
                 native.verify_source_process(entry)

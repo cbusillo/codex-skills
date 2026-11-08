@@ -78,6 +78,7 @@ class OperationTests(unittest.TestCase):
         for obstruction in (
             "immediate",
             "delayed_pid",
+            "flushing_pid",
             "delayed_tty",
             "persistent_pid",
             "persistent_tty",
@@ -104,6 +105,7 @@ class OperationTests(unittest.TestCase):
                 )
                 + "\n"
             )
+            completed_transcript = transcript.read_text()
             entry = {
                 "session_id": "native",
                 "harness": "claude",
@@ -137,6 +139,12 @@ class OperationTests(unittest.TestCase):
                 elapsed += seconds
                 if obstruction.startswith("delayed"):
                     rows.clear()
+                elif obstruction == "flushing_pid":
+                    if transcript.read_text() == completed_transcript:
+                        transcript.write_text(completed_transcript + '{"type": "user",')
+                    else:
+                        transcript.write_text(completed_transcript)
+                        rows.clear()
                 elif obstruction == "changed_ledger":
                     ledger.write_text(json.dumps([{**entry, "supervisor_owned": False}]))
                     rows.clear()
@@ -193,7 +201,7 @@ class OperationTests(unittest.TestCase):
                 patch.object(session_liveness, "process_arguments", return_value=(["node", "fixture"], True)),
                 patch.object(session_closeout.closure, "process_started_at", return_value=datetime(2025, 1, 1, tzinfo=UTC)),
             ):
-                if obstruction in {"immediate", "delayed_pid", "delayed_tty"}:
+                if obstruction in {"immediate", "delayed_pid", "delayed_tty", "flushing_pid"}:
                     session_closeout.closeout(args, operation)
                     self.assertIn("finish", calls)
                     self.assertEqual(json.loads(ledger.read_text()), [])
