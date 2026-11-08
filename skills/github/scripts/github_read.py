@@ -873,6 +873,13 @@ def discussion_comment(node: dict[str, Any], repo: str, number: int) -> dict[str
     }
 
 
+
+def discussion_thread(node: dict[str, Any], repo: str, number: int) -> dict[str, Any]:
+    return {
+        **discussion_comment(node, repo, number), "number": node["number"], "title": node["title"],
+        "state": "closed" if node["state"] in {"CLOSED", "MERGED"} else "open", "closed_at": node["closedAt"],
+    }
+
 def discussion_issue_id(
     reader: GitHubReader, repo: str, number: int, thread: dict[str, Any], comments: list[dict[str, Any]],
     *, issue_id: int | None = None,
@@ -914,9 +921,7 @@ def read_discussion(reader: GitHubReader, repo: str, number: int, *, issue_id: i
     comments = discussion_nodes(reader, thread, "comments", DISCUSSION_ISSUE_COMMENT_FIELDS)
     resolved_id = discussion_issue_id(reader, repo, number, thread, comments, issue_id=issue_id)
     result: dict[str, Any] = {
-        **discussion_comment({**thread, "databaseId": resolved_id}, repo, number), "number": thread["number"], "title": thread["title"],
-        "state": "closed" if thread["state"] in {"CLOSED", "MERGED"} else "open",
-        "closed_at": thread["closedAt"],
+        **discussion_thread({**thread, "databaseId": resolved_id}, repo, number),
         "comments": [discussion_comment(node, repo, number) for node in comments],
         "reviews": [], "review_comments": [],
     }

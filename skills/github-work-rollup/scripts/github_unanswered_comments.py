@@ -666,10 +666,7 @@ def opened_threads(
         created = rollup.parse_timestamp(str(node.get("createdAt") or ""))
         if created is None:
             raise ValueError("Opening creation time unavailable")
-        row = {**github_read.discussion_comment(node, source_repo, node["number"]),
-               "number": node["number"], "title": node["title"],
-               "state": "closed" if node["state"] in {"CLOSED", "MERGED"} else "open",
-               "closed_at": node["closedAt"],
+        row = {**github_read.discussion_thread(node, source_repo, node["number"]),
                **({"pull_request": {"url": f"https://api.github.com/repos/{source_repo}/pulls/{node['number']}"}}
                   if node["__typename"] == "PullRequest" else {})}
         candidate_opening = normalize_opening_post(source_repo, row)
@@ -807,7 +804,7 @@ def repository_activity(
         threads = []
     for item in threads:
         opening = normalize_opening_post(repo, item)
-        if opening is not None and is_external_comment(opening, self_logins, bot_logins, automation_logins, own_automation):
+        if opening is not None:
             candidate_ids.setdefault(opening.thread_key, set()).add(opening.key)
     return candidate_ids, errors
 

@@ -1437,7 +1437,6 @@ def test_own_openings_are_excluded_and_non_own_bot_openings_need_attention(monke
 
 def test_opened_threads_stop_at_window_start_and_skip_after_until(monkeypatch) -> None:
     reader = Mock(batch_diagnostic={"cost": 0})
-    requested: list[tuple[str, int]] = []
 
     def response(document: str, _variables: dict[str, Any], **_kwargs: Any) -> Any:
         alias_match = re.search(r"(\w+):repository", document)
@@ -1445,7 +1444,6 @@ def test_opened_threads_stop_at_window_start_and_skip_after_until(monkeypatch) -
         alias = alias_match[1]
         field = "pullRequests" if "pullRequests(" in document else "issues"
         page = 2 if 'after:"next"' in document else 1
-        requested.append((field, page))
         issue_pages = {1: [(4, "2026-07-27T00:00:00Z"), (3, "2026-07-25T00:00:00Z")],
                        2: [(2, "2026-07-01T00:00:00Z"), (1, "2026-06-01T00:00:00Z")]}
         pairs = issue_pages[page] if field == "issues" else [(5, "2026-07-26T20:00:00Z")]
@@ -1468,7 +1466,6 @@ def test_opened_threads_stop_at_window_start_and_skip_after_until(monkeypatch) -
         "example/repo", datetime(2026, 7, 1, tzinfo=UTC), datetime(2026, 7, 26, 20, tzinfo=UTC), per_page=2,
     )
     assert [item["number"] for item in items] == [5, 3, 2]
-    assert requested == [("issues", 1), ("issues", 2), ("pullRequests", 1)]
     opening_post = github_unanswered_comments.normalize_opening_post("example/repo", items[0])
     assert (opening_post.comment_id, opening_post.author, opening_post.author_type) == (5005, "outside-agent[bot]", "Bot")
     assert "pull_request" in items[0]

@@ -97,13 +97,12 @@ class WaitTests(unittest.TestCase):
         self.assertNotIn("repo:", query)
 
     def test_search_metadata_limits_and_partial_failure_preserve_rows(self):
-        for metadata in ({"total_count": 2, "incomplete_results": False},):
-            reader = Mock()
-            reader.request.return_value = SimpleNamespace(body={"items": [issue()], **metadata})
-            result = director_waits.collect_query(reader, "owner", ["Director"], NOW, 1)
-            self.assertFalse(result["complete"])
-            self.assertEqual(len(result["waits"]), 1)
-            self.assertTrue(result["errors"])
+        reader = Mock()
+        reader.request.return_value = SimpleNamespace(body={"items": [issue()], "total_count": 2, "incomplete_results": False})
+        result = director_waits.collect_query(reader, "owner", ["Director"], NOW, 1)
+        self.assertFalse(result["complete"])
+        self.assertEqual(len(result["waits"]), 1)
+        self.assertTrue(result["errors"])
         reader = Mock()
         reader.request.side_effect = [SimpleNamespace(body={
             "items": [issue(i) for i in range(1, 101)], "total_count": 101,
