@@ -1073,6 +1073,7 @@ def test_attachment_route_enforces_limits_through_real_wrapper() -> None:
         failed = subprocess.run([str(SCRIPT), *args], env={**env, "FIXTURE_ATTACH_EXIT": "1", "GH_WITH_ENV_TOKEN_RECEIPT_NONCE": nonce},
                                 input=body, text=True, capture_output=True, timeout=15)
         assert failed.returncode != 0
+        assert failed.stdout.strip().endswith("#issuecomment-20"), failed.stdout
         assert github_comment.attachment_write_outcome(failed.stderr, nonce) == "unknown", failed.stderr
         for comment_command in (
             [sys.executable, str(SCRIPT.with_name("github_comment.py")), "issue", "42", "--repo", repo],
