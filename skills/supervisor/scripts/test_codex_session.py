@@ -31,9 +31,14 @@ github_agent = importlib.import_module("github_agent")
 
 class ResumeTests(unittest.TestCase):
     def test_queue_uses_the_recorded_lead_home_only_for_its_current_managed_worker(self) -> None:
+        for harness in ("claude", "codex", "agy"):
+            with self.subTest(harness=harness):
+                self.assert_managed_worker_queue(harness)
+
+    def assert_managed_worker_queue(self, harness: str) -> None:
         worker = str(uuid.uuid4())
         ledger = self.root / "launch-ledger.json"
-        rows = [{"session_id": worker, "harness": "claude", "supervisor_owned": True, "lead_session_id": self.native},
+        rows = [{"session_id": worker, "harness": harness, "supervisor_owned": True, "lead_session_id": self.native},
                 {"session_id": self.native, "harness": "codex", "supervisor_owned": True, "codex_home": str(self.home)}]
         argv = ["codex-session.py", "queue", "--session-id", self.native, "--message", "https://github.com/fixture/repo/issues/7"]
         self.thread_state = "idle"
@@ -46,19 +51,50 @@ class ResumeTests(unittest.TestCase):
             self.assertEqual(code, 0 if result["ok"] else 1)
             return result
 
-        with patch.dict(os.environ, {LAUNCH_LEDGER_ENV: str(ledger), "CLAUDE_CODE_SESSION_ID": worker}), \
-                patch.dict(github_agent.__dict__, {"running_agent": MagicMock(return_value="claude")}):
+        source_var = {"claude": "CLAUDE_CODE_SESSION_ID", "codex": "CODEX_SESSION_ID", "agy": "ANTIGRAVITY_SOURCE_METADATA"}[harness]
+        source = json.dumps({"tool": {"conversationId": worker}}) if harness == "agy" else worker
+        with patch.dict(os.environ, {LAUNCH_LEDGER_ENV: str(ledger)}), \
+                patch.dict(github_agent.__dict__, {"ancestor_agent": MagicMock(return_value=None)}):
+            for name in ("CLAUDE_CODE_SESSION_ID", "CLAUDECODE", "CODEX_SESSION_ID", "CODEX_THREAD_ID", "ANTIGRAVITY_SOURCE_METADATA"):
+                os.environ.pop(name, None)
+            os.environ[source_var] = source
             ledger.write_text(json.dumps(rows))
             self.assertTrue(execute()["ok"])
             self.assertEqual(len(self.queue_requests), 1)
             self.queue_requests.clear()
+            wrong_source = json.dumps({"tool": {"conversationId": str(uuid.uuid4())}}) if harness == "agy" else str(uuid.uuid4())
+            invalid_sources = [wrong_source]
+            if harness == "agy":
+                invalid_sources.extend(["", "malformed", "null", "[]", "{}", '{"tool": []}',
+                                        json.dumps({"tool": {"conversationId": {"id": worker}}}),
+                                        json.dumps({"tool": {"conversationId": [worker, str(uuid.uuid4())]}})])
+            for invalid_source in invalid_sources:
+                with self.subTest(source=invalid_source), patch.dict(os.environ, {source_var: invalid_source}):
+                    self.assertFalse(execute()["ok"])
+                    self.assertFalse(self.queue_requests)
+            if harness == "agy":
+                for nested in github_agent.FAMILIES:
+                    with self.subTest(nested=nested), patch.dict(
+                            github_agent.__dict__, {"ancestor_agent": MagicMock(return_value=nested)}):
+                        self.assertFalse(execute()["ok"])
+                        self.assertFalse(self.queue_requests)
+                for inherited in ({"CODEX_THREAD_ID": str(uuid.uuid4())},
+                                  {"CLAUDE_CODE_SESSION_ID": str(uuid.uuid4())},
+                                  {"CODEX_SESSION_ID": worker, "CLAUDE_CODE_SESSION_ID": worker}):
+                    with self.subTest(inherited=inherited), patch.dict(os.environ, inherited):
+                        self.assertFalse(execute()["ok"])
+                        self.assertFalse(self.queue_requests)
+            if harness == "codex":
+                with patch.dict(os.environ, {"CODEX_THREAD_ID": str(uuid.uuid4())}):
+                    self.assertFalse(execute()["ok"])
+                    self.assertFalse(self.queue_requests)
             with patch.dict(os.environ):
-                os.environ.pop("CLAUDE_CODE_SESSION_ID")
+                os.environ.pop(source_var)
                 self.assertFalse(execute()["ok"])
                 self.assertFalse(self.queue_requests)
             for changed in ([rows[1]], [*rows, rows[0]], [*rows, rows[1]],
                             [{**rows[0], "supervisor_owned": False}, rows[1]],
-                            [{**rows[0], "harness": "codex"}, rows[1]],
+                            [{**rows[0], "harness": "other"}, rows[1]],
                             [{**rows[0], "lead_session_id": "other"}, rows[1]],
                             [rows[0], {**rows[1], "supervisor_owned": False}],
                             [rows[0], {**rows[1], "harness": "claude"}],
@@ -83,6 +119,7 @@ class ResumeTests(unittest.TestCase):
             argv[-1] = str(ledger)
             self.assertTrue(execute()["ok"])
             self.assertEqual(len(self.queue_requests), 1)
+            self.queue_requests.clear()
             argv.extend(["--codex-home", str(self.home)])
             with patch.object(sys, "argv", argv), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 SESSION.main()
