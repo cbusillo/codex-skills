@@ -59,10 +59,10 @@ class LaunchIssueTests(unittest.TestCase):
         lead = "fixture-lead"
         task = "### Goal\nKeep  spacing and `quotes`.\n<!-- Preserve authored context. -->\n"
         status = f"Next actor: agent:{lead}\nBrief:\n```text\n{task}```"
-        issue = {"repo": "fixture/repo", "number": 7, "title": "Human request", "state": "open", "labels": [],
+        issue: dict[str, Any] = {"repo": "fixture/repo", "number": 7, "title": "Human request", "state": "open", "labels": [],
                  "user": {"login": "reporter"}, "body": "Keep the human request unchanged.\n",
                  "updated_at": "2026-01-01T00:00:00Z"}
-        managed = {"id": 8, "user": {"login": "fixture-bot[bot]"}, "body": "## Current Status\n" + status,
+        managed: dict[str, Any] = {"id": 8, "user": {"login": "fixture-bot[bot]"}, "body": "## Current Status\n" + status,
                    "created_at": "2026-01-02T00:00:00Z"}
         clear = plan.github_plan_wait.reviewed(evidence="Fictional request reviewed; no holds")
         ownership = {"complete": True, "records": [], "pulls": [],

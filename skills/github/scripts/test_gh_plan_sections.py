@@ -264,8 +264,8 @@ class SectionTests(unittest.TestCase):
             body = PLAN.github_api_core.body_with_operation_marker("## Current Status\n" + status + "\n" + records, "a" * 32)
             comment = {"id": 7, "user": {"login": "fixture-bot[bot]"}, "body": body,
                        "created_at": "2026-02-01T00:00:00Z"}
-            with self.subTest(records=bool(records)), patch.object(
-                    PLAN.github_comment_core, "comment", return_value={"comment": {"id": 8}}) as posted:
+            posted = Mock(return_value={"comment": {"id": 8}})
+            with self.subTest(records=bool(records)), patch.multiple(PLAN.github_comment_core, comment=posted):
                 code, _result, edit, errors = self.run_update("--next-actor", "agent:lead-b", section="Current Status",
                     collect_paged_rest_items=Mock(return_value=("automation-gh", [comment])),
                     next_status_body_time=Mock(return_value="2026-01-01T00:00:00Z"),

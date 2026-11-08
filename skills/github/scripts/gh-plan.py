@@ -68,7 +68,7 @@ import github_plan_trigger
 import github_plan_release
 import github_plan_landing
 import github_plan_status
-from github_plan_status.discussion import section_ranges
+from github_plan_status.discussion import CurrentStatus, current_status_record, section_ranges
 from github_plan_status import next_actor as github_plan_next_actor
 from github_plan_status import questions as github_plan_questions
 import github_agent
@@ -2259,14 +2259,13 @@ def _claim_release_evidence(evidence_repo, _number, evidence_id):
 
 
 def claim_current_status_record(issue: dict[str, Any], sections: dict[str, str], comments: list[dict[str, Any]],
-                                *, preserve_content: bool = False) -> github_plan_status.discussion.CurrentStatus:
+                                *, preserve_content: bool = False) -> CurrentStatus:
     discussion = github_direction_next.discussion_snapshot(issue, comments, complete=True)
     if "body" not in issue:
         discussion["body"] = "## Current Status\n" + sections.get("Current Status", "")
     trusted = wait_authors(issue["repo"])
     body_time = next_status_body_time({**issue, "discussion": discussion}, trusted)
-    return github_plan_status.discussion.current_status_record(discussion, trusted, body_recorded_at=body_time,
-                                                               preserve_content=preserve_content)
+    return current_status_record(discussion, trusted, body_recorded_at=body_time, preserve_content=preserve_content)
 
 
 def claim_current_status(issue: dict[str, Any], sections: dict[str, str], comments: list[dict[str, Any]],
