@@ -154,8 +154,8 @@ class RetireTests(unittest.TestCase):
                                            apply=True, runner=run)
             self.assertEqual([row["decision"] for row in rows], ["retired", expected])
 
+    @staticmethod
     def runner(
-        self,
         refuse_preview: bool = False,
         refuse_apply: bool = False,
         *,
