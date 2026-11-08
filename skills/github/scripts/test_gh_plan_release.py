@@ -1090,6 +1090,7 @@ class ReleaseTests(ReleaseHarness):
                       "https://github.com/owner/repo/pull/3519 (claim scope).",
                       "Status for this exact session: `status` reports completion.",
                       "Work completed during our session: everything passed.",
+                      "Codex session: other-label",
                       "Review thread: https://github.com/owner/repo/pull/99",
                       "Next actor: Chris performs Q914 in his existing Launchplane administrator session: "
                       "https://github.com/owner/repo/issues/42#issuecomment-7",
@@ -1107,7 +1108,8 @@ class ReleaseTests(ReleaseHarness):
                 self.successor()
 
     def test_explicit_session_fields_keep_conflicting_and_malformed_values_refused(self) -> None:
-        for field in ("Session: {}", "- Session: {}", "Handoff; Session: {}",
+        for field in ("Session: {}", "Claimed by trial-b\nsession: {}", "Worker: trial-b\nsession: {}",
+                      "- Session: {}", "Handoff; Session: {}",
                       "Ownership record Native session ID: {}", "Thread ID: {}", "| Session | {} |",
                       "Claimed by trial-b Session: {}", "Claimed by trial-b, Session: {}",
                       "1. Session: {}", "Worker: trial-b. Session: {}", "Handoff: Session: {}",
@@ -1137,9 +1139,11 @@ class ReleaseTests(ReleaseHarness):
                      f"Superseded session: {session}",
                      f"Session: {session}\nPrevious session: {other}"):
             self.assertFalse(release.related_sessions_match(body, session, require_explicit=True))
-        for label in ("Previous session", "Prior native session ID"):
+        for label in ("Previous session", "Prior native session ID", "Previous Codex session"):
             self.assertTrue(release.related_sessions_match(f"{label}: {session}", session))
             self.assertFalse(release.related_sessions_match(f"{label}: {other}", session))
+            self.assertTrue(release.related_sessions_match(f"{label}: session-b", "session-b"))
+            self.assertFalse(release.related_sessions_match(f"{label}: other-label", "session-b"))
         self.assertTrue(release.related_sessions_match("No session field", session))
         self.assertTrue(release.related_sessions_match(
             f"Changes in this session:\n- Finished the work.\n| Session | |\n- Session: Claude Code `{session}`", session,
@@ -1153,6 +1157,7 @@ class ReleaseTests(ReleaseHarness):
             "Chris uses his administrator session: <https://example.test/admin>",
             "Chris uses his administrator\nsession: https://example.test/admin",
             "Chris uses his browser session: the one already open",
+            "Chris uses his prior browser session: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
         ):
             self.assertFalse(CLAIM.has_ownership_assertion(prose))
         for field in ("Session: https://example.test/admin", "Native session: https://example.test/admin",

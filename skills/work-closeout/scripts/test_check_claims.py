@@ -219,6 +219,8 @@ class ClaimCloseoutTests(unittest.TestCase):
                       "https://github.com/owner/repo/pull/3519 (claim scope).",
                       "- Status for this exact session: `status` reports completion.",
                       "Tooling landed this\nsession: https://github.com/owner/repo/pull/3510",
+                      "Tooling landed in the\nsession: https://github.com/owner/repo/pull/3510",
+                      "Work was done in the same\nsession: all green",
                       "Verified everything (session: see the run above)", "Done, session: all green"):
             with self.subTest(prose=prose):
                 self.comments = [self.source, {**self.release, "body": self.release["body"] + "\n\n" + prose}]

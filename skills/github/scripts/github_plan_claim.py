@@ -26,6 +26,7 @@ except ModuleNotFoundError:
 
 LEASE_TAKEOVER_PREFIX = "Lease takeover: claim "
 NATIVE_SESSION_ID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", re.IGNORECASE)
+HISTORICAL_SESSION_PREFIX = re.compile(r"\b(?:previous|prior|earlier|original|superseded)\b[^:|;\n]*$", re.IGNORECASE)
 EMPTY_HOLDERS = {"none", "unassigned", "unclaimed", "not assigned", "n/a", "-", "nobody", "no one", "no-one"}
 
 
@@ -240,8 +241,7 @@ def session_fields(text: str, *, include_quotes: bool = True, current_only: bool
             continue
         matches = list(fields.finditer(line))
         for index, field in enumerate(matches):
-            if current_only and re.search(r"\b(?:previous|prior|earlier|original|superseded)\b[^:|;\n]*$",
-                                          line[:field.start()], re.IGNORECASE):
+            if current_only and HISTORICAL_SESSION_PREFIX.search(line[:field.start()]):
                 continue
             end = matches[index + 1].start() if index + 1 < len(matches) else len(line)
             value = line[field.end():end].split("|", 1)[0].strip()
@@ -261,23 +261,26 @@ def prose_session_reference(text: str, position: int, value: str) -> bool:
     if not re.match(r"session(?:[ \t]*[:=]|[ \t]+[—-][ \t]+)", text[position:], re.IGNORECASE):
         return False
     prefix = text[:position]
+    previous, _, line_prefix = prefix.rpartition("\n")
+    previous = previous.rsplit("\n", 1)[-1]
     ownership = re.search(r"\b(?:Claimed by:?|Worker:|Owner:)\s+\S+\s+$", prefix, re.IGNORECASE)
     if re.search(
         r"\b\w+[ \t]+(?:administrator|browser|human)(?:[ \t]+|[ \t]*\n[ \t]*)\Z", prefix, re.IGNORECASE,
     ) and not ownership:
         return True
+    if (ownership or re.search(r"\bnative[ \t_-]*$", prefix, re.IGNORECASE)
+            or HISTORICAL_SESSION_PREFIX.search(line_prefix)
+            or re.search(r"\b(?:Ownership record|Handoff from|Continuing from|Completed)\s+$", line_prefix, re.IGNORECASE)):
+        return False
     if any(NATIVE_SESSION_ID.fullmatch(token) for token in session_identifiers(value)):
         return False
-    if re.search(r"\b(?:this|that|our|your|my|their|exact)[ \t]*\n[ \t]*$", prefix, re.IGNORECASE):
+    if (not line_prefix.strip() and text[position].islower() and previous.strip()
+            and not re.search(r"^\s*(?:[-*+>#`~]|\d+[.)]\s|(?:claimed by|handoff from|continuing from)\b|"
+                              r"[\w /-]+[:=])|[.:;!?|]\s*$", previous, re.IGNORECASE)):
         return True
-    line_prefix = prefix.rsplit("\n", 1)[-1]
     return not (
-        ownership
-        or re.search(r"\bnative[ \t_-]*$", prefix, re.IGNORECASE)
-        or re.fullmatch(r"\s*(?:[-*+]|\d+[.)])?\s*\(?", line_prefix)
+        re.fullmatch(r"\s*(?:[-*+]|\d+[.)])?\s*\(?", line_prefix)
         or (text[position].isupper() and re.search(r"[;:.(,]\s*$", line_prefix))
-        or re.search(r"\b(?:Ownership record|Handoff from|Continuing from|Previous|Prior|Earlier|Original|"
-                     r"Superseded|Completed)\s+$", line_prefix, re.IGNORECASE)
     )
 
 

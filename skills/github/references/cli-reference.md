@@ -1667,9 +1667,11 @@ closed automation session with a structured source claim, use the evidence-backe
 `release-claim` route above, including its verified related hand-written
 follow-ups. Explicit Session/Session ID or Thread ID fields on a related follow-up must
 name the source's native session. Field aliases (session_id/sessionId), spaced
-dash separators and vertical field/value tables are supported. An embedded prose
-`session:` counts only when its value contains a native session ID; horizontal
-tables do not establish a session identity. Use the canonical
+dash separators and vertical field/value tables are supported. Explicit fields
+remain identity evidence even when malformed. Prose references, including wrapped
+continuations, need a native session ID; human browser/administrator sessions and
+horizontal tables do not establish agent identity. Non-UUID labels need an explicit
+field. Use the canonical
 Session field or authored exact-ID recovery for those older formats. A distinct structured claim needs its own closure
 evidence; an unstructured claim needs an exact-ID release by its author.
 
