@@ -1522,7 +1522,7 @@ def test_attachment_passthrough_and_failures_never_replay() -> None:
         def exercise(kind: str, mode: str) -> None:
             calls: list[list[str]] = []
             posted: list[str] = []
-            readback = {**comment_body(1001, github_comment.ATTACHMENT_OWNER), "html_url": url}
+            readback: dict[str, Any] = {**comment_body(1001, github_comment.ATTACHMENT_OWNER), "html_url": url}
 
             def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
                 calls.append(command)
@@ -1601,16 +1601,16 @@ def test_attachment_passthrough_and_failures_never_replay() -> None:
                 assert len(posted) == (0 if mode in ("old_cli", "help_failure", "bot_actor") else 1)
             assert len(calls) == (1 if mode in ("old_cli", "help_failure", "bot_actor", "bot_failure") else 2)
 
-        for kind in ("issue", "pr"):
-            for mode in modes:
-                exercise(kind, mode)
+        for comment_kind in ("issue", "pr"):
+            for failure_mode in modes:
+                exercise(comment_kind, failure_mode)
         with patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_OWN_USER": "0"}), patch.object(
             github_comment.subprocess, "run", side_effect=AssertionError("must not call CLI")
         ):
             try:
                 github_comment.comment("issue", 42, "proof", repo=repo, attachments=attachments)
-            except github_comment.CommentError as error:
-                assert error.failure.write_outcome == "not_started"
+            except github_comment.CommentError as refusal:
+                assert refusal.failure.write_outcome == "not_started"
             else:
                 raise AssertionError("missing opt-in must refuse")
 

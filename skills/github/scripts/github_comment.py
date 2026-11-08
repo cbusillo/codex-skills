@@ -1396,7 +1396,8 @@ def attached_comment(
             f"{error}",
             operation=operation, cause=failure.cause,
             actor=agent_comment["actor"], expected_actor=agent_comment["expected_actor"],
-            completed_steps=[*agent_comment["completed_steps"], *failure.completed_steps], failed_step=failure.failed_step,
+            completed_steps=[*agent_comment["completed_steps"], *failure.completed_steps],
+            failed_step=failure.failed_step or "attach_comment",
             write_outcome="applied", payload={
                 "url": agent_comment["url"], "agent_comment": agent_comment,
                 "attachment_write_outcome": failure.write_outcome, "attachment_error": upload_error.payload,
@@ -1472,7 +1473,7 @@ def upload_attachment_comment(
     if (not isinstance(saved, dict) or saved.get("id") != int(match[1])
             or saved.get("html_url") != url or saved_author.casefold() != actor
             or not saved_body.startswith(body) or len(markup) != len(attachments)
-            or any(not re.fullmatch(rf"(?:!?\[[^\r\n]*]\({asset}\)|{asset})", line) for line in markup)):
+            or any(not re.fullmatch(rf"!?\[[^\r\n]*]\({asset}\)|{asset}", line) for line in markup)):
         raise _local_error(
             "Attachment readback did not confirm the comment, author, agent line and uploaded asset; read the thread before retrying",
             operation=operation, cause="invalid_response", actor=actor, expected_actor=actor,
