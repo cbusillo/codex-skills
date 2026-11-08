@@ -532,14 +532,11 @@ spans, including package inspections, still mean UNKNOWN.
 Results name `backend: native`, the selected scope, source/profile/helper and
 framework provenance, coverage, findings and separate cleanup. Reports must
 name the backend and any `coverage.unavailable` or `coverage.unproven` entries.
-Automatic UNKNOWN results retain the specific selection code in `backend_selection`,
-including outcome records. Native prerequisite failures retain a fixed exception
-category and, when available, the symbolic OS errno in the native receipt;
-the agent report includes the category. Known scope/configuration errors and
-unreadable reports receive a matching next step. Exception messages, paths,
-subprocess arguments and output are never included as error diagnostics.
-These details do not prove a historical cause or turn missing execution,
-coverage, source or activation proof into a clean result.
+Automatic UNKNOWN outcomes retain `backend_selection`; known scope/configuration
+errors use canonical safe messages and next steps on both routes. Native exception
+diagnostics retain only a fixed category and symbolic OS errno, never raw messages,
+paths, subprocess arguments or output; these details establish neither historical
+cause nor missing execution, coverage, source or activation proof.
 
 For `changed_files` and `files` scopes the verdict counts a finding when its
 line was added or modified since the merge base of `HEAD` and `origin/HEAD`,

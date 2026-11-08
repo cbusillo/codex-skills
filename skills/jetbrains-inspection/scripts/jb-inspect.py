@@ -340,6 +340,7 @@ def run_agent_inspect(args: argparse.Namespace) -> int:
     try:
         selection = "explicit"
         if args.backend == "auto":
+            selection = "native_selection_unavailable"
             native_backend = native_backend_module()
             backend, selection = native_backend.select_backend(args, sys.modules[__name__])
             if backend != "native":
@@ -351,6 +352,7 @@ def run_agent_inspect(args: argparse.Namespace) -> int:
         if not args.native_recover_only:
             log_assessment(result)
     except InspectError as error:
+        error = safe_inspection_error(error) or error
         payload = error_payload(error, args)
         reason = str(payload["error_reason"])
         next_action = payload.get("hint") or payload.get("next_action") or "Resolve the reported prerequisite before a fresh assessment."
@@ -362,6 +364,7 @@ def run_agent_inspect(args: argparse.Namespace) -> int:
     except Exception as error:
         result = unknown_agent_result(normalize_reason(error.__class__.__name__), str(error) or error.__class__.__name__,
                                       "Report this helper failure with its diagnostic; do not run another inspection command.", bucket="tool_bug")
+        result["backend_selection"] = selection
         log_assessment(result)
     print(public_json(result))
     return 0
@@ -1037,6 +1040,40 @@ def inspection_lane_config_error(message: str) -> InspectError:
     )
 
 
+INSPECTION_SCOPE_ERRORS = {
+    "inspection_lane_scope_empty": ("The files scope needs --file; the directory scope needs --dir.",
+                                    "Supply --file for files scope or --dir for directory scope, then run one fresh assessment."),
+    "inspection_lane_scope_unsupported": ("The requested inspection scope is unsupported.",
+                                          "Use files, changed_files, directory or whole_project scope, then run one fresh assessment."),
+    "inspection_lane_scope_resolution_failed": ("Git could not resolve the inspection scope.",
+                                                "Check local Git availability and the exact repository's readable index and source files before one fresh assessment."),
+    "inspection_lane_path_outside_worktree": ("The inspection scope contains a path outside the exact worktree.",
+                                             "Select --file and --dir paths inside the exact --repo worktree, then run one fresh assessment."),
+    "inspection_lane_scope_too_large": ("The inspection scope exceeds --max-files.",
+                                       "Reduce the selected scope or set --max-files to the intended file limit before reassessing."),
+}
+
+
+def inspection_scope_error(reason: str) -> InspectError:
+    message, action = INSPECTION_SCOPE_ERRORS[reason]
+    exit_code = 3 if reason == "inspection_lane_scope_resolution_failed" else 2
+    return InspectError(message, exit_code, {"error_reason": reason, "failure_phase": "scope_resolution", "next_action": action})
+
+
+def safe_inspection_error(error: InspectError) -> InspectError | None:
+    reason = error.payload.get("error_reason")
+    if reason == "inspection_lane_config_invalid":
+        return inspection_lane_config_error("The inspection lane configuration is invalid.")
+    if reason == "repository_preparation_config_invalid":
+        return repository_preparation_config_error("The inspection preparation configuration is invalid.")
+    if isinstance(reason, str) and reason in INSPECTION_SCOPE_ERRORS:
+        safe = inspection_scope_error(reason)
+        safe.payload.update({key: value for key in ("selected_file_count", "max_files", "git_exit_code")
+                             if type(value := error.payload.get(key)) is int})
+        return safe
+    return None
+
+
 def configured_inspection_lanes(context: dict[str, Any]) -> tuple[InspectionLane, ...]:
     lanes = context.get("_inspection_lanes")
     if isinstance(lanes, tuple) and all(isinstance(lane, InspectionLane) for lane in lanes):
@@ -1073,16 +1110,9 @@ def resolve_inspection_lane_selection(
 
     max_files = getattr(args, "max_files", None)
     if max_files is not None and len(selected_files) > int(max_files):
-        raise InspectError(
-            f"Resolved lane scope contains {len(selected_files)} files, exceeding --max-files={max_files}.",
-            2,
-            {
-                "error_reason": "inspection_lane_scope_too_large",
-                "failure_phase": "scope_resolution",
-                "selected_file_count": len(selected_files),
-                "max_files": int(max_files),
-            },
-        )
+        error = inspection_scope_error("inspection_lane_scope_too_large")
+        error.payload.update(selected_file_count=len(selected_files), max_files=int(max_files))
+        raise error
 
     lane_files: dict[str, list[dict[str, str]]] = {lane.lane_id: [] for lane in lanes}
     excluded_files: list[dict[str, str]] = []
@@ -1142,11 +1172,7 @@ def inspection_scope_paths(args: argparse.Namespace, worktree_root: Path, scope:
     if scope == "files":
         files = [str(path) for path in (getattr(args, "files", []) or []) if clean_optional(path)]
         if not files:
-            raise InspectError(
-                "files scope requires at least one --file argument when inspection lanes are configured.",
-                2,
-                {"error_reason": "inspection_lane_scope_empty", "failure_phase": "scope_resolution"},
-            )
+            raise inspection_scope_error("inspection_lane_scope_empty")
         return files
     if scope == "changed_files":
         return changed_inspection_scope_paths(args, worktree_root)
@@ -1155,11 +1181,7 @@ def inspection_scope_paths(args: argparse.Namespace, worktree_root: Path, scope:
         if scope == "directory":
             directory = clean_optional(getattr(args, "directory", None))
             if directory is None:
-                raise InspectError(
-                    "directory scope requires --dir when inspection lanes are configured.",
-                    2,
-                    {"error_reason": "inspection_lane_scope_empty", "failure_phase": "scope_resolution"},
-                )
+                raise inspection_scope_error("inspection_lane_scope_empty")
             normalized_directory = normalize_inspection_lane_path(directory, worktree_root)
             pathspec = [normalized_directory.relative_to(worktree_root).as_posix()]
         command = ["git", "-C", str(worktree_root), "ls-files", "-z", "--cached"]
@@ -1167,16 +1189,8 @@ def inspection_scope_paths(args: argparse.Namespace, worktree_root: Path, scope:
             command.extend(["--others", "--exclude-standard"])
         if pathspec:
             command.extend(["--", *pathspec])
-        return git_null_paths(command, worktree_root)
-    raise InspectError(
-        f"Inspection lanes do not support scope: {scope}",
-        2,
-        {
-            "error_reason": "inspection_lane_scope_unsupported",
-            "failure_phase": "scope_resolution",
-            "scope": scope,
-        },
-    )
+        return git_null_paths(command)
+    raise inspection_scope_error("inspection_lane_scope_unsupported")
 
 
 def changed_inspection_scope_paths(args: argparse.Namespace, worktree_root: Path) -> list[str]:
@@ -1209,31 +1223,23 @@ def changed_inspection_scope_paths(args: argparse.Namespace, worktree_root: Path
         )
     paths: list[str] = []
     for command in commands:
-        paths.extend(git_null_paths(command, worktree_root))
+        paths.extend(git_null_paths(command))
     if getattr(args, "include_unversioned", True) and mode in {"all", "unstaged"}:
         paths.extend(
             git_null_paths(
                 ["git", "-C", str(worktree_root), "ls-files", "--others", "--exclude-standard", "-z"],
-                worktree_root,
             )
         )
     return paths
 
 
-def git_null_paths(command: list[str], worktree_root: Path) -> list[str]:
+def git_null_paths(command: list[str]) -> list[str]:
     try:
         completed = subprocess.run(command, check=True, capture_output=True)
     except subprocess.CalledProcessError as error:
-        raise InspectError(
-            "Could not resolve the repository file scope for inspection lanes.",
-            3,
-            {
-                "error_reason": "inspection_lane_scope_resolution_failed",
-                "failure_phase": "scope_resolution",
-                "git_exit_code": error.returncode,
-                "worktree_root": str(worktree_root),
-            },
-        ) from error
+        failure = inspection_scope_error("inspection_lane_scope_resolution_failed")
+        failure.payload["git_exit_code"] = error.returncode
+        raise failure from error
     return [os.fsdecode(path) for path in completed.stdout.split(b"\0") if path]
 
 
@@ -1243,16 +1249,7 @@ def normalize_inspection_lane_path(value: Any, worktree_root: Path) -> Path:
         path = worktree_root / path
     normalized = path.resolve()
     if normalized != worktree_root and not normalized.is_relative_to(worktree_root):
-        raise InspectError(
-            "Inspection lane scope contains a path outside the exact worktree.",
-            2,
-            {
-                "error_reason": "inspection_lane_path_outside_worktree",
-                "failure_phase": "scope_resolution",
-                "path": str(path),
-                "worktree_root": str(worktree_root),
-            },
-        )
+        raise inspection_scope_error("inspection_lane_path_outside_worktree")
     return normalized
 
 

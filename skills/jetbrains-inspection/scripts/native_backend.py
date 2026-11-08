@@ -1612,18 +1612,13 @@ def next_action_for_reason(host: Any, receipt: dict[str, Any], reason: str, verd
                            has_advisory: bool = False,
                            default_action: str = "Resolve the reported native prerequisite or execution-coverage gap before a fresh assessment.") -> str:
     product = host.IDE_PRODUCTS[receipt.get("product", PYTHON_PRODUCT_KEY)]
+    if reason == "native_" + receipt.get("error_reason", ""):
+        default_action = receipt.get("next_action") or default_action
     action = "Fix current findings." if verdict == "RED" else "None." if verdict == "GREEN" else default_action
     if has_advisory and verdict != "UNKNOWN":
         action += (" Review the advisory spelling and grammar findings: fix real mistakes, and add real tool, library"
                    " or product names to the repository's .idea/dictionaries/project.xml.")
-    if reason == "native_inspection_lane_config_invalid":
-        action = host.inspection_lane_config_error("").payload["next_action"]
-    elif reason == "native_repository_preparation_config_invalid":
-        action = host.repository_preparation_config_error("").payload["next_action"]
-    elif reason in {"native_inspection_lane_scope_empty", "native_inspection_lane_scope_unsupported",
-                    "native_inspection_lane_scope_resolution_failed", "native_inspection_lane_path_outside_worktree"}:
-        action = "Check --scope, --file and --dir against the exact worktree and its inspection lanes, then run one fresh assessment."
-    elif reason == "native_report_unreadable":
+    if reason == "native_report_unreadable":
         action = "The native result or execution trace could not be read. Report the safe error category and check the worker's report generation before one fresh assessment."
     elif reason == "native_prerequisite_or_report_failed" and receipt.get("error_type"):
         action = (f"A native prerequisite failed ({receipt['error_type']}). Check local Git and runtime availability and readable "
@@ -1686,7 +1681,7 @@ def next_action_for_reason(host: Any, receipt: dict[str, Any], reason: str, verd
     elif reason.startswith("native_odoo_"):
         action = "Run the workspace's documented dependency sync so its declared addon refs resolve locally. Match the selected addon's version and workspace build.odoo_version to one Odoo core checkout plus the declared addon dependency roots. Supply those clean roots with --native-framework-root; preserve source version declarations."
     elif reason == "native_scope_too_large":
-        action = "Reduce the selected scope or set --max-files to the intended file limit before reassessing."
+        action = host.inspection_scope_error("inspection_lane_scope_too_large").payload["next_action"]
     elif reason == "native_scope_unsupported":
         action = ("The selection has files or lanes this native worker does not inspect. Run agent-inspect without --backend "
                   "native to name them; coverage no native worker offers is unavailable and stays UNKNOWN.")
@@ -1739,7 +1734,7 @@ def envelope(host: Any, receipt: dict[str, Any], findings: list[dict[str, Any]],
               f"{len(receipt.get('coverage', {}).get('covered_by', {}))} inspections covered by repository gates; "
               f"{len(receipt.get('coverage', {}).get('advisory_gaps', []))} advisory coverage gaps; "
               f"{len(gaps)} proof gaps; {len(receipt.get('coverage', {}).get('unproven', []))} inspections unproven.")
-    if receipt.get("error_type"):
+    if reason in {"native_prerequisite_or_report_failed", "native_report_unreadable"} and receipt.get("error_type"):
         report += f" Error category: {receipt['error_type']}."
     return {"schema_version": host.AGENT_RESULT_SCHEMA_VERSION, "command": "agent-inspect", "backend": "native",
             "status": {"GREEN": "clean", "RED": "findings"}.get(verdict, "error"),
@@ -2084,12 +2079,11 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
         known_terminal = True
     except host.InspectError as error:
         record_safe_error(receipt, error)
-        source_reason = error.payload.get("error_reason")
-        if source_reason == "inspection_lane_scope_too_large":
-            reason = "native_scope_too_large"
-        elif source_reason in {"inspection_lane_config_invalid", "repository_preparation_config_invalid", "inspection_lane_scope_empty",
-                               "inspection_lane_scope_unsupported", "inspection_lane_scope_resolution_failed", "inspection_lane_path_outside_worktree"}:
-            reason = "native_" + source_reason
+        safe_error = host.safe_inspection_error(error)
+        if safe_error is not None:
+            receipt.update(safe_error.payload)
+            source_reason = safe_error.payload["error_reason"]
+            reason = "native_scope_too_large" if source_reason == "inspection_lane_scope_too_large" else "native_" + source_reason
         else:
             reason = "native_prerequisite_or_report_failed"
         known_terminal = True
