@@ -1493,7 +1493,8 @@ class AccountChoiceTests(unittest.TestCase):
              "naturalResetAt": "2026-10-03T05:00:00Z", "burn": None},
             {"id": "anthropic-1w", "label": "Claude weekly", "period": "weekly", "remainingFraction": weekly,
              "naturalResetAt": "2026-10-09T00:00:00Z",
-             "burn": {"unitsPerHour": weekly_burn, "observedDurationHours": 12, "sampleCount": 8}}])
+             "burn": {"unitsPerHour": weekly_burn, "observedDurationHours": 12, "sampleCount": 8},
+             "recentBurn": {"unitsPerHour": 0.0, "observedDurationHours": 2, "sampleCount": 24}}])
         return snapshot
 
     def test_report_passes_banked_reset_summary_through_unchanged(self) -> None:
@@ -1512,6 +1513,16 @@ class AccountChoiceTests(unittest.TestCase):
         snapshot["accounts"][1]["bankedResets"]["summary"] = None
         self.assertIsNone(account_choice.choose("anthropic", accounts_config(), snapshot, None, now=NOW)["banked_resets"])
 
+    def test_report_passes_the_providers_unused_at_pace_through_unchanged(self) -> None:
+        snapshot = self.snapshot()
+        self.assertIsNone(account_choice.choose("anthropic", accounts_config(), snapshot, None, now=NOW)["unused_at_pace"])
+        forecast = {"runsOutBeforeRefill": False, "refillsUnusedPoints": 140, "accountsSpendingUsageCredits": 1,
+                    "line": "Anthropic: about 140 points will refill unused at this pace. Add work."}
+        snapshot["providers"] = [{"provider": "openai", "unusedAtPace": {"refillsUnusedPoints": 0}},
+                                 {"provider": "anthropic", "unusedAtPace": forecast}]
+        choices = account_choice.choose_batch("anthropic", accounts_config(), snapshot, None, count=2, now=NOW)
+        self.assertEqual([account_choice.public(c)["unused_at_pace"] for c in choices], [forecast, forecast])
+
     def test_report_keeps_five_hour_and_weekly_capacity_separate(self) -> None:
         snapshot = self.windowed(self.snapshot(), "5-hour", .63, .89, 1.5)
         choice = account_choice.choose("anthropic", accounts_config(), snapshot, None, now=NOW)
@@ -1528,7 +1539,9 @@ class AccountChoiceTests(unittest.TestCase):
         weekly = [c["window_capacity"]["weekly"][0] for c in choices]
         self.assertEqual([w["remaining_fraction"] for w in weekly], [.89, .88])
         self.assertEqual([w["burn_units_per_hour"] for w in weekly], [1.5, 1.5])
+        self.assertEqual([w["recent_burn_units_per_hour"] for w in weekly], [0.0, 0.0])
         self.assertIsNone(choices[0]["window_capacity"]["five_hour"][0]["burn_units_per_hour"])
+        self.assertIsNone(choices[0]["window_capacity"]["five_hour"][0]["recent_burn_units_per_hour"])
         snapshot = self.windowed(self.snapshot(), "Weekly", .9, .4, 1.0)
         snapshot["accounts"][1]["windows"].append(
             {"id": "anthropic-opus", "label": "Opus weekly", "period": "weekly", "remainingFraction": .7})

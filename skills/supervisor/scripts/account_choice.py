@@ -220,7 +220,16 @@ def resolve_choice(provider: str, config: dict, snapshot: dict, account_id: obje
         raise ValueError(f"Context Panel {provider} choice matches no single configured account")
     row = matched[0]
     return decision(configured[0], source, reason, account_id=account_id,
-                    remaining=row.get("remainingFraction"), **window_report(row), **snapshot_notices(snapshot))
+                    remaining=row.get("remainingFraction"), unused_at_pace=provider_unused_at_pace(snapshot, provider),
+                    **window_report(row), **snapshot_notices(snapshot))
+
+
+def provider_unused_at_pace(snapshot, provider):
+    """Context Panel's provider pace forecast, unchanged; None when an older Context Panel omits it."""
+    entries = snapshot.get("providers")
+    entries = [e for e in entries if isinstance(e, dict) and e.get("provider") == provider] if isinstance(entries, list) else []
+    value = entries[0].get("unusedAtPace") if len(entries) == 1 else None
+    return value if isinstance(value, dict) else None
 
 
 REPORTED_PERIODS = {"fiveHour": "five_hour", "weekly": "weekly"}
@@ -253,15 +262,20 @@ def window_report(row):
                               "coverage": summary.get("coverage")} if isinstance(summary, dict) else None}
 
 
+def burn_rate(window, key):
+    burn = window.get(key)
+    return number_or_none(burn.get("unitsPerHour")) if isinstance(burn, dict) else None
+
+
 def period_window(window):
     burn = window.get("burn")
-    rate = number_or_none(burn.get("unitsPerHour")) if isinstance(burn, dict) else None
     samples = burn.get("sampleCount") if isinstance(burn, dict) else None
     reset = window.get("naturalResetAt")
     return {"label": window.get("label") if isinstance(window.get("label"), str) else None,
             "remaining_fraction": number_or_none(window.get("remainingFraction")),
             "natural_reset_at": reset if isinstance(reset, str) else None,
-            "burn_units_per_hour": rate,
+            "burn_units_per_hour": burn_rate(window, "burn"),
+            "recent_burn_units_per_hour": burn_rate(window, "recentBurn"),
             "burn_sample_count": samples if isinstance(samples, int) and not isinstance(samples, bool) else None}
 
 
@@ -371,13 +385,13 @@ def choose(provider, config, snapshot, unavailable_reason, now=None, name=None):
 
 
 def decision(account, source, reason, account_id=None, remaining=None, limiting_window_label=None,
-             window_capacity=None, configuration_errors=(), reset_prompts=(), banked_resets=None):
+             window_capacity=None, configuration_errors=(), reset_prompts=(), banked_resets=None, unused_at_pace=None):
     binding = {"account_binding": GOOGLE_ACCOUNT_BINDING} if account["provider"] == "google" else {}
     return {**binding, "name": account["name"], "provider": account["provider"], "source": source,
             "reason": reason, "account_id": account_id, "remaining_fraction": remaining,
             "limiting_window_label": limiting_window_label,
             "window_capacity": window_capacity or dict.fromkeys(REPORTED_PERIODS.values()),
-            "banked_resets": banked_resets,
+            "banked_resets": banked_resets, "unused_at_pace": unused_at_pace,
             "env": account["env"], "configuration_errors": list(configuration_errors),
             "reset_prompts": list(reset_prompts)}
 
