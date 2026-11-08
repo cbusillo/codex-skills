@@ -7,11 +7,12 @@
 
 from __future__ import annotations
 
+import json
 import os
-from pathlib import Path
 import re
 import subprocess
 import time
+from pathlib import Path
 from typing import Any, Mapping
 
 FAMILIES = ("claude", "codex")
@@ -76,6 +77,14 @@ def native_sessions(agent: str | None, *, environ: Mapping[str, str] | None = No
     An unidentified harness may hold only an outer harness's inherited ID, so it reads none.
     """
     env = os.environ if environ is None else environ
+    if agent == "agy":
+        try:
+            metadata = json.loads(env.get("ANTIGRAVITY_SOURCE_METADATA", ""))
+        except json.JSONDecodeError:
+            return {}
+        tool = metadata.get("tool") if isinstance(metadata, dict) else None
+        session = tool.get("conversationId") if isinstance(tool, dict) else None
+        return {"ANTIGRAVITY_SOURCE_METADATA": session} if isinstance(session, str) and session.strip() else {}
     return {name: env[name] for name in NATIVE_SESSION_VARS.get(agent or "", ()) if env.get(name)}
 
 
