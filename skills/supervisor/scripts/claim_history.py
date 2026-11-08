@@ -5,14 +5,14 @@
 """Read native child histories without inventing a second session registry."""
 from __future__ import annotations
 
-from contextlib import ExitStack, closing, contextmanager
 import json
-from pathlib import Path
 import re
 import sqlite3
 import sys
+from contextlib import ExitStack, closing, contextmanager
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
-from datetime import datetime, timezone, UTC
 
 
 def protobuf_fields(data: bytes) -> dict[int, Any]:
