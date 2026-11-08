@@ -1228,17 +1228,10 @@ def _comment_impl(
     )
 
 
-def validate_attachment_request(repo: str, body: str, attachments: list[str]) -> None:
+def validate_attachment_files(repo: str, attachments: list[str]) -> None:
     if (not github_identity.REPOSITORY_PATTERN.fullmatch(repo)
             or repo.split("/")[0].casefold() != ATTACHMENT_OWNER):
         raise ValueError("Own-user attachments are limited to Chris-owned repositories")
-    if body.splitlines()[:1] != [AGENT_POSTED_LINE]:
-        raise ValueError(f"Attachment comments must start with: {AGENT_POSTED_LINE}")
-    requested_body = body[len(AGENT_POSTED_LINE):].lstrip()
-    validate_question_mentions(requested_body, repo)
-    if question_id.QUESTION_HEADING.match(requested_body) and not question_id.heading_id(requested_body):
-        raise ValueError("Personal-identity questions need an existing Q ID; allocate with question_id.py next first")
-    verify_question_number(requested_body)
     if not attachments:
         raise ValueError("Own-user attachment comments require an image or video")
     for attachment in attachments:
@@ -1252,6 +1245,38 @@ def validate_attachment_request(repo: str, body: str, attachments: list[str]) ->
                 raise ValueError("PDFs stay manual, including PDFs renamed as images")
 
 
+def attachment_source_url(repo: str, number: int, body: str) -> str:
+    match = re.fullmatch(
+        rf"\[{re.escape(AGENT_POSTED_LINE)}]\((https://github\.com/{re.escape(repo)}/(?:issues|pull)/{number}#issuecomment-[1-9][0-9]*)\)",
+        body.strip(), re.IGNORECASE,
+    )
+    if match is None:
+        raise ValueError("Attachment text must be only the agent line linked to its automation comment on this thread")
+    return match[1]
+
+
+def validate_attachment_bot(actor: str) -> None:
+    bots = {login.casefold() for login in github_identity.configured_bot_logins()}
+    if primary := github_identity.automation_login():
+        bots.add(primary.casefold())
+    if actor.casefold() not in bots or actor.casefold() == ATTACHMENT_OWNER:
+        raise ValueError("Attachment report text requires the configured automation identity")
+
+
+def verify_attachment_owner(repo: str, *, gh_cmd: str) -> None:
+    if str(github_identity.configured_value("GH_WITH_ENV_TOKEN_OWN_USER_LOGIN") or "").casefold() != ATTACHMENT_OWNER:
+        raise ValueError("Own-user attachments require Chris's declared personal login")
+    result = _call_api(
+        "GET", f"/repos/{repo}", None, gh_cmd=gh_cmd,
+        operation="github.comment.attachment_preflight", actor=None, expected_actor=EXPECTED_ACTOR,
+        completed_steps=[], failed_step="verify_attachment_owner", is_write=False,
+    )
+    if (not isinstance(result.body, dict)
+            or str((result.body.get("owner") or {}).get("login", "")).casefold() != ATTACHMENT_OWNER
+            or str(result.body.get("full_name", "")).casefold() != repo.casefold()):
+        raise ValueError("Attachment target must still be owned by Chris at its current repository name")
+
+
 def validate_own_attachment_command(arguments: list[str], body: str) -> str:
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument("kind", choices=("issue", "pr"))
@@ -1263,18 +1288,22 @@ def validate_own_attachment_command(arguments: list[str], body: str) -> str:
     args = parser.parse_args(arguments)
     if args.number <= 0:
         raise ValueError("Attachment comments require a positive issue or PR number")
-    validate_attachment_request(args.repo, body, args.attach)
-    if str(github_identity.configured_value("GH_WITH_ENV_TOKEN_OWN_USER_LOGIN") or "").casefold() != ATTACHMENT_OWNER:
-        raise ValueError("Own-user attachments require Chris's declared personal login")
+    validate_attachment_files(args.repo, args.attach)
+    source_url = attachment_source_url(args.repo, args.number, body)
+    verify_attachment_owner(args.repo, gh_cmd=DEFAULT_GH)
+    source_id = source_url.rsplit("-", 1)[1]
     result = _call_api(
-        "GET", f"/repos/{args.repo}", None, gh_cmd=DEFAULT_GH,
+        "GET", f"/repos/{args.repo}/issues/comments/{source_id}", None, gh_cmd=DEFAULT_GH,
         operation="github.comment.attachment_preflight", actor=None, expected_actor=EXPECTED_ACTOR,
-        completed_steps=[], failed_step="verify_attachment_owner", is_write=False,
+        completed_steps=[], failed_step="verify_attachment_source", is_write=False,
     )
-    if (not isinstance(result.body, dict)
-            or str((result.body.get("owner") or {}).get("login", "")).casefold() != ATTACHMENT_OWNER
-            or str(result.body.get("full_name", "")).casefold() != args.repo.casefold()):
-        raise ValueError("Attachment target must still be owned by Chris at its current repository name")
+    source = result.body
+    if (not isinstance(source, dict) or source.get("id") != int(source_id)
+            or str(source.get("html_url", "")).casefold() != source_url.casefold()
+            or str(source.get("issue_url", "")).casefold() != f"https://api.github.com/repos/{args.repo}/issues/{args.number}".casefold()):
+        raise ValueError("Attachment source must be the saved automation comment on this exact thread")
+    user = source.get("user")
+    validate_attachment_bot(str(user.get("login") or "") if isinstance(user, dict) else "")
     return args.repo
 
 
@@ -1304,10 +1333,14 @@ def attached_comment(
     gh_cmd: str, operation: str, retry_summaries: list[github_api_core.RetrySummary],
 ) -> dict[str, Any]:
     resolved_repo = resolve_repo(repo, gh_cmd=gh_cmd, operation=operation)
-    if body.splitlines()[:1] != [AGENT_POSTED_LINE]:
-        body = f"{AGENT_POSTED_LINE}\n\n{body}"
+    if body.splitlines()[:1] == [AGENT_POSTED_LINE]:
+        body = body[len(AGENT_POSTED_LINE):].lstrip()
     try:
-        validate_attachment_request(resolved_repo, body, attachments)
+        validate_attachment_files(resolved_repo, attachments)
+        validate_question_mentions(body, resolved_repo)
+        if question_id.QUESTION_HEADING.match(body) and not question_id.heading_id(body):
+            raise ValueError("Personal-identity questions need an existing Q ID; allocate with question_id.py next first")
+        verify_question_number(body)
     except (ValueError, OSError) as error:
         raise _local_error(
             str(error), operation=operation, cause="validation_error", failed_step="attachment_preflight",
@@ -1316,6 +1349,11 @@ def attached_comment(
         raise _local_error(
             "Attachments require GH_WITH_ENV_TOKEN_OWN_USER=1 on this command",
             operation=operation, cause="validation_error", failed_step="attachment_preflight",
+        )
+    if str(github_identity.configured_value("GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH") or "").casefold() in {"1", "true", "yes"}:
+        raise _local_error(
+            "Attachment uploads cannot require automation authentication", operation=operation,
+            cause="validation_error", failed_step="attachment_preflight",
         )
     try:
         help_result = subprocess.run(
@@ -1335,8 +1373,49 @@ def attached_comment(
             "Attachments require GitHub CLI with the official --attach flag (2.103.2 or newer)",
             operation=operation, cause="attachment_cli_unavailable", failed_step="attachment_preflight",
         )
+    verify_attachment_owner(resolved_repo, gh_cmd=gh_cmd)
+    agent_comment = comment(
+        kind, number, body, repo=resolved_repo, gh_cmd=gh_cmd, operation=operation,
+        validate_actor=validate_attachment_bot, retry_summaries=retry_summaries,
+    )
+    upload_body = f"[{AGENT_POSTED_LINE}]({agent_comment['url']})"
+    try:
+        attachment_source_url(resolved_repo, number, upload_body)
+        uploaded = upload_attachment_comment(
+            kind, number, upload_body, attachments, repo=resolved_repo, gh_cmd=gh_cmd,
+            operation=operation, retry_summaries=retry_summaries,
+        )
+    except (CommentError, ValueError) as error:
+        upload_error = error if isinstance(error, CommentError) else _local_error(
+            str(error), operation=operation, cause="invalid_response", failed_step="verify_attachment_source",
+        )
+        failure = upload_error.failure
+        raise _local_error(
+            "The automation report is saved. Do not replay the combined attachment command; "
+            "reconcile the upload, then use gh-with-env-token issue comment with --attach and only the linked agent line. "
+            f"{error}",
+            operation=operation, cause=failure.cause,
+            actor=agent_comment["actor"], expected_actor=agent_comment["expected_actor"],
+            completed_steps=[*agent_comment["completed_steps"], *failure.completed_steps], failed_step=failure.failed_step,
+            write_outcome="applied", payload={
+                "url": agent_comment["url"], "agent_comment": agent_comment,
+                "attachment_write_outcome": failure.write_outcome, "attachment_error": upload_error.payload,
+                "outcome_certainty": "unknown" if failure.write_outcome == "unknown" else "confirmed_partially_applied",
+                "recommended_next_action": "follow_operation_reconciliation_strategy", "retry_eligible": False,
+                "reconciliation": {"strategy": "read_comment_by_url", "required_before_retry": True,
+                                   "url": upload_error.payload.get("url") or agent_comment["url"]},
+            },
+        ) from error
+    return {**agent_comment, "attachment_comment": uploaded,
+            "completed_steps": [*agent_comment["completed_steps"], *uploaded["completed_steps"]]}
+
+
+def upload_attachment_comment(
+    kind: str, number: int, body: str, attachments: list[str], *, repo: str,
+    gh_cmd: str, operation: str, retry_summaries: list[github_api_core.RetrySummary],
+) -> dict[str, Any]:
     actor = ATTACHMENT_OWNER
-    command = [gh_cmd, kind, "comment", str(number), "--repo", resolved_repo, "--body-file", "-"]
+    command = [gh_cmd, kind, "comment", str(number), "--repo", repo, "--body-file", "-"]
     for attachment in attachments:
         command.extend(["--attach", attachment])
     receipt_nonce = os.urandom(16).hex()
@@ -1352,7 +1431,7 @@ def attached_comment(
         ) from error
     url = result.stdout.strip()
     match = re.fullmatch(
-        rf"https://github\.com/{re.escape(resolved_repo)}/(?:issues|pull)/{number}#issuecomment-(\d+)", url, re.IGNORECASE,
+        rf"https://github\.com/{re.escape(repo)}/(?:issues|pull)/{number}#issuecomment-(\d+)", url, re.IGNORECASE,
     )
     if result.returncode and match and attachment_write_outcome(result.stderr, receipt_nonce) == "applied":
         raise _local_error(
@@ -1372,7 +1451,7 @@ def attached_comment(
         )
     try:
         readback = _call_api(
-            "GET", f"/repos/{resolved_repo}/issues/comments/{match[1]}", None,
+            "GET", f"/repos/{repo}/issues/comments/{match[1]}", None,
             gh_cmd=gh_cmd, operation=operation, actor=None, expected_actor=EXPECTED_ACTOR,
             completed_steps=["attach_comment"], failed_step="attachment_readback", is_write=False,
             retry_summaries=retry_summaries,
@@ -1387,17 +1466,20 @@ def attached_comment(
     saved = readback.body
     saved_user = saved.get("user") if isinstance(saved, dict) else None
     saved_author = str(saved_user.get("login") or "") if isinstance(saved_user, dict) else ""
+    saved_body = str(saved.get("body", "")) if isinstance(saved, dict) else ""
+    asset = r"https://github\.com/user-attachments/assets/[A-Za-z0-9_-]+"
+    markup = [line.strip() for line in saved_body.removeprefix(body).splitlines() if line.strip()]
     if (not isinstance(saved, dict) or saved.get("id") != int(match[1])
             or saved.get("html_url") != url or saved_author.casefold() != actor
-            or str(saved.get("body", "")).splitlines()[:1] != [AGENT_POSTED_LINE]
-            or "https://github.com/user-attachments/assets/" not in str(saved.get("body", ""))):
+            or not saved_body.startswith(body) or len(markup) != len(attachments)
+            or any(not re.fullmatch(rf"(?:!?\[[^\r\n]*]\({asset}\)|{asset})", line) for line in markup)):
         raise _local_error(
             "Attachment readback did not confirm the comment, author, agent line and uploaded asset; read the thread before retrying",
             operation=operation, cause="invalid_response", actor=actor, expected_actor=actor,
             failed_step="attachment_readback", write_outcome="applied", payload={"url": url},
         )
     return _comment_payload(
-        readback.body, operation=operation, kind=kind, repo=resolved_repo, number=number,
+        readback.body, operation=operation, kind=kind, repo=repo, number=number,
         actor=actor, expected_actor=actor, comment_action="created",
         completed_steps=["attach_comment", "attachment_readback"],
     )
