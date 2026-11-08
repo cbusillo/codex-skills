@@ -1197,6 +1197,7 @@ def test_controller_rejects_unsafe_or_unbound_diagnostic_shapes(change: dict[str
 
 def test_controller_block_and_reconciliation_preserve_durable_diagnostics() -> None:
     result = {
+        "repository": "example/repo", "base_branch": "main",
         "controller_action": "block", "mode": "blocked",
         "blocking_reason": {"code": "merge_readiness_not_ready", "message": "Required checks failed."},
         "merge_readiness": {
@@ -1204,18 +1205,32 @@ def test_controller_block_and_reconciliation_preserve_durable_diagnostics() -> N
             "technical_checks_state": "failed", "engineering_review_state": "ready",
             "policy_state": "ready", "candidate_state": "ready", "fence_state": "ready",
         },
+        "structural_provenance": {
+            "status": "recorded_rolling", "reason_codes": ["structural_rolling_chain_recorded"],
+            "effective_base_sha": "a" * 40, "effective_base_tree_sha": "b" * 40,
+            "candidate_sha256": "c" * 64, "landing_plan_sha256": "d" * 64, "provenance_sha256": "e" * 64,
+        },
         "merge_train_batch_landing_plan_record_id": "landing-plan-example",
-        "landing_plan": {"record_id": "landing-plan-example"},
+        "landing_plan": {"record_id": "landing-plan-example", "status": "planned", "candidate_sha": "abc123",
+                         "entries": [{"pull_request_number": 42, "status": "planned"}]},
     }
-    response = {"status": "accepted", "trace_id": "launchplane_req_block", "records": {}, "result": result}
+    response = {"status": "accepted", "trace_id": "launchplane_req_block",
+                "records": {"merge_train_batch_landing_plan_record_id": "landing-plan-example"}, "result": result}
     status, payload = _run_controller_response(response, mutate=True)
     assert status == 0
     assert payload["status"] == "accepted"
     assert payload["summary"]["controller_action"] == result["controller_action"]
+    assert payload["summary"]["trace_id"] == response["trace_id"]
     assert payload["summary"]["error_code"] == result["blocking_reason"]["code"]
+    assert payload["records"] == response["records"]
+    assert payload["result"]["blocking_reason"] == result["blocking_reason"]
     assert payload["result"]["merge_readiness"] == result["merge_readiness"]
+    assert payload["result"]["structural_provenance"] == result["structural_provenance"]
     assert payload["result"]["merge_train_batch_landing_plan_record_id"] == result["merge_train_batch_landing_plan_record_id"]
-    assert payload["result"]["landing_plan"] == result["landing_plan"]
+    assert payload["result"]["landing_plan"] == {
+        "record_id": "landing-plan-example", "status": "planned", "candidate_sha": "abc123",
+        "entries_count": 1, "pull_request_numbers": [42],
+    }
     lease = {
         "controller_action": "resume_reconciliation", "controller_reconciliation_status": "required",
         "active_action": "land_batch", "active_phase": "merge_batch_entries",
@@ -1683,79 +1698,6 @@ def test_current_launchplane_service_response_shapes() -> None:
         projected = write_action._project_merge_component({"entries": entries}, include_membership=True)
         assert "pull_request_numbers" not in projected
         assert projected["entries_count"] == len(entries)
-
-    blocked_merge = write_action.summarize_success(
-        operation="merge-train-controller-run-once",
-        request={"repository": "example/repo", "base_branch": "main", "mutate": True},
-        provider_payload={
-            "status": "accepted",
-            "trace_id": "launchplane_req_blocked_merge",
-            "records": {
-                "merge_train_batch_landing_plan_record_id": "landing-plan-example",
-            },
-            "result": {
-                "repository": "example/repo",
-                "base_branch": "main",
-                "mode": "blocked",
-                "controller_action": "block",
-                "blocking_reason": {
-                    "code": "merge_readiness_not_ready",
-                    "message": "Merge readiness is not ready.",
-                },
-                "merge_readiness": {
-                    "state": "blocked_engineering_review",
-                    "reason_codes": ["engineering_review_pending"],
-                    "owner_states": ["ready"],
-                    "technical_checks_state": "ready",
-                    "engineering_review_state": "blocked_engineering_review",
-                    "policy_state": "ready",
-                    "candidate_state": "ready",
-                    "fence_state": "ready",
-                },
-                "structural_provenance": {
-                    "status": "recorded_rolling",
-                    "reason_codes": ["structural_rolling_chain_recorded"],
-                    "effective_base_sha": "a" * 40,
-                    "effective_base_tree_sha": "b" * 40,
-                    "candidate_sha256": "c" * 64,
-                    "landing_plan_sha256": "d" * 64,
-                    "provenance_sha256": "e" * 64,
-                },
-                "landing_plan": {
-                    "status": "planned",
-                    "candidate_sha": "abc123",
-                    "entries": [{"pull_request_number": 42, "status": "planned"}],
-                },
-            },
-        },
-    )
-    assert blocked_merge["summary"]["controller_action"] == "block"
-    assert blocked_merge["summary"]["trace_id"] == "launchplane_req_blocked_merge"
-    assert blocked_merge["result"]["structural_provenance"]["status"] == "recorded_rolling"
-    assert blocked_merge["result"]["structural_provenance"]["effective_base_sha"] == "a" * 40
-    assert blocked_merge["records"] == {
-        "merge_train_batch_landing_plan_record_id": "landing-plan-example"
-    }
-    assert blocked_merge["result"]["blocking_reason"] == {
-        "code": "merge_readiness_not_ready",
-        "message": "Merge readiness is not ready.",
-    }
-    assert blocked_merge["result"]["merge_readiness"] == {
-        "state": "blocked_engineering_review",
-        "reason_codes": ["engineering_review_pending"],
-        "owner_states": ["ready"],
-        "technical_checks_state": "ready",
-        "engineering_review_state": "blocked_engineering_review",
-        "policy_state": "ready",
-        "candidate_state": "ready",
-        "fence_state": "ready",
-    }
-    assert blocked_merge["result"]["landing_plan"] == {
-        "status": "planned",
-        "candidate_sha": "abc123",
-        "entries_count": 1,
-        "pull_request_numbers": [42],
-    }
 
     early_refusal = write_action.summarize_success(
         operation="merge-train-controller-run-once",
