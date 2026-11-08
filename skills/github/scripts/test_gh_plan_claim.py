@@ -561,6 +561,11 @@ class ClaimTests(unittest.TestCase):
         self.inventory["remote_branches"] = list(self.inventory["local_branches"])
         self.inventory["worktrees"] = [{"path": "/retained/" + p["head"]["ref"].split("/")[-1], "branch": p["head"]["ref"]} for p in self.pulls]
 
+    def close_retained_pull(self, pull: dict[str, Any], merged_at: str | None) -> None:
+        pull.update(state="closed", merged_at=merged_at)
+        self.closed_pulls[pull["number"]] = pull
+        self.targets[str(pull["number"])]["state"] = "closed"
+
     def released_issue_pr_fixture(self) -> None:
         self.refresh_fixture()
         self.comments[0]["created_at"] = OTHER["claimed_at"]
@@ -807,18 +812,14 @@ class ClaimTests(unittest.TestCase):
     def test_refresh_merged_sibling_remains_retained_without_cleanup(self):
         self.refresh_fixture()
         sibling = self.pulls.pop()
-        sibling.update(state="closed", merged_at="2026-10-02T01:00:00Z")
-        self.closed_pulls[sibling["number"]] = sibling
-        self.targets[str(sibling["number"])]["state"] = "closed"
+        self.close_retained_pull(sibling, "2026-10-02T01:00:00Z")
         self.run_claim()
         self.assertIn(sibling["head"]["ref"], self.inventory["local_branches"])
 
     def test_refresh_closed_unmerged_sibling_still_refuses_retained_artifacts(self):
         self.refresh_fixture()
         sibling = self.pulls.pop()
-        sibling.update(state="closed", merged_at=None)
-        self.closed_pulls[sibling["number"]] = sibling
-        self.targets[str(sibling["number"])]["state"] = "closed"
+        self.close_retained_pull(sibling, None)
         with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
         self.assert_no_writes()
 
@@ -1085,9 +1086,7 @@ class ClaimTests(unittest.TestCase):
                 target["body"] += "\n\n## Current Status\n\n" + target_status
                 if merged:
                     pull = self.pulls.pop(0)
-                    pull.update(state="closed", merged_at="2026-10-02T01:00:00Z")
-                    self.closed_pulls[pull["number"]] = pull
-                    target["state"] = "closed"
+                    self.close_retained_pull(pull, "2026-10-02T01:00:00Z")
                 wait = ({"version": 1, "state": "review", "evidence": "", "waits": []}
                         if review else wait_record.reviewed(evidence="Client asked to hold",
                             waiting_for="Client test", ends_when="Accepted head"))
@@ -1968,9 +1967,7 @@ class ClaimTests(unittest.TestCase):
         sibling = self.pulls.pop()
         old_branch = sibling["head"]["ref"]
         sibling["head"]["ref"] = source_branch
-        sibling.update(state="closed", merged_at="2026-10-02T01:00:00Z")
-        self.closed_pulls[sibling["number"]] = sibling
-        self.targets[str(sibling["number"])]["state"] = "closed"
+        self.close_retained_pull(sibling, "2026-10-02T01:00:00Z")
         for key in ("local_branches", "remote_branches"):
             self.inventory[key] = [source_branch if b == old_branch else b for b in self.inventory[key]]
         self.inventory["worktrees"][1]["branch"] = source_branch
@@ -2010,9 +2007,7 @@ class ClaimTests(unittest.TestCase):
                 self.handoff_id = None
                 if route == "parent_merged":
                     for pull in self.pulls:
-                        pull.update(state="closed", merged_at="2026-10-02T02:00:00Z")
-                        self.closed_pulls[pull["number"]] = pull
-                        self.targets[str(pull["number"])]["state"] = "closed"
+                        self.close_retained_pull(pull, "2026-10-02T02:00:00Z")
                     self.pulls = []
                 self.run_claim()
                 result = self.emitted.call_args.args[0]
@@ -2037,9 +2032,7 @@ class ClaimTests(unittest.TestCase):
                 first_number = 100 if shape in {"merged", "next"} else 99
                 if shape == "all_merged":
                     for pull in self.pulls:
-                        pull.update(state="closed", merged_at="2026-10-02T03:00:00Z")
-                        self.closed_pulls[pull["number"]] = pull
-                        self.targets[str(pull["number"])]["state"] = "closed"
+                        self.close_retained_pull(pull, "2026-10-02T03:00:00Z")
                     self.pulls = []
                 if shape in {"same_head", "weak_open", "weak_merged"}:
                     pull = self.pulls[1]
@@ -2055,9 +2048,7 @@ class ClaimTests(unittest.TestCase):
                         pull.update(title="Archived research", body="Historical context: https://github.com/owner/repo/issues/42")
                 if shape in {"weak_merged", "other_released_merged"}:
                     pull = self.pulls.pop()
-                    pull.update(state="closed", merged_at="2026-10-02T03:00:00Z")
-                    self.closed_pulls[100] = pull
-                    self.targets["100"]["state"] = "closed"
+                    self.close_retained_pull(pull, "2026-10-02T03:00:00Z")
                 historical = shape in {"weak_open", "weak_merged", "other_released_merged"}
                 if historical:
                     self.targets["100"]["labels"] = [{"name": 'plan:waiting'}]
@@ -2253,9 +2244,7 @@ class ClaimTests(unittest.TestCase):
                     elif change == "binding": os.environ["CODEX_SESSION_ID"] = "another-native"
                     else:
                         self.pulls.remove(pull)
-                        pull.update(state="closed", merged_at="2026-10-02T03:00:00Z")
-                        self.closed_pulls[pull["number"]] = pull
-                        self.targets[str(pull["number"])]["state"] = "closed"
+                        self.close_retained_pull(pull, "2026-10-02T03:00:00Z")
                 setattr(self, phase, mutate)
                 with patch.dict(os.environ, {"CODEX_THREAD_ID": self.args.session}):
                     if mode == "ordinary" and change in {"merged", "binding"}:
@@ -2282,9 +2271,7 @@ class ClaimTests(unittest.TestCase):
                     published = copy.deepcopy(self.emitted.call_args.args[0]["claim"])
                     if changed and mode == "next":
                         pull = self.pulls.pop(0)
-                        pull.update(state="closed", merged_at="2026-10-02T03:00:00Z")
-                        self.closed_pulls[pull["number"]] = pull
-                        self.targets[str(pull["number"])]["state"] = "closed"
+                        self.close_retained_pull(pull, "2026-10-02T03:00:00Z")
                     elif changed:
                         pull = {"number": 99, "state": "open", "user": {"login": TEST_BOT},
                                 "title": "New retained work", "body": "Refs #42",
@@ -4638,9 +4625,7 @@ class ClaimTests(unittest.TestCase):
                 if change == "fork": self.pulls[0]["head"]["repo"]["full_name"] = "stranger/repo"
                 if change == "closed_unmerged":
                     unmerged = self.pulls.pop()
-                    unmerged.update(state="closed", merged_at=None)
-                    self.closed_pulls[unmerged["number"]] = unmerged
-                    self.targets[str(unmerged["number"])]["state"] = "closed"
+                    self.close_retained_pull(unmerged, None)
                 if change == "new_pr": self.pulls.append({**copy.deepcopy(self.pulls[0]), "number": 101})
                 if change == "extra_branch": self.inventory["remote_branches"].append("work/issue-42-unmentioned")
                 if change == "new_task_uses_source": self.args.branch = self.closed_pulls[100]["head"]["ref"]
@@ -4876,9 +4861,7 @@ class ClaimTests(unittest.TestCase):
                     self.inventory["local_branches"].append(self.args.branch)
                     self.inventory["worktrees"].append({"branch": self.args.branch, "path": "/task/recovery"})
                 self.pulls.remove(closing)
-                closing.update(state="closed", merged_at="2026-10-02T03:00:00Z")
-                self.closed_pulls[closing["number"]] = closing
-                self.targets[str(closing["number"])]["state"] = "closed"
+                self.close_retained_pull(closing, "2026-10-02T03:00:00Z")
                 if control != "no_cleanup":
                     branch = closing["head"]["ref"]
                     for key in ("local_branches", "remote_branches"):
