@@ -114,10 +114,11 @@ decisions, statuses or narrative; open linked records for action.
    `refillsUnusedPoints` is above a few points and `runsOutBeforeRefill` is
    false, start more productive work on that provider, or say in the check that
    no work is available to fill it. When `accountsSpendingUsageCredits` is above
-   zero while points will refill unused, launch new work with `--account` on an
-   account with plan quota left and note the sessions still running on the empty
-   one. A refused preview or `null` value means the signal is unavailable; say
-   so and continue. Refill
+   zero while points will refill unused, start new work on the first account in
+   the published launch order (`account_choice.py --count N`) whose weekly and
+   five-hour windows both have quota left, by name with `--account`, and note
+   the sessions still running on the empty one. A refused preview or `null`
+   value means the signal is unavailable; say so and continue. Refill
    available capacity, handle stale waits and deferred-question conditions,
    and read the stranded-work digest's oldest Supervisor actions and unasked
    Director waits. Nudge stalls with exact evidence and process finished
