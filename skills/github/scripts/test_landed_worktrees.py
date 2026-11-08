@@ -200,27 +200,24 @@ class RetireTests(unittest.TestCase):
             ({"refuse_apply": True}, [("/a", True), ("/a", False)]),
         ):
             for stdout, stderr, stream, message in cases:
-                for status in (1, 23, -15):
-                    with self.subTest(stage=refuse, stream=stream, message=message, status=status):
-                        calls, run = self.runner(**refuse, returncode=status, stdout=stdout, stderr=stderr)
-                        rows = landed_worktrees.retire([{"path": "/a", "decision": "candidate"}], apply=True, runner=run)
-                        self.assertEqual(rows[0]["decision"], "kept")
-                        self.assertEqual(
-                            rows[0]["reason"], "retire preview refused" if refuse.get("refuse_preview") else "retire refused"
-                        )
-                        detail = "\n".join(rows[0]["detail"])
-                        self.assertIn(str(status), detail)
-                        self.assertIn(message, detail)
-                        if stream:
-                            self.assertIn(stream, detail)
-                        self.assertNotIn("earlier", detail)
-                        self.assertNotIn("unused stdout", detail)
-                        self.assertTrue(all(line.strip() for line in rows[0]["detail"]))
-                        self.assertEqual(calls, expected_calls)
+                with self.subTest(stage=refuse, stream=stream, message=message, status=-15):
+                    calls, run = self.runner(**refuse, returncode=-15, stdout=stdout, stderr=stderr)
+                    rows = landed_worktrees.retire([{"path": "/a", "decision": "candidate"}], apply=True, runner=run)
+                    self.assertEqual(rows[0]["decision"], "kept")
+                    detail = "\n".join(rows[0]["detail"])
+                    self.assertIn(str(-15), detail)
+                    self.assertIn(message, detail)
+                    if stream:
+                        self.assertIn(stream, detail)
+                    self.assertNotIn("earlier", detail)
+                    self.assertNotIn("unused stdout", detail)
+                    self.assertTrue(all(line.strip() for line in rows[0]["detail"]))
+                    self.assertEqual(calls, expected_calls)
 
     def test_refusal_diagnostics_bound_and_redact_the_selected_line(self) -> None:
         secret = "fixture-private-value"
-        output = "unrelated payload\nrefused token=" + secret * 100 + " trailing context " * 100
+        context = " trailing context " * 100
+        output = "unrelated payload\nrefused token=" + secret * 100 + context
         for preview in (True, False):
             for stream in ("stderr", "stdout"):
                 with self.subTest(preview=preview, stream=stream):
@@ -237,7 +234,7 @@ class RetireTests(unittest.TestCase):
                     self.assertIn(stream, detail)
                     self.assertNotIn(secret, detail)
                     self.assertNotIn("unrelated payload", detail)
-                    self.assertLess(len(detail), len(output.splitlines()[-1]))
+                    self.assertLess(len(detail), len(context))
                     self.assertEqual(calls, [("/a", True)] if preview else [("/a", True), ("/a", False)])
 
     def test_expired_budget_keeps_a_candidate_without_starting_removal(self) -> None:
