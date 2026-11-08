@@ -161,39 +161,19 @@ def handoff_refusal(comment: dict, evidence: list[dict], session: str, actor: st
     return f"{comment.get('html_url') or comment.get('id')}: {identity}; {proof}"
 
 
-def handoff_source(entry: dict) -> dict:
-    saved = closure.source_records({entry["session_id"]}).get(entry["session_id"], {})
-    if not saved.get("resumed_at") and not saved.get("resumed_generation"):
-        return {}
-    try:
-        generation = native.source_generation(entry, saved)
-    except ValueError as error:
-        raise GateFailed("handoff", str(error)) from error
-    if generation is None:
-        raise GateFailed("handoff", "canonical resumed handoff generation is unavailable; preserve it")
-    require(entry.get("harness") == saved.get("harness") == "codex"
-        and saved.get("process_exit_verified") is True
-        and saved.get("launch_generation") != entry.get("launch_generation")
-        and isinstance(saved.get("resumed_generation"), dict)
-        and isinstance(generation, dict) and all(generation.get(key) for key in (
-            "launch_pid", "launch_generation", "launch_started_at", "pid", "tty", "codex_home", "transcript")),
-        "handoff", "canonical resumed handoff generation is incomplete; preserve it")
-    started = claim_release.stamp(generation["launch_started_at"])
-    require(claim_release.stamp(saved["ended_at"]) < started <= claim_release.stamp(saved["resumed_at"]),
-            "handoff", "canonical handoff succession does not follow the original closure")
-    return saved
-
-
 def verify_handoff(entry: dict, args: argparse.Namespace, operation: Operation, *, retired: bool) -> None:
     operation.gate = "handoff"
     reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 60)
     actor = github_identity.automation_login()
     if not actor:
         raise GateFailed("handoff", "configured automation identity is unknown")
-    source = handoff_source(entry) if not retired else {}
-    started = claim_release.stamp(source["resumed_generation"]["launch_started_at"]) if source else None
+    started = claim_release.stamp(entry["launch_started_at"]) if entry.get("launch_started_at") else None
     recorded = entry.get("handoff_url")
-    inherited = bool(source and recorded == source.get("handoff_url"))
+    try:
+        saved = closure.source_records({entry["session_id"]}).get(entry["session_id"]) if not retired else None
+        inherited = release.inherited_handoff(entry, saved, reader=reader, actor=actor)
+    except ValueError as error:
+        raise GateFailed("handoff", str(error)) from error
     selected = getattr(args, "handoff_url", None) or operation.state.get("handoff", {}).get("url") or (None if inherited else recorded)
     require(not recorded or inherited or recorded == selected, "handoff", "recorded handoff differs; preserve it")
     evidence = None

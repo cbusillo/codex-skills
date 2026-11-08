@@ -138,6 +138,8 @@ class ReleaseTests(unittest.TestCase):
         self.reader.batch_diagnostic = {}
         self.reader.get_json.return_value = {**comment(99, "Handoff"),
             "issue_url": "https://api.github.com/repos/test/a/issues/1"}
+        self.enterContext(patch.object(helper, "GitHubReader", return_value=self.reader))
+        self.enterContext(patch.object(helper.github_identity, "automation_login", return_value=ACTOR))
         self.inventory = patch.object(helper, "inventory", return_value=[])
         self.inventory.start()
         self.addCleanup(self.inventory.stop)
@@ -1379,6 +1381,44 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(helper.record_closure(log, self.entry, "supervisor", persist=False)["ended_at"], first["ended_at"])
         with self.assertRaisesRegex(ValueError, "identity changed"):
             helper.record_closure(log, {**self.entry, "pid": 789}, "supervisor")
+
+    def test_finish_binds_a_missing_handoff_without_replacing_a_current_one(self) -> None:
+        log = self.root / "late-handoff.json"
+        original = helper.record_closure(log, {**self.entry, "handoff_url": None}, "supervisor")
+        preview = helper.record_closure(log, self.entry, "supervisor", persist=False)
+        self.assertEqual(preview["handoff_url"], self.entry["handoff_url"])
+        self.assertIsNone(json.loads(log.read_text())[0]["handoff_url"])
+        bound = helper.record_closure(log, self.entry, "supervisor")
+        self.assertEqual(bound["ended_at"], original["ended_at"])
+        self.assertEqual(helper.closure_identity(bound), helper.closure_identity(self.entry))
+        with self.assertRaisesRegex(ValueError, "handoff_url"):
+            helper.record_closure(log, {**self.entry, "handoff_url": self.entry["handoff_url"].replace("-99", "-100")}, "supervisor")
+        self.assertEqual(json.loads(log.read_text())[0]["handoff_url"], self.entry["handoff_url"])
+
+    def test_manual_finish_drops_prior_generation_handoffs_on_repeated_resume(self) -> None:
+        metadata = {"pid": self.entry["pid"], "launch_pid": self.entry["pid"], "tty": self.entry["tty"],
+                    "launch_generation": "resumed", "launch_started_at": "2026-01-01T00:00:30Z",
+                    "codex_home": str(self.root), "transcript": str(self.transcript)}
+        original_url = self.entry["handoff_url"]
+        for intermediate in (False, True):
+            with self.subTest(intermediate=intermediate):
+                log = self.root / f"manual-{intermediate}.json"
+                current = {**self.entry, **metadata,
+                           "handoff_url": original_url.replace("-99", "-98") if intermediate else original_url}
+                saved = {**self.entry, "resumed_at": "2026-01-01T00:00:40Z", "resumed_generation": metadata}
+                log.write_text(json.dumps([saved]))
+                posted = dict(self.reader.get_json.return_value)
+                self.reader.get_json.side_effect = lambda path, posted=posted, **_kw: {
+                    **posted, "id": int(path.rsplit("/", 1)[-1]),
+                    "created_at": "2026-01-01T00:00:20Z" if path.endswith("/98") else posted["created_at"]}
+                with (patch.object(helper, "GitHubReader", return_value=self.reader),
+                      patch.object(helper.github_identity, "automation_login", return_value=ACTOR)):
+                    closed = helper.record_closure(log, current, "supervisor")
+                    self.assertIsNone(closed.get("handoff_url"))
+                    self.assertIsNone(json.loads(log.read_text())[0].get("handoff_url"))
+                    retried = helper.record_closure(log, current, "supervisor")
+                    self.assertIsNone(retried.get("handoff_url"))
+                    self.assertEqual(retried["ended_at"], closed["ended_at"])
 
     def test_closure_selects_its_source_and_preserves_unrelated_rows(self):
         log = self.root / "selected-close.json"

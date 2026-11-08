@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 from contextlib import contextmanager, nullcontext
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 import json
 import fcntl
 import os
@@ -322,6 +322,9 @@ def _record_closure(path, entry, supervisor_session, *, persist=True, native=Non
     else:
         process = github_plan_native._source_process(entry, saved)
         github_plan_native.recheck_source_process(process)
+    inherited = inherited_handoff(entry, saved)
+    if inherited:
+        entry = {**entry, "handoff_url": None}
     recovered = False
     if existing and existing[0].get("resumed_at") and not existing[0].get("resumed_generation") and native:
         # An invalidation is not a launch. Full current native/source proof can
@@ -348,50 +351,45 @@ def _record_closure(path, entry, supervisor_session, *, persist=True, native=Non
         existing = []
     if existing:
         saved_identity, current_identity = _closure_identity(existing[0]), _closure_identity(entry)
-        if any(saved_identity[key] != current_identity[key] for key in (
-                "pid", "tty", "harness", "handoff_url", "supervisor_owned", "transcript")):
-            raise ValueError("closure log identity changed; preserve the original record")
-        closed = {**existing[0], **{k: v for k, v in entry.items() if k.startswith("_")}}
-        validate_closure(closed, supervisor_session, native=native, process=process)
-        with closure.store_lock(path):
-            current = json.loads(path.read_text())
-            if closure.selected_source_rows(current, entry["session_id"]) != original:
-                raise ValueError("source closure changed during verification; preserve the current generation")
-            if recovered and persist:
-                # Preserve the actual original end time. An optional admission
-                # fingerprint can be recomputed later; never restore the stale one.
-                durable = {key: value for key, value in closed.items() if not key.startswith("_")}
-                closure.replace_rows([durable if row.get("session_id") == entry["session_id"] else row for row in current])
-        return closed, ({k: v for k, v in closed.items() if not k.startswith("_")} if recovered and persist else saved)
-    # Keep the generation's verified process cutoff even when a later turn
-    # replaces its closure time. Native proof may have outlived the dead pane.
-    entry = {k: v for k, v in entry.items() if k != "tty_exited_at"}
-    cutoff = process.cutoff
-    if cutoff is not None:
-        entry = {**entry, "tty_exited_at": cutoff.isoformat()}
-    status = session_record.session_status(entry)
-    outcome: dict[str, Any] = status["session_outcome"]
-    if saved and saved.get("resumed_generation"):
-        outcome["landed_without_rescue"] = False
-    closed = {**entry, "ended_at": datetime.now(timezone.utc).isoformat(),
-              "verdict_at": status["timestamp"], "process_exit_verified": True,
-              "session_outcome": outcome}
-    if entry.get("harness") == "codex" and entry.get("codex_home"):
-        try:
-            closed["closure_evidence"] = closure.evidence(closed)
-        except (ValueError, OSError, ImportError, subprocess.SubprocessError):
-            # Optional admission proof must not stop the existing release route.
-            closed["closure_proof_unavailable"] = True
+        changed = [key for key in ("pid", "tty", "harness", "supervisor_owned", "transcript")
+                   if saved_identity[key] != current_identity[key]]
+        associated = saved_identity["handoff_url"] != current_identity["handoff_url"]
+        if (associated and saved_identity["handoff_url"] and not inherited
+                and not inherited_handoff({**entry, "handoff_url": saved_identity["handoff_url"]}, saved)):
+            changed.append("handoff_url")
+        if changed:
+            raise ValueError(f"closure log identity changed ({', '.join(changed)}); preserve the original record")
+        closed = {**existing[0], "handoff_url": entry.get("handoff_url"),
+                  **{k: v for k, v in entry.items() if k.startswith("_")}}
+    else:
+        entry = {k: v for k, v in entry.items() if k != "tty_exited_at"}
+        cutoff = process.cutoff
+        if cutoff is not None:
+            entry = {**entry, "tty_exited_at": cutoff.isoformat()}
+        status = session_record.session_status(entry)
+        outcome: dict[str, Any] = status["session_outcome"]
+        if saved and saved.get("resumed_generation"):
+            outcome["landed_without_rescue"] = False
+        closed = {**entry, "ended_at": datetime.now(UTC).isoformat(),
+                  "verdict_at": status["timestamp"], "process_exit_verified": True,
+                  "session_outcome": outcome}
+        if entry.get("harness") == "codex" and entry.get("codex_home"):
+            try:
+                closed["closure_evidence"] = closure.evidence(closed)
+            except (ValueError, OSError, ImportError, subprocess.SubprocessError):
+                closed["closure_proof_unavailable"] = True
     validate_closure(closed, supervisor_session, native=native, process=process)
-    if not persist:
+    if not persist and not existing:
         return closed, saved
     # Slow native/process/transcript verification owns only this source. The
     # shared store lock covers a fresh read/compare/write, preserving launches
     # and closures published for other sources while verification was running.
-    with closure.store_lock(path, create=True):
+    with closure.store_lock(path, create=persist):
         current = json.loads(path.read_text()) if path.exists() else []
         if closure.selected_source_rows(current, entry["session_id"]) != original:
             raise ValueError("source closure changed during verification; preserve the current generation")
+        if not persist or existing and not (recovered or associated):
+            return closed, saved
         retained = [r for r in current if r.get("session_id") != entry["session_id"]]
         with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False) as stream:
             temporary = Path(stream.name)
@@ -562,6 +560,20 @@ def handoff(reader, entry, actor):
             or not release.related_sessions_match(claim.unquoted_text(evidence.get("body") or ""), entry["session_id"])):
         raise ValueError("inventory handoff changed after closure or names another native session; preserve the original inventory and use the source's evidence-backed release-claim route")
     return evidence
+
+
+def inherited_handoff(entry: dict, saved: dict | None, *, reader: GitHubReader | None = None,
+                      actor: str | None = None) -> bool:
+    if not entry.get("handoff_url") or not entry.get("launch_started_at"):
+        return False
+    generation = native_closure.source_generation(entry, saved)
+    if generation is None or not generation.get("launch_started_at"):
+        return False
+    actor = actor or github_identity.automation_login()
+    if not actor:
+        raise ValueError("configured automation identity is unknown")
+    reader = reader or GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 60)
+    return release.stamp(handoff(reader, entry, actor)["created_at"]) < release.stamp(generation["launch_started_at"])
 
 
 def inventory_source_context(reader, entry, actor):
