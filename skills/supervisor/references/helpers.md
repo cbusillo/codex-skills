@@ -1964,7 +1964,10 @@ When reporting capacity, read `window_capacity.five_hour` and
 `window_capacity.weekly` instead: each lists that period's windows with their
 own remaining fraction, reset and burn. For weekly pacing or banked-reset burn,
 use the weekly entries' `burn_units_per_hour`, never changes in the headline.
-Snapshots older than
+`recent_burn_units_per_hour` is the last two hours' pace, to see an account
+that stopped or sped up since the last check. `unused_at_pace` is Context
+Panel's provider `unusedAtPace` forecast, unchanged. Both are `null` (unknown)
+on Context Panel before 1.0.80. Snapshots older than
 [context-panel#961](https://github.com/cbusillo/context-panel/pull/961) carry
 no periods, so both are `null` (unknown) and the label is `null`.
 

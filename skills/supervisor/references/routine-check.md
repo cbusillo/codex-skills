@@ -109,7 +109,15 @@ decisions, statuses or narrative; open linked records for action.
    Reuse that output for [planning intake](../../github-plan/SKILL.md#triage-incoming-reports);
    the unanswered-comment radar alone does not track unfinished requests.
    Load the owning skill before a launch, plan mutation or train/landing action;
-   those actions are outside this no-reload reader entry. Refill
+   those actions are outside this no-reload reader entry. Preview each
+   provider with `account_choice.py` and read its `unused_at_pace`. When its
+   `refillsUnusedPoints` is above a few points and `runsOutBeforeRefill` is
+   false, start more productive work on that provider, or say in the check that
+   no work is available to fill it. When `accountsSpendingUsageCredits` is above
+   zero while points will refill unused, launch new work with `--account` on an
+   account with plan quota left and note the sessions still running on the empty
+   one. A refused preview or `null` value means the signal is unavailable; say
+   so and continue. Refill
    available capacity, handle stale waits and deferred-question conditions,
    and read the stranded-work digest's oldest Supervisor actions and unasked
    Director waits. Nudge stalls with exact evidence and process finished
