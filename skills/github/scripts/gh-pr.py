@@ -38,6 +38,7 @@ EXPECTED_ACTOR = github_identity.automation_login()
 CURRENT_OPERATION = "github.pr.unknown"
 CURRENT_RETRY_FIELDS: dict[str, Any] = {}
 CURRENT_RETRY_SUMMARY: Optional[github_api_core.RetrySummary] = None
+OPERATION_OUTCOME_FIELDS = ("outcome_certainty", "recommended_next_action", "reconciliation", "retry_eligible")
 FULL_SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{40}$")
 
 PR_COMMAND_CONTEXT: dict[str, tuple[str, str, bool]] = {
@@ -166,6 +167,7 @@ def main() -> int:
                 envelope[key] = api_result[key]
         if CURRENT_RETRY_FIELDS:
             envelope.update(CURRENT_RETRY_FIELDS)
+        envelope.update({field: exc.payload[field] for field in OPERATION_OUTCOME_FIELDS if field in exc.payload})
         return github_api_core.emit_terminal(
             envelope,
             stderr_message=f"error: {exc}",

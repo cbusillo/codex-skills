@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -1004,38 +1005,66 @@ def test_attachment_route_enforces_limits_through_real_wrapper() -> None:
               "elif args[:1] in (['issue'], ['pr']) and 'comment' in args:\n"
               "    assert not os.environ.get('GH_TOKEN')\n"
               "    body = sys.stdin.read()\n"
-              "    assert body.splitlines()[0] == github_comment.AGENT_POSTED_LINE\n"
+              "    with open(os.environ['FIXTURE_CALLS'], 'a') as stream:\n"
+              "        stream.write(json.dumps(['upload_body', body]) + '\\n')\n"
+              "    open(os.environ['FIXTURE_UPLOAD'], 'w').write(body)\n"
               "    assert any(value == '--attach' for value in args)\n"
               "    print(f'https://github.com/{owner}/catalog/issues/42#issuecomment-20')\n"
-              "    if os.environ.get('FIXTURE_LOSE_COUNTER'):\n"
-              "        github_comment.question_id.counter_path().unlink()\n"
               "    raise SystemExit(int(os.environ.get('FIXTURE_ATTACH_EXIT', '0')))\n"
               "else:\n"
               "    assert os.environ.get('GH_TOKEN') == 'installation-token'\n"
-              "    path = next(arg for arg in args if arg.startswith('/'))\n"
-              "    if path.endswith('/comments/20'):\n"
+              "    path = next(arg for arg in args if arg.startswith('/')).split('?')[0]\n"
+              "    if path == '/user':\n"
+              "        result = {'login': 'catalog-app[bot]'}\n"
+              "    elif path.endswith('/issues/42/comments'):\n"
+              "        if 'POST' in args:\n"
+              "            body = json.load(sys.stdin)['body']\n"
+              "            with open(os.environ['FIXTURE_CALLS'], 'a') as stream:\n"
+              "                stream.write(json.dumps(['bot_body', body]) + '\\n')\n"
+              "            result = {'id': 7351, 'html_url': f'https://github.com/{owner}/catalog/issues/42#issuecomment-7351',\n"
+              "                      'user': {'login': 'catalog-app[bot]'}, 'body': body}\n"
+              "        else:\n"
+              "            result = []\n"
+              "    elif path.endswith('/comments/7351'):\n"
+              "        result = {'id': 7351, 'html_url': f'https://github.com/{owner}/catalog/issues/42#issuecomment-7351',\n"
+              "                  'issue_url': f'https://api.github.com/repos/{owner}/catalog/issues/' + os.environ.get('FIXTURE_SOURCE_ISSUE', '42'),\n"
+              "                  'user': {'login': os.environ.get('FIXTURE_SOURCE_AUTHOR', 'catalog-app[bot]')}}\n"
+              "    elif path.endswith('/comments/20'):\n"
               "        result = {'id': 20, 'html_url': f'https://github.com/{owner}/catalog/issues/42#issuecomment-20',\n"
-              "                  'user': {'login': owner}, 'body': github_comment.AGENT_POSTED_LINE + '\\n\\n![proof](https://github.com/user-attachments/assets/example)'}\n"
+              "                  'user': {'login': owner}, 'body': open(os.environ['FIXTURE_UPLOAD']).read() + '\\n\\n![proof](https://github.com/user-attachments/assets/example)'}\n"
               "    else:\n"
               "        result = {'owner': {'login': os.environ.get('FIXTURE_OWNER', owner)}, 'full_name': f'{owner}/catalog'}\n"
               "    print('HTTP/2.0 200\\r\\ncontent-type: application/json\\r\\n\\r\\n' + json.dumps(result))\n")
-        body = github_comment.AGENT_POSTED_LINE + "\n\nAttachment proof"
+        bot_url = f"https://github.com/{repo}/issues/42#issuecomment-7351"
+        body = f"[{github_comment.AGENT_POSTED_LINE}]({bot_url})"
         args = ["issue", "comment", "42", "--repo", repo, "--body-file", "-", "--attach", str(image)]
         env = {
             "PATH": os.environ["PATH"], "HOME": directory, "CODEX_SKILLS_ENV_FILE": str(env_file),
             "GH_WITH_ENV_TOKEN_IDENTITY_HELPER": str(identity), "GH_WITH_ENV_TOKEN_PYTHON": sys.executable,
             "GH_WITH_ENV_TOKEN_GH": str(fake_gh), "GH_WITH_ENV_TOKEN_OWN_USER": "1",
             "FIXTURE_CALLS": str(calls_file), "GH_COMMENT_GH": str(SCRIPT),
+            "GH_PR_GH": str(SCRIPT), "FIXTURE_UPLOAD": str(root / "uploaded.md"),
             "GITHUB_RETRY_STATE_DIR": str(root / "retry-state"),
         }
         for kind in ("issue", "pr"):
+            calls_file.write_text("")
+            command = ([sys.executable, str(SCRIPT.with_name("gh-pr.py")), "--repo", repo, "comment", "42"]
+                       if kind == "pr" else [sys.executable, str(SCRIPT.with_name("github_comment.py")), kind, "42", "--repo", repo])
             result = subprocess.run(
-                [sys.executable, str(SCRIPT.with_name("github_comment.py")), kind, "42", "--repo", repo,
-                 "--body-file", "-", "--attach", str(image) + "#Evidence"],
+                [*command, "--body-file", "-", "--attach", str(image) + "#Evidence"],
                 env=env, input="Attachment proof", text=True, capture_output=True, timeout=15,
             )
             assert result.returncode == 0, (result.stdout, result.stderr)
-            assert json.loads(result.stdout)["actor"] == owner
+            effects = [json.loads(line) for line in calls_file.read_text().splitlines()
+                       if json.loads(line)[0] in ("bot_body", "upload_body")]
+            assert [effect[0] for effect in effects] == ["bot_body", "upload_body"], effects
+            assert "Attachment proof" in effects[0][1]
+            assert effects[1][1].strip() == body, effects
+            assert "Attachment proof" not in effects[1][1]
+            payload = json.loads(result.stdout)
+            assert payload["actor"] == "catalog-app[bot]", payload
+            assert payload["url"] == bot_url, payload
+            assert payload["attachment_comment"]["actor"] == owner, payload
         positioned = ["issue", "--repo", repo, "comment", "42", "--body-file", "-", "--attach", str(image)]
         result = subprocess.run([str(SCRIPT), *positioned], env=env, input=body, text=True, capture_output=True, timeout=15, check=True)
         assert result.returncode == 0, (result.stdout, result.stderr)
@@ -1044,17 +1073,35 @@ def test_attachment_route_enforces_limits_through_real_wrapper() -> None:
         failed = subprocess.run([str(SCRIPT), *args], env={**env, "FIXTURE_ATTACH_EXIT": "1", "GH_WITH_ENV_TOKEN_RECEIPT_NONCE": nonce},
                                 input=body, text=True, capture_output=True, timeout=15)
         assert failed.returncode != 0
+        assert failed.stdout.strip() == f"https://github.com/{repo}/issues/42#issuecomment-20", failed.stdout
         assert github_comment.attachment_write_outcome(failed.stderr, nonce) == "unknown", failed.stderr
-        refused = subprocess.run(
-            [sys.executable, str(SCRIPT.with_name("github_comment.py")), "issue", "42", "--repo", repo,
-             "--body-file", "-", "--attach", str(image)], env={**env, "FIXTURE_LOGIN": "another-person"},
-            input="proof", text=True, capture_output=True, timeout=15,
-        )
-        assert refused.returncode != 0
-        assert json.loads(refused.stdout)["write_outcome"] == "not_started", refused.stdout
+        for comment_command in (
+            [sys.executable, str(SCRIPT.with_name("github_comment.py")), "issue", "42", "--repo", repo],
+            [sys.executable, str(SCRIPT.with_name("gh-pr.py")), "--repo", repo, "comment", "42"],
+        ):
+            calls_file.write_text("")
+            refused = subprocess.run(
+                [*comment_command, "--body-file", "-", "--attach", str(image)],
+                env={**env, "FIXTURE_LOGIN": "another-person"}, input="proof", text=True, capture_output=True, timeout=15,
+            )
+            assert refused.returncode != 0
+            partial = json.loads(refused.stdout)
+            assert partial["write_outcome"] == "applied", partial
+            assert partial["attachment_write_outcome"] == "not_started", partial
+            assert partial["url"] == bot_url, partial
+            assert partial["retry_eligible"] is False, partial
+            assert partial["outcome_certainty"] == "confirmed_partially_applied", partial
+            assert partial["reconciliation"]["url"] == bot_url, partial
+            effects = [json.loads(line)[0] for line in calls_file.read_text().splitlines()]
+            assert effects.count("bot_body") == 1 and effects.count("upload_body") == 0, effects
+            recovery = next(line for line in partial["error"].splitlines() if line.startswith("printf "))
+            recovered = subprocess.run(["sh", "-c", recovery.replace("gh-with-env-token", shlex.quote(str(SCRIPT)), 1)],
+                                       env=env, text=True, capture_output=True, timeout=15)
+            assert recovered.returncode == 0, (recovery, recovered.stderr)
+            assert recovered.stdout.strip().endswith("#issuecomment-20"), recovered.stdout
+            assert (root / "uploaded.md").read_text().strip() == body
         cases = [
             (args, "ordinary text", {}),
-            (args, github_comment.AGENT_POSTED_LINE + "\r\n\r\nOwner question: Q123. Decide about @outside?", {}),
             ([*args[:-1], str(pdf)], body, {}),
             ([*args, "--edit-last"], body, {}),
             ([*args[:5], "--body", "replacement", *args[5:]], body, {}),
@@ -1062,6 +1109,9 @@ def test_attachment_route_enforces_limits_through_real_wrapper() -> None:
             (args, body, {"GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH": "1"}),
             (args, body, {"FIXTURE_LOGIN": "another-person"}),
             (args, body, {"FIXTURE_OWNER": "new-owner"}),
+            (args, body, {"FIXTURE_SOURCE_AUTHOR": owner}),
+            (args, body, {"FIXTURE_SOURCE_ISSUE": "43"}),
+            (args, body + "\n\nAttachment proof", {}),
             ([*args[:4], "other/catalog", *args[5:]], body, {}),
         ]
         for command, requested_body, changes in cases:
@@ -1071,29 +1121,6 @@ def test_attachment_route_enforces_limits_through_real_wrapper() -> None:
             assert result.returncode != 0, (command, changes, result.stdout)
             calls = [json.loads(line)[0] for line in calls_file.read_text().splitlines()]
             assert not any(call[:2] == ["issue", "comment"] for call in calls), calls
-        from skills.direction.scripts import question_id
-        with patch.dict(os.environ, env, clear=True), patch.object(question_id, "configured_queue", return_value=None):
-            counter_file = question_id.counter_path()
-            question_id.update(counter_file, seed=(10, ["fixture"]), allocate=False)
-            reserved = question_id.update(counter_file)
-        numbered = github_comment.AGENT_POSTED_LINE + f"\n\nDirector question: Q{reserved}. Continue?"
-        result = subprocess.run([str(SCRIPT), *args], env=env, input=numbered, text=True, capture_output=True, timeout=15)
-        assert result.returncode == 0, (result.stdout, result.stderr)
-        with patch.object(question_id, "configured_queue", return_value=None):
-            question_id.verify_number(counter_file, reserved, result.stdout.strip())
-        for requested_body in (numbered, github_comment.AGENT_POSTED_LINE + "\n\nDirector question: Q9999. Invented?"):
-            calls_file.write_text("")
-            result = subprocess.run([str(SCRIPT), *args], env=env, input=requested_body, text=True, capture_output=True, timeout=15)
-            assert result.returncode != 0
-            calls = [json.loads(line)[0] for line in calls_file.read_text().splitlines()]
-            assert not any(call[:2] == ["issue", "comment"] for call in calls), calls
-        with patch.dict(os.environ, env, clear=True), patch.object(question_id, "configured_queue", return_value=None):
-            reserved = question_id.update(question_id.counter_path())
-        numbered = github_comment.AGENT_POSTED_LINE + f"\n\nDirector question: Q{reserved}. Continue?"
-        partial = subprocess.run([str(SCRIPT), *args], env={**env, "FIXTURE_LOSE_COUNTER": "1", "GH_WITH_ENV_TOKEN_RECEIPT_NONCE": nonce},
-                                 input=numbered, text=True, capture_output=True, timeout=15)
-        assert partial.returncode != 0
-        assert github_comment.attachment_write_outcome(partial.stderr, nonce) == "applied", partial.stderr
         original_env = env_file.read_text()
         env_file.write_text(original_env.replace(f"GH_WITH_ENV_TOKEN_OWN_USER_LOGIN={owner}",
                                                 "GH_WITH_ENV_TOKEN_OWN_USER_LOGIN=another-person"))
@@ -1107,10 +1134,10 @@ def test_attachment_route_enforces_limits_through_real_wrapper() -> None:
         env_file.write_text(original_env)
         calls_file.write_text("")
         result = subprocess.run([str(SCRIPT), "api", "--include", "--method", "POST", f"/repos/{repo}/issues/42/comments"],
-                                env=env, text=True, capture_output=True, timeout=15)
+                                env=env, input=json.dumps({"body": "ordinary automation comment"}), text=True, capture_output=True, timeout=15)
         assert result.returncode == 0, result.stderr
         calls = [json.loads(line) for line in calls_file.read_text().splitlines()]
-        assert calls[-1][1] == "installation-token", calls
+        assert next(call for call in reversed(calls) if isinstance(call[0], list))[1] == "installation-token", calls
 
 
 def test_comment_cli_selects_own_user_through_real_wrapper() -> None:
