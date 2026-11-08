@@ -131,10 +131,10 @@ print(json.dumps({{"items": rows, "total_count": len(rows), "incomplete_results"
             def request(self, method, path, **kwargs):
                 rows = search_items(parse_qs(urlsplit(path).query)["q"][0])
                 return SimpleNamespace(body={"items": rows, "total_count": len(rows), "incomplete_results": False})
-
-            def paged_json(self, path, **kwargs):
-                return []
-        result = director_waits.collect(Reader(), "owner", ["Director"], NOW)
+        # noinspection PyUnresolvedReferences
+        unread_comments = patch.object(director_waits, "read_discussion", return_value=[])
+        with unread_comments:
+            result = director_waits.collect(Reader(), "owner", ["Director"], NOW)
         self.assertEqual([row["repo"] for row in result["waits"]], ["owner/current"])
         self.assertTrue(result["complete"])
 
@@ -177,10 +177,10 @@ print(json.dumps({{"items": rows, "total_count": len(rows), "incomplete_results"
             def request(self, method, path, **kwargs):
                 rows = search_items(parse_qs(urlsplit(path).query)["q"][0])
                 return SimpleNamespace(body={"items": rows, "total_count": len(rows), "incomplete_results": False})
-
-            def paged_json(self, path, **kwargs):
-                return []
-        report = director_waits.collect(Reader(), "owner", ["Director"], NOW, include_archived=True)
+        # noinspection PyUnresolvedReferences
+        unread_comments = patch.object(director_waits, "read_discussion", return_value=[])
+        with unread_comments:
+            report = director_waits.collect(Reader(), "owner", ["Director"], NOW, include_archived=True)
         self.assertEqual(len(report["waits"]), len(REPOS))
         self.assertTrue(report["complete"])
 

@@ -13,11 +13,13 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import time
 from datetime import UTC, datetime, timezone
 from functools import partial
+from types import SimpleNamespace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlsplit
@@ -42,6 +44,7 @@ else:
     github_close_attention = importlib.import_module("github_close_attention")
 REAL_READ_DISCUSSION = github_read.read_discussion
 REAL_DISCUSSION_QUERY = github_read.discussion_query
+REAL_READ_REPOSITORY_CONNECTIONS = github_read.read_repository_connections
 
 
 @pytest.fixture(autouse=True)
@@ -73,8 +76,30 @@ def no_host_people_index(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
             command.extend(["-F", f"after={variables['after']}"])
         return github_unanswered_comments.run_json(command)["data"]
 
+    def connections(_reader: Any, repositories: list[str], *, field: str, selection: Any, normalize: Any,
+                    **_kwargs: Any) -> dict[str, Any]:
+        """Serve the open-issue inventory from REST-shaped fixtures through the radar's own normalizer."""
+        assert field == "issues" and "states:[OPEN]" in selection(None)
+        found: dict[str, Any] = {}
+        for repo in repositories:
+            try:
+                payload = github_unanswered_comments.run_json(
+                    [github_unanswered_comments.GH, "api", f"repos/{repo}/issues?state=open", "--paginate", "--slurp"])
+            except github_unanswered_comments.rollup.RollupError as error:
+                found[repo] = error
+                continue
+            items = [row for page in payload for row in (page if isinstance(page, list) else [page])]
+            found[repo] = [normalize(repo, {
+                "number": row["number"], "title": row.get("title", ""), "body": row.get("body"), "url": row.get("html_url", ""),
+                "createdAt": row.get("created_at", ""), "updatedAt": row.get("updated_at", ""),
+                "author": {"login": (row.get("user") or {}).get("login", ""),
+                           "__typename": (row.get("user") or {}).get("type", "User")},
+            }) for row in items if isinstance(row, dict) and "pull_request" not in row and row.get("state", "open") == "open"]
+        return found
+
     monkeypatch.setattr(github_read, "read_discussion", discussion)
     monkeypatch.setattr(github_read, "discussion_query", query)
+    monkeypatch.setattr(github_read, "read_repository_connections", connections)
 
 
 def comment(
@@ -1668,6 +1693,47 @@ def test_unasked_wait_on_director_is_reported(monkeypatch, tmp_path: Path) -> No
     rendered = github_unanswered_comments.render_markdown(payload)
     assert "## Waiting On You — No Question Asked" in rendered
     assert "No external comments need attention" not in rendered
+
+
+def test_open_issue_inventory_pages_every_repository_and_isolates_a_failed_one(monkeypatch, tmp_path: Path) -> None:
+    """The wait lane reads open issues through batched GraphQL pages; one repository's error stays its own."""
+    def node(issue: dict[str, Any]) -> dict[str, Any]:
+        return {"number": issue["number"], "title": issue["title"], "body": issue["body"], "url": issue["html_url"],
+                "createdAt": issue["updated_at"], "updatedAt": issue["updated_at"],
+                "author": {"__typename": "User", "login": "cbusillo"}}
+
+    pages = {None: ([node(waiting_issue("No current wait.", number=200))], "CURSOR"),
+             "CURSOR": ([node(waiting_issue("Pat's review of the release."))], None)}
+    queries: list[str] = []
+
+    def graphql_json(document: str, _variables: dict[str, Any], **_kwargs: Any) -> Any:
+        queries.append(document)
+        data: dict[str, Any] = {}
+        errors = []
+        for alias, repo in re.findall(r'(r\d+):repository\(owner:"example",name:"(\w+)"\)', document):
+            if repo == "broken":
+                errors.append({"path": [alias], "message": "Could not resolve to a Repository"})
+                continue
+            cursor = re.findall(r'after:("CURSOR"|null)', document)[0].strip('"')
+            nodes, after = pages[None if cursor == "null" else cursor]
+            data[alias] = {"nameWithOwner": f"example/{repo}", "issues": {
+                "totalCount": 2, "nodes": nodes, "pageInfo": {"hasNextPage": after is not None, "endCursor": after}}}
+        return Mock(ok=True, body={"data": data, **({"errors": errors} if errors else {})})
+
+    reader = SimpleNamespace(batch_diagnostic={}, graphql_json=graphql_json, diagnostics=dict)
+    monkeypatch.setattr(github_read, "read_repository_connections", REAL_READ_REPOSITORY_CONNECTIONS)
+    patch_radar(monkeypatch, "discussion_reader", lambda _repo: reader)
+    fake = FakeGitHub({})
+    patch_radar(monkeypatch, "run_json", fake)
+
+    settings = portfolio_settings(people_index=people_index(tmp_path))
+    settings["repositories"] = ["example/repo", "example/broken"]
+    payload = github_unanswered_comments.collect_payload(settings)
+
+    assert [(row["repo"], row["number"]) for row in payload["unasked_director_waits"]] == [("example/repo", 141)]
+    assert [(error["repo"], error["lane"]) for error in payload["coverage"]["errors"]] == [("example/broken", "director_waits")]
+    assert payload["status"] == "degraded"
+    assert len(queries) == 2 and not any("state=open" in call for call in fake.calls)
 
 
 def test_director_hold_is_listed_without_raising_attention(monkeypatch, tmp_path: Path) -> None:
