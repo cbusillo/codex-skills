@@ -1988,6 +1988,7 @@ def refresh_resume_ledger(path: Path, result: dict, source: dict, session: str) 
         if len(matches) != 1:
             raise ValueError("resume source is not unique in the ledger")
         entry = dict(source)
+        entry.pop("handoff_url", None)
         if Path(result["transcript"]).resolve() != Path(source["transcript"]).resolve():
             raise ValueError("resumed account or transcript differs from the source")
         for key in ("pid", "tty", "transcript", "codex_home", "launch_pid", "launch_generation", "launch_started_at",
