@@ -1290,6 +1290,14 @@ environment prefixes. `agy` uses its native `--prompt-interactive` option;
 Codex and Claude take one positional prompt after `--`. Keep prompt options
 out of the command file. Shell wrappers, extra commands, trailing shell punctuation
 and shell comments refuse because they may discard the prompt.
+Before native creation, execution anchors use the shared
+[agent assignment rule](../../github-plan/SKILL.md#agent-assignment) against the
+intended command, independently of the lead's harness. Matching assignments,
+unlabeled issues and read-only anchors remain available. For an explicit
+Director exception, pass `--agent-override "<recorded decision or instruction>"`;
+the launcher adds that same argument to the claim instructions of workers using
+the family exception.
+It never changes an assignment or waives admission, custody or other launch checks.
 For a worker's parallel-session request, its lead or the Supervisor adds
 `--brief-issue <child-issue-url>`
 and puts only the standard Supervisor header in `--brief-file`: trial token,
