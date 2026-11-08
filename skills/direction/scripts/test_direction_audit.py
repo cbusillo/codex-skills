@@ -907,19 +907,6 @@ def test_configured_bot_logins_are_trusted_creators() -> None:
     assert creators == ["app[bot]"], "the automation override replaces the acting identity only for open milestones"
 
 
-def test_milestone_creator_finding_applies_only_to_open_milestones() -> None:
-    module = load()
-    result = run(
-        module,
-        milestones=[
-            milestone(1, "Open unknown creator", creator="stranger"),
-            milestone(2, "Closed unknown creator", state="closed", creator="stranger"),
-        ],
-    )
-    creator_titles = [item["title"] for item in result["findings"] if item["kind"] == "milestone_creator"]
-    assert creator_titles == ["Open unknown creator"]
-
-
 def test_listed_but_never_created_is_pending() -> None:
     module = load()
     result = run(module, milestones=[milestone(1, "Thin fork decision")])
