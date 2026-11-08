@@ -1510,97 +1510,137 @@ def test_attachment_passthrough_and_failures_never_replay() -> None:
         image.write_bytes(b"image fixture")
         video.write_bytes(b"video fixture")
         attachments = [str(image) + "#Evidence", str(video)]
-        url = f"https://github.com/{github_comment.ATTACHMENT_OWNER}/repo/issues/42#issuecomment-1001"
-        saved = {**comment_body(1001, github_comment.ATTACHMENT_OWNER), "html_url": url,
-                 "body": github_comment.AGENT_POSTED_LINE + "\n\n![proof](https://github.com/user-attachments/assets/example)"}
+        repo = f"{github_comment.ATTACHMENT_OWNER}/repo"
+        url = f"https://github.com/{repo}/issues/42#issuecomment-1001"
+        bot_url = f"https://github.com/{repo}/issues/42#issuecomment-7351"
         modes = (
             "success", "old_cli", "failed_upload", "bad_readback", "wrong_author", "missing_author",
             "canonical_case", "prewrite_refusal", "forged_receipt", "help_failure", "crlf_body", "readback_failure",
-            "attributed_question", "bind_failure",
+            "attributed_question", "question_binding_failure", "bot_failure", "bot_actor", "extra_prose",
+            "launch_failure", "unmatched_bracket", "escaped_alt",
         )
-        successful_modes = {"success", "canonical_case", "crlf_body", "attributed_question"}
-        for kind in ("issue", "pr"):
-            for mode in modes:
-                calls: list[list[str]] = []
+        successful_modes = {"success", "canonical_case", "crlf_body", "attributed_question", "escaped_alt"}
+        upload_url_modes = {"failed_upload", "bad_readback", "wrong_author", "missing_author", "readback_failure",
+                            "extra_prose", "unmatched_bracket"}
 
-                def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-                    calls.append(command)
-                    if command[1] == "help":
-                        return subprocess.CompletedProcess(command, 1 if mode == "help_failure" else 0,
-                                                           "" if mode == "old_cli" else "--attach", "authentication unavailable")
-                    assert command[:4] == ["fake-gh", kind, "comment", "42"]
-                    assert command[command.index("--repo") + 1].casefold() == f"{github_comment.ATTACHMENT_OWNER}/repo"
-                    assert [command[index + 1] for index, value in enumerate(command) if value == "--attach"] == attachments
-                    assert kwargs["input"].splitlines()[0] == github_comment.AGENT_POSTED_LINE
-                    if mode in ("prewrite_refusal", "forged_receipt", "bind_failure"):
-                        nonce = kwargs["env"]["GH_WITH_ENV_TOKEN_RECEIPT_NONCE"] if mode != "forged_receipt" else "forged"
-                        receipt = {"schema_version": 1, "nonce": nonce, "write_outcome": "applied" if mode == "bind_failure" else "not_started"}
-                        return subprocess.CompletedProcess(command, 1, url if mode == "bind_failure" else "", json.dumps(receipt))
-                    return subprocess.CompletedProcess(command, 1 if mode == "failed_upload" else 0, url, "upload failed")
+        def assert_upload_reconciliation(mode: str, reconciliation: dict[str, Any]) -> None:
+            assert reconciliation["required_before_retry"] is True, reconciliation
+            if mode in upload_url_modes:
+                assert reconciliation == {**reconciliation, "strategy": "read_comment_by_url", "url": url}, reconciliation
+            elif mode in ("forged_receipt", "launch_failure"):
+                assert reconciliation["strategy"] == "list_actor_comments_and_compare_body", reconciliation
+                assert reconciliation["actor"] == github_comment.ATTACHMENT_OWNER, reconciliation
+                assert reconciliation["body_starts_with"] == f"[{github_comment.AGENT_POSTED_LINE}]({bot_url})", reconciliation
+                assert "url" not in reconciliation, reconciliation
+            else:
+                assert reconciliation["url"] == bot_url, reconciliation
+        def exercise(kind: str, mode: str) -> None:
+            calls: list[list[str]] = []
+            posted: list[str] = []
+            readback: dict[str, Any] = {**comment_body(1001, github_comment.ATTACHMENT_OWNER), "html_url": url}
 
-                readback: dict[str, Any] = dict(saved)
+            def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+                calls.append(command)
+                if command[1] == "help":
+                    return subprocess.CompletedProcess(command, 1 if mode == "help_failure" else 0,
+                                                       "" if mode == "old_cli" else "--attach", "authentication unavailable")
+                assert len(posted) == 1, posted
+                assert command[:4] == ["fake-gh", kind, "comment", "42"]
+                assert command[command.index("--repo") + 1].casefold() == repo
+                assert [command[index + 1] for index, value in enumerate(command) if value == "--attach"] == attachments
+                assert kwargs["input"] == f"[{github_comment.AGENT_POSTED_LINE}]({bot_url})"
+                if mode == "launch_failure":
+                    raise OSError("gh could not start")
+                readback["body"] = kwargs["input"] + "\n\n![proof](https://github.com/user-attachments/assets/image)\n\nhttps://github.com/user-attachments/assets/video"
+                if mode == "escaped_alt":
+                    readback["body"] = readback["body"].replace("![proof]", r"![a\]b\[c\\]")
+                if mode == "unmatched_bracket":
+                    readback["body"] = readback["body"].replace("\n\n![proof]", "\n\n[Unexpected report prose\n\n![proof]")
                 if mode == "bad_readback":
                     readback["body"] = "no uploaded image"
-                if mode in ("wrong_author", "missing_author"):
-                    readback["user"] = {"login": "someone-else" if mode == "wrong_author" else None}
+                if mode == "extra_prose":
+                    readback["body"] = readback["body"].replace("/image)", "/image) Unexpected report prose")
                 if mode == "crlf_body":
                     readback["body"] = readback["body"].replace("\n", "\r\n")
+                if mode in ("wrong_author", "missing_author"):
+                    readback["user"] = {"login": "someone-else" if mode == "wrong_author" else None}
+                if mode in ("prewrite_refusal", "forged_receipt"):
+                    nonce = kwargs["env"]["GH_WITH_ENV_TOKEN_RECEIPT_NONCE"] if mode != "forged_receipt" else "forged"
+                    receipt = {"schema_version": 1, "nonce": nonce, "write_outcome": "not_started"}
+                    return subprocess.CompletedProcess(command, 1, "", json.dumps(receipt))
+                return subprocess.CompletedProcess(command, 1 if mode == "failed_upload" else 0, url, "upload failed")
 
-                def read_api(*_args: Any, **_kwargs: Any) -> github_api.ApiResult:
+            def read_api(method: str, path: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
+                if path.casefold() == f"/repos/{repo}":
+                    return success({"owner": {"login": github_comment.ATTACHMENT_OWNER}, "full_name": repo})
+                if path == "/user":
+                    return success({"login": github_comment.ATTACHMENT_OWNER if mode == "bot_actor" else "fixture-automation"})
+                if method == "POST":
+                    posted.append(body["body"])
+                    if mode == "bot_failure":
+                        raise github_comment._local_error("Bot unavailable", operation="github.comment.issue", cause="network_provider_failure",
+                                                          failed_step="create_comment", write_outcome="unknown")
+                    return success({**comment_body(7351, body=body["body"]), "html_url": bot_url})
+                if path.endswith("/comments/1001"):
                     if mode == "readback_failure":
-                        raise github_comment._local_error(
-                            "Read unavailable", operation="github.comment.issue", cause="permission_denied",
-                            actor="fixture-automation", expected_actor="fixture-automation",
-                            failed_step="attachment_readback",
-                        )
+                        raise github_comment._local_error("Read unavailable", operation="github.comment.issue", cause="permission_denied",
+                                                          failed_step="attachment_readback")
                     return success(readback)
+                return success([])
 
-                requested = (github_comment.AGENT_POSTED_LINE + "\r\n\r\nproof") if mode == "crlf_body" else "proof"
-                if mode == "attributed_question":
-                    counter_file = pathlib.Path(directory) / f"question-{kind}-{mode}.json"
-                    with patch.object(question_counter, "configured_queue", return_value=None):
-                        question_counter.update(counter_file, seed=(10, ["fixture"]), allocate=False)
-                        reserved = question_counter.update(counter_file)
-                    requested = github_comment.AGENT_POSTED_LINE + f"\n\nOwner question: Q{reserved}. Decide about <code>@outside</code>?"
-                    readback["body"] = requested + "\n\n![proof](https://github.com/user-attachments/assets/example)"
-                requested_repo = f"{github_comment.ATTACHMENT_OWNER}/repo"
-                if mode == "canonical_case":
-                    requested_repo = requested_repo.upper()
-                counter_file = pathlib.Path(directory) / f"question-{kind}-{mode}.json"
-                with patch.object(question_counter, "counter_path", return_value=counter_file), \
-                        patch.object(question_counter, "configured_queue", return_value=None), \
-                        patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_OWN_USER": "1"}), patch.object(
-                    github_comment.subprocess, "run", side_effect=run
-                ), patch.object(github_comment, "_call_api", side_effect=read_api):
-                    try:
-                        result = github_comment.comment(
-                            kind, 42, requested, repo=requested_repo, gh_cmd="fake-gh", attachments=attachments,
-                        )
-                    except github_comment.CommentError as error:
-                        assert mode not in successful_modes, error
-                        assert error.failure.write_outcome == ("not_started" if mode in ("old_cli", "prewrite_refusal", "help_failure") else
-                                                              "unknown" if mode in ("failed_upload", "forged_receipt") else "applied")
-                        terminal = github_comment._terminal_failure(
-                            error, "github.comment.issue", expected_actor="fixture-automation",
-                        )
-                        if mode not in ("old_cli", "help_failure"):
-                            assert terminal["actor"] == terminal["expected_actor"] == github_comment.ATTACHMENT_OWNER, terminal
-                        if mode == "readback_failure":
-                            assert terminal["write_outcome"] == "applied", terminal
-                            assert terminal["failed_request"]["actor"] == "fixture-automation", terminal
-                            assert terminal["failed_request"]["write_outcome"] == "not_started", terminal
-                    else:
-                        assert mode in successful_modes
-                        assert result["actor"] == github_comment.ATTACHMENT_OWNER
-                        assert result["url"] == url
-                assert len(calls) == (1 if mode in ("old_cli", "help_failure") else 2)
+            requested = (github_comment.AGENT_POSTED_LINE + "\r\n\r\nproof") if mode == "crlf_body" else "proof"
+            counter_file = pathlib.Path(directory) / f"question-{kind}-{mode}.json"
+            if mode in ("attributed_question", "question_binding_failure"):
+                with patch.object(question_counter, "configured_queue", return_value=None):
+                    question_counter.update(counter_file, seed=(10, ["fixture"]), allocate=False)
+                    reserved = question_counter.update(counter_file)
+                requested = github_comment.AGENT_POSTED_LINE + f"\n\nOwner question: Q{reserved}. Decide about <code>@outside</code>?"
+            original_update = question_counter.update
+
+            def update_question(*args: Any, **kwargs: Any) -> Any:
+                if mode == "question_binding_failure" and kwargs.get("question_url"):
+                    raise OSError("Question source unavailable")
+                return original_update(*args, **kwargs)
+
+            requested_repo = repo.upper() if mode == "canonical_case" else repo
+            with patch.object(question_counter, "counter_path", return_value=counter_file), \
+                    patch.object(question_counter, "configured_queue", return_value=None), \
+                    patch.object(question_counter, "update", side_effect=update_question), \
+                    patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_OWN_USER": "1", "GH_WITH_ENV_TOKEN_OWN_USER_LOGIN": github_comment.ATTACHMENT_OWNER}), \
+                    patch.object(github_api.github_catalog_health, "marker_fields", return_value="catalog=fixture"), \
+                    patch.object(github_comment.subprocess, "run", side_effect=run), \
+                    patch.object(github_comment, "_call_api", side_effect=read_api):
+                try:
+                    result = github_comment.comment(kind, 42, requested, repo=requested_repo, gh_cmd="fake-gh", attachments=attachments)
+                except github_comment.CommentError as error:
+                    assert mode not in successful_modes, error
+                    before_post = mode in ("old_cli", "help_failure", "bot_actor")
+                    assert error.failure.write_outcome == ("not_started" if before_post else "unknown" if mode == "bot_failure" else "applied")
+                    if not before_post and mode != "bot_failure":
+                        assert error.payload["url"] == bot_url
+                        assert error.payload["attachment_write_outcome"] == ("not_started" if mode in ("prewrite_refusal", "question_binding_failure") else
+                                                                          "unknown" if mode in ("failed_upload", "forged_receipt", "launch_failure") else "applied")
+                        assert_upload_reconciliation(mode, error.payload["reconciliation"])
+                else:
+                    assert mode in successful_modes
+                    assert result["actor"] == "fixture-automation"
+                    assert result["url"] == bot_url
+                    assert result["attachment_comment"]["url"] == url
+                    if mode == "attributed_question":
+                        question_counter.verify_number(counter_file, reserved, bot_url)
+                assert len(posted) == (0 if mode in ("old_cli", "help_failure", "bot_actor") else 1)
+            assert len(calls) == (1 if mode in ("old_cli", "help_failure", "bot_actor", "bot_failure", "question_binding_failure") else 2)
+
+        for comment_kind in ("issue", "pr"):
+            for failure_mode in modes:
+                exercise(comment_kind, failure_mode)
         with patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_OWN_USER": "0"}), patch.object(
             github_comment.subprocess, "run", side_effect=AssertionError("must not call CLI")
         ):
             try:
-                github_comment.comment("issue", 42, "proof", repo=f"{github_comment.ATTACHMENT_OWNER}/repo", attachments=attachments)
-            except github_comment.CommentError as error:
-                assert error.failure.write_outcome == "not_started"
+                github_comment.comment("issue", 42, "proof", repo=repo, attachments=attachments)
+            except github_comment.CommentError as refusal:
+                assert refusal.failure.write_outcome == "not_started"
             else:
                 raise AssertionError("missing opt-in must refuse")
 
