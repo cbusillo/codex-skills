@@ -7560,109 +7560,6 @@ def test_product_owner_dry_run_sends_normalized_login_to_the_product_route() -> 
         assert payload["warnings"][0]["code"] == code
 
 
-def test_product_owner_apply_checks_the_client_reapplies_and_reads_back(tmp_path: Path) -> None:
-    evidence = _saved_dry_run_output("product-owner-dry-run", _owner_response(_owner_plan()))
-    evidence_path = _write_json(tmp_path, "owner-dry-run.json", evidence)
-    digest = evidence["result"]["plan_sha256"]
-    apply_argv = [
-        "product-owner-apply",
-        *OWNER_DRY_RUN_ARGV[1:],
-        *_reviewed_apply_argv(digest, evidence_path),
-    ]
-    applied = _owner_response(
-        _owner_plan(mode="apply", applied=True, profile_updated_at_after="2026-10-02T12:00:00Z")
-    )
-    profiles = iter([_profile_response(), _profile_response("example-client", "1234567")])
-    status, payload, posts, reads = _run_main(
-        apply_argv, post=applied, read=lambda _kwargs: next(profiles)
-    )
-    assert status == 0, payload
-    assert payload["status"] == "accepted"
-    assert posts[0]["body"]["mode"] == "apply"
-    assert posts[0]["idempotency_key"] == "apply-1"
-    assert "reviewed_plan_sha256" not in posts[0]["body"]
-    assert [read["path"] for read in reads] == ["/v1/product-profiles/example-product"] * 2
-    assert payload["result"]["read_back_matches"] is True
-
-    # Someone else set a Client after the review: stop before the POST.
-    status, payload, posts, _reads = _run_main(
-        apply_argv, post=applied, read=_profile_response("someone-else", "7")
-    )
-    assert (status, payload["status"], posts) == (1, "stale", [])
-    assert payload["summary"]["error_code"] == "owner_changed_since_review"
-
-    # Launchplane applied something other than the review: never report success.
-    moved = _owner_response(
-        _owner_plan(mode="apply", applied=True, owner_before={"github_login": "x", "github_id": "9"})
-    )
-    profiles = iter([_profile_response(), _profile_response("example-client", "1234567")])
-    status, payload, _posts, _reads = _run_main(
-        apply_argv, post=moved, read=lambda _kwargs: next(profiles)
-    )
-    assert (status, payload["status"]) == (1, "accepted_unverified")
-    assert "applied_plan_differs_from_review" in [item["code"] for item in payload["warnings"]]
-
-    # The read-back fails: the write is not called verified.
-    profiles = iter([_profile_response(), OSError("down")])
-    status, payload, _posts, _reads = _run_main(
-        apply_argv, post=applied, read=lambda _kwargs: next(profiles)
-    )
-    assert (status, payload["status"]) == (1, "accepted_unverified")
-    assert "read_back_unavailable" in [item["code"] for item in payload["warnings"]]
-
-    # The connection drops after the POST began: the outcome is unknown.
-    status, payload, _posts, _reads = _run_main(
-        apply_argv, post=TimeoutError(), read=_profile_response()
-    )
-    assert (status, payload["status"]) == (1, "outcome_unknown")
-
-    def http_error(http_status: int) -> urllib.error.HTTPError:
-        body = {"trace_id": "launchplane_req_error", "error": {"code": "example"}}
-        return urllib.error.HTTPError(
-            "https://launchplane.example.invalid", http_status, "error", hdrs=Message(),
-            fp=io.BytesIO(json.dumps(body).encode()),
-        )
-
-    # A gateway error after the POST may follow a completed write; a 4xx is Launchplane's refusal.
-    status, payload, _posts, _reads = _run_main(
-        apply_argv, post=http_error(502), read=_profile_response()
-    )
-    assert (status, payload["status"]) == (1, "outcome_unknown")
-    status, payload, _posts, _reads = _run_main(
-        apply_argv, post=http_error(409), read=_profile_response()
-    )
-    assert status == 1 and payload["status"] not in {"outcome_unknown", "accepted"}
-
-    for overrides, code in (
-        (["--clear"], "reviewed_dry_run_not_apply_eligible"),
-        (["--github-login", "another-user"], "reviewed_dry_run_not_apply_eligible"),
-    ):
-        argv = [
-            "product-owner-apply",
-            "--product",
-            "example-product",
-            *overrides,
-            "--reason",
-            "Record the Client.",
-            *_reviewed_apply_argv(digest, evidence_path),
-        ]
-        status, payload, posts, reads = _run_main(argv, post=applied, read=_profile_response())
-        assert (status, posts, reads) == (2, [], []), overrides
-        assert payload["warnings"][0]["code"] == code
-    unchanged = _saved_dry_run_output(
-        "product-owner-dry-run",
-        _owner_response(_owner_plan(operation="unchanged", changed=False)),
-    )
-    unchanged_path = _write_json(tmp_path, "owner-unchanged.json", unchanged)
-    argv = [
-        "product-owner-apply",
-        *OWNER_DRY_RUN_ARGV[1:],
-        *_reviewed_apply_argv(unchanged["result"]["plan_sha256"], unchanged_path),
-    ]
-    status, _payload, posts, _reads = _run_main(argv, post=applied, read=_profile_response())
-    assert (status, posts) == (2, [])
-
-
 _OLD_IMAGE = "ghcr.io/example-owner/example-product-app"
 _NEW_IMAGE = "ghcr.io/example-owner/example-product"
 
@@ -7784,99 +7681,120 @@ def test_product_image_repository_dry_run_sends_the_package_to_the_product_route
         assert payload["warnings"][0]["code"] == code
 
 
-def test_product_image_repository_apply_names_the_reviewed_start_and_reads_back(tmp_path: Path) -> None:
-    evidence = _saved_dry_run_output(
-        "product-image-repository-dry-run", _image_response(_image_plan())
-    )
-    evidence_path = _write_json(tmp_path, "image-dry-run.json", evidence)
+@pytest.mark.parametrize(
+    "case",
+    [
+        pytest.param(
+            {
+                "dry_run_argv": OWNER_DRY_RUN_ARGV,
+                "response": _owner_response(_owner_plan()),
+                "before": _profile_response(),
+                "after": _profile_response("example-client", "1234567"),
+                "stale": _profile_response("someone-else", "7"),
+                "stale_code": "owner_changed_since_review",
+                "moved": {"owner_before": {"github_login": "x", "github_id": "9"}},
+                "unchanged": {"operation": "unchanged", "changed": False},
+                "invalid_selections": [["--clear"], ["--github-login", "another-user"]],
+                "expected_body": {},
+            },
+            id="client-owner",
+        ),
+        pytest.param(
+            {
+                "dry_run_argv": IMAGE_DRY_RUN_ARGV,
+                "response": _image_response(_image_plan()),
+                "before": _image_profile_response(),
+                "after": _image_profile_response(_NEW_IMAGE),
+                "stale": _image_profile_response("ghcr.io/example-owner/other"),
+                "stale_code": "image_repository_changed_since_review",
+                "moved": {"image_repository_before": "ghcr.io/x/y"},
+                "unchanged": {"image_repository_before": _NEW_IMAGE, "changed": False},
+                "invalid_selections": [["--image-repository", "ghcr.io/example-owner/another"]],
+                "expected_body": {"expected_image_repository": _OLD_IMAGE},
+                "tampered_field": "image_repository_before",
+            },
+            id="image-repository",
+        ),
+    ],
+)
+def test_product_profile_apply_binds_review_and_verifies_readback(tmp_path: Path, case: dict[str, Any]) -> None:
+    dry_run_argv = case["dry_run_argv"]
+    operation = dry_run_argv[0].replace("dry-run", "apply")
+    evidence = _saved_dry_run_output(dry_run_argv[0], case["response"])
+    evidence_path = _write_json(tmp_path, "profile-dry-run.json", evidence)
     digest = evidence["result"]["plan_sha256"]
-    apply_argv = [
-        "product-image-repository-apply",
-        *IMAGE_DRY_RUN_ARGV[1:],
-        *_reviewed_apply_argv(digest, evidence_path),
-    ]
-    applied = _image_response(
-        _image_plan(mode="apply", applied=True, profile_updated_at_after="2026-10-02T12:00:00Z")
-    )
-    profiles = iter([_image_profile_response(), _image_profile_response(_NEW_IMAGE)])
-    status, payload, posts, reads = _run_main(
-        apply_argv, post=applied, read=lambda _kwargs: next(profiles)
-    )
+    apply_argv = [operation, *dry_run_argv[1:], *_reviewed_apply_argv(digest, evidence_path)]
+    applied = copy.deepcopy(case["response"])
+    applied["result"].update(mode="apply", applied=True, profile_updated_at_after="2026-10-02T12:00:00Z")
+    profiles = iter([case["before"], case["after"]])
+    status, payload, posts, reads = _run_main(apply_argv, post=applied, read=lambda _kwargs: next(profiles))
     assert status == 0, payload
     assert payload["status"] == "accepted"
     assert posts[0]["body"]["mode"] == "apply"
-    assert posts[0]["body"]["expected_image_repository"] == _OLD_IMAGE
     assert posts[0]["idempotency_key"] == "apply-1"
+    assert "reviewed_plan_sha256" not in posts[0]["body"]
+    for field, value in case["expected_body"].items():
+        assert posts[0]["body"][field] == value
     assert [read["path"] for read in reads] == ["/v1/product-profiles/example-product"] * 2
     assert payload["result"]["read_back_matches"] is True
 
-    # The profile moved after the review: stop before the POST.
-    status, payload, posts, _reads = _run_main(
-        apply_argv, post=applied, read=_image_profile_response("ghcr.io/example-owner/other")
-    )
+    status, payload, posts, _reads = _run_main(apply_argv, post=applied, read=case["stale"])
     assert (status, payload["status"], posts) == (1, "stale", [])
-    assert payload["summary"]["error_code"] == "image_repository_changed_since_review"
+    assert payload["summary"]["error_code"] == case["stale_code"]
 
-    # The read-back still shows the old repository: never report success.
-    status, payload, _posts, _reads = _run_main(
-        apply_argv, post=applied, read=_image_profile_response()
-    )
-    assert (status, payload["status"]) == (1, "accepted_unverified")
-
-    # Launchplane applied a move from somewhere else: never report success.
-    moved = _image_response(
-        _image_plan(mode="apply", applied=True, image_repository_before="ghcr.io/x/y")
-    )
-    profiles = iter([_image_profile_response(), _image_profile_response(_NEW_IMAGE)])
-    status, payload, _posts, _reads = _run_main(
-        apply_argv, post=moved, read=lambda _kwargs: next(profiles)
-    )
+    moved = {**applied, "result": {**applied["result"], **case["moved"]}}
+    profiles = iter([case["before"], case["after"]])
+    status, payload, _posts, _reads = _run_main(apply_argv, post=moved, read=lambda _kwargs: next(profiles))
     assert (status, payload["status"]) == (1, "accepted_unverified")
     assert "applied_plan_differs_from_review" in [item["code"] for item in payload["warnings"]]
 
-    # The connection drops after the POST began: the outcome is unknown.
-    status, payload, _posts, _reads = _run_main(
-        apply_argv, post=TimeoutError(), read=_image_profile_response()
-    )
+    status, payload, _posts, _reads = _run_main(apply_argv, post=applied, read=case["before"])
+    assert (status, payload["status"]) == (1, "accepted_unverified")
+
+    profiles = iter([case["before"], OSError("down")])
+    status, payload, _posts, _reads = _run_main(apply_argv, post=applied, read=lambda _kwargs: next(profiles))
+    assert (status, payload["status"]) == (1, "accepted_unverified")
+    assert "read_back_unavailable" in [item["code"] for item in payload["warnings"]]
+
+    status, payload, _posts, _reads = _run_main(apply_argv, post=TimeoutError(), read=case["before"])
     assert (status, payload["status"]) == (1, "outcome_unknown")
 
-    # A different package, or an edited evidence file, is not the reviewed plan.
-    tampered = copy.deepcopy(evidence)
-    tampered["result"]["image_repository_before"] = "ghcr.io/example-owner/other"
-    tampered_path = _write_json(tmp_path, "image-tampered.json", tampered)
-    for argv in (
-        [
-            "product-image-repository-apply",
-            *IMAGE_DRY_RUN_ARGV[1:4],
-            "ghcr.io/example-owner/another",
-            *IMAGE_DRY_RUN_ARGV[5:],
-            *_reviewed_apply_argv(digest, evidence_path),
-        ],
-        [
-            "product-image-repository-apply",
-            *IMAGE_DRY_RUN_ARGV[1:],
-            *_reviewed_apply_argv(digest, tampered_path),
-        ],
-    ):
-        status, payload, posts, reads = _run_main(
-            argv, post=applied, read=_image_profile_response()
+    def http_error(http_status: int) -> urllib.error.HTTPError:
+        body = {"trace_id": "launchplane_req_error", "error": {"code": "example"}}
+        return urllib.error.HTTPError(
+            "https://launchplane.example.invalid",
+            http_status,
+            "error",
+            hdrs=Message(),
+            fp=io.BytesIO(json.dumps(body).encode()),
         )
-        assert (status, posts, reads) == (2, [], []), argv
+
+    status, payload, _posts, _reads = _run_main(apply_argv, post=http_error(502), read=case["before"])
+    assert (status, payload["status"]) == (1, "outcome_unknown")
+    status, payload, _posts, _reads = _run_main(apply_argv, post=http_error(409), read=case["before"])
+    assert status == 1 and payload["status"] not in {"outcome_unknown", "accepted"}
+
+    for selection in case["invalid_selections"]:
+        argv = [operation, *dry_run_argv[1:3], *selection, *dry_run_argv[5:], *_reviewed_apply_argv(digest, evidence_path)]
+        status, payload, posts, reads = _run_main(argv, post=applied, read=case["before"])
+        assert (status, posts, reads) == (2, [], []), selection
+        assert payload["warnings"][0]["code"] == "reviewed_dry_run_not_apply_eligible"
+
+    if tampered_field := case.get("tampered_field"):
+        tampered = copy.deepcopy(evidence)
+        tampered["result"][tampered_field] = "ghcr.io/example-owner/other"
+        tampered_path = _write_json(tmp_path, "profile-tampered.json", tampered)
+        argv = [operation, *dry_run_argv[1:], *_reviewed_apply_argv(digest, tampered_path)]
+        status, payload, posts, reads = _run_main(argv, post=applied, read=case["before"])
+        assert (status, posts, reads) == (2, [], [])
         assert payload["warnings"][0]["code"] == "reviewed_dry_run_not_apply_eligible"
 
     unchanged = _saved_dry_run_output(
-        "product-image-repository-dry-run",
-        _image_response(_image_plan(image_repository_before=_NEW_IMAGE, changed=False)),
+        dry_run_argv[0], {**case["response"], "result": {**case["response"]["result"], **case["unchanged"]}}
     )
-    unchanged_path = _write_json(tmp_path, "image-unchanged.json", unchanged)
-    argv = [
-        "product-image-repository-apply",
-        *IMAGE_DRY_RUN_ARGV[1:],
-        *_reviewed_apply_argv(unchanged["result"]["plan_sha256"], unchanged_path),
-    ]
-    status, _payload, posts, _reads = _run_main(
-        argv, post=applied, read=_image_profile_response()
-    )
+    unchanged_path = _write_json(tmp_path, "profile-unchanged.json", unchanged)
+    argv = [operation, *dry_run_argv[1:], *_reviewed_apply_argv(unchanged["result"]["plan_sha256"], unchanged_path)]
+    status, _payload, posts, _reads = _run_main(argv, post=applied, read=case["before"])
     assert (status, posts) == (2, [])
 
 
