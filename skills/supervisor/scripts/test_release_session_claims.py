@@ -1401,7 +1401,7 @@ class ReleaseTests(unittest.TestCase):
             with self.subTest(current=current):
                 log.write_text(json.dumps([{**modern, "handoff_url": None}]))
                 self.reader.get_json.return_value["created_at"] = (
-                    helper.release.stamp(modern["launch_started_at"]) + timedelta(seconds=1 if current else -1)).isoformat()
+                    github_plan_release.stamp(modern["launch_started_at"]) + timedelta(seconds=1 if current else -1)).isoformat()
                 with patch_attribute(helper, "GitHubReader", return_value=self.reader), patch_attribute(identity, "automation_login", return_value=ACTOR):
                     finished = helper.record_closure(log, modern, "supervisor")
                 self.assertEqual(finished["handoff_url"], modern["handoff_url"] if current else None)
