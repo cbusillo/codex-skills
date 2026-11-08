@@ -416,22 +416,18 @@ def _merge_train_policy_dry_run_evidence() -> dict[str, object]:
     )
 
 
-def test_merge_train_policy_import_body_projection_and_redaction() -> None:
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        payload_path = Path(directory) / "private-merge-train-policy.json"
-        payload_path.write_text(
-            json.dumps(_merge_train_policy_import_payload()), encoding="utf-8"
+def test_merge_train_policy_import_body_projection_and_redaction(tmp_path: Path) -> None:
+    payload_path = _write_json(tmp_path, "private-merge-train-policy.json", _merge_train_policy_import_payload())
+    body, current_digest, candidate_digest = (
+        write_action.merge_train_policy_import_body(
+            argparse.Namespace(
+                payload_file=str(payload_path),
+                expected_current_policy_digest="a" * 64,
+                idempotency_key="",
+            ),
+            mode="dry_run",
         )
-        body, current_digest, candidate_digest = (
-            write_action.merge_train_policy_import_body(
-                argparse.Namespace(
-                    payload_file=str(payload_path),
-                    expected_current_policy_digest="a" * 64,
-                    idempotency_key="",
-                ),
-                mode="dry_run",
-            )
-        )
+    )
     assert body["mode"] == "dry_run"
     assert current_digest == "a" * 64
     assert candidate_digest == "c" * 64
@@ -499,98 +495,89 @@ def test_merge_train_policy_import_accepts_free_text_source_without_emitting_it(
         assert getattr(caught.value, "code") == "invalid_response"
 
 
-def test_merge_train_policy_import_apply_requires_bound_evidence() -> None:
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        payload_path = Path(directory) / "private-merge-train-policy-apply.json"
-        evidence_path = Path(directory) / "private-merge-train-policy-dry-run.json"
-        payload_path.write_text(
-            json.dumps(
-                _merge_train_policy_import_payload(
-                    mode="apply", reason="Approved policy import."
-                )
-            ),
-            encoding="utf-8",
-        )
-        evidence_path.write_text(
-            json.dumps(_merge_train_policy_dry_run_evidence()), encoding="utf-8"
-        )
-        args = argparse.Namespace(
-            payload_file=str(payload_path),
-            expected_current_policy_digest="a" * 64,
-            expected_new_policy_digest="c" * 64,
-            idempotency_key="merge-train-policy-import-example",
-            reviewed_dry_run=True,
-            dry_run_evidence_file=str(evidence_path),
-        )
-        body, current_digest, candidate_digest = (
-            write_action.merge_train_policy_import_body(args, mode="apply")
-        )
-        assert body["mode"] == "apply"
-        assert current_digest == "a" * 64
-        assert candidate_digest == "c" * 64
+def test_merge_train_policy_import_apply_requires_bound_evidence(tmp_path: Path) -> None:
+    evidence_path = tmp_path / "private-merge-train-policy-dry-run.json"
+    payload_path = _write_json(
+        tmp_path,
+        "private-merge-train-policy-apply.json",
+        _merge_train_policy_import_payload(mode="apply", reason="Approved policy import."),
+    )
+    evidence_path.write_text(
+        json.dumps(_merge_train_policy_dry_run_evidence()), encoding="utf-8"
+    )
+    args = argparse.Namespace(
+        payload_file=str(payload_path),
+        expected_current_policy_digest="a" * 64,
+        expected_new_policy_digest="c" * 64,
+        idempotency_key="merge-train-policy-import-example",
+        reviewed_dry_run=True,
+        dry_run_evidence_file=str(evidence_path),
+    )
+    body, current_digest, candidate_digest = (
+        write_action.merge_train_policy_import_body(args, mode="apply")
+    )
+    assert body["mode"] == "apply"
+    assert current_digest == "a" * 64
+    assert candidate_digest == "c" * 64
 
-        for attribute, value, expected_code in (
-            ("idempotency_key", "", "idempotency_key_required"),
-            ("reviewed_dry_run", False, "reviewed_dry_run_required"),
-            ("expected_new_policy_digest", "d" * 64, "new_policy_digest_mismatch"),
-        ):
-            invalid_args = copy.copy(args)
-            setattr(invalid_args, attribute, value)
-            with pytest.raises(ValueError) as caught:
-                write_action.merge_train_policy_import_body(
-                    invalid_args, mode="apply"
-                )
-            assert str(caught.value) == expected_code
-
-        mismatched_evidence = _merge_train_policy_dry_run_evidence()
-        mismatched_result = mismatched_evidence["result"]
-        assert isinstance(mismatched_result, dict)
-        mismatched_current_policy = mismatched_result["current_policy"]
-        assert isinstance(mismatched_current_policy, dict)
-        mismatched_current_policy["policy_sha256"] = "b" * 64
-        evidence_path.write_text(json.dumps(mismatched_evidence), encoding="utf-8")
+    for attribute, value, expected_code in (
+        ("idempotency_key", "", "idempotency_key_required"),
+        ("reviewed_dry_run", False, "reviewed_dry_run_required"),
+        ("expected_new_policy_digest", "d" * 64, "new_policy_digest_mismatch"),
+    ):
+        invalid_args = copy.copy(args)
+        setattr(invalid_args, attribute, value)
         with pytest.raises(ValueError) as caught:
-            write_action.merge_train_policy_import_body(args, mode="apply")
-        assert str(caught.value) == "reviewed_dry_run_not_apply_eligible"
+            write_action.merge_train_policy_import_body(
+                invalid_args, mode="apply"
+            )
+        assert str(caught.value) == expected_code
+
+    mismatched_evidence = _merge_train_policy_dry_run_evidence()
+    mismatched_result = mismatched_evidence["result"]
+    assert isinstance(mismatched_result, dict)
+    mismatched_current_policy = mismatched_result["current_policy"]
+    assert isinstance(mismatched_current_policy, dict)
+    mismatched_current_policy["policy_sha256"] = "b" * 64
+    evidence_path.write_text(json.dumps(mismatched_evidence), encoding="utf-8")
+    with pytest.raises(ValueError) as caught:
+        write_action.merge_train_policy_import_body(args, mode="apply")
+    assert str(caught.value) == "reviewed_dry_run_not_apply_eligible"
 
 
-def test_merge_train_policy_import_preflight_blocks_stale_policy_before_post() -> None:
+def test_merge_train_policy_import_preflight_blocks_stale_policy_before_post(tmp_path: Path) -> None:
     calls: list[str] = []
     output = io.StringIO()
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        payload_path = Path(directory) / "private-merge-train-policy.json"
-        payload_path.write_text(
-            json.dumps(_merge_train_policy_import_payload()), encoding="utf-8"
-        )
+    payload_path = _write_json(tmp_path, "private-merge-train-policy.json", _merge_train_policy_import_payload())
 
-        def fake_read(**kwargs: Any) -> dict[str, object]:
-            calls.append(str(kwargs["path"]))
-            return _merge_train_policy_targets_payload(policy_sha256="b" * 64)
+    def fake_read(**kwargs: Any) -> dict[str, object]:
+        calls.append(str(kwargs["path"]))
+        return _merge_train_policy_targets_payload(policy_sha256="b" * 64)
 
-        def fail_post(**_kwargs: Any) -> dict[str, object]:
-            raise AssertionError("policy import POST must not run after stale preflight")
+    def fail_post(**_kwargs: Any) -> dict[str, object]:
+        raise AssertionError("policy import POST must not run after stale preflight")
 
-        with temporary_attribute(
-            write_action,
-            "resolve_settings",
-            lambda _args: {
-                "service_url": "https://launchplane.example.invalid",
-                "token": "operator-token",
-                "public_url_hint_sources": "",
-            },
-        ):
-            with temporary_attribute(write_action, "request_launchplane_read", fake_read):
-                with temporary_attribute(write_action, "request_launchplane", fail_post):
-                    with redirect_stdout(output):
-                        status = write_action.main(
-                            [
-                                "merge-train-policy-import-dry-run",
-                                "--payload-file",
-                                str(payload_path),
-                                "--expected-current-policy-digest",
-                                "a" * 64,
-                            ]
-                        )
+    with temporary_attribute(
+        write_action,
+        "resolve_settings",
+        lambda _args: {
+            "service_url": "https://launchplane.example.invalid",
+            "token": "operator-token",
+            "public_url_hint_sources": "",
+        },
+    ):
+        with temporary_attribute(write_action, "request_launchplane_read", fake_read):
+            with temporary_attribute(write_action, "request_launchplane", fail_post):
+                with redirect_stdout(output):
+                    status = write_action.main(
+                        [
+                            "merge-train-policy-import-dry-run",
+                            "--payload-file",
+                            str(payload_path),
+                            "--expected-current-policy-digest",
+                            "a" * 64,
+                        ]
+                    )
     assert status == 1
     assert calls == ["/v1/work-graph/merge-train/policy-targets"]
     result = json.loads(output.getvalue())
@@ -598,72 +585,71 @@ def test_merge_train_policy_import_preflight_blocks_stale_policy_before_post() -
     assert result["summary"]["error_code"] == "current_policy_digest_mismatch"
 
 
-def test_merge_train_policy_import_uses_exact_read_and_write_routes() -> None:
+def test_merge_train_policy_import_uses_exact_read_and_write_routes(tmp_path: Path) -> None:
     calls: list[tuple[str, str]] = []
     output = io.StringIO()
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        payload_path = Path(directory) / "private-merge-train-policy.json"
-        payload_path.write_text(
-            json.dumps(_merge_train_policy_import_payload()), encoding="utf-8"
-        )
+    payload_path = tmp_path / "private-merge-train-policy.json"
+    payload_path.write_text(
+        json.dumps(_merge_train_policy_import_payload()), encoding="utf-8"
+    )
 
-        def fake_read(**kwargs: Any) -> dict[str, object]:
-            calls.append(("GET", str(kwargs["path"])))
-            payload = _merge_train_policy_targets_payload()
-            policy = payload["policy"]
-            assert isinstance(policy, dict)
-            policy["updated_at"] = "2026-09-14T17:13:11.787617Z"
-            return payload
+    def fake_read(**kwargs: Any) -> dict[str, object]:
+        calls.append(("GET", str(kwargs["path"])))
+        payload = _merge_train_policy_targets_payload()
+        policy = payload["policy"]
+        assert isinstance(policy, dict)
+        policy["updated_at"] = "2026-09-14T17:13:11.787617Z"
+        return payload
 
-        def fake_post(**kwargs: Any) -> dict[str, object]:
-            calls.append(("POST", str(kwargs["path"])))
-            assert kwargs["idempotency_key"] == ""
-            return _merge_train_policy_import_response(replayed=False)
+    def fake_post(**kwargs: Any) -> dict[str, object]:
+        calls.append(("POST", str(kwargs["path"])))
+        assert kwargs["idempotency_key"] == ""
+        return _merge_train_policy_import_response(replayed=False)
 
-        with temporary_attribute(
-            write_action,
-            "resolve_settings",
-            lambda _args: {
-                "service_url": "https://launchplane.example.invalid",
-                "token": "operator-token",
-                "public_url_hint_sources": "",
-            },
-        ):
-            with temporary_attribute(write_action, "request_launchplane_read", fake_read):
-                with temporary_attribute(write_action, "request_launchplane", fake_post):
-                    with redirect_stdout(output):
-                        status = write_action.main(
-                            [
-                                "merge-train-policy-import-dry-run",
-                                "--payload-file",
-                                str(payload_path),
-                                "--expected-current-policy-digest",
-                                "a" * 64,
-                            ]
-                        )
-        evidence_path = Path(directory) / "private-merge-train-policy-evidence.json"
-        evidence_path.write_text(output.getvalue(), encoding="utf-8")
-        payload_path.write_text(
-            json.dumps(
-                _merge_train_policy_import_payload(
-                    mode="apply", reason="Approved policy import."
-                )
-            ),
-            encoding="utf-8",
-        )
-        apply_body, apply_current_digest, apply_candidate_digest = (
-            write_action.merge_train_policy_import_body(
-                argparse.Namespace(
-                    payload_file=str(payload_path),
-                    expected_current_policy_digest="a" * 64,
-                    expected_new_policy_digest="c" * 64,
-                    idempotency_key="merge-train-policy-import-example",
-                    reviewed_dry_run=True,
-                    dry_run_evidence_file=str(evidence_path),
-                ),
-                mode="apply",
+    with temporary_attribute(
+        write_action,
+        "resolve_settings",
+        lambda _args: {
+            "service_url": "https://launchplane.example.invalid",
+            "token": "operator-token",
+            "public_url_hint_sources": "",
+        },
+    ):
+        with temporary_attribute(write_action, "request_launchplane_read", fake_read):
+            with temporary_attribute(write_action, "request_launchplane", fake_post):
+                with redirect_stdout(output):
+                    status = write_action.main(
+                        [
+                            "merge-train-policy-import-dry-run",
+                            "--payload-file",
+                            str(payload_path),
+                            "--expected-current-policy-digest",
+                            "a" * 64,
+                        ]
+                    )
+    evidence_path = tmp_path / "private-merge-train-policy-evidence.json"
+    evidence_path.write_text(output.getvalue(), encoding="utf-8")
+    payload_path.write_text(
+        json.dumps(
+            _merge_train_policy_import_payload(
+                mode="apply", reason="Approved policy import."
             )
+        ),
+        encoding="utf-8",
+    )
+    apply_body, apply_current_digest, apply_candidate_digest = (
+        write_action.merge_train_policy_import_body(
+            argparse.Namespace(
+                payload_file=str(payload_path),
+                expected_current_policy_digest="a" * 64,
+                expected_new_policy_digest="c" * 64,
+                idempotency_key="merge-train-policy-import-example",
+                reviewed_dry_run=True,
+                dry_run_evidence_file=str(evidence_path),
+            ),
+            mode="apply",
         )
+    )
     assert status == 0
     assert calls == [
         ("GET", "/v1/work-graph/merge-train/policy-targets"),
@@ -948,14 +934,13 @@ def test_preview_feedback_remediation_body_and_projection() -> None:
     assert "companion_feedback_id" not in dry_run["result"]
 
 
-def test_invalid_private_payload_does_not_expose_path() -> None:
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        payload_path = Path(directory) / "private-payload.json"
-        payload_path.write_text("{broken", encoding="utf-8")
-        with pytest.raises(ValueError) as caught:
-            write_action.read_payload_file(str(payload_path))
-        assert str(caught.value) == "invalid_payload"
-        assert str(payload_path) not in str(caught.value)
+def test_invalid_private_payload_does_not_expose_path(tmp_path: Path) -> None:
+    payload_path = tmp_path / "private-payload.json"
+    payload_path.write_text("{broken", encoding="utf-8")
+    with pytest.raises(ValueError) as caught:
+        write_action.read_payload_file(str(payload_path))
+    assert str(caught.value) == "invalid_payload"
+    assert str(payload_path) not in str(caught.value)
 
 
 @pytest.mark.parametrize("relative", [False, True])
@@ -2594,7 +2579,7 @@ def _copy_reference_response(mode: str, *, replayed: bool = False) -> dict[str, 
     return response
 
 
-def test_product_config_secret_copy_keeps_the_source_through_dry_run_apply_and_replay() -> None:
+def test_product_config_secret_copy_keeps_the_source_through_dry_run_apply_and_replay(tmp_path: Path) -> None:
     expected_secret = {
         "action": "created",
         "integration": "runtime_environment",
@@ -2615,33 +2600,31 @@ def test_product_config_secret_copy_keeps_the_source_through_dry_run_apply_and_r
         return responses[len(calls) - 1]
 
     settings = {"service_url": "https://launchplane.example.invalid", "token": "t"}
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        payload_path = Path(directory) / "copy.json"
-        payload_path.write_text(json.dumps(_copy_reference_payload()), encoding="utf-8")
-        apply_argv = [
-            "product-config-apply",
-            "--payload-file",
-            str(payload_path),
-            "--idempotency-key",
-            "example-copy-1",
-            "--reviewed-dry-run",
-        ]
-        outputs: list[dict[str, Any]] = []
-        for argv in (
-            ["product-config-dry-run", "--payload-file", str(payload_path)],
-            apply_argv,
-            apply_argv,
+    payload_path = _write_json(tmp_path, "copy.json", _copy_reference_payload())
+    apply_argv = [
+        "product-config-apply",
+        "--payload-file",
+        str(payload_path),
+        "--idempotency-key",
+        "example-copy-1",
+        "--reviewed-dry-run",
+    ]
+    outputs: list[dict[str, Any]] = []
+    for argv in (
+        ["product-config-dry-run", "--payload-file", str(payload_path)],
+        apply_argv,
+        apply_argv,
+    ):
+        output = io.StringIO()
+        with (
+            temporary_attribute(
+                write_action, "prepare_operator_settings", lambda **_kwargs: settings
+            ),
+            temporary_attribute(write_action, "request_launchplane", fake_request),
+            redirect_stdout(output),
         ):
-            output = io.StringIO()
-            with (
-                temporary_attribute(
-                    write_action, "prepare_operator_settings", lambda **_kwargs: settings
-                ),
-                temporary_attribute(write_action, "request_launchplane", fake_request),
-                redirect_stdout(output),
-            ):
-                assert write_action.main(argv) == 0, output.getvalue()
-            outputs.append(json.loads(output.getvalue()))
+            assert write_action.main(argv) == 0, output.getvalue()
+        outputs.append(json.loads(output.getvalue()))
 
     assert [call["body"]["mode"] for call in calls] == ["dry-run", "apply", "apply"]
     for call in calls:
@@ -2655,31 +2638,30 @@ def test_product_config_secret_copy_keeps_the_source_through_dry_run_apply_and_r
         assert "secret-record-copy" not in json.dumps(payload)
 
 
-def test_product_config_secret_copy_refuses_a_value_or_malformed_source() -> None:
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        payload_path = Path(directory) / "copy.json"
-        args = argparse.Namespace(payload_file=str(payload_path), idempotency_key="")
-        for change, code in (
-            ({"value": "should-not-be-sent"}, "secret_copy_with_value"),
-            ({"copy_from": {**_COPY_REFERENCE, "product": "other"}}, "invalid_secret_copy_from"),
-            ({"copy_from": {**_COPY_REFERENCE, "version_id": " "}}, "invalid_secret_copy_from"),
-            ({"copy_from": "example-product/prod"}, "invalid_secret_copy_from"),
-        ):
-            payload = _copy_reference_payload()
-            payload_entries = cast(list[dict[str, object]], payload["secrets"])
-            payload_entries[0] = {**payload_entries[0], **change}
-            payload_path.write_text(json.dumps(payload), encoding="utf-8")
-            with pytest.raises(ValueError) as caught:
-                write_action.product_config_payload_body(args, mode="dry-run")
-            assert str(caught.value) == code
+def test_product_config_secret_copy_refuses_a_value_or_malformed_source(tmp_path: Path) -> None:
+    payload_path = tmp_path / "copy.json"
+    args = argparse.Namespace(payload_file=str(payload_path), idempotency_key="")
+    for change, code in (
+        ({"value": "should-not-be-sent"}, "secret_copy_with_value"),
+        ({"copy_from": {**_COPY_REFERENCE, "product": "other"}}, "invalid_secret_copy_from"),
+        ({"copy_from": {**_COPY_REFERENCE, "version_id": " "}}, "invalid_secret_copy_from"),
+        ({"copy_from": "example-product/prod"}, "invalid_secret_copy_from"),
+    ):
+        payload = _copy_reference_payload()
+        payload_entries = cast(list[dict[str, object]], payload["secrets"])
+        payload_entries[0] = {**payload_entries[0], **change}
+        payload_path.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(ValueError) as caught:
+            write_action.product_config_payload_body(args, mode="dry-run")
+        assert str(caught.value) == code
 
-        ordinary = {
-            "product": "example-product",
-            "secrets": [{"binding_key": "EXAMPLE_API_TOKEN", "value": "private-value"}],
-        }
-        payload_path.write_text(json.dumps(ordinary), encoding="utf-8")
-        body = write_action.product_config_payload_body(args, mode="dry-run")
-        assert body["secrets"] == ordinary["secrets"]
+    ordinary = {
+        "product": "example-product",
+        "secrets": [{"binding_key": "EXAMPLE_API_TOKEN", "value": "private-value"}],
+    }
+    payload_path.write_text(json.dumps(ordinary), encoding="utf-8")
+    body = write_action.product_config_payload_body(args, mode="dry-run")
+    assert body["secrets"] == ordinary["secrets"]
 
 
 def test_product_config_secret_copy_projection_refuses_extra_source_fields() -> None:
@@ -5793,7 +5775,7 @@ def _testing_hold_args(**overrides: object) -> argparse.Namespace:
     return argparse.Namespace(**values)
 
 
-def test_testing_hold_body_binds_apply_to_saved_dry_run() -> None:
+def test_testing_hold_body_binds_apply_to_saved_dry_run(tmp_path: Path) -> None:
     dry_run = write_action.testing_hold_body(_testing_hold_args(), mode="dry-run")
     assert dry_run["mode"] == "dry-run"
     assert dry_run["hold"] is True
@@ -5805,73 +5787,65 @@ def test_testing_hold_body_binds_apply_to_saved_dry_run() -> None:
         "reason_required",
     )
 
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        evidence_path = Path(directory) / "testing-hold-dry-run.json"
-        evidence_path.write_text(
-            json.dumps(
-                _saved_dry_run_output(
-                    "testing-hold-dry-run", _testing_hold_response(_testing_hold_plan())
-                )
-            ),
-            encoding="utf-8",
-        )
-        apply_args = _testing_hold_args(
-            idempotency_key="testing-hold-1",
-            reviewed_dry_run=True,
-            expected_plan_digest="B" * 64,
-            dry_run_evidence_file=str(evidence_path),
-        )
-        body = write_action.testing_hold_body(apply_args, mode="apply")
-        assert body["mode"] == "apply"
-        assert body["reviewed_plan_sha256"] == "b" * 64
+    evidence_path = _write_json(
+        tmp_path,
+        "testing-hold-dry-run.json",
+        _saved_dry_run_output("testing-hold-dry-run", _testing_hold_response(_testing_hold_plan())),
+    )
+    apply_args = _testing_hold_args(
+        idempotency_key="testing-hold-1",
+        reviewed_dry_run=True,
+        expected_plan_digest="B" * 64,
+        dry_run_evidence_file=str(evidence_path),
+    )
+    body = write_action.testing_hold_body(apply_args, mode="apply")
+    assert body["mode"] == "apply"
+    assert body["reviewed_plan_sha256"] == "b" * 64
 
-        for overrides, code in (
-            ({"reviewed_dry_run": False}, "reviewed_dry_run_required"),
-            ({"idempotency_key": ""}, "idempotency_key_required"),
-            ({"expected_plan_digest": "short"}, "invalid_expected_plan_digest"),
-            ({"expected_plan_digest": "d" * 64}, "reviewed_dry_run_not_apply_eligible"),
-            ({"dry_run_evidence_file": ""}, "reviewed_dry_run_not_apply_eligible"),
-            ({"hold": False}, "reviewed_dry_run_not_apply_eligible"),
-            ({"context": "other"}, "reviewed_dry_run_not_apply_eligible"),
-            ({"reason": "A reason nobody reviewed"}, "reviewed_dry_run_not_apply_eligible"),
-        ):
-            args = argparse.Namespace(**{**vars(apply_args), **overrides})
-            _expect_error(lambda candidate=args: write_action.testing_hold_body(candidate, mode="apply"), code)
+    for overrides, code in (
+        ({"reviewed_dry_run": False}, "reviewed_dry_run_required"),
+        ({"idempotency_key": ""}, "idempotency_key_required"),
+        ({"expected_plan_digest": "short"}, "invalid_expected_plan_digest"),
+        ({"expected_plan_digest": "d" * 64}, "reviewed_dry_run_not_apply_eligible"),
+        ({"dry_run_evidence_file": ""}, "reviewed_dry_run_not_apply_eligible"),
+        ({"hold": False}, "reviewed_dry_run_not_apply_eligible"),
+        ({"context": "other"}, "reviewed_dry_run_not_apply_eligible"),
+        ({"reason": "A reason nobody reviewed"}, "reviewed_dry_run_not_apply_eligible"),
+    ):
+        args = argparse.Namespace(**{**vars(apply_args), **overrides})
+        _expect_error(lambda candidate=args: write_action.testing_hold_body(candidate, mode="apply"), code)
 
 
-def test_testing_hold_cli_dispatches_local_extension_route() -> None:
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        evidence_path = Path(directory) / "testing-hold-dry-run.json"
-        lift_plan = _testing_hold_plan(
-            action="clear", before=_testing_hold_plan()["after"], after=None, reason="Testing done."
-        )
-        evidence_path.write_text(
-            json.dumps(_saved_dry_run_output("testing-hold-dry-run", _testing_hold_response(lift_plan))),
-            encoding="utf-8",
-        )
-        calls: list[dict[str, Any]] = []
-        lane = ["--product", "example-product", "--context", "example", "--instance", "testing"]
-        with temporary_attribute(write_action, "execute_post", lambda **kwargs: calls.append(kwargs) or 0):
-            assert write_action.main(["testing-hold-dry-run", *lane, "--lift", "--reason", "Testing done."]) == 0
-            assert (
-                write_action.main(
-                    [
-                        "testing-hold-apply",
-                        *lane,
-                        "--lift",
-                        "--reason",
-                        "Testing done.",
-                        "--idempotency-key",
-                        "testing-hold-lift-1",
-                        "--reviewed-dry-run",
-                        "--expected-plan-digest",
-                        "b" * 64,
-                        "--dry-run-evidence-file",
-                        str(evidence_path),
-                    ]
-                )
-                == 0
+def test_testing_hold_cli_dispatches_local_extension_route(tmp_path: Path) -> None:
+    lift_plan = _testing_hold_plan(
+        action="clear", before=_testing_hold_plan()["after"], after=None, reason="Testing done."
+    )
+    evidence_path = _write_json(
+        tmp_path, "testing-hold-dry-run.json", _saved_dry_run_output("testing-hold-dry-run", _testing_hold_response(lift_plan))
+    )
+    calls: list[dict[str, Any]] = []
+    lane = ["--product", "example-product", "--context", "example", "--instance", "testing"]
+    with temporary_attribute(write_action, "execute_post", lambda **kwargs: calls.append(kwargs) or 0):
+        assert write_action.main(["testing-hold-dry-run", *lane, "--lift", "--reason", "Testing done."]) == 0
+        assert (
+            write_action.main(
+                [
+                    "testing-hold-apply",
+                    *lane,
+                    "--lift",
+                    "--reason",
+                    "Testing done.",
+                    "--idempotency-key",
+                    "testing-hold-lift-1",
+                    "--reviewed-dry-run",
+                    "--expected-plan-digest",
+                    "b" * 64,
+                    "--dry-run-evidence-file",
+                    str(evidence_path),
+                ]
             )
+            == 0
+        )
     route = contract.LOCAL_EXTENSION_ROUTES["testing-hold-apply"]["path"]
     assert [call["path"] for call in calls] == [route, route]
     assert [call["body"]["mode"] for call in calls] == ["dry-run", "apply"]
@@ -6025,7 +5999,7 @@ def test_product_repository_identity_projection_is_bounded_and_fail_closed() -> 
         )
 
 
-def test_product_repository_identity_apply_requires_saved_dry_run() -> None:
+def test_product_repository_identity_apply_requires_saved_dry_run(tmp_path: Path) -> None:
     base = argparse.Namespace(product="example-product", reason="Route GitHub events.", idempotency_key="")
     dry_run = write_action.product_repository_identity_body(base, mode="dry-run")
     assert dry_run == {
@@ -6035,56 +6009,51 @@ def test_product_repository_identity_apply_requires_saved_dry_run() -> None:
         "reason": "Route GitHub events.",
     }
 
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        evidence_path = Path(directory) / "repository-identity-dry-run.json"
-        evidence_path.write_text(
-            json.dumps(
-                _saved_dry_run_output(
-                    "product-repository-identity-dry-run",
-                    _repository_identity_response(_repository_identity_plan()),
-                )
-            ),
-            encoding="utf-8",
+    evidence_path = _write_json(
+        tmp_path,
+        "repository-identity-dry-run.json",
+        _saved_dry_run_output(
+            "product-repository-identity-dry-run",
+            _repository_identity_response(_repository_identity_plan()),
+        ),
+    )
+    hold_evidence_path = _write_json(
+        tmp_path,
+        "testing-hold-dry-run.json",
+        _saved_dry_run_output("testing-hold-dry-run", _testing_hold_response(_testing_hold_plan())),
+    )
+    apply_args = argparse.Namespace(
+        product="example-product",
+        reason="Route GitHub events.",
+        idempotency_key="repository-identity-1",
+        reviewed_dry_run=True,
+        expected_plan_digest="b" * 64,
+        dry_run_evidence_file=str(evidence_path),
+    )
+    assert write_action.product_repository_identity_body(apply_args, mode="apply")[
+        "reviewed_plan_sha256"
+    ] == "b" * 64
+    for overrides, code in (
+        ({"reviewed_dry_run": False}, "reviewed_dry_run_required"),
+        ({"idempotency_key": " "}, "idempotency_key_required"),
+        ({"expected_plan_digest": "d" * 64}, "reviewed_dry_run_not_apply_eligible"),
+        ({"product": "other-product"}, "reviewed_dry_run_not_apply_eligible"),
+        # Another operation's evidence with the same digest is not this plan's review.
+        ({"dry_run_evidence_file": str(hold_evidence_path)}, "reviewed_dry_run_not_apply_eligible"),
+    ):
+        args = argparse.Namespace(**{**vars(apply_args), **overrides})
+        _expect_error(
+            lambda candidate=args: write_action.product_repository_identity_body(candidate, mode="apply"), code
         )
-        hold_evidence_path = Path(directory) / "testing-hold-dry-run.json"
-        hold_evidence_path.write_text(
-            json.dumps(
-                _saved_dry_run_output("testing-hold-dry-run", _testing_hold_response(_testing_hold_plan()))
-            ),
-            encoding="utf-8",
-        )
-        apply_args = argparse.Namespace(
-            product="example-product",
-            reason="Route GitHub events.",
-            idempotency_key="repository-identity-1",
-            reviewed_dry_run=True,
-            expected_plan_digest="b" * 64,
-            dry_run_evidence_file=str(evidence_path),
-        )
-        assert write_action.product_repository_identity_body(apply_args, mode="apply")[
-            "reviewed_plan_sha256"
-        ] == "b" * 64
-        for overrides, code in (
-            ({"reviewed_dry_run": False}, "reviewed_dry_run_required"),
-            ({"idempotency_key": " "}, "idempotency_key_required"),
-            ({"expected_plan_digest": "d" * 64}, "reviewed_dry_run_not_apply_eligible"),
-            ({"product": "other-product"}, "reviewed_dry_run_not_apply_eligible"),
-            # Another operation's evidence with the same digest is not this plan's review.
-            ({"dry_run_evidence_file": str(hold_evidence_path)}, "reviewed_dry_run_not_apply_eligible"),
-        ):
-            args = argparse.Namespace(**{**vars(apply_args), **overrides})
-            _expect_error(
-                lambda candidate=args: write_action.product_repository_identity_body(candidate, mode="apply"), code
-            )
 
-        calls: list[dict[str, Any]] = []
-        with temporary_attribute(write_action, "execute_post", lambda **kwargs: calls.append(kwargs) or 0):
-            assert (
-                write_action.main(
-                    ["product-repository-identity-dry-run", "--product", "example-product", "--reason", "Route GitHub events."]
-                )
-                == 0
+    calls: list[dict[str, Any]] = []
+    with temporary_attribute(write_action, "execute_post", lambda **kwargs: calls.append(kwargs) or 0):
+        assert (
+            write_action.main(
+                ["product-repository-identity-dry-run", "--product", "example-product", "--reason", "Route GitHub events."]
             )
+            == 0
+        )
     route = contract.LOCAL_EXTENSION_ROUTES["product-repository-identity-apply"]["path"]
     assert calls[0]["path"] == route
     assert calls[0]["body"]["mode"] == "dry-run"
@@ -6166,7 +6135,7 @@ def test_service_runtime_setting_projection_drops_the_actor_and_fails_closed() -
         )
 
 
-def test_service_runtime_setting_apply_requires_the_reviewed_key_and_value() -> None:
+def test_service_runtime_setting_apply_requires_the_reviewed_key_and_value(tmp_path: Path) -> None:
     base = argparse.Namespace(
         key="LAUNCHPLANE_PREVIEW_HOST_MEMORY_FLOORS",
         value=SERVICE_SETTING_VALUE,
@@ -6179,45 +6148,40 @@ def test_service_runtime_setting_apply_requires_the_reviewed_key_and_value() -> 
         "value": SERVICE_SETTING_VALUE,
         "reason": "Activate the preview floor.",
     }
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        evidence_path = Path(directory) / "service-setting-dry-run.json"
-        evidence_path.write_text(
-            json.dumps(
-                _saved_dry_run_output(
-                    "service-runtime-setting-dry-run",
-                    _service_setting_response(_service_setting_plan()),
-                )
-            ),
-            encoding="utf-8",
+    evidence_path = _write_json(
+        tmp_path,
+        "service-setting-dry-run.json",
+        _saved_dry_run_output(
+            "service-runtime-setting-dry-run",
+            _service_setting_response(_service_setting_plan()),
+        ),
+    )
+    hold_evidence_path = _write_json(
+        tmp_path,
+        "testing-hold-dry-run.json",
+        _saved_dry_run_output("testing-hold-dry-run", _testing_hold_response(_testing_hold_plan())),
+    )
+    apply_args = argparse.Namespace(
+        **{**vars(base), "idempotency_key": "service-setting-1"},
+        reviewed_dry_run=True,
+        expected_plan_digest="b" * 64,
+        dry_run_evidence_file=str(evidence_path),
+    )
+    assert write_action.service_runtime_setting_body(apply_args, mode="apply")[
+        "expected_plan_digest"
+    ] == "b" * 64
+    for overrides, code in (
+        ({"reviewed_dry_run": False}, "reviewed_dry_run_required"),
+        ({"idempotency_key": " "}, "idempotency_key_required"),
+        ({"expected_plan_digest": "d" * 64}, "reviewed_dry_run_not_apply_eligible"),
+        ({"value": '{"synthetic-execution-host":1}'}, "reviewed_dry_run_not_apply_eligible"),
+        ({"key": "LAUNCHPLANE_DISCUSSION_REMINDERS"}, "reviewed_dry_run_not_apply_eligible"),
+        ({"dry_run_evidence_file": str(hold_evidence_path)}, "reviewed_dry_run_not_apply_eligible"),
+    ):
+        args = argparse.Namespace(**{**vars(apply_args), **overrides})
+        _expect_error(
+            lambda candidate=args: write_action.service_runtime_setting_body(candidate, mode="apply"), code
         )
-        hold_evidence_path = Path(directory) / "testing-hold-dry-run.json"
-        hold_evidence_path.write_text(
-            json.dumps(
-                _saved_dry_run_output("testing-hold-dry-run", _testing_hold_response(_testing_hold_plan()))
-            ),
-            encoding="utf-8",
-        )
-        apply_args = argparse.Namespace(
-            **{**vars(base), "idempotency_key": "service-setting-1"},
-            reviewed_dry_run=True,
-            expected_plan_digest="b" * 64,
-            dry_run_evidence_file=str(evidence_path),
-        )
-        assert write_action.service_runtime_setting_body(apply_args, mode="apply")[
-            "expected_plan_digest"
-        ] == "b" * 64
-        for overrides, code in (
-            ({"reviewed_dry_run": False}, "reviewed_dry_run_required"),
-            ({"idempotency_key": " "}, "idempotency_key_required"),
-            ({"expected_plan_digest": "d" * 64}, "reviewed_dry_run_not_apply_eligible"),
-            ({"value": '{"synthetic-execution-host":1}'}, "reviewed_dry_run_not_apply_eligible"),
-            ({"key": "LAUNCHPLANE_DISCUSSION_REMINDERS"}, "reviewed_dry_run_not_apply_eligible"),
-            ({"dry_run_evidence_file": str(hold_evidence_path)}, "reviewed_dry_run_not_apply_eligible"),
-        ):
-            args = argparse.Namespace(**{**vars(apply_args), **overrides})
-            _expect_error(
-                lambda candidate=args: write_action.service_runtime_setting_body(candidate, mode="apply"), code
-            )
 
     calls: list[dict[str, Any]] = []
     with temporary_attribute(write_action, "execute_post", lambda **kwargs: calls.append(kwargs) or 0):
@@ -6854,53 +6818,48 @@ def _generic_web_deploy_recovery_evidence(
     }
 
 
-def test_generic_web_deploy_recovery_body_and_projection() -> None:
+def test_generic_web_deploy_recovery_body_and_projection(tmp_path: Path) -> None:
     private_payload = _generic_web_deploy_recovery_payload()
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        payload_path = Path(directory) / "deploy-recovery.json"
-        evidence_path = Path(directory) / "deploy-recovery-dry-run-output.json"
-        payload_path.write_text(json.dumps(private_payload), encoding="utf-8")
-        evidence_path.write_text(
-            json.dumps(_generic_web_deploy_recovery_evidence()),
-            encoding="utf-8",
-        )
+    payload_path = tmp_path / "deploy-recovery.json"
+    payload_path.write_text(json.dumps(private_payload), encoding="utf-8")
+    evidence_path = _write_json(tmp_path, "deploy-recovery-dry-run-output.json", _generic_web_deploy_recovery_evidence())
 
-        dry_run_body = write_action.generic_web_deploy_recovery_body(
-            argparse.Namespace(
-                payload_file=str(payload_path),
-                idempotency_key="original-deploy-key-1",
-                reviewed_dry_run=False,
-            ),
-            mode="dry_run",
-        )
-        assert dry_run_body == private_payload
-        assert "expected_recovery_digest" not in dry_run_body
+    dry_run_body = write_action.generic_web_deploy_recovery_body(
+        argparse.Namespace(
+            payload_file=str(payload_path),
+            idempotency_key="original-deploy-key-1",
+            reviewed_dry_run=False,
+        ),
+        mode="dry_run",
+    )
+    assert dry_run_body == private_payload
+    assert "expected_recovery_digest" not in dry_run_body
 
-        apply_body = write_action.generic_web_deploy_recovery_body(
-            argparse.Namespace(
-                payload_file=str(payload_path),
-                idempotency_key="original-deploy-key-1",
-                reviewed_dry_run=True,
-                expected_recovery_digest="a" * 64,
-                dry_run_evidence_file=str(evidence_path),
-            ),
-            mode="apply",
-        )
-        assert apply_body["expected_recovery_digest"] == "a" * 64
+    apply_body = write_action.generic_web_deploy_recovery_body(
+        argparse.Namespace(
+            payload_file=str(payload_path),
+            idempotency_key="original-deploy-key-1",
+            reviewed_dry_run=True,
+            expected_recovery_digest="a" * 64,
+            dry_run_evidence_file=str(evidence_path),
+        ),
+        mode="apply",
+    )
+    assert apply_body["expected_recovery_digest"] == "a" * 64
 
-        payload_with_digest = {**private_payload, "expected_recovery_digest": ""}
-        payload_path.write_text(json.dumps(payload_with_digest), encoding="utf-8")
-        digest_bound_body = write_action.generic_web_deploy_recovery_body(
-            argparse.Namespace(
-                payload_file=str(payload_path),
-                idempotency_key="original-deploy-key-1",
-                reviewed_dry_run=True,
-                expected_recovery_digest="a" * 64,
-                dry_run_evidence_file=str(evidence_path),
-            ),
-            mode="apply",
-        )
-        assert digest_bound_body["expected_recovery_digest"] == "a" * 64
+    payload_with_digest = {**private_payload, "expected_recovery_digest": ""}
+    payload_path.write_text(json.dumps(payload_with_digest), encoding="utf-8")
+    digest_bound_body = write_action.generic_web_deploy_recovery_body(
+        argparse.Namespace(
+            payload_file=str(payload_path),
+            idempotency_key="original-deploy-key-1",
+            reviewed_dry_run=True,
+            expected_recovery_digest="a" * 64,
+            dry_run_evidence_file=str(evidence_path),
+        ),
+        mode="apply",
+    )
+    assert digest_bound_body["expected_recovery_digest"] == "a" * 64
 
     projected_dry_run = write_action.summarize_success(
         operation="generic-web-deploy-recovery-dry-run",
@@ -6963,177 +6922,157 @@ def test_generic_web_deploy_recovery_body_and_projection() -> None:
     assert projected_apply["result"]["recovery_action"] == "retry_original_operation"
 
 
-def test_generic_web_deploy_recovery_apply_requires_review_idempotency_and_reason() -> None:
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        payload_path = Path(directory) / "deploy-recovery.json"
-        evidence_path = Path(directory) / "deploy-recovery-dry-run-output.json"
-        payload_path.write_text(
-            json.dumps(_generic_web_deploy_recovery_payload()),
-            encoding="utf-8",
-        )
-        evidence_path.write_text(
-            json.dumps(_generic_web_deploy_recovery_evidence()),
-            encoding="utf-8",
-        )
-        args = argparse.Namespace(
-            payload_file=str(payload_path),
-            idempotency_key="",
-            reviewed_dry_run=False,
-            expected_recovery_digest="",
-            dry_run_evidence_file=str(evidence_path),
-        )
-        with pytest.raises(ValueError) as caught:
-            write_action.generic_web_deploy_recovery_body(args, mode="dry_run")
-        assert str(caught.value) == "idempotency_key_required"
+def test_generic_web_deploy_recovery_apply_requires_review_idempotency_and_reason(tmp_path: Path) -> None:
+    payload_path = tmp_path / "deploy-recovery.json"
+    payload_path.write_text(
+        json.dumps(_generic_web_deploy_recovery_payload()),
+        encoding="utf-8",
+    )
+    evidence_path = _write_json(tmp_path, "deploy-recovery-dry-run-output.json", _generic_web_deploy_recovery_evidence())
+    args = argparse.Namespace(
+        payload_file=str(payload_path),
+        idempotency_key="",
+        reviewed_dry_run=False,
+        expected_recovery_digest="",
+        dry_run_evidence_file=str(evidence_path),
+    )
+    with pytest.raises(ValueError) as caught:
+        write_action.generic_web_deploy_recovery_body(args, mode="dry_run")
+    assert str(caught.value) == "idempotency_key_required"
 
-        args.idempotency_key = "original-deploy-key-1"
-        dry_run_body = write_action.generic_web_deploy_recovery_body(args, mode="dry_run")
-        assert dry_run_body["reason"] == "Recover from failed deploy."
+    args.idempotency_key = "original-deploy-key-1"
+    dry_run_body = write_action.generic_web_deploy_recovery_body(args, mode="dry_run")
+    assert dry_run_body["reason"] == "Recover from failed deploy."
 
-        args.idempotency_key = ""
-        with pytest.raises(ValueError) as caught:
-            write_action.generic_web_deploy_recovery_body(args, mode="apply")
-        assert str(caught.value) == "idempotency_key_required"
+    args.idempotency_key = ""
+    with pytest.raises(ValueError) as caught:
+        write_action.generic_web_deploy_recovery_body(args, mode="apply")
+    assert str(caught.value) == "idempotency_key_required"
 
-        args.idempotency_key = "original-deploy-key-1"
-        with pytest.raises(ValueError) as caught:
-            write_action.generic_web_deploy_recovery_body(args, mode="apply")
-        assert str(caught.value) == "reviewed_dry_run_required"
+    args.idempotency_key = "original-deploy-key-1"
+    with pytest.raises(ValueError) as caught:
+        write_action.generic_web_deploy_recovery_body(args, mode="apply")
+    assert str(caught.value) == "reviewed_dry_run_required"
 
-        args.reviewed_dry_run = True
-        payload_path.write_text(
-            json.dumps(_generic_web_deploy_recovery_payload(reason="")),
-            encoding="utf-8",
-        )
-        with pytest.raises(ValueError) as caught:
-            write_action.generic_web_deploy_recovery_body(args, mode="apply")
-        assert str(caught.value) == "reason_required"
+    args.reviewed_dry_run = True
+    payload_path.write_text(
+        json.dumps(_generic_web_deploy_recovery_payload(reason="")),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError) as caught:
+        write_action.generic_web_deploy_recovery_body(args, mode="apply")
+    assert str(caught.value) == "reason_required"
 
-        payload_path.write_text(
-            json.dumps(
-                {
-                    **_generic_web_deploy_recovery_payload(),
-                    "expected_recovery_digest": "b" * 64,
-                }
-            ),
-            encoding="utf-8",
-        )
-        args.expected_recovery_digest = "a" * 64
-        with pytest.raises(ValueError) as caught:
-            write_action.generic_web_deploy_recovery_body(args, mode="apply")
-        assert str(caught.value) == "recovery_digest_mismatch"
+    payload_path.write_text(
+        json.dumps(
+            {
+                **_generic_web_deploy_recovery_payload(),
+                "expected_recovery_digest": "b" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+    args.expected_recovery_digest = "a" * 64
+    with pytest.raises(ValueError) as caught:
+        write_action.generic_web_deploy_recovery_body(args, mode="apply")
+    assert str(caught.value) == "recovery_digest_mismatch"
 
-        args.expected_recovery_digest = "not-a-digest"
-        with pytest.raises(ValueError) as caught:
-            write_action.generic_web_deploy_recovery_body(args, mode="apply")
-        assert str(caught.value) == "invalid_expected_recovery_digest"
+    args.expected_recovery_digest = "not-a-digest"
+    with pytest.raises(ValueError) as caught:
+        write_action.generic_web_deploy_recovery_body(args, mode="apply")
+    assert str(caught.value) == "invalid_expected_recovery_digest"
 
 
-def test_generic_web_deploy_recovery_apply_requires_apply_eligible_evidence() -> None:
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        payload_path = Path(directory) / "deploy-recovery.json"
-        evidence_path = Path(directory) / "deploy-recovery-dry-run-output.json"
-        payload_path.write_text(
-            json.dumps(_generic_web_deploy_recovery_payload()),
-            encoding="utf-8",
-        )
-        args = argparse.Namespace(
-            payload_file=str(payload_path),
-            idempotency_key="original-deploy-key-1",
-            reviewed_dry_run=True,
-            expected_recovery_digest="a" * 64,
-            dry_run_evidence_file=str(evidence_path),
-        )
-        ineligible_evidence = (
-            _generic_web_deploy_recovery_evidence(proposed_action="hold_unknown"),
-            _generic_web_deploy_recovery_evidence(provider_outcome="unknown"),
-            _generic_web_deploy_recovery_evidence(retry_safe=False),
-            _generic_web_deploy_recovery_evidence(recovery_digest="b" * 64),
-            _generic_web_deploy_recovery_evidence(instance="another-instance"),
-            {"status": "ok", "result": {}},
-        )
-        for evidence in ineligible_evidence:
-            evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
-            with pytest.raises(ValueError) as caught:
-                write_action.generic_web_deploy_recovery_body(args, mode="apply")
-            assert str(caught.value) == "reviewed_dry_run_not_apply_eligible"
-
-        args.dry_run_evidence_file = ""
+def test_generic_web_deploy_recovery_apply_requires_apply_eligible_evidence(tmp_path: Path) -> None:
+    evidence_path = tmp_path / "deploy-recovery-dry-run-output.json"
+    payload_path = _write_json(tmp_path, "deploy-recovery.json", _generic_web_deploy_recovery_payload())
+    args = argparse.Namespace(
+        payload_file=str(payload_path),
+        idempotency_key="original-deploy-key-1",
+        reviewed_dry_run=True,
+        expected_recovery_digest="a" * 64,
+        dry_run_evidence_file=str(evidence_path),
+    )
+    ineligible_evidence = (
+        _generic_web_deploy_recovery_evidence(proposed_action="hold_unknown"),
+        _generic_web_deploy_recovery_evidence(provider_outcome="unknown"),
+        _generic_web_deploy_recovery_evidence(retry_safe=False),
+        _generic_web_deploy_recovery_evidence(recovery_digest="b" * 64),
+        _generic_web_deploy_recovery_evidence(instance="another-instance"),
+        {"status": "ok", "result": {}},
+    )
+    for evidence in ineligible_evidence:
+        evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
         with pytest.raises(ValueError) as caught:
             write_action.generic_web_deploy_recovery_body(args, mode="apply")
         assert str(caught.value) == "reviewed_dry_run_not_apply_eligible"
 
-
-def test_generic_web_deploy_recovery_payload_rejects_repo_local_files() -> None:
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        repo_root = Path(directory) / "repo"
-        repo_root.mkdir()
-        payload_path = repo_root / "deploy-recovery.json"
-        payload_path.write_text(
-            json.dumps(_generic_web_deploy_recovery_payload(reason="Recover.")),
-            encoding="utf-8",
-        )
-        with temporary_attribute(write_action, "active_repo_root", lambda: repo_root):
-            with pytest.raises(ValueError) as caught:
-                write_action.generic_web_deploy_recovery_body(
-                    argparse.Namespace(
-                        payload_file=str(payload_path),
-                        idempotency_key="original-deploy-key-1",
-                        reviewed_dry_run=False,
-                    ),
-                    mode="dry_run",
-                )
-            assert str(caught.value) == "repo_local_payload_unsupported"
+    args.dry_run_evidence_file = ""
+    with pytest.raises(ValueError) as caught:
+        write_action.generic_web_deploy_recovery_body(args, mode="apply")
+    assert str(caught.value) == "reviewed_dry_run_not_apply_eligible"
 
 
-def test_generic_web_deploy_recovery_cli_dispatches_exact_routes() -> None:
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        payload_path = Path(directory) / "deploy-recovery.json"
-        evidence_path = Path(directory) / "deploy-recovery-dry-run-output.json"
-        payload_path.write_text(
-            json.dumps(_generic_web_deploy_recovery_payload()),
-            encoding="utf-8",
-        )
-        evidence_path.write_text(
-            json.dumps(_generic_web_deploy_recovery_evidence()),
-            encoding="utf-8",
-        )
-        calls: list[dict[str, Any]] = []
-
-        def fake_execute_post(**kwargs: Any) -> int:
-            calls.append(kwargs)
-            return 0
-
-        with temporary_attribute(write_action, "execute_post", fake_execute_post):
-            assert (
-                write_action.main(
-                    [
-                        "generic-web-deploy-recovery-dry-run",
-                        "--payload-file",
-                        str(payload_path),
-                        "--idempotency-key",
-                        "original-deploy-key-1",
-                    ]
-                )
-                == 0
+def test_generic_web_deploy_recovery_payload_rejects_repo_local_files(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    payload_path = repo_root / "deploy-recovery.json"
+    payload_path.write_text(
+        json.dumps(_generic_web_deploy_recovery_payload(reason="Recover.")),
+        encoding="utf-8",
+    )
+    with temporary_attribute(write_action, "active_repo_root", lambda: repo_root):
+        with pytest.raises(ValueError) as caught:
+            write_action.generic_web_deploy_recovery_body(
+                argparse.Namespace(
+                    payload_file=str(payload_path),
+                    idempotency_key="original-deploy-key-1",
+                    reviewed_dry_run=False,
+                ),
+                mode="dry_run",
             )
-            assert (
-                write_action.main(
-                    [
-                        "generic-web-deploy-recovery-apply",
-                        "--payload-file",
-                        str(payload_path),
-                        "--idempotency-key",
-                        "original-deploy-key-1",
-                        "--reviewed-dry-run",
-                        "--expected-recovery-digest",
-                        "a" * 64,
-                        "--dry-run-evidence-file",
-                        str(evidence_path),
-                    ]
-                )
-                == 0
+        assert str(caught.value) == "repo_local_payload_unsupported"
+
+
+def test_generic_web_deploy_recovery_cli_dispatches_exact_routes(tmp_path: Path) -> None:
+    payload_path = _write_json(tmp_path, "deploy-recovery.json", _generic_web_deploy_recovery_payload())
+    evidence_path = _write_json(tmp_path, "deploy-recovery-dry-run-output.json", _generic_web_deploy_recovery_evidence())
+    calls: list[dict[str, Any]] = []
+
+    def fake_execute_post(**kwargs: Any) -> int:
+        calls.append(kwargs)
+        return 0
+
+    with temporary_attribute(write_action, "execute_post", fake_execute_post):
+        assert (
+            write_action.main(
+                [
+                    "generic-web-deploy-recovery-dry-run",
+                    "--payload-file",
+                    str(payload_path),
+                    "--idempotency-key",
+                    "original-deploy-key-1",
+                ]
             )
+            == 0
+        )
+        assert (
+            write_action.main(
+                [
+                    "generic-web-deploy-recovery-apply",
+                    "--payload-file",
+                    str(payload_path),
+                    "--idempotency-key",
+                    "original-deploy-key-1",
+                    "--reviewed-dry-run",
+                    "--expected-recovery-digest",
+                    "a" * 64,
+                    "--dry-run-evidence-file",
+                    str(evidence_path),
+                ]
+            )
+            == 0
+        )
     assert [call["path"] for call in calls] == [
         "/v1/admin/generic-web/deploy-recovery/dry-run",
         "/v1/admin/generic-web/deploy-recovery/apply",
@@ -7150,49 +7089,42 @@ def test_generic_web_deploy_recovery_cli_dispatches_exact_routes() -> None:
     assert "original_deploy" not in json.dumps(calls[1]["request"])
 
 
-def test_generic_web_deploy_recovery_cli_refuses_ineligible_evidence_without_http() -> None:
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        payload_path = Path(directory) / "deploy-recovery.json"
-        evidence_path = Path(directory) / "deploy-recovery-dry-run-output.json"
-        payload_path.write_text(
-            json.dumps(_generic_web_deploy_recovery_payload()),
-            encoding="utf-8",
-        )
-        evidence_path.write_text(
-            json.dumps(
-                _generic_web_deploy_recovery_evidence(
-                    proposed_action="hold_unknown",
-                    provider_outcome="unknown",
-                    retry_safe=False,
-                )
-            ),
-            encoding="utf-8",
-        )
-        calls: list[dict[str, Any]] = []
-        output = io.StringIO()
+def test_generic_web_deploy_recovery_cli_refuses_ineligible_evidence_without_http(tmp_path: Path) -> None:
+    payload_path = _write_json(tmp_path, "deploy-recovery.json", _generic_web_deploy_recovery_payload())
+    evidence_path = _write_json(
+        tmp_path,
+        "deploy-recovery-dry-run-output.json",
+        _generic_web_deploy_recovery_evidence(
+            proposed_action="hold_unknown",
+            provider_outcome="unknown",
+            retry_safe=False,
+        ),
+    )
+    calls: list[dict[str, Any]] = []
+    output = io.StringIO()
 
-        with (
-            temporary_attribute(
-                write_action,
-                "execute_post",
-                lambda **kwargs: calls.append(kwargs) or 0,
-            ),
-            redirect_stdout(output),
-        ):
-            status = write_action.main(
-                [
-                    "generic-web-deploy-recovery-apply",
-                    "--payload-file",
-                    str(payload_path),
-                    "--idempotency-key",
-                    "original-deploy-key-1",
-                    "--reviewed-dry-run",
-                    "--expected-recovery-digest",
-                    "a" * 64,
-                    "--dry-run-evidence-file",
-                    str(evidence_path),
-                ]
-            )
+    with (
+        temporary_attribute(
+            write_action,
+            "execute_post",
+            lambda **kwargs: calls.append(kwargs) or 0,
+        ),
+        redirect_stdout(output),
+    ):
+        status = write_action.main(
+            [
+                "generic-web-deploy-recovery-apply",
+                "--payload-file",
+                str(payload_path),
+                "--idempotency-key",
+                "original-deploy-key-1",
+                "--reviewed-dry-run",
+                "--expected-recovery-digest",
+                "a" * 64,
+                "--dry-run-evidence-file",
+                str(evidence_path),
+            ]
+        )
 
     assert status == 2
     assert calls == []
@@ -7505,7 +7437,7 @@ def _run_main(
     return status, json.loads(output.getvalue()), posts, reads
 
 
-def _write_json(directory: str, name: str, value: object) -> str:
+def _write_json(directory: str | Path, name: str, value: object) -> str:
     path = Path(directory) / name
     path.write_text(json.dumps(value), encoding="utf-8")
     return str(path)
@@ -7628,108 +7560,107 @@ def test_product_owner_dry_run_sends_normalized_login_to_the_product_route() -> 
         assert payload["warnings"][0]["code"] == code
 
 
-def test_product_owner_apply_checks_the_client_reapplies_and_reads_back() -> None:
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        evidence = _saved_dry_run_output("product-owner-dry-run", _owner_response(_owner_plan()))
-        evidence_path = _write_json(directory, "owner-dry-run.json", evidence)
-        digest = evidence["result"]["plan_sha256"]
-        apply_argv = [
-            "product-owner-apply",
-            *OWNER_DRY_RUN_ARGV[1:],
-            *_reviewed_apply_argv(digest, evidence_path),
-        ]
-        applied = _owner_response(
-            _owner_plan(mode="apply", applied=True, profile_updated_at_after="2026-10-02T12:00:00Z")
-        )
-        profiles = iter([_profile_response(), _profile_response("example-client", "1234567")])
-        status, payload, posts, reads = _run_main(
-            apply_argv, post=applied, read=lambda _kwargs: next(profiles)
-        )
-        assert status == 0, payload
-        assert payload["status"] == "accepted"
-        assert posts[0]["body"]["mode"] == "apply"
-        assert posts[0]["idempotency_key"] == "apply-1"
-        assert "reviewed_plan_sha256" not in posts[0]["body"]
-        assert [read["path"] for read in reads] == ["/v1/product-profiles/example-product"] * 2
-        assert payload["result"]["read_back_matches"] is True
+def test_product_owner_apply_checks_the_client_reapplies_and_reads_back(tmp_path: Path) -> None:
+    evidence = _saved_dry_run_output("product-owner-dry-run", _owner_response(_owner_plan()))
+    evidence_path = _write_json(tmp_path, "owner-dry-run.json", evidence)
+    digest = evidence["result"]["plan_sha256"]
+    apply_argv = [
+        "product-owner-apply",
+        *OWNER_DRY_RUN_ARGV[1:],
+        *_reviewed_apply_argv(digest, evidence_path),
+    ]
+    applied = _owner_response(
+        _owner_plan(mode="apply", applied=True, profile_updated_at_after="2026-10-02T12:00:00Z")
+    )
+    profiles = iter([_profile_response(), _profile_response("example-client", "1234567")])
+    status, payload, posts, reads = _run_main(
+        apply_argv, post=applied, read=lambda _kwargs: next(profiles)
+    )
+    assert status == 0, payload
+    assert payload["status"] == "accepted"
+    assert posts[0]["body"]["mode"] == "apply"
+    assert posts[0]["idempotency_key"] == "apply-1"
+    assert "reviewed_plan_sha256" not in posts[0]["body"]
+    assert [read["path"] for read in reads] == ["/v1/product-profiles/example-product"] * 2
+    assert payload["result"]["read_back_matches"] is True
 
-        # Someone else set a Client after the review: stop before the POST.
-        status, payload, posts, _reads = _run_main(
-            apply_argv, post=applied, read=_profile_response("someone-else", "7")
-        )
-        assert (status, payload["status"], posts) == (1, "stale", [])
-        assert payload["summary"]["error_code"] == "owner_changed_since_review"
+    # Someone else set a Client after the review: stop before the POST.
+    status, payload, posts, _reads = _run_main(
+        apply_argv, post=applied, read=_profile_response("someone-else", "7")
+    )
+    assert (status, payload["status"], posts) == (1, "stale", [])
+    assert payload["summary"]["error_code"] == "owner_changed_since_review"
 
-        # Launchplane applied something other than the review: never report success.
-        moved = _owner_response(
-            _owner_plan(mode="apply", applied=True, owner_before={"github_login": "x", "github_id": "9"})
-        )
-        profiles = iter([_profile_response(), _profile_response("example-client", "1234567")])
-        status, payload, _posts, _reads = _run_main(
-            apply_argv, post=moved, read=lambda _kwargs: next(profiles)
-        )
-        assert (status, payload["status"]) == (1, "accepted_unverified")
-        assert "applied_plan_differs_from_review" in [item["code"] for item in payload["warnings"]]
+    # Launchplane applied something other than the review: never report success.
+    moved = _owner_response(
+        _owner_plan(mode="apply", applied=True, owner_before={"github_login": "x", "github_id": "9"})
+    )
+    profiles = iter([_profile_response(), _profile_response("example-client", "1234567")])
+    status, payload, _posts, _reads = _run_main(
+        apply_argv, post=moved, read=lambda _kwargs: next(profiles)
+    )
+    assert (status, payload["status"]) == (1, "accepted_unverified")
+    assert "applied_plan_differs_from_review" in [item["code"] for item in payload["warnings"]]
 
-        # The read-back fails: the write is not called verified.
-        profiles = iter([_profile_response(), OSError("down")])
-        status, payload, _posts, _reads = _run_main(
-            apply_argv, post=applied, read=lambda _kwargs: next(profiles)
-        )
-        assert (status, payload["status"]) == (1, "accepted_unverified")
-        assert "read_back_unavailable" in [item["code"] for item in payload["warnings"]]
+    # The read-back fails: the write is not called verified.
+    profiles = iter([_profile_response(), OSError("down")])
+    status, payload, _posts, _reads = _run_main(
+        apply_argv, post=applied, read=lambda _kwargs: next(profiles)
+    )
+    assert (status, payload["status"]) == (1, "accepted_unverified")
+    assert "read_back_unavailable" in [item["code"] for item in payload["warnings"]]
 
-        # The connection drops after the POST began: the outcome is unknown.
-        status, payload, _posts, _reads = _run_main(
-            apply_argv, post=TimeoutError(), read=_profile_response()
-        )
-        assert (status, payload["status"]) == (1, "outcome_unknown")
+    # The connection drops after the POST began: the outcome is unknown.
+    status, payload, _posts, _reads = _run_main(
+        apply_argv, post=TimeoutError(), read=_profile_response()
+    )
+    assert (status, payload["status"]) == (1, "outcome_unknown")
 
-        def http_error(http_status: int) -> urllib.error.HTTPError:
-            body = {"trace_id": "launchplane_req_error", "error": {"code": "example"}}
-            return urllib.error.HTTPError(
-                "https://launchplane.example.invalid", http_status, "error", hdrs=Message(),
-                fp=io.BytesIO(json.dumps(body).encode()),
-            )
+    def http_error(http_status: int) -> urllib.error.HTTPError:
+        body = {"trace_id": "launchplane_req_error", "error": {"code": "example"}}
+        return urllib.error.HTTPError(
+            "https://launchplane.example.invalid", http_status, "error", hdrs=Message(),
+            fp=io.BytesIO(json.dumps(body).encode()),
+        )
 
-        # A gateway error after the POST may follow a completed write; a 4xx is Launchplane's refusal.
-        status, payload, _posts, _reads = _run_main(
-            apply_argv, post=http_error(502), read=_profile_response()
-        )
-        assert (status, payload["status"]) == (1, "outcome_unknown")
-        status, payload, _posts, _reads = _run_main(
-            apply_argv, post=http_error(409), read=_profile_response()
-        )
-        assert status == 1 and payload["status"] not in {"outcome_unknown", "accepted"}
+    # A gateway error after the POST may follow a completed write; a 4xx is Launchplane's refusal.
+    status, payload, _posts, _reads = _run_main(
+        apply_argv, post=http_error(502), read=_profile_response()
+    )
+    assert (status, payload["status"]) == (1, "outcome_unknown")
+    status, payload, _posts, _reads = _run_main(
+        apply_argv, post=http_error(409), read=_profile_response()
+    )
+    assert status == 1 and payload["status"] not in {"outcome_unknown", "accepted"}
 
-        for overrides, code in (
-            (["--clear"], "reviewed_dry_run_not_apply_eligible"),
-            (["--github-login", "another-user"], "reviewed_dry_run_not_apply_eligible"),
-        ):
-            argv = [
-                "product-owner-apply",
-                "--product",
-                "example-product",
-                *overrides,
-                "--reason",
-                "Record the Client.",
-                *_reviewed_apply_argv(digest, evidence_path),
-            ]
-            status, payload, posts, reads = _run_main(argv, post=applied, read=_profile_response())
-            assert (status, posts, reads) == (2, [], []), overrides
-            assert payload["warnings"][0]["code"] == code
-        unchanged = _saved_dry_run_output(
-            "product-owner-dry-run",
-            _owner_response(_owner_plan(operation="unchanged", changed=False)),
-        )
-        unchanged_path = _write_json(directory, "owner-unchanged.json", unchanged)
+    for overrides, code in (
+        (["--clear"], "reviewed_dry_run_not_apply_eligible"),
+        (["--github-login", "another-user"], "reviewed_dry_run_not_apply_eligible"),
+    ):
         argv = [
             "product-owner-apply",
-            *OWNER_DRY_RUN_ARGV[1:],
-            *_reviewed_apply_argv(unchanged["result"]["plan_sha256"], unchanged_path),
+            "--product",
+            "example-product",
+            *overrides,
+            "--reason",
+            "Record the Client.",
+            *_reviewed_apply_argv(digest, evidence_path),
         ]
-        status, _payload, posts, _reads = _run_main(argv, post=applied, read=_profile_response())
-        assert (status, posts) == (2, [])
+        status, payload, posts, reads = _run_main(argv, post=applied, read=_profile_response())
+        assert (status, posts, reads) == (2, [], []), overrides
+        assert payload["warnings"][0]["code"] == code
+    unchanged = _saved_dry_run_output(
+        "product-owner-dry-run",
+        _owner_response(_owner_plan(operation="unchanged", changed=False)),
+    )
+    unchanged_path = _write_json(tmp_path, "owner-unchanged.json", unchanged)
+    argv = [
+        "product-owner-apply",
+        *OWNER_DRY_RUN_ARGV[1:],
+        *_reviewed_apply_argv(unchanged["result"]["plan_sha256"], unchanged_path),
+    ]
+    status, _payload, posts, _reads = _run_main(argv, post=applied, read=_profile_response())
+    assert (status, posts) == (2, [])
 
 
 _OLD_IMAGE = "ghcr.io/example-owner/example-product-app"
@@ -7853,101 +7784,100 @@ def test_product_image_repository_dry_run_sends_the_package_to_the_product_route
         assert payload["warnings"][0]["code"] == code
 
 
-def test_product_image_repository_apply_names_the_reviewed_start_and_reads_back() -> None:
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        evidence = _saved_dry_run_output(
-            "product-image-repository-dry-run", _image_response(_image_plan())
-        )
-        evidence_path = _write_json(directory, "image-dry-run.json", evidence)
-        digest = evidence["result"]["plan_sha256"]
-        apply_argv = [
+def test_product_image_repository_apply_names_the_reviewed_start_and_reads_back(tmp_path: Path) -> None:
+    evidence = _saved_dry_run_output(
+        "product-image-repository-dry-run", _image_response(_image_plan())
+    )
+    evidence_path = _write_json(tmp_path, "image-dry-run.json", evidence)
+    digest = evidence["result"]["plan_sha256"]
+    apply_argv = [
+        "product-image-repository-apply",
+        *IMAGE_DRY_RUN_ARGV[1:],
+        *_reviewed_apply_argv(digest, evidence_path),
+    ]
+    applied = _image_response(
+        _image_plan(mode="apply", applied=True, profile_updated_at_after="2026-10-02T12:00:00Z")
+    )
+    profiles = iter([_image_profile_response(), _image_profile_response(_NEW_IMAGE)])
+    status, payload, posts, reads = _run_main(
+        apply_argv, post=applied, read=lambda _kwargs: next(profiles)
+    )
+    assert status == 0, payload
+    assert payload["status"] == "accepted"
+    assert posts[0]["body"]["mode"] == "apply"
+    assert posts[0]["body"]["expected_image_repository"] == _OLD_IMAGE
+    assert posts[0]["idempotency_key"] == "apply-1"
+    assert [read["path"] for read in reads] == ["/v1/product-profiles/example-product"] * 2
+    assert payload["result"]["read_back_matches"] is True
+
+    # The profile moved after the review: stop before the POST.
+    status, payload, posts, _reads = _run_main(
+        apply_argv, post=applied, read=_image_profile_response("ghcr.io/example-owner/other")
+    )
+    assert (status, payload["status"], posts) == (1, "stale", [])
+    assert payload["summary"]["error_code"] == "image_repository_changed_since_review"
+
+    # The read-back still shows the old repository: never report success.
+    status, payload, _posts, _reads = _run_main(
+        apply_argv, post=applied, read=_image_profile_response()
+    )
+    assert (status, payload["status"]) == (1, "accepted_unverified")
+
+    # Launchplane applied a move from somewhere else: never report success.
+    moved = _image_response(
+        _image_plan(mode="apply", applied=True, image_repository_before="ghcr.io/x/y")
+    )
+    profiles = iter([_image_profile_response(), _image_profile_response(_NEW_IMAGE)])
+    status, payload, _posts, _reads = _run_main(
+        apply_argv, post=moved, read=lambda _kwargs: next(profiles)
+    )
+    assert (status, payload["status"]) == (1, "accepted_unverified")
+    assert "applied_plan_differs_from_review" in [item["code"] for item in payload["warnings"]]
+
+    # The connection drops after the POST began: the outcome is unknown.
+    status, payload, _posts, _reads = _run_main(
+        apply_argv, post=TimeoutError(), read=_image_profile_response()
+    )
+    assert (status, payload["status"]) == (1, "outcome_unknown")
+
+    # A different package, or an edited evidence file, is not the reviewed plan.
+    tampered = copy.deepcopy(evidence)
+    tampered["result"]["image_repository_before"] = "ghcr.io/example-owner/other"
+    tampered_path = _write_json(tmp_path, "image-tampered.json", tampered)
+    for argv in (
+        [
             "product-image-repository-apply",
-            *IMAGE_DRY_RUN_ARGV[1:],
+            *IMAGE_DRY_RUN_ARGV[1:4],
+            "ghcr.io/example-owner/another",
+            *IMAGE_DRY_RUN_ARGV[5:],
             *_reviewed_apply_argv(digest, evidence_path),
-        ]
-        applied = _image_response(
-            _image_plan(mode="apply", applied=True, profile_updated_at_after="2026-10-02T12:00:00Z")
-        )
-        profiles = iter([_image_profile_response(), _image_profile_response(_NEW_IMAGE)])
-        status, payload, posts, reads = _run_main(
-            apply_argv, post=applied, read=lambda _kwargs: next(profiles)
-        )
-        assert status == 0, payload
-        assert payload["status"] == "accepted"
-        assert posts[0]["body"]["mode"] == "apply"
-        assert posts[0]["body"]["expected_image_repository"] == _OLD_IMAGE
-        assert posts[0]["idempotency_key"] == "apply-1"
-        assert [read["path"] for read in reads] == ["/v1/product-profiles/example-product"] * 2
-        assert payload["result"]["read_back_matches"] is True
-
-        # The profile moved after the review: stop before the POST.
-        status, payload, posts, _reads = _run_main(
-            apply_argv, post=applied, read=_image_profile_response("ghcr.io/example-owner/other")
-        )
-        assert (status, payload["status"], posts) == (1, "stale", [])
-        assert payload["summary"]["error_code"] == "image_repository_changed_since_review"
-
-        # The read-back still shows the old repository: never report success.
-        status, payload, _posts, _reads = _run_main(
-            apply_argv, post=applied, read=_image_profile_response()
-        )
-        assert (status, payload["status"]) == (1, "accepted_unverified")
-
-        # Launchplane applied a move from somewhere else: never report success.
-        moved = _image_response(
-            _image_plan(mode="apply", applied=True, image_repository_before="ghcr.io/x/y")
-        )
-        profiles = iter([_image_profile_response(), _image_profile_response(_NEW_IMAGE)])
-        status, payload, _posts, _reads = _run_main(
-            apply_argv, post=moved, read=lambda _kwargs: next(profiles)
-        )
-        assert (status, payload["status"]) == (1, "accepted_unverified")
-        assert "applied_plan_differs_from_review" in [item["code"] for item in payload["warnings"]]
-
-        # The connection drops after the POST began: the outcome is unknown.
-        status, payload, _posts, _reads = _run_main(
-            apply_argv, post=TimeoutError(), read=_image_profile_response()
-        )
-        assert (status, payload["status"]) == (1, "outcome_unknown")
-
-        # A different package, or an edited evidence file, is not the reviewed plan.
-        tampered = copy.deepcopy(evidence)
-        tampered["result"]["image_repository_before"] = "ghcr.io/example-owner/other"
-        tampered_path = _write_json(directory, "image-tampered.json", tampered)
-        for argv in (
-            [
-                "product-image-repository-apply",
-                *IMAGE_DRY_RUN_ARGV[1:4],
-                "ghcr.io/example-owner/another",
-                *IMAGE_DRY_RUN_ARGV[5:],
-                *_reviewed_apply_argv(digest, evidence_path),
-            ],
-            [
-                "product-image-repository-apply",
-                *IMAGE_DRY_RUN_ARGV[1:],
-                *_reviewed_apply_argv(digest, tampered_path),
-            ],
-        ):
-            status, payload, posts, reads = _run_main(
-                argv, post=applied, read=_image_profile_response()
-            )
-            assert (status, posts, reads) == (2, [], []), argv
-            assert payload["warnings"][0]["code"] == "reviewed_dry_run_not_apply_eligible"
-
-        unchanged = _saved_dry_run_output(
-            "product-image-repository-dry-run",
-            _image_response(_image_plan(image_repository_before=_NEW_IMAGE, changed=False)),
-        )
-        unchanged_path = _write_json(directory, "image-unchanged.json", unchanged)
-        argv = [
+        ],
+        [
             "product-image-repository-apply",
             *IMAGE_DRY_RUN_ARGV[1:],
-            *_reviewed_apply_argv(unchanged["result"]["plan_sha256"], unchanged_path),
-        ]
-        status, _payload, posts, _reads = _run_main(
+            *_reviewed_apply_argv(digest, tampered_path),
+        ],
+    ):
+        status, payload, posts, reads = _run_main(
             argv, post=applied, read=_image_profile_response()
         )
-        assert (status, posts) == (2, [])
+        assert (status, posts, reads) == (2, [], []), argv
+        assert payload["warnings"][0]["code"] == "reviewed_dry_run_not_apply_eligible"
+
+    unchanged = _saved_dry_run_output(
+        "product-image-repository-dry-run",
+        _image_response(_image_plan(image_repository_before=_NEW_IMAGE, changed=False)),
+    )
+    unchanged_path = _write_json(tmp_path, "image-unchanged.json", unchanged)
+    argv = [
+        "product-image-repository-apply",
+        *IMAGE_DRY_RUN_ARGV[1:],
+        *_reviewed_apply_argv(unchanged["result"]["plan_sha256"], unchanged_path),
+    ]
+    status, _payload, posts, _reads = _run_main(
+        argv, post=applied, read=_image_profile_response()
+    )
+    assert (status, posts) == (2, [])
 
 
 def _backup_payload() -> dict[str, object]:
@@ -8043,122 +7973,120 @@ def _backup_read_response(**overrides: object) -> dict[str, object]:
     return {"status": "ok", "trace_id": "launchplane_req_backup_read", "authority": authority}
 
 
-def test_production_backup_authority_never_prints_provider_coordinates() -> None:
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        payload_path = _write_json(directory, "backup.json", _backup_payload())
-        status, payload, posts, _reads = _run_main(
-            ["production-backup-authority-dry-run", "--payload-file", payload_path],
-            post=_backup_response(),
-        )
-        assert status == 0, payload
-        assert posts[0]["path"] == "/v1/production-backup-authority/apply"
-        assert posts[0]["body"]["mode"] == "dry_run"
-        assert posts[0]["body"]["targets"][0]["destination"]["guest_id"] == "101"
-        printed = json.dumps(payload)
-        for private in ("proxmox.example.invalid", "backup-operator", '"101"'):
-            assert private not in printed
-        assert payload["summary"]["authority_digest"] == "c" * 64
-        assert payload["request"]["promotion_action"] == "generic_web_prod_promotion.execute"
+def test_production_backup_authority_never_prints_provider_coordinates(tmp_path: Path) -> None:
+    payload_path = _write_json(tmp_path, "backup.json", _backup_payload())
+    status, payload, posts, _reads = _run_main(
+        ["production-backup-authority-dry-run", "--payload-file", payload_path],
+        post=_backup_response(),
+    )
+    assert status == 0, payload
+    assert posts[0]["path"] == "/v1/production-backup-authority/apply"
+    assert posts[0]["body"]["mode"] == "dry_run"
+    assert posts[0]["body"]["targets"][0]["destination"]["guest_id"] == "101"
+    printed = json.dumps(payload)
+    for private in ("proxmox.example.invalid", "backup-operator", '"101"'):
+        assert private not in printed
+    assert payload["summary"]["authority_digest"] == "c" * 64
+    assert payload["request"]["promotion_action"] == "generic_web_prod_promotion.execute"
 
-        # A response that echoes a destination is refused, not printed.
-        leaked = _backup_response(targets=[{**_backup_target_summary(), "destination": {"host": "x"}}])
-        status, payload, _posts, _reads = _run_main(
-            ["production-backup-authority-dry-run", "--payload-file", payload_path], post=leaked
-        )
-        assert status == 1 and "proxmox" not in json.dumps(payload.get("result"))
+    # A response that echoes a destination is refused, not printed.
+    leaked = _backup_response(targets=[{**_backup_target_summary(), "destination": {"host": "x"}}])
+    status, payload, _posts, _reads = _run_main(
+        ["production-backup-authority-dry-run", "--payload-file", payload_path], post=leaked
+    )
+    assert status == 1 and "proxmox" not in json.dumps(payload.get("result"))
 
-        for mutate, code in (
-            (lambda data: data.update(mode="apply"), "unsupported_backup_authority_field"),
-            (lambda data: data.update(reviewed_authority_digest="c" * 64), "unsupported_backup_authority_field"),
-            (lambda data: data.pop("policy"), "backup_policy_required"),
-            (lambda data: data["policy"].pop("promotion_action"), "backup_policy_promotion_action_required"),
-        ):
-            changed = _backup_payload()
-            mutate(changed)
-            bad_path = _write_json(directory, "backup-bad.json", changed)
-            status, payload, posts, _reads = _run_main(
-                ["production-backup-authority-dry-run", "--payload-file", bad_path],
-                post=_backup_response(),
-            )
-            assert (status, posts) == (2, []), code
-            assert payload["warnings"][0]["code"] == code
-
-
-def test_production_backup_authority_apply_binds_the_exact_reviewed_payload() -> None:
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        payload_path = _write_json(directory, "backup.json", _backup_payload())
-        _status, evidence, _posts, _reads = _run_main(
-            ["production-backup-authority-dry-run", "--payload-file", payload_path],
-            post=_backup_response(),
-        )
-        evidence_path = _write_json(directory, "backup-dry-run.json", evidence)
-        apply_argv = [
-            "production-backup-authority-apply",
-            "--payload-file",
-            payload_path,
-            *_reviewed_apply_argv("c" * 64, evidence_path),
-        ]
-        status, payload, posts, reads = _run_main(
-            apply_argv,
-            post=_backup_response(mode="apply", status="applied"),
-            read=_backup_read_response(),
-        )
-        assert status == 0, payload
-        assert posts[0]["body"]["mode"] == "apply"
-        assert posts[0]["body"]["reviewed_authority_digest"] == "c" * 64
-        assert posts[0]["idempotency_key"] == "apply-1"
-        assert reads[0]["path"] == "/v1/production-backup-authority"
-        assert reads[0]["query"] == {
-            "product": "example-product",
-            "context": "example",
-            "instance": "prod",
-            "promotion_action": "generic_web_prod_promotion.execute",
-        }
-        assert payload["result"]["read_back_matches"] is True
-
-        # A target the apply reported is missing from the read-back.
-        status, payload, _posts, _reads = _run_main(
-            apply_argv,
-            post=_backup_response(mode="apply", status="applied"),
-            read=_backup_read_response(targets=[], state="missing", ready=False),
-        )
-        assert (status, payload["status"]) == (1, "accepted_unverified")
-        assert payload["result"]["read_back_matches"] is False
-
-        # The response leaves out a reviewed target while reporting the reviewed digest.
-        status, payload, _posts, _reads = _run_main(
-            apply_argv,
-            post=_backup_response(mode="apply", status="applied", targets=[]),
-            read=_backup_read_response(),
-        )
-        assert (status, payload["status"]) == (1, "accepted_unverified")
-        assert "applied_plan_differs_from_review" in [item["code"] for item in payload["warnings"]]
-
-        # Launchplane reports an authority other than the reviewed one.
-        status, payload, _posts, _reads = _run_main(
-            apply_argv,
-            post=_backup_response(mode="apply", status="applied", authority_digest="e" * 64),
-            read=_backup_read_response(),
-        )
-        assert (status, payload["status"]) == (1, "accepted_unverified")
-        assert "applied_plan_differs_from_review" in [item["code"] for item in payload["warnings"]]
-
-        stale_read = _backup_read_response(policy={**_backup_policy_summary(), "record_id": "other-r2"})
-        status, payload, _posts, _reads = _run_main(
-            apply_argv, post=_backup_response(mode="apply", status="applied"), read=stale_read
-        )
-        assert (status, payload["status"]) == (1, "accepted_unverified")
-        assert payload["result"]["read_back_matches"] is False
-
-        # The private payload changed after review: refuse before any request.
+    for mutate, code in (
+        (lambda data: data.update(mode="apply"), "unsupported_backup_authority_field"),
+        (lambda data: data.update(reviewed_authority_digest="c" * 64), "unsupported_backup_authority_field"),
+        (lambda data: data.pop("policy"), "backup_policy_required"),
+        (lambda data: data["policy"].pop("promotion_action"), "backup_policy_promotion_action_required"),
+    ):
         changed = _backup_payload()
-        cast(dict[str, Any], changed["policy"])["policy_revision"] = 2
-        _write_json(directory, "backup.json", changed)
-        status, payload, posts, reads = _run_main(
-            apply_argv, post=_backup_response(mode="apply", status="applied"), read=_backup_read_response()
+        mutate(changed)
+        bad_path = _write_json(tmp_path, "backup-bad.json", changed)
+        status, payload, posts, _reads = _run_main(
+            ["production-backup-authority-dry-run", "--payload-file", bad_path],
+            post=_backup_response(),
         )
-        assert (status, posts, reads) == (2, [], [])
-        assert payload["warnings"][0]["code"] == "reviewed_dry_run_not_apply_eligible"
+        assert (status, posts) == (2, []), code
+        assert payload["warnings"][0]["code"] == code
+
+
+def test_production_backup_authority_apply_binds_the_exact_reviewed_payload(tmp_path: Path) -> None:
+    payload_path = _write_json(tmp_path, "backup.json", _backup_payload())
+    _status, evidence, _posts, _reads = _run_main(
+        ["production-backup-authority-dry-run", "--payload-file", payload_path],
+        post=_backup_response(),
+    )
+    evidence_path = _write_json(tmp_path, "backup-dry-run.json", evidence)
+    apply_argv = [
+        "production-backup-authority-apply",
+        "--payload-file",
+        payload_path,
+        *_reviewed_apply_argv("c" * 64, evidence_path),
+    ]
+    status, payload, posts, reads = _run_main(
+        apply_argv,
+        post=_backup_response(mode="apply", status="applied"),
+        read=_backup_read_response(),
+    )
+    assert status == 0, payload
+    assert posts[0]["body"]["mode"] == "apply"
+    assert posts[0]["body"]["reviewed_authority_digest"] == "c" * 64
+    assert posts[0]["idempotency_key"] == "apply-1"
+    assert reads[0]["path"] == "/v1/production-backup-authority"
+    assert reads[0]["query"] == {
+        "product": "example-product",
+        "context": "example",
+        "instance": "prod",
+        "promotion_action": "generic_web_prod_promotion.execute",
+    }
+    assert payload["result"]["read_back_matches"] is True
+
+    # A target the apply reported is missing from the read-back.
+    status, payload, _posts, _reads = _run_main(
+        apply_argv,
+        post=_backup_response(mode="apply", status="applied"),
+        read=_backup_read_response(targets=[], state="missing", ready=False),
+    )
+    assert (status, payload["status"]) == (1, "accepted_unverified")
+    assert payload["result"]["read_back_matches"] is False
+
+    # The response leaves out a reviewed target while reporting the reviewed digest.
+    status, payload, _posts, _reads = _run_main(
+        apply_argv,
+        post=_backup_response(mode="apply", status="applied", targets=[]),
+        read=_backup_read_response(),
+    )
+    assert (status, payload["status"]) == (1, "accepted_unverified")
+    assert "applied_plan_differs_from_review" in [item["code"] for item in payload["warnings"]]
+
+    # Launchplane reports an authority other than the reviewed one.
+    status, payload, _posts, _reads = _run_main(
+        apply_argv,
+        post=_backup_response(mode="apply", status="applied", authority_digest="e" * 64),
+        read=_backup_read_response(),
+    )
+    assert (status, payload["status"]) == (1, "accepted_unverified")
+    assert "applied_plan_differs_from_review" in [item["code"] for item in payload["warnings"]]
+
+    stale_read = _backup_read_response(policy={**_backup_policy_summary(), "record_id": "other-r2"})
+    status, payload, _posts, _reads = _run_main(
+        apply_argv, post=_backup_response(mode="apply", status="applied"), read=stale_read
+    )
+    assert (status, payload["status"]) == (1, "accepted_unverified")
+    assert payload["result"]["read_back_matches"] is False
+
+    # The private payload changed after review: refuse before any request.
+    changed = _backup_payload()
+    cast(dict[str, Any], changed["policy"])["policy_revision"] = 2
+    _write_json(tmp_path, "backup.json", changed)
+    status, payload, posts, reads = _run_main(
+        apply_argv, post=_backup_response(mode="apply", status="applied"), read=_backup_read_response()
+    )
+    assert (status, posts, reads) == (2, [], [])
+    assert payload["warnings"][0]["code"] == "reviewed_dry_run_not_apply_eligible"
 
 
 def test_production_backup_authority_read_keeps_state_and_record_ids() -> None:
@@ -8273,107 +8201,106 @@ def _inspect_response(target_id: str = "compose-private-9", status: str = "prese
     }
 
 
-def test_dokploy_compose_target_hides_provider_ids_and_binds_the_payload() -> None:
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        payload_path = _write_json(directory, "compose.json", _compose_payload())
-        status, evidence, posts, _reads = _run_main(
-            ["dokploy-target-create-compose-dry-run", "--payload-file", payload_path],
+def test_dokploy_compose_target_hides_provider_ids_and_binds_the_payload(tmp_path: Path) -> None:
+    payload_path = _write_json(tmp_path, "compose.json", _compose_payload())
+    status, evidence, posts, _reads = _run_main(
+        ["dokploy-target-create-compose-dry-run", "--payload-file", payload_path],
+        post=_compose_response(),
+    )
+    assert status == 0, evidence
+    body = posts[0]["body"]
+    assert (body["operation"], body["product"], body["mode"]) == ("create-compose", "launchplane", "dry-run")
+    assert "confirmation" not in body
+    printed = json.dumps(evidence)
+    for private in (
+        "server-private-1",
+        "project-private-1",
+        "testing.example.invalid",
+        "git@",
+        "EXAMPLE_KEY",
+        "planned-compose-id",
+        "Create the testing lane",
+    ):
+        assert private not in printed, private
+    assert evidence["result"]["plan_actions"] == {"project": "reuse", "environment": "create", "compose": "create"}
+    assert evidence["result"]["domain_count"] == 1
+    digest = evidence["result"]["plan_sha256"]
+    evidence_path = _write_json(tmp_path, "compose-dry-run.json", evidence)
+    apply_argv = [
+        "dokploy-target-create-compose-apply",
+        "--payload-file",
+        payload_path,
+        *_reviewed_apply_argv(digest, evidence_path),
+    ]
+    status, payload, posts, reads = _run_main(
+        apply_argv,
+        post=_compose_response("apply", "compose-private-9"),
+        read=_inspect_response(),
+    )
+    assert status == 0, payload
+    assert posts[0]["body"]["confirmation"] == write_action.DOKPLOY_TARGET_SETUP_CONFIRMATION
+    assert reads[0]["path"] == contract.internal_helper_path("dokploy-target-inspect")
+    assert reads[0]["query"] == {"context": "example", "instance": "testing"}
+    assert payload["result"]["read_back_matches"] is True
+    assert "compose-private-9" not in json.dumps(payload)
+
+    # Launchplane applied a different plan than the reviewed one.
+    changed_plan = _compose_response("apply", "compose-private-9")
+    changed_plan["result"]["setup"]["plan"]["project"]["action"] = "create"
+    status, payload, _posts, _reads = _run_main(
+        apply_argv, post=changed_plan, read=_inspect_response()
+    )
+    assert (status, payload["status"]) == (1, "accepted_unverified")
+    assert "applied_plan_differs_from_review" in [item["code"] for item in payload["warnings"]]
+
+    # The tracked target does not hold the reviewed domain.
+    moved_domain = _inspect_response()
+    moved_domain["inspect"]["tracked_target"]["domains"] = ["other.example.invalid"]
+    status, payload, _posts, _reads = _run_main(
+        apply_argv, post=_compose_response("apply", "compose-private-9"), read=moved_domain
+    )
+    assert (status, payload["status"]) == (1, "accepted_unverified")
+    assert payload["result"]["read_back"]["configuration_matches_review"] is False
+    assert "other.example.invalid" not in json.dumps(payload)
+
+    # The records name a different target than the one created.
+    status, payload, _posts, _reads = _run_main(
+        apply_argv,
+        post=_compose_response("apply", "compose-private-9"),
+        read=_inspect_response(target_id="compose-other"),
+    )
+    assert (status, payload["status"]) == (1, "accepted_unverified")
+
+    changed = {**_compose_payload(), "domains": ["other.example.invalid"]}
+    _write_json(tmp_path, "compose.json", changed)
+    status, payload, posts, _reads = _run_main(
+        apply_argv, post=_compose_response("apply"), read=_inspect_response()
+    )
+    assert (status, posts) == (2, [])
+    assert payload["warnings"][0]["code"] == "reviewed_dry_run_not_apply_eligible"
+
+    for mutate, code in (
+        (lambda data: data.update(confirmation="APPLY DOKPLOY TARGET SETUP"), "unsupported_dokploy_target_field"),
+        (lambda data: data.update(domains="testing.example.invalid"), "domains_required"),
+        (lambda data: data.update(domains=[""]), "domains_required"),
+        (lambda data: data.update(domains=[None]), "domains_required"),
+        (lambda data: data.update(healthcheck_path="health"), "healthcheck_path_required"),
+        (lambda data: data.pop("project_id"), "dokploy_project_required"),
+        (lambda data: data.pop("server_id"), "server_id_required"),
+    ):
+        bad = _compose_payload()
+        mutate(bad)
+        bad_path = _write_json(tmp_path, "compose-bad.json", bad)
+        status, payload, posts, _reads = _run_main(
+            ["dokploy-target-create-compose-dry-run", "--payload-file", bad_path],
             post=_compose_response(),
         )
-        assert status == 0, evidence
-        body = posts[0]["body"]
-        assert (body["operation"], body["product"], body["mode"]) == ("create-compose", "launchplane", "dry-run")
-        assert "confirmation" not in body
-        printed = json.dumps(evidence)
-        for private in (
-            "server-private-1",
-            "project-private-1",
-            "testing.example.invalid",
-            "git@",
-            "EXAMPLE_KEY",
-            "planned-compose-id",
-            "Create the testing lane",
-        ):
-            assert private not in printed, private
-        assert evidence["result"]["plan_actions"] == {"project": "reuse", "environment": "create", "compose": "create"}
-        assert evidence["result"]["domain_count"] == 1
-        digest = evidence["result"]["plan_sha256"]
-        evidence_path = _write_json(directory, "compose-dry-run.json", evidence)
-        apply_argv = [
-            "dokploy-target-create-compose-apply",
-            "--payload-file",
-            payload_path,
-            *_reviewed_apply_argv(digest, evidence_path),
-        ]
-        status, payload, posts, reads = _run_main(
-            apply_argv,
-            post=_compose_response("apply", "compose-private-9"),
-            read=_inspect_response(),
-        )
-        assert status == 0, payload
-        assert posts[0]["body"]["confirmation"] == write_action.DOKPLOY_TARGET_SETUP_CONFIRMATION
-        assert reads[0]["path"] == contract.internal_helper_path("dokploy-target-inspect")
-        assert reads[0]["query"] == {"context": "example", "instance": "testing"}
-        assert payload["result"]["read_back_matches"] is True
-        assert "compose-private-9" not in json.dumps(payload)
-
-        # Launchplane applied a different plan than the reviewed one.
-        changed_plan = _compose_response("apply", "compose-private-9")
-        changed_plan["result"]["setup"]["plan"]["project"]["action"] = "create"
-        status, payload, _posts, _reads = _run_main(
-            apply_argv, post=changed_plan, read=_inspect_response()
-        )
-        assert (status, payload["status"]) == (1, "accepted_unverified")
-        assert "applied_plan_differs_from_review" in [item["code"] for item in payload["warnings"]]
-
-        # The tracked target does not hold the reviewed domain.
-        moved_domain = _inspect_response()
-        moved_domain["inspect"]["tracked_target"]["domains"] = ["other.example.invalid"]
-        status, payload, _posts, _reads = _run_main(
-            apply_argv, post=_compose_response("apply", "compose-private-9"), read=moved_domain
-        )
-        assert (status, payload["status"]) == (1, "accepted_unverified")
-        assert payload["result"]["read_back"]["configuration_matches_review"] is False
-        assert "other.example.invalid" not in json.dumps(payload)
-
-        # The records name a different target than the one created.
-        status, payload, _posts, _reads = _run_main(
-            apply_argv,
-            post=_compose_response("apply", "compose-private-9"),
-            read=_inspect_response(target_id="compose-other"),
-        )
-        assert (status, payload["status"]) == (1, "accepted_unverified")
-
-        changed = {**_compose_payload(), "domains": ["other.example.invalid"]}
-        _write_json(directory, "compose.json", changed)
-        status, payload, posts, _reads = _run_main(
-            apply_argv, post=_compose_response("apply"), read=_inspect_response()
-        )
-        assert (status, posts) == (2, [])
-        assert payload["warnings"][0]["code"] == "reviewed_dry_run_not_apply_eligible"
-
-        for mutate, code in (
-            (lambda data: data.update(confirmation="APPLY DOKPLOY TARGET SETUP"), "unsupported_dokploy_target_field"),
-            (lambda data: data.update(domains="testing.example.invalid"), "domains_required"),
-            (lambda data: data.update(domains=[""]), "domains_required"),
-            (lambda data: data.update(domains=[None]), "domains_required"),
-            (lambda data: data.update(healthcheck_path="health"), "healthcheck_path_required"),
-            (lambda data: data.pop("project_id"), "dokploy_project_required"),
-            (lambda data: data.pop("server_id"), "server_id_required"),
-        ):
-            bad = _compose_payload()
-            mutate(bad)
-            bad_path = _write_json(directory, "compose-bad.json", bad)
-            status, payload, posts, _reads = _run_main(
-                ["dokploy-target-create-compose-dry-run", "--payload-file", bad_path],
-                post=_compose_response(),
-            )
-            assert (status, posts) == (2, []), code
-            assert payload["warnings"][0]["code"] == code
+        assert (status, posts) == (2, []), code
+        assert payload["warnings"][0]["code"] == code
 
 
 @pytest.mark.parametrize("domains", [[], ["testing.example.invalid"]])
-def test_compose_target_review_and_readback_cover_private_and_public_routes(domains: list[str]) -> None:
+def test_compose_target_review_and_readback_cover_private_and_public_routes(domains: list[str], tmp_path: Path) -> None:
     def response(mode: str) -> dict[str, Any]:
         value = _compose_response(mode, "compose-private-9")
         value["result"]["setup"]["target_record"]["domains"] = domains
@@ -8384,50 +8311,49 @@ def test_compose_target_review_and_readback_cover_private_and_public_routes(doma
         value["inspect"]["tracked_target"]["domains"] = observed_domains
         return value
 
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        inputs = {**_compose_payload(), "domains": domains}
-        payload_path = _write_json(directory, "compose.json", inputs)
-        status, evidence, posts, reads = _run_main(
-            ["dokploy-target-create-compose-dry-run", "--payload-file", payload_path],
-            post=response("dry-run"),
-        )
-        assert status == 0, evidence
-        assert len(posts) == 1 and not reads
-        assert posts[0]["body"]["domains"] == domains
-        assert evidence["result"]["domain_count"] == len(domains)
-        evidence_path = _write_json(directory, "review.json", evidence)
-        idempotency_key = "compose-route-review"
-        apply_argv = [
-            "dokploy-target-create-compose-apply", "--payload-file", payload_path,
-            *_reviewed_apply_argv(evidence["result"]["plan_sha256"], evidence_path, idempotency_key),
-        ]
-        status, receipt, posts, reads = _run_main(
-            apply_argv, post=response("apply"), read=inspect(domains),
-        )
-        assert status == 0, receipt
-        assert len(posts) == len(reads) == 1
-        assert posts[0]["body"]["domains"] == domains
-        assert posts[0]["idempotency_key"] == idempotency_key
-        assert receipt["result"]["read_back_matches"] is True
-        for private in ("server-private-1", "project-private-1", "compose-private-9", *domains):
-            assert private not in json.dumps(receipt)
+    inputs = {**_compose_payload(), "domains": domains}
+    payload_path = _write_json(tmp_path, "compose.json", inputs)
+    status, evidence, posts, reads = _run_main(
+        ["dokploy-target-create-compose-dry-run", "--payload-file", payload_path],
+        post=response("dry-run"),
+    )
+    assert status == 0, evidence
+    assert len(posts) == 1 and not reads
+    assert posts[0]["body"]["domains"] == domains
+    assert evidence["result"]["domain_count"] == len(domains)
+    evidence_path = _write_json(tmp_path, "review.json", evidence)
+    idempotency_key = "compose-route-review"
+    apply_argv = [
+        "dokploy-target-create-compose-apply", "--payload-file", payload_path,
+        *_reviewed_apply_argv(evidence["result"]["plan_sha256"], evidence_path, idempotency_key),
+    ]
+    status, receipt, posts, reads = _run_main(
+        apply_argv, post=response("apply"), read=inspect(domains),
+    )
+    assert status == 0, receipt
+    assert len(posts) == len(reads) == 1
+    assert posts[0]["body"]["domains"] == domains
+    assert posts[0]["idempotency_key"] == idempotency_key
+    assert receipt["result"]["read_back_matches"] is True
+    for private in ("server-private-1", "project-private-1", "compose-private-9", *domains):
+        assert private not in json.dumps(receipt)
 
-        unexpected_domains = ["unexpected.example.invalid"]
-        status, receipt, posts, reads = _run_main(
-            apply_argv, post=response("apply"), read=inspect(unexpected_domains),
-        )
-        assert status == 1 and receipt["status"] == "accepted_unverified"
-        assert receipt["result"]["read_back"]["configuration_matches_review"] is False
-        assert unexpected_domains[0] not in json.dumps(receipt)
+    unexpected_domains = ["unexpected.example.invalid"]
+    status, receipt, posts, reads = _run_main(
+        apply_argv, post=response("apply"), read=inspect(unexpected_domains),
+    )
+    assert status == 1 and receipt["status"] == "accepted_unverified"
+    assert receipt["result"]["read_back"]["configuration_matches_review"] is False
+    assert unexpected_domains[0] not in json.dumps(receipt)
 
-        # Adding or removing a route after review cannot reuse that evidence.
-        changed = {**inputs, "domains": [] if domains else ["testing.example.invalid"]}
-        _write_json(directory, "compose.json", changed)
-        status, receipt, posts, reads = _run_main(
-            apply_argv, post=response("apply"), read=inspect(domains),
-        )
-        assert status == 2 and not posts and not reads
-        assert receipt["warnings"][0]["code"] == "reviewed_dry_run_not_apply_eligible"
+    # Adding or removing a route after review cannot reuse that evidence.
+    changed = {**inputs, "domains": [] if domains else ["testing.example.invalid"]}
+    _write_json(tmp_path, "compose.json", changed)
+    status, receipt, posts, reads = _run_main(
+        apply_argv, post=response("apply"), read=inspect(domains),
+    )
+    assert status == 2 and not posts and not reads
+    assert receipt["warnings"][0]["code"] == "reviewed_dry_run_not_apply_eligible"
 
 
 STATE_PLAN_ID = "0123456789abcdef0123456789abcdef"
@@ -8494,80 +8420,79 @@ def _application_inspect_response(**tracked: object) -> dict[str, Any]:
     return response
 
 
-def test_application_target_apply_reuses_the_reviewed_storage_plan() -> None:
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        payload_path = _write_json(directory, "application.json", _application_payload())
-        status, evidence, posts, _reads = _run_main(
-            ["dokploy-target-create-application-dry-run", "--payload-file", payload_path],
-            post=_state_volume_response(),
+def test_application_target_apply_reuses_the_reviewed_storage_plan(tmp_path: Path) -> None:
+    payload_path = _write_json(tmp_path, "application.json", _application_payload())
+    status, evidence, posts, _reads = _run_main(
+        ["dokploy-target-create-application-dry-run", "--payload-file", payload_path],
+        post=_state_volume_response(),
+    )
+    assert status == 0, evidence
+    body = posts[0]["body"]
+    assert (body["operation"], body["product"], body["mode"]) == ("create-application", "launchplane", "dry-run")
+    assert "state_volume_plan_id" not in body and "confirmation" not in body
+    assert evidence["result"]["state_volume"] == {"plan_id": STATE_PLAN_ID, "service_plan_sha256": STATE_PLAN_SHA256}
+    for private in ("server-private-1", "example-project-private", "lp-testing-", "/srv/state", "Create the testing"):
+        assert private not in json.dumps(evidence), private
+    evidence_path = _write_json(tmp_path, "application-dry-run.json", evidence)
+    argv = [
+        "dokploy-target-create-application-apply", "--payload-file", payload_path,
+        *_reviewed_apply_argv(evidence["result"]["plan_sha256"], evidence_path, "original-key"),
+    ]
+    # A retry sends the same saved plan and key; it never plans again.
+    for _attempt in range(2):
+        status, receipt, posts, reads = _run_main(
+            argv, post=_state_volume_response("apply"), read=_application_inspect_response()
         )
-        assert status == 0, evidence
-        body = posts[0]["body"]
-        assert (body["operation"], body["product"], body["mode"]) == ("create-application", "launchplane", "dry-run")
-        assert "state_volume_plan_id" not in body and "confirmation" not in body
-        assert evidence["result"]["state_volume"] == {"plan_id": STATE_PLAN_ID, "service_plan_sha256": STATE_PLAN_SHA256}
-        for private in ("server-private-1", "example-project-private", "lp-testing-", "/srv/state", "Create the testing"):
-            assert private not in json.dumps(evidence), private
-        evidence_path = _write_json(directory, "application-dry-run.json", evidence)
-        argv = [
-            "dokploy-target-create-application-apply", "--payload-file", payload_path,
-            *_reviewed_apply_argv(evidence["result"]["plan_sha256"], evidence_path, "original-key"),
-        ]
-        # A retry sends the same saved plan and key; it never plans again.
-        for _attempt in range(2):
-            status, receipt, posts, reads = _run_main(
-                argv, post=_state_volume_response("apply"), read=_application_inspect_response()
-            )
-            assert status == 0, receipt
-            assert len(posts) == len(reads) == 1
-            assert posts[0]["idempotency_key"] == "original-key"
-            assert posts[0]["body"]["state_volume_plan_id"] == STATE_PLAN_ID
-            assert posts[0]["body"]["expected_plan_sha256"] == STATE_PLAN_SHA256
-            assert posts[0]["body"]["confirmation"] == write_action.DOKPLOY_TARGET_SETUP_CONFIRMATION
-            assert receipt["result"]["read_back_matches"] is True
-            assert "app-private-9" not in json.dumps(receipt)
+        assert status == 0, receipt
+        assert len(posts) == len(reads) == 1
+        assert posts[0]["idempotency_key"] == "original-key"
+        assert posts[0]["body"]["state_volume_plan_id"] == STATE_PLAN_ID
+        assert posts[0]["body"]["expected_plan_sha256"] == STATE_PLAN_SHA256
+        assert posts[0]["body"]["confirmation"] == write_action.DOKPLOY_TARGET_SETUP_CONFIRMATION
+        assert receipt["result"]["read_back_matches"] is True
+        assert "app-private-9" not in json.dumps(receipt)
 
-        # A 202 is a receipt: retained custody and unverified mounts are not creation.
-        retained = {"status": "accepted", "trace_id": "launchplane_req_retained", "records": {}, "result": {
-            "applied": False, "allocation_state": "retained_uncertain", "original_key": "original-key",
-            "plan_id": STATE_PLAN_ID, "deployment_performed": False, "resources_retained": True,
-            "reviewed_custody_sha256": "e" * 64,
-        }}
-        status, receipt, _posts, reads = _run_main(argv, post=retained, read=_application_inspect_response())
-        assert (status, receipt["status"], reads) == (1, "accepted_unverified", [])
-        assert "state_volume_allocation_retained" in [item["code"] for item in receipt["warnings"]]
-        unverified = _state_volume_response("apply", configuration_evidence="unavailable", configuration_matches=False)
-        status, receipt, _posts, _reads = _run_main(argv, post=unverified, read=_application_inspect_response())
-        assert (status, receipt["status"]) == (1, "accepted_unverified")
-        assert "state_volume_configuration_unverified" in [item["code"] for item in receipt["warnings"]]
+    # A 202 is a receipt: retained custody and unverified mounts are not creation.
+    retained = {"status": "accepted", "trace_id": "launchplane_req_retained", "records": {}, "result": {
+        "applied": False, "allocation_state": "retained_uncertain", "original_key": "original-key",
+        "plan_id": STATE_PLAN_ID, "deployment_performed": False, "resources_retained": True,
+        "reviewed_custody_sha256": "e" * 64,
+    }}
+    status, receipt, _posts, reads = _run_main(argv, post=retained, read=_application_inspect_response())
+    assert (status, receipt["status"], reads) == (1, "accepted_unverified", [])
+    assert "state_volume_allocation_retained" in [item["code"] for item in receipt["warnings"]]
+    unverified = _state_volume_response("apply", configuration_evidence="unavailable", configuration_matches=False)
+    status, receipt, _posts, _reads = _run_main(argv, post=unverified, read=_application_inspect_response())
+    assert (status, receipt["status"]) == (1, "accepted_unverified")
+    assert "state_volume_configuration_unverified" in [item["code"] for item in receipt["warnings"]]
 
-        # The tracked target must be the created application with the reviewed health path.
-        for observed in (
-            _application_inspect_response(healthcheck_path="/other"),
-            _application_inspect_response(target_id="app-other"),
-            {**_application_inspect_response(), "inspect": {**_application_inspect_response()["inspect"], "target_type": "compose"}},
-        ):
-            status, receipt, _posts, _reads = _run_main(argv, post=_state_volume_response("apply"), read=observed)
-            assert (status, receipt["result"]["read_back_matches"]) == (1, False)
+    # The tracked target must be the created application with the reviewed health path.
+    for observed in (
+        _application_inspect_response(healthcheck_path="/other"),
+        _application_inspect_response(target_id="app-other"),
+        {**_application_inspect_response(), "inspect": {**_application_inspect_response()["inspect"], "target_type": "compose"}},
+    ):
+        status, receipt, _posts, _reads = _run_main(argv, post=_state_volume_response("apply"), read=observed)
+        assert (status, receipt["result"]["read_back_matches"]) == (1, False)
 
-        # Edited evidence, a changed payload or a missing review never reach the service.
-        _write_json(directory, "application-dry-run.json", {
-            **evidence, "result": {**evidence["result"], "state_volume": {
-                "plan_id": "a" * 32, "service_plan_sha256": STATE_PLAN_SHA256,
-            }},
-        })
-        status, receipt, posts, _reads = _run_main(argv, post=_state_volume_response("apply"))
-        assert (status, posts) == (2, [])
-        assert receipt["warnings"][0]["code"] == "reviewed_dry_run_not_apply_eligible"
-        _write_json(directory, "application-dry-run.json", evidence)
-        _write_json(directory, "application.json", _application_payload(state_volume_path="/srv/other"))
-        status, receipt, posts, _reads = _run_main(argv, post=_state_volume_response("apply"))
-        assert (status, posts) == (2, [])
-        _write_json(directory, "application.json", _application_payload())
-        status, receipt, posts, _reads = _run_main(
-            [value for value in argv if value != "--reviewed-dry-run"], post=_state_volume_response("apply")
-        )
-        assert (status, posts) == (2, [])
+    # Edited evidence, a changed payload or a missing review never reach the service.
+    _write_json(tmp_path, "application-dry-run.json", {
+        **evidence, "result": {**evidence["result"], "state_volume": {
+            "plan_id": "a" * 32, "service_plan_sha256": STATE_PLAN_SHA256,
+        }},
+    })
+    status, receipt, posts, _reads = _run_main(argv, post=_state_volume_response("apply"))
+    assert (status, posts) == (2, [])
+    assert receipt["warnings"][0]["code"] == "reviewed_dry_run_not_apply_eligible"
+    _write_json(tmp_path, "application-dry-run.json", evidence)
+    _write_json(tmp_path, "application.json", _application_payload(state_volume_path="/srv/other"))
+    status, receipt, posts, _reads = _run_main(argv, post=_state_volume_response("apply"))
+    assert (status, posts) == (2, [])
+    _write_json(tmp_path, "application.json", _application_payload())
+    status, receipt, posts, _reads = _run_main(
+        [value for value in argv if value != "--reviewed-dry-run"], post=_state_volume_response("apply")
+    )
+    assert (status, posts) == (2, [])
 
 
 STATE_CUSTODY_SHA256 = "c" * 64
@@ -8599,7 +8524,7 @@ def _state_volume_refusal(code: str) -> urllib.error.HTTPError:
     )
 
 
-def _saved_state_volume_dry_run(directory: str) -> tuple[str, dict[str, Any], str]:
+def _saved_state_volume_dry_run(directory: str | Path) -> tuple[str, dict[str, Any], str]:
     payload_path = _write_json(directory, "application.json", _application_payload())
     status, evidence, _posts, _reads = _run_main(
         ["dokploy-target-create-application-dry-run", "--payload-file", payload_path],
@@ -8609,159 +8534,157 @@ def _saved_state_volume_dry_run(directory: str) -> tuple[str, dict[str, Any], st
     return payload_path, evidence, _write_json(directory, "application-dry-run.json", evidence)
 
 
-def test_application_storage_readback_uses_saved_plan_and_original_key() -> None:
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        payload_path, evidence, evidence_path = _saved_state_volume_dry_run(directory)
-        digest = evidence["result"]["plan_sha256"]
-        argv = [
-            "dokploy-target-create-application-readback", "--payload-file", payload_path,
-            "--idempotency-key", "original-key", "--expected-plan-digest", digest,
-            "--dry-run-evidence-file", evidence_path,
-        ]
-        status, readback, posts, _reads = _run_main(argv, post=_state_volume_readback_response())
-        assert status == 0, readback
-        body = posts[0]["body"]
-        assert posts[0]["idempotency_key"] == "original-key"
-        assert (body["mode"], body["state_volume_plan_id"], body["expected_plan_sha256"]) == (
-            "readback", STATE_PLAN_ID, STATE_PLAN_SHA256,
+def test_application_storage_readback_uses_saved_plan_and_original_key(tmp_path: Path) -> None:
+    payload_path, evidence, evidence_path = _saved_state_volume_dry_run(tmp_path)
+    digest = evidence["result"]["plan_sha256"]
+    argv = [
+        "dokploy-target-create-application-readback", "--payload-file", payload_path,
+        "--idempotency-key", "original-key", "--expected-plan-digest", digest,
+        "--dry-run-evidence-file", evidence_path,
+    ]
+    status, readback, posts, _reads = _run_main(argv, post=_state_volume_readback_response())
+    assert status == 0, readback
+    body = posts[0]["body"]
+    assert posts[0]["idempotency_key"] == "original-key"
+    assert (body["mode"], body["state_volume_plan_id"], body["expected_plan_sha256"]) == (
+        "readback", STATE_PLAN_ID, STATE_PLAN_SHA256,
+    )
+    # Readback observes only: no apply confirmation and no retention request.
+    assert "confirmation" not in body and "retain_state_volume_allocation" not in body
+    result = readback["result"]
+    assert result["plan_sha256"] == digest
+    assert (result["operation_state"], result["configuration_evidence"], result["custody_sha256"]) == (
+        "reconcile_required", "unavailable", STATE_CUSTODY_SHA256,
+    )
+    assert result["configuration_matches"] is False
+    assert result["provider_effect_phase"] == {
+        "recorded": True, "created": ["project", "environment"],
+        "mount_verified": False, "pending": "application",
+    }
+    printed = json.dumps(readback)
+    for private in ("project-private-1", "environment-private-1", "server-private-1", "lp-testing-", "/srv/state"):
+        assert private not in printed, private
+
+    # A response for another plan is never reported as this plan's custody.
+    other_plan = _state_volume_readback_response(state_volume_plan_id="a" * 32)
+    status, refused, _posts, _reads = _run_main(argv, post=other_plan)
+    assert status == 1 and "custody_sha256" not in json.dumps(refused["result"])
+
+    # Missing or edited evidence, a different digest or no key never reach the service.
+    edited = copy.deepcopy(evidence)
+    edited["result"]["state_volume"]["plan_id"] = "a" * 32
+    edited_path = _write_json(tmp_path, "edited-dry-run.json", edited)
+    for changed in (
+        [edited_path if value == evidence_path else value for value in argv],
+        [str(tmp_path / "missing.json") if value == evidence_path else value for value in argv],
+        ["e" * 64 if value == digest else value for value in argv],
+        [" " if value == "original-key" else value for value in argv],
+    ):
+        status, refused, posts, _reads = _run_main(changed, post=_state_volume_readback_response())
+        assert (status, posts) == (2, []), refused
+
+    # The service refuses another key by code; the next step comes from that code.
+    status, refused, _posts, _reads = _run_main(
+        argv, post=_state_volume_refusal("application_state_volume_unqualified")
+    )
+    assert status == 1
+    assert refused["summary"]["error_code"] == "application_state_volume_unqualified"
+    assert refused["summary"]["recommendation"] == write_action.APPLICATION_STATE_VOLUME_NEXT_STEPS[
+        "application_state_volume_unqualified"
+    ]
+    assert "private detail" not in json.dumps(refused)
+
+
+def test_application_storage_retention_requires_original_key_readback_custody(tmp_path: Path) -> None:
+    payload_path, evidence, evidence_path = _saved_state_volume_dry_run(tmp_path)
+    digest = evidence["result"]["plan_sha256"]
+
+    def readback_evidence(key: str, name: str) -> str:
+        readback_status, readback, *_ = _run_main(
+            [
+                "dokploy-target-create-application-readback", "--payload-file", payload_path,
+                "--idempotency-key", key, "--expected-plan-digest", digest,
+                "--dry-run-evidence-file", evidence_path,
+            ],
+            post=_state_volume_readback_response(),
         )
-        # Readback observes only: no apply confirmation and no retention request.
-        assert "confirmation" not in body and "retain_state_volume_allocation" not in body
-        result = readback["result"]
-        assert result["plan_sha256"] == digest
-        assert (result["operation_state"], result["configuration_evidence"], result["custody_sha256"]) == (
-            "reconcile_required", "unavailable", STATE_CUSTODY_SHA256,
-        )
-        assert result["configuration_matches"] is False
-        assert result["provider_effect_phase"] == {
-            "recorded": True, "created": ["project", "environment"],
-            "mount_verified": False, "pending": "application",
-        }
-        printed = json.dumps(readback)
-        for private in ("project-private-1", "environment-private-1", "server-private-1", "lp-testing-", "/srv/state"):
-            assert private not in printed, private
+        assert readback_status == 0, readback
+        return _write_json(tmp_path, name, readback)
 
-        # A response for another plan is never reported as this plan's custody.
-        other_plan = _state_volume_readback_response(state_volume_plan_id="a" * 32)
-        status, refused, _posts, _reads = _run_main(argv, post=other_plan)
-        assert status == 1 and "custody_sha256" not in json.dumps(refused["result"])
+    readback_path = readback_evidence("original-key", "readback.json")
+    argv = [
+        "dokploy-target-create-application-retain", "--payload-file", payload_path,
+        *_reviewed_apply_argv(digest, evidence_path, "original-key"),
+        "--readback-evidence-file", readback_path,
+        "--expected-custody-digest", STATE_CUSTODY_SHA256,
+    ]
+    receipt_result = {
+        "applied": False, "allocation_state": "retained_uncertain", "original_key": "original-key",
+        "plan_id": STATE_PLAN_ID, "deployment_performed": False, "resources_retained": True,
+        "reviewed_custody_sha256": STATE_CUSTODY_SHA256,
+        "retained_provider_effect_phase": '{"project": "project-private-1"}',
+    }
+    retained = {"status": "accepted", "trace_id": "launchplane_req_retained", "records": {}, "result": receipt_result}
+    status, receipt, posts, reads = _run_main(argv, post=retained)
+    assert status == 0, receipt
+    assert reads == [] and posts[0]["idempotency_key"] == "original-key"
+    body = posts[0]["body"]
+    assert body["retain_state_volume_allocation"] is True
+    assert body["expected_state_volume_custody_sha256"] == STATE_CUSTODY_SHA256
+    assert (body["mode"], body["state_volume_plan_id"], body["expected_plan_sha256"]) == (
+        "apply", STATE_PLAN_ID, STATE_PLAN_SHA256,
+    )
+    assert body["confirmation"] == write_action.DOKPLOY_TARGET_SETUP_CONFIRMATION
+    assert receipt["result"]["allocation_state"] == "retained_uncertain"
+    assert receipt["result"]["reviewed_custody_sha256"] == STATE_CUSTODY_SHA256
+    assert "project-private-1" not in json.dumps(receipt)
 
-        # Missing or edited evidence, a different digest or no key never reach the service.
-        edited = copy.deepcopy(evidence)
-        edited["result"]["state_volume"]["plan_id"] = "a" * 32
-        edited_path = _write_json(directory, "edited-dry-run.json", edited)
-        for changed in (
-            [edited_path if value == evidence_path else value for value in argv],
-            [str(Path(directory) / "missing.json") if value == evidence_path else value for value in argv],
-            ["e" * 64 if value == digest else value for value in argv],
-            [" " if value == "original-key" else value for value in argv],
-        ):
-            status, refused, posts, _reads = _run_main(changed, post=_state_volume_readback_response())
-            assert (status, posts) == (2, []), refused
+    # A receipt that differs from the reviewed retention in any binding is not it.
+    for field, value in (
+        ("reviewed_custody_sha256", "d" * 64),
+        ("plan_id", "a" * 32),
+        ("original_key", "other-key"),
+        ("allocation_state", "adopted"),
+        ("applied", True),
+        ("deployment_performed", True),
+        ("resources_retained", False),
+    ):
+        other = {**retained, "result": {**receipt_result, field: value}}
+        status, receipt, _posts, _reads = _run_main(argv, post=other)
+        assert (status, receipt["status"]) == (1, "accepted_unverified"), field
 
-        # The service refuses another key by code; the next step comes from that code.
-        status, refused, _posts, _reads = _run_main(
-            argv, post=_state_volume_refusal("application_state_volume_unqualified")
-        )
-        assert status == 1
-        assert refused["summary"]["error_code"] == "application_state_volume_unqualified"
-        assert refused["summary"]["recommendation"] == write_action.APPLICATION_STATE_VOLUME_NEXT_STEPS[
-            "application_state_volume_unqualified"
-        ]
-        assert "private detail" not in json.dumps(refused)
+    # Without readback custody from the original key, payload and plan, nothing is sent.
+    other_key_readback = readback_evidence("other-key", "other-readback.json")
+    saved_readback = json.loads(Path(readback_path).read_text(encoding="utf-8"))
+    edited_readbacks = []
+    for section, field, value in (
+        ("result", "custody_sha256", "d" * 64),
+        ("result", "plan_sha256", "e" * 64),
+        ("result", "state_volume", {"plan_id": "a" * 32, "service_plan_sha256": STATE_PLAN_SHA256}),
+        ("request", "payload_digest", "f" * 64),
+    ):
+        edited = copy.deepcopy(saved_readback)
+        edited[section][field] = value
+        edited_readbacks.append(_write_json(tmp_path, f"edited-readback-{field}.json", edited))
+    for changed in (
+        ["d" * 64 if value == STATE_CUSTODY_SHA256 else value for value in argv],
+        [other_key_readback if value == readback_path else value for value in argv],
+        *([edited_path if value == readback_path else value for value in argv] for edited_path in edited_readbacks),
+        [str(tmp_path / "missing.json") if value == readback_path else value for value in argv],
+        ["other-key" if value == "original-key" else value for value in argv],
+        [value for value in argv if value != "--reviewed-dry-run"],
+    ):
+        status, refused, posts, _reads = _run_main(changed, post=retained)
+        assert (status, posts) == (2, []), refused
 
-
-def test_application_storage_retention_requires_original_key_readback_custody() -> None:
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        payload_path, evidence, evidence_path = _saved_state_volume_dry_run(directory)
-        digest = evidence["result"]["plan_sha256"]
-
-        def readback_evidence(key: str, name: str) -> str:
-            readback_status, readback, *_ = _run_main(
-                [
-                    "dokploy-target-create-application-readback", "--payload-file", payload_path,
-                    "--idempotency-key", key, "--expected-plan-digest", digest,
-                    "--dry-run-evidence-file", evidence_path,
-                ],
-                post=_state_volume_readback_response(),
-            )
-            assert readback_status == 0, readback
-            return _write_json(directory, name, readback)
-
-        readback_path = readback_evidence("original-key", "readback.json")
-        argv = [
-            "dokploy-target-create-application-retain", "--payload-file", payload_path,
-            *_reviewed_apply_argv(digest, evidence_path, "original-key"),
-            "--readback-evidence-file", readback_path,
-            "--expected-custody-digest", STATE_CUSTODY_SHA256,
-        ]
-        receipt_result = {
-            "applied": False, "allocation_state": "retained_uncertain", "original_key": "original-key",
-            "plan_id": STATE_PLAN_ID, "deployment_performed": False, "resources_retained": True,
-            "reviewed_custody_sha256": STATE_CUSTODY_SHA256,
-            "retained_provider_effect_phase": '{"project": "project-private-1"}',
-        }
-        retained = {"status": "accepted", "trace_id": "launchplane_req_retained", "records": {}, "result": receipt_result}
-        status, receipt, posts, reads = _run_main(argv, post=retained)
-        assert status == 0, receipt
-        assert reads == [] and posts[0]["idempotency_key"] == "original-key"
-        body = posts[0]["body"]
-        assert body["retain_state_volume_allocation"] is True
-        assert body["expected_state_volume_custody_sha256"] == STATE_CUSTODY_SHA256
-        assert (body["mode"], body["state_volume_plan_id"], body["expected_plan_sha256"]) == (
-            "apply", STATE_PLAN_ID, STATE_PLAN_SHA256,
-        )
-        assert body["confirmation"] == write_action.DOKPLOY_TARGET_SETUP_CONFIRMATION
-        assert receipt["result"]["allocation_state"] == "retained_uncertain"
-        assert receipt["result"]["reviewed_custody_sha256"] == STATE_CUSTODY_SHA256
-        assert "project-private-1" not in json.dumps(receipt)
-
-        # A receipt that differs from the reviewed retention in any binding is not it.
-        for field, value in (
-            ("reviewed_custody_sha256", "d" * 64),
-            ("plan_id", "a" * 32),
-            ("original_key", "other-key"),
-            ("allocation_state", "adopted"),
-            ("applied", True),
-            ("deployment_performed", True),
-            ("resources_retained", False),
-        ):
-            other = {**retained, "result": {**receipt_result, field: value}}
-            status, receipt, _posts, _reads = _run_main(argv, post=other)
-            assert (status, receipt["status"]) == (1, "accepted_unverified"), field
-
-        # Without readback custody from the original key, payload and plan, nothing is sent.
-        other_key_readback = readback_evidence("other-key", "other-readback.json")
-        saved_readback = json.loads(Path(readback_path).read_text(encoding="utf-8"))
-        edited_readbacks = []
-        for section, field, value in (
-            ("result", "custody_sha256", "d" * 64),
-            ("result", "plan_sha256", "e" * 64),
-            ("result", "state_volume", {"plan_id": "a" * 32, "service_plan_sha256": STATE_PLAN_SHA256}),
-            ("request", "payload_digest", "f" * 64),
-        ):
-            edited = copy.deepcopy(saved_readback)
-            edited[section][field] = value
-            edited_readbacks.append(_write_json(directory, f"edited-readback-{field}.json", edited))
-        for changed in (
-            ["d" * 64 if value == STATE_CUSTODY_SHA256 else value for value in argv],
-            [other_key_readback if value == readback_path else value for value in argv],
-            *([edited_path if value == readback_path else value for value in argv] for edited_path in edited_readbacks),
-            [str(Path(directory) / "missing.json") if value == readback_path else value for value in argv],
-            ["other-key" if value == "original-key" else value for value in argv],
-            [value for value in argv if value != "--reviewed-dry-run"],
-        ):
-            status, refused, posts, _reads = _run_main(changed, post=retained)
-            assert (status, posts) == (2, []), refused
-
-        # A service refusal is answered by its code's next step.
-        status, refused, _posts, _reads = _run_main(
-            argv, post=_state_volume_refusal("application_state_volume_custody_changed")
-        )
-        assert status == 1
-        assert refused["summary"]["recommendation"] == write_action.APPLICATION_STATE_VOLUME_NEXT_STEPS[
-            "application_state_volume_custody_changed"
-        ]
+    # A service refusal is answered by its code's next step.
+    status, refused, _posts, _reads = _run_main(
+        argv, post=_state_volume_refusal("application_state_volume_custody_changed")
+    )
+    assert status == 1
+    assert refused["summary"]["recommendation"] == write_action.APPLICATION_STATE_VOLUME_NEXT_STEPS[
+        "application_state_volume_custody_changed"
+    ]
 
 
 def _application_response(mode: str = "dry-run", target_id: str = "app-private-9") -> dict[str, Any]:
@@ -8775,69 +8698,68 @@ def _application_response(mode: str = "dry-run", target_id: str = "app-private-9
     return response
 
 
-def test_application_target_without_storage_binds_plan_actions_and_payload() -> None:
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        inputs = {key: value for key, value in _application_payload().items() if key != "state_volume_path"}
-        payload_path = _write_json(directory, "application.json", inputs)
-        status, evidence, posts, _reads = _run_main(
-            ["dokploy-target-create-application-dry-run", "--payload-file", payload_path],
+def test_application_target_without_storage_binds_plan_actions_and_payload(tmp_path: Path) -> None:
+    inputs = {key: value for key, value in _application_payload().items() if key != "state_volume_path"}
+    payload_path = _write_json(tmp_path, "application.json", inputs)
+    status, evidence, posts, _reads = _run_main(
+        ["dokploy-target-create-application-dry-run", "--payload-file", payload_path],
+        post=_application_response(),
+    )
+    assert status == 0, evidence
+    assert evidence["result"]["plan_actions"] == {"project": "reuse", "environment": "create", "application": "create"}
+    evidence_path = _write_json(tmp_path, "review.json", evidence)
+    argv = [
+        "dokploy-target-create-application-apply", "--payload-file", payload_path,
+        *_reviewed_apply_argv(evidence["result"]["plan_sha256"], evidence_path),
+    ]
+    status, receipt, posts, _reads = _run_main(
+        argv, post=_application_response("apply"), read=_application_inspect_response()
+    )
+    assert status == 0, receipt
+    assert "state_volume_plan_id" not in posts[0]["body"]
+    # Edited evidence keeping the reviewed digest is refused before any POST.
+    edited_actions = copy.deepcopy(evidence)
+    edited_actions["result"]["plan_actions"]["project"] = "create"
+    changed_payload_path = _write_json(tmp_path, "application-changed.json", {**inputs, "description": "other"})
+    edited_payload = copy.deepcopy(evidence)
+    with open(changed_payload_path, encoding="utf-8") as handle:
+        edited_payload["request"]["payload_digest"] = write_action.metadata_review_digest(json.load(handle))
+    for edited, path in ((edited_actions, payload_path), (edited_payload, changed_payload_path)):
+        edited_path = _write_json(tmp_path, "review-edited.json", edited)
+        status, refused, posts, _reads = _run_main(
+            [
+                "dokploy-target-create-application-apply", "--payload-file", path,
+                *_reviewed_apply_argv(evidence["result"]["plan_sha256"], edited_path),
+            ],
+            post=_application_response("apply"),
+        )
+        assert (status, posts) == (2, []), refused
+    changed_plan = _application_response("apply")
+    changed_plan["result"]["setup"]["plan"]["project"]["action"] = "create"
+    status, receipt, _posts, _reads = _run_main(argv, post=changed_plan, read=_application_inspect_response())
+    assert (status, receipt["status"]) == (1, "accepted_unverified")
+    assert "applied_plan_differs_from_review" in [item["code"] for item in receipt["warnings"]]
+
+    for mutate, code in (
+        (lambda data: data.update(instance="prod"), "application_target_requires_testing"),
+        (lambda data: data.update(domains=["testing.example.invalid"]), "unsupported_dokploy_target_field"),
+        (lambda data: data.update(project_id="project-private-1"), "unsupported_dokploy_target_field"),
+        (lambda data: data.update(app_name="chosen"), "unsupported_dokploy_target_field"),
+        (lambda data: data.pop("environment_name"), "environment_name_required"),
+        (lambda data: data.update(healthcheck_path="health"), "invalid_healthcheck_path"),
+        (lambda data: data.update(state_volume_path="srv/state"), "invalid_state_volume_path"),
+        (lambda data: data.update(state_volume_path="/srv/../etc"), "invalid_state_volume_path"),
+        (lambda data: data.update(expected_current_provider_target="app-1"), "invalid_expected_current_provider_target"),
+    ):
+        bad = dict(inputs)
+        mutate(bad)
+        bad_path = _write_json(tmp_path, "application-bad.json", bad)
+        status, payload, posts, _reads = _run_main(
+            ["dokploy-target-create-application-dry-run", "--payload-file", bad_path],
             post=_application_response(),
         )
-        assert status == 0, evidence
-        assert evidence["result"]["plan_actions"] == {"project": "reuse", "environment": "create", "application": "create"}
-        evidence_path = _write_json(directory, "review.json", evidence)
-        argv = [
-            "dokploy-target-create-application-apply", "--payload-file", payload_path,
-            *_reviewed_apply_argv(evidence["result"]["plan_sha256"], evidence_path),
-        ]
-        status, receipt, posts, _reads = _run_main(
-            argv, post=_application_response("apply"), read=_application_inspect_response()
-        )
-        assert status == 0, receipt
-        assert "state_volume_plan_id" not in posts[0]["body"]
-        # Edited evidence keeping the reviewed digest is refused before any POST.
-        edited_actions = copy.deepcopy(evidence)
-        edited_actions["result"]["plan_actions"]["project"] = "create"
-        changed_payload_path = _write_json(directory, "application-changed.json", {**inputs, "description": "other"})
-        edited_payload = copy.deepcopy(evidence)
-        with open(changed_payload_path, encoding="utf-8") as handle:
-            edited_payload["request"]["payload_digest"] = write_action.metadata_review_digest(json.load(handle))
-        for edited, path in ((edited_actions, payload_path), (edited_payload, changed_payload_path)):
-            edited_path = _write_json(directory, "review-edited.json", edited)
-            status, refused, posts, _reads = _run_main(
-                [
-                    "dokploy-target-create-application-apply", "--payload-file", path,
-                    *_reviewed_apply_argv(evidence["result"]["plan_sha256"], edited_path),
-                ],
-                post=_application_response("apply"),
-            )
-            assert (status, posts) == (2, []), refused
-        changed_plan = _application_response("apply")
-        changed_plan["result"]["setup"]["plan"]["project"]["action"] = "create"
-        status, receipt, _posts, _reads = _run_main(argv, post=changed_plan, read=_application_inspect_response())
-        assert (status, receipt["status"]) == (1, "accepted_unverified")
-        assert "applied_plan_differs_from_review" in [item["code"] for item in receipt["warnings"]]
-
-        for mutate, code in (
-            (lambda data: data.update(instance="prod"), "application_target_requires_testing"),
-            (lambda data: data.update(domains=["testing.example.invalid"]), "unsupported_dokploy_target_field"),
-            (lambda data: data.update(project_id="project-private-1"), "unsupported_dokploy_target_field"),
-            (lambda data: data.update(app_name="chosen"), "unsupported_dokploy_target_field"),
-            (lambda data: data.pop("environment_name"), "environment_name_required"),
-            (lambda data: data.update(healthcheck_path="health"), "invalid_healthcheck_path"),
-            (lambda data: data.update(state_volume_path="srv/state"), "invalid_state_volume_path"),
-            (lambda data: data.update(state_volume_path="/srv/../etc"), "invalid_state_volume_path"),
-            (lambda data: data.update(expected_current_provider_target="app-1"), "invalid_expected_current_provider_target"),
-        ):
-            bad = dict(inputs)
-            mutate(bad)
-            bad_path = _write_json(directory, "application-bad.json", bad)
-            status, payload, posts, _reads = _run_main(
-                ["dokploy-target-create-application-dry-run", "--payload-file", bad_path],
-                post=_application_response(),
-            )
-            assert (status, posts) == (2, []), code
-            assert payload["warnings"][0]["code"] == code
+        assert (status, posts) == (2, []), code
+        assert payload["warnings"][0]["code"] == code
 
 
 COMPOSE_SOURCE = {
@@ -8863,100 +8785,98 @@ def _source_inspect_response() -> dict[str, Any]:
     return response
 
 
-def test_compose_source_create_reads_back_repository_branch_and_path() -> None:
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        source_inputs = {key: value for key, value in COMPOSE_SOURCE.items() if key != "custom_git_url"}
-        payload_path = _write_json(directory, "compose.json", {**_compose_payload(), **source_inputs})
-        def response(mode: str) -> dict[str, Any]:
-            value = _compose_response(mode, "compose-private-9")
-            value["result"]["setup"]["plan"]["compose"].update(COMPOSE_SOURCE)
-            return value
-        status, evidence, posts, _ = _run_main(
-            ["dokploy-target-create-compose-dry-run", "--payload-file", payload_path], post=response("dry-run")
-        )
-        assert status == 0, evidence
-        assert posts[0]["body"]["custom_git_branch"] == source_inputs["custom_git_branch"]
-        evidence_path = _write_json(directory, "review.json", evidence)
-        argv = ["dokploy-target-create-compose-apply", "--payload-file", payload_path,
-                *_reviewed_apply_argv(evidence["result"]["plan_sha256"], evidence_path)]
-        status, result, _, _ = _run_main(argv, post=response("apply"), read=_source_inspect_response())
-        assert status == 0 and result["result"]["read_back_matches"] is True, result
+def test_compose_source_create_reads_back_repository_branch_and_path(tmp_path: Path) -> None:
+    source_inputs = {key: value for key, value in COMPOSE_SOURCE.items() if key != "custom_git_url"}
+    payload_path = _write_json(tmp_path, "compose.json", {**_compose_payload(), **source_inputs})
+    def response(mode: str) -> dict[str, Any]:
+        value = _compose_response(mode, "compose-private-9")
+        value["result"]["setup"]["plan"]["compose"].update(COMPOSE_SOURCE)
+        return value
+    status, evidence, posts, _ = _run_main(
+        ["dokploy-target-create-compose-dry-run", "--payload-file", payload_path], post=response("dry-run")
+    )
+    assert status == 0, evidence
+    assert posts[0]["body"]["custom_git_branch"] == source_inputs["custom_git_branch"]
+    evidence_path = _write_json(tmp_path, "review.json", evidence)
+    argv = ["dokploy-target-create-compose-apply", "--payload-file", payload_path,
+            *_reviewed_apply_argv(evidence["result"]["plan_sha256"], evidence_path)]
+    status, result, _, _ = _run_main(argv, post=response("apply"), read=_source_inspect_response())
+    assert status == 0 and result["result"]["read_back_matches"] is True, result
+    changed = _source_inspect_response()
+    changed["inspect"]["provider"]["custom_git_url"] = "https://github.com/other/repo.git"
+    status, result, _, _ = _run_main(argv, post=response("apply"), read=changed)
+    assert status == 1 and result["result"]["read_back_matches"] is False
+    assert COMPOSE_SOURCE["custom_git_url"] not in json.dumps(result)
+
+
+def test_compose_source_completion_binds_source_and_existing_target(tmp_path: Path) -> None:
+    private = {"context": "example", "instance": "testing", "reason": "Complete testing source.",
+               "custom_git_branch": COMPOSE_SOURCE["custom_git_branch"], "compose_path": COMPOSE_SOURCE["compose_path"]}
+    payload_path = _write_json(tmp_path, "source.json", private)
+    dry_argv = ["dokploy-target-complete-compose-source-dry-run", "--payload-file", payload_path]
+    status, evidence, posts, _ = _run_main(dry_argv, post=_source_completion_response())
+    assert status == 0, evidence
+    assert posts[0]["body"] == {**private, "operation": "complete-compose-source", "product": "launchplane", "mode": "dry-run"}
+    assert posts[0]["path"] == contract.helper_command_path(dry_argv[0])
+    printed = json.dumps(evidence)
+    for hidden in ("compose-private-9", COMPOSE_SOURCE["custom_git_url"], "git@", "EXAMPLE_KEY", "testing.example.invalid"):
+        assert hidden not in printed, hidden
+    evidence_path = _write_json(tmp_path, "review.json", evidence)
+    argv = ["dokploy-target-complete-compose-source-apply", "--payload-file", payload_path,
+            *_reviewed_apply_argv(evidence["result"]["plan_sha256"], evidence_path)]
+    readbacks = iter([_inspect_response(), _source_inspect_response()])
+    status, result, posts, _ = _run_main(argv, post=_source_completion_response("apply"), read=lambda _: next(readbacks))
+    assert status == 0 and result["result"]["read_back_matches"] is True, result
+    assert len(posts) == 1 and posts[0]["idempotency_key"] == "apply-1"
+    assert posts[0]["body"]["confirmation"] == write_action.DOKPLOY_TARGET_SETUP_CONFIRMATION
+    # Stale binding is rejected before the write.
+    status, result, posts, _ = _run_main(argv, post=_source_completion_response("apply"), read=_inspect_response("other-compose"))
+    assert status == 1 and result["status"] == "stale" and posts == []
+    # A mismatched tracked or live source is never verified.
+    for location in ("tracked", "live"):
         changed = _source_inspect_response()
-        changed["inspect"]["provider"]["custom_git_url"] = "https://github.com/other/repo.git"
-        status, result, _, _ = _run_main(argv, post=response("apply"), read=changed)
-        assert status == 1 and result["result"]["read_back_matches"] is False
-        assert COMPOSE_SOURCE["custom_git_url"] not in json.dumps(result)
-
-
-def test_compose_source_completion_binds_source_and_existing_target() -> None:
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        private = {"context": "example", "instance": "testing", "reason": "Complete testing source.",
-                   "custom_git_branch": COMPOSE_SOURCE["custom_git_branch"], "compose_path": COMPOSE_SOURCE["compose_path"]}
-        payload_path = _write_json(directory, "source.json", private)
-        dry_argv = ["dokploy-target-complete-compose-source-dry-run", "--payload-file", payload_path]
-        status, evidence, posts, _ = _run_main(dry_argv, post=_source_completion_response())
-        assert status == 0, evidence
-        assert posts[0]["body"] == {**private, "operation": "complete-compose-source", "product": "launchplane", "mode": "dry-run"}
-        assert posts[0]["path"] == contract.helper_command_path(dry_argv[0])
-        printed = json.dumps(evidence)
-        for hidden in ("compose-private-9", COMPOSE_SOURCE["custom_git_url"], "git@", "EXAMPLE_KEY", "testing.example.invalid"):
-            assert hidden not in printed, hidden
-        evidence_path = _write_json(directory, "review.json", evidence)
-        argv = ["dokploy-target-complete-compose-source-apply", "--payload-file", payload_path,
-                *_reviewed_apply_argv(evidence["result"]["plan_sha256"], evidence_path)]
-        reads = iter([_inspect_response(), _source_inspect_response()])
-        status, result, posts, _ = _run_main(argv, post=_source_completion_response("apply"), read=lambda _: next(reads))
-        assert status == 0 and result["result"]["read_back_matches"] is True, result
-        assert len(posts) == 1 and posts[0]["idempotency_key"] == "apply-1"
-        assert posts[0]["body"]["confirmation"] == write_action.DOKPLOY_TARGET_SETUP_CONFIRMATION
-        # Stale binding is rejected before the write.
-        status, result, posts, _ = _run_main(argv, post=_source_completion_response("apply"), read=_inspect_response("other-compose"))
-        assert status == 1 and result["status"] == "stale" and posts == []
-        # A mismatched tracked or live source is never verified.
-        for location in ("tracked", "live"):
-            changed = _source_inspect_response()
-            target = changed["inspect"]["tracked_target"] if location == "tracked" else changed["inspect"]["provider"]
-            target["custom_git_branch"] = "other-branch"
-            reads = iter([_inspect_response(), changed])
-            status, result, posts, _ = _run_main(argv, post=_source_completion_response("apply"), read=lambda _: next(reads))
-            assert status == 1 and result["status"] == "accepted_unverified"
-            assert result["result"]["read_back_matches"] is False and len(posts) == 1
-        # The service applied a different target than it planned.
-        reads = iter([_inspect_response(), _source_inspect_response()])
-        status, result, posts, _ = _run_main(argv, post=_source_completion_response("apply", "other-compose"), read=lambda _: next(reads))
+        target = changed["inspect"]["tracked_target"] if location == "tracked" else changed["inspect"]["provider"]
+        target["custom_git_branch"] = "other-branch"
+        readbacks = iter([_inspect_response(), changed])
+        status, result, posts, _ = _run_main(argv, post=_source_completion_response("apply"), read=lambda _: next(readbacks))
         assert status == 1 and result["status"] == "accepted_unverified"
-        # Exact payload evidence and reviewed acknowledgement are required.
-        for field in ("custom_git_branch", "compose_path", "reason"):
-            _write_json(directory, "source.json", {**private, field: "changed"})
-            status, _, posts, _ = _run_main(argv, post=_source_completion_response("apply"))
-            assert status == 2 and posts == []
-        _write_json(directory, "source.json", private)
-        status, _, posts, _ = _run_main([value for value in argv if value != "--reviewed-dry-run"], post=_source_completion_response("apply"))
+        assert result["result"]["read_back_matches"] is False and len(posts) == 1
+    # The service applied a different target than it planned.
+    readbacks = iter([_inspect_response(), _source_inspect_response()])
+    status, result, posts, _ = _run_main(argv, post=_source_completion_response("apply", "other-compose"), read=lambda _: next(readbacks))
+    assert status == 1 and result["status"] == "accepted_unverified"
+    # Exact payload evidence and reviewed acknowledgement are required.
+    for field in ("custom_git_branch", "compose_path", "reason"):
+        _write_json(tmp_path, "source.json", {**private, field: "changed"})
+        status, _, posts, _ = _run_main(argv, post=_source_completion_response("apply"))
         assert status == 2 and posts == []
-        # Corrupt saved source metadata cannot cause a post-write traceback.
-        corrupted = {**evidence, "result": {**evidence["result"], "source": {}}}
-        _write_json(directory, "review.json", corrupted)
-        reads = iter([_inspect_response(), _source_inspect_response()])
-        status, result, posts, _ = _run_main(argv, post=_source_completion_response("apply"), read=lambda _: next(reads))
-        assert status == 0 and result["result"]["read_back_matches"] is True
-        _write_json(directory, "review.json", evidence)
-        # Partial outcomes retain safe trace/code; no automatic retry or read follows the error.
-        error = urllib.error.HTTPError("https://private.invalid", 502, "private", Message(), io.BytesIO(json.dumps({
-            "trace_id": "launchplane_req_partial", "error": {"code": "dokploy_source_partial_outcome", "message": "private-provider-data"},
-        }).encode()))
-        status, result, posts, reads = _run_main(argv, post=error, read=_inspect_response())
-        assert status == 1 and result["status"] == "outcome_unknown"
-        assert result["summary"]["error_code"] == "dokploy_source_partial_outcome"
-        assert result["summary"]["trace_id"] == "launchplane_req_partial"
-        assert len(posts) == 1 and len(reads) == 1
-        assert "private-provider-data" not in json.dumps(result)
-        for field, value in (("instance", "prod"), ("target_id", "private-id"), ("server_id", "private-id"),
-                             ("custom_git_url", "https://github.com/other/repo.git"), ("domains", []),
-                             ("credential", "secret"), ("custom_git_branch", "main;echo x"),
-                             ("compose_path", "../compose.yml")):
-            path = _write_json(directory, "bad.json", {**private, field: value})
-            status, _, posts, _ = _run_main([dry_argv[0], "--payload-file", path], post=_source_completion_response())
-            assert status == 2 and posts == [], field
+    _write_json(tmp_path, "source.json", private)
+    status, _, posts, _ = _run_main([value for value in argv if value != "--reviewed-dry-run"], post=_source_completion_response("apply"))
+    assert status == 2 and posts == []
+    # Corrupt saved source metadata cannot cause a post-write traceback.
+    corrupted = {**evidence, "result": {**evidence["result"], "source": {}}}
+    _write_json(tmp_path, "review.json", corrupted)
+    readbacks = iter([_inspect_response(), _source_inspect_response()])
+    status, result, posts, _ = _run_main(argv, post=_source_completion_response("apply"), read=lambda _: next(readbacks))
+    assert status == 0 and result["result"]["read_back_matches"] is True
+    _write_json(tmp_path, "review.json", evidence)
+    # Partial outcomes retain safe trace/code; no automatic retry or read follows the error.
+    error = urllib.error.HTTPError("https://private.invalid", 502, "private", Message(), io.BytesIO(json.dumps({
+        "trace_id": "launchplane_req_partial", "error": {"code": "dokploy_source_partial_outcome", "message": "private-provider-data"},
+    }).encode()))
+    status, result, posts, reads = _run_main(argv, post=error, read=_inspect_response())
+    assert status == 1 and result["status"] == "outcome_unknown"
+    assert result["summary"]["error_code"] == "dokploy_source_partial_outcome"
+    assert result["summary"]["trace_id"] == "launchplane_req_partial"
+    assert len(posts) == 1 and len(reads) == 1
+    assert "private-provider-data" not in json.dumps(result)
+    for field, value in (("instance", "prod"), ("target_id", "private-id"), ("server_id", "private-id"),
+                         ("custom_git_url", "https://github.com/other/repo.git"), ("domains", []),
+                         ("credential", "secret"), ("custom_git_branch", "main;echo x"),
+                         ("compose_path", "../compose.yml")):
+        path = _write_json(tmp_path, "bad.json", {**private, field: value})
+        status, _, posts, _ = _run_main([dry_argv[0], "--payload-file", path], post=_source_completion_response())
+        assert status == 2 and posts == [], field
 
 
 PRIVATE_ENDPOINT_URL = "http://10.0.0.106:8001/healthz"
@@ -9006,141 +8926,140 @@ def _private_endpoint_read(**record: object) -> dict[str, object]:
     }
 
 
-def test_private_health_endpoint_hides_the_url_and_binds_apply_to_the_review() -> None:
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        payload_path = _write_json(directory, "endpoint.json", _private_endpoint_payload())
-        dry_run_argv = [
-            "private-health-endpoint-dry-run",
-            "--payload-file",
-            payload_path,
-            "--reason",
-            "Monitor the testing lane privately.",
-        ]
-        status, evidence, posts, _reads = _run_main(dry_run_argv, post=_private_endpoint_response())
-        assert status == 0, evidence
-        assert posts[0]["path"] == "/v1/private-health-endpoints/apply"
-        body = posts[0]["body"]
-        assert body["mode"] == "dry-run"
-        assert body["endpoint"]["url"] == PRIVATE_ENDPOINT_URL
-        assert body["endpoint"]["status"] == "active"
-        assert "confirmation" not in body
-        printed = json.dumps(evidence)
-        for private in ("10.0.0.106", "8001", "healthz", "lxc-106", "Monitor the testing lane"):
-            assert private not in printed, private
-        assert evidence["result"]["record"]["endpoint_key"] == "example-testing-runtime"
-        digest = evidence["result"]["plan_sha256"]
-        reviewed_at = evidence["result"]["record"]["updated_at"]
-        evidence_path = _write_json(directory, "endpoint-dry-run.json", evidence)
-        apply_argv = [
+def test_private_health_endpoint_hides_the_url_and_binds_apply_to_the_review(tmp_path: Path) -> None:
+    payload_path = _write_json(tmp_path, "endpoint.json", _private_endpoint_payload())
+    dry_run_argv = [
+        "private-health-endpoint-dry-run",
+        "--payload-file",
+        payload_path,
+        "--reason",
+        "Monitor the testing lane privately.",
+    ]
+    status, evidence, posts, _reads = _run_main(dry_run_argv, post=_private_endpoint_response())
+    assert status == 0, evidence
+    assert posts[0]["path"] == "/v1/private-health-endpoints/apply"
+    body = posts[0]["body"]
+    assert body["mode"] == "dry-run"
+    assert body["endpoint"]["url"] == PRIVATE_ENDPOINT_URL
+    assert body["endpoint"]["status"] == "active"
+    assert "confirmation" not in body
+    printed = json.dumps(evidence)
+    for private in ("10.0.0.106", "8001", "healthz", "lxc-106", "Monitor the testing lane"):
+        assert private not in printed, private
+    assert evidence["result"]["record"]["endpoint_key"] == "example-testing-runtime"
+    digest = evidence["result"]["plan_sha256"]
+    reviewed_at = evidence["result"]["record"]["updated_at"]
+    evidence_path = _write_json(tmp_path, "endpoint-dry-run.json", evidence)
+    apply_argv = [
+        "private-health-endpoint-apply",
+        "--payload-file",
+        payload_path,
+        "--reason",
+        "Monitor the testing lane privately.",
+        *_reviewed_apply_argv(digest, evidence_path),
+    ]
+    status, payload, posts, reads = _run_main(
+        apply_argv, post=_private_endpoint_response("apply"), read=_private_endpoint_read()
+    )
+    assert status == 0, payload
+    body = posts[0]["body"]
+    assert body["confirmation"] == write_action.PRIVATE_HEALTH_ENDPOINT_CONFIRMATION
+    assert posts[0]["idempotency_key"] == "apply-1"
+    # A retry with the same evidence sends the same body, so Launchplane can replay it.
+    assert body["endpoint"]["updated_at"] == reviewed_at
+    assert reads[0]["path"] == contract.internal_helper_path(
+        "private-health-endpoint-record-read"
+    ).format(endpoint_key="example-testing-runtime")
+    assert reads[0]["query"] == {"product": "example", "context": "example", "instance": "testing"}
+    assert payload["result"]["read_back_matches"] is True
+    assert "10.0.0.106" not in json.dumps(payload)
+
+    # Launchplane recorded a different URL than the reviewed payload.
+    status, payload, _posts, _reads = _run_main(
+        apply_argv,
+        post=_private_endpoint_response("apply", url="http://10.0.0.107:8001/healthz"),
+        read=_private_endpoint_read(),
+    )
+    assert (status, payload["status"]) == (1, "accepted_unverified")
+    assert "applied_plan_differs_from_review" in [item["code"] for item in payload["warnings"]]
+    assert "10.0.0.107" not in json.dumps(payload)
+
+    # The record read back points somewhere else.
+    status, payload, _posts, _reads = _run_main(
+        apply_argv,
+        post=_private_endpoint_response("apply"),
+        read=_private_endpoint_read(url="http://10.0.0.107:8001/healthz"),
+    )
+    assert (status, payload["status"]) == (1, "accepted_unverified")
+    assert payload["result"]["read_back"]["url_matches_review"] is False
+    assert "10.0.0.107" not in json.dumps(payload)
+
+    # The record read back is another lane's, even though the URL agrees.
+    status, payload, _posts, _reads = _run_main(
+        apply_argv,
+        post=_private_endpoint_response("apply"),
+        read=_private_endpoint_read(instance="prod"),
+    )
+    assert (status, payload["status"]) == (1, "accepted_unverified")
+    assert payload["result"]["read_back_matches"] is False
+
+    # Evidence edited to vouch for a different payload still fails the reviewed digest.
+    swapped = {**_private_endpoint_payload(), "url": "http://10.0.0.107:8001/healthz"}
+    swapped_path = _write_json(tmp_path, "endpoint-swapped.json", swapped)
+    forged = copy.deepcopy(evidence)
+    forged["request"]["payload_digest"] = write_action.metadata_review_digest(
+        {**swapped, "status": "active", "reason": "Monitor the testing lane privately."}
+    )
+    forged_path = _write_json(tmp_path, "endpoint-forged.json", forged)
+    status, payload, posts, _reads = _run_main(
+        [
             "private-health-endpoint-apply",
             "--payload-file",
-            payload_path,
+            swapped_path,
             "--reason",
             "Monitor the testing lane privately.",
-            *_reviewed_apply_argv(digest, evidence_path),
-        ]
-        status, payload, posts, reads = _run_main(
-            apply_argv, post=_private_endpoint_response("apply"), read=_private_endpoint_read()
-        )
-        assert status == 0, payload
-        body = posts[0]["body"]
-        assert body["confirmation"] == write_action.PRIVATE_HEALTH_ENDPOINT_CONFIRMATION
-        assert posts[0]["idempotency_key"] == "apply-1"
-        # A retry with the same evidence sends the same body, so Launchplane can replay it.
-        assert body["endpoint"]["updated_at"] == reviewed_at
-        assert reads[0]["path"] == contract.internal_helper_path(
-            "private-health-endpoint-record-read"
-        ).format(endpoint_key="example-testing-runtime")
-        assert reads[0]["query"] == {"product": "example", "context": "example", "instance": "testing"}
-        assert payload["result"]["read_back_matches"] is True
-        assert "10.0.0.106" not in json.dumps(payload)
+            *_reviewed_apply_argv(digest, forged_path),
+        ],
+        post=_private_endpoint_response("apply"),
+        read=_private_endpoint_read(),
+    )
+    assert (status, posts) == (2, [])
+    assert payload["warnings"][0]["code"] == "reviewed_dry_run_not_apply_eligible"
 
-        # Launchplane recorded a different URL than the reviewed payload.
-        status, payload, _posts, _reads = _run_main(
-            apply_argv,
-            post=_private_endpoint_response("apply", url="http://10.0.0.107:8001/healthz"),
-            read=_private_endpoint_read(),
-        )
-        assert (status, payload["status"]) == (1, "accepted_unverified")
-        assert "applied_plan_differs_from_review" in [item["code"] for item in payload["warnings"]]
-        assert "10.0.0.107" not in json.dumps(payload)
+    # A different reason than the reviewed one is a different change.
+    status, payload, posts, _reads = _run_main(
+        [*apply_argv[:4], "Another reason.", *apply_argv[5:]],
+        post=_private_endpoint_response("apply"),
+        read=_private_endpoint_read(),
+    )
+    assert (status, posts) == (2, [])
+    assert payload["warnings"][0]["code"] == "reviewed_dry_run_not_apply_eligible"
 
-        # The record read back points somewhere else.
-        status, payload, _posts, _reads = _run_main(
-            apply_argv,
-            post=_private_endpoint_response("apply"),
-            read=_private_endpoint_read(url="http://10.0.0.107:8001/healthz"),
-        )
-        assert (status, payload["status"]) == (1, "accepted_unverified")
-        assert payload["result"]["read_back"]["url_matches_review"] is False
-        assert "10.0.0.107" not in json.dumps(payload)
+    changed = {**_private_endpoint_payload(), "url": "http://10.0.0.107:8001/healthz"}
+    _write_json(tmp_path, "endpoint.json", changed)
+    status, payload, posts, _reads = _run_main(
+        apply_argv, post=_private_endpoint_response("apply"), read=_private_endpoint_read()
+    )
+    assert (status, posts) == (2, [])
+    assert payload["warnings"][0]["code"] == "reviewed_dry_run_not_apply_eligible"
 
-        # The record read back is another lane's, even though the URL agrees.
-        status, payload, _posts, _reads = _run_main(
-            apply_argv,
-            post=_private_endpoint_response("apply"),
-            read=_private_endpoint_read(instance="prod"),
-        )
-        assert (status, payload["status"]) == (1, "accepted_unverified")
-        assert payload["result"]["read_back_matches"] is False
-
-        # Evidence edited to vouch for a different payload still fails the reviewed digest.
-        swapped = {**_private_endpoint_payload(), "url": "http://10.0.0.107:8001/healthz"}
-        swapped_path = _write_json(directory, "endpoint-swapped.json", swapped)
-        forged = copy.deepcopy(evidence)
-        forged["request"]["payload_digest"] = write_action.metadata_review_digest(
-            {**swapped, "status": "active", "reason": "Monitor the testing lane privately."}
-        )
-        forged_path = _write_json(directory, "endpoint-forged.json", forged)
+    for mutate, code in (
+        (lambda data: data.update(updated_at="2026-10-03T12:00:00Z"), "unsupported_private_health_endpoint_field"),
+        (lambda data: data.update(url="ftp://10.0.0.106/health"), "private_url_required"),
+        (lambda data: data.pop("url"), "private_url_required"),
+        (lambda data: data.update(endpoint_key="../other"), "endpoint_key_required"),
+        (lambda data: data.pop("instance"), "instance_required"),
+        (lambda data: data.update(status="paused"), "invalid_private_health_endpoint_status"),
+    ):
+        bad = _private_endpoint_payload()
+        mutate(bad)
+        bad_path = _write_json(tmp_path, "endpoint-bad.json", bad)
         status, payload, posts, _reads = _run_main(
-            [
-                "private-health-endpoint-apply",
-                "--payload-file",
-                swapped_path,
-                "--reason",
-                "Monitor the testing lane privately.",
-                *_reviewed_apply_argv(digest, forged_path),
-            ],
-            post=_private_endpoint_response("apply"),
-            read=_private_endpoint_read(),
+            ["private-health-endpoint-dry-run", "--payload-file", bad_path, "--reason", "r"],
+            post=_private_endpoint_response(),
         )
-        assert (status, posts) == (2, [])
-        assert payload["warnings"][0]["code"] == "reviewed_dry_run_not_apply_eligible"
-
-        # A different reason than the reviewed one is a different change.
-        status, payload, posts, _reads = _run_main(
-            [*apply_argv[:4], "Another reason.", *apply_argv[5:]],
-            post=_private_endpoint_response("apply"),
-            read=_private_endpoint_read(),
-        )
-        assert (status, posts) == (2, [])
-        assert payload["warnings"][0]["code"] == "reviewed_dry_run_not_apply_eligible"
-
-        changed = {**_private_endpoint_payload(), "url": "http://10.0.0.107:8001/healthz"}
-        _write_json(directory, "endpoint.json", changed)
-        status, payload, posts, _reads = _run_main(
-            apply_argv, post=_private_endpoint_response("apply"), read=_private_endpoint_read()
-        )
-        assert (status, posts) == (2, [])
-        assert payload["warnings"][0]["code"] == "reviewed_dry_run_not_apply_eligible"
-
-        for mutate, code in (
-            (lambda data: data.update(updated_at="2026-10-03T12:00:00Z"), "unsupported_private_health_endpoint_field"),
-            (lambda data: data.update(url="ftp://10.0.0.106/health"), "private_url_required"),
-            (lambda data: data.pop("url"), "private_url_required"),
-            (lambda data: data.update(endpoint_key="../other"), "endpoint_key_required"),
-            (lambda data: data.pop("instance"), "instance_required"),
-            (lambda data: data.update(status="paused"), "invalid_private_health_endpoint_status"),
-        ):
-            bad = _private_endpoint_payload()
-            mutate(bad)
-            bad_path = _write_json(directory, "endpoint-bad.json", bad)
-            status, payload, posts, _reads = _run_main(
-                ["private-health-endpoint-dry-run", "--payload-file", bad_path, "--reason", "r"],
-                post=_private_endpoint_response(),
-            )
-            assert (status, posts) == (2, []), code
-            assert payload["warnings"][0]["code"] == code
+        assert (status, posts) == (2, []), code
+        assert payload["warnings"][0]["code"] == code
 
 
 def test_private_health_endpoint_read_lists_keys_without_urls() -> None:
@@ -10016,88 +9935,83 @@ def test_odoo_addon_settings_projection_redacts_secret_settings() -> None:
         )
 
 
-def test_odoo_addon_settings_body_refuses_plaintext_and_binds_digest() -> None:
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        payload_path = Path(directory) / "addon-settings.json"
-        evidence_path = Path(directory) / "addon-settings-dry-run.json"
-        payload_path.write_text(json.dumps(_odoo_addon_settings_payload()), encoding="utf-8")
-        evidence_path.write_text(json.dumps(_odoo_addon_settings_evidence()), encoding="utf-8")
+def test_odoo_addon_settings_body_refuses_plaintext_and_binds_digest(tmp_path: Path) -> None:
+    payload_path = tmp_path / "addon-settings.json"
+    payload_path.write_text(json.dumps(_odoo_addon_settings_payload()), encoding="utf-8")
+    evidence_path = _write_json(tmp_path, "addon-settings-dry-run.json", _odoo_addon_settings_evidence())
 
-        dry_run_body = write_action.odoo_addon_settings_body(
+    dry_run_body = write_action.odoo_addon_settings_body(
+        argparse.Namespace(payload_file=str(payload_path), idempotency_key=""),
+        mode="dry-run",
+    )
+    assert dry_run_body["mode"] == "dry-run"
+    assert "reviewed_plan_sha256" not in dry_run_body
+
+    apply_args = argparse.Namespace(
+        payload_file=str(payload_path),
+        idempotency_key="example-testing-shopify-1",
+        reviewed_dry_run=True,
+        expected_plan_digest="a" * 64,
+        dry_run_evidence_file=str(evidence_path),
+    )
+    apply_body = write_action.odoo_addon_settings_body(apply_args, mode="apply")
+    assert apply_body["reviewed_plan_sha256"] == "a" * 64
+
+    for overrides, code in (
+        ({"reviewed_dry_run": False}, "reviewed_dry_run_required"),
+        ({"expected_plan_digest": "b" * 64}, "reviewed_dry_run_not_apply_eligible"),
+        ({"expected_plan_digest": "short"}, "invalid_expected_plan_digest"),
+        ({"idempotency_key": ""}, "idempotency_key_required"),
+    ):
+        args = argparse.Namespace(**{**vars(apply_args), **overrides})
+        with pytest.raises(ValueError) as caught:
+            write_action.odoo_addon_settings_body(args, mode="apply")
+        assert str(caught.value) == code
+
+    plaintext = _odoo_addon_settings_payload()
+    cast(dict[str, object], plaintext["shopify"])["api_token"] = "plaintext"
+    payload_path.write_text(json.dumps(plaintext), encoding="utf-8")
+    with pytest.raises(ValueError) as caught:
+        write_action.odoo_addon_settings_body(
             argparse.Namespace(payload_file=str(payload_path), idempotency_key=""),
             mode="dry-run",
         )
-        assert dry_run_body["mode"] == "dry-run"
-        assert "reviewed_plan_sha256" not in dry_run_body
+    assert str(caught.value) == "unsupported_shopify_field"
 
-        apply_args = argparse.Namespace(
-            payload_file=str(payload_path),
-            idempotency_key="example-testing-shopify-1",
-            reviewed_dry_run=True,
-            expected_plan_digest="a" * 64,
-            dry_run_evidence_file=str(evidence_path),
+
+def test_odoo_addon_settings_cli_dispatches_projected_route(tmp_path: Path) -> None:
+    payload_path = _write_json(tmp_path, "addon-settings.json", _odoo_addon_settings_payload())
+    evidence_path = _write_json(tmp_path, "addon-settings-dry-run.json", _odoo_addon_settings_evidence())
+    calls: list[dict[str, Any]] = []
+
+    def fake_execute_post(**kwargs: Any) -> int:
+        calls.append(kwargs)
+        return 0
+
+    with temporary_attribute(write_action, "execute_post", fake_execute_post):
+        assert (
+            write_action.main(
+                ["odoo-addon-settings-dry-run", "--payload-file", str(payload_path)]
+            )
+            == 0
         )
-        apply_body = write_action.odoo_addon_settings_body(apply_args, mode="apply")
-        assert apply_body["reviewed_plan_sha256"] == "a" * 64
-
-        for overrides, code in (
-            ({"reviewed_dry_run": False}, "reviewed_dry_run_required"),
-            ({"expected_plan_digest": "b" * 64}, "reviewed_dry_run_not_apply_eligible"),
-            ({"expected_plan_digest": "short"}, "invalid_expected_plan_digest"),
-            ({"idempotency_key": ""}, "idempotency_key_required"),
-        ):
-            args = argparse.Namespace(**{**vars(apply_args), **overrides})
-            with pytest.raises(ValueError) as caught:
-                write_action.odoo_addon_settings_body(args, mode="apply")
-            assert str(caught.value) == code
-
-        plaintext = _odoo_addon_settings_payload()
-        cast(dict[str, object], plaintext["shopify"])["api_token"] = "plaintext"
-        payload_path.write_text(json.dumps(plaintext), encoding="utf-8")
-        with pytest.raises(ValueError) as caught:
-            write_action.odoo_addon_settings_body(
-                argparse.Namespace(payload_file=str(payload_path), idempotency_key=""),
-                mode="dry-run",
+        assert (
+            write_action.main(
+                [
+                    "odoo-addon-settings-apply",
+                    "--payload-file",
+                    str(payload_path),
+                    "--idempotency-key",
+                    "example-testing-shopify-1",
+                    "--reviewed-dry-run",
+                    "--expected-plan-digest",
+                    "a" * 64,
+                    "--dry-run-evidence-file",
+                    str(evidence_path),
+                ]
             )
-        assert str(caught.value) == "unsupported_shopify_field"
-
-
-def test_odoo_addon_settings_cli_dispatches_projected_route() -> None:
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        payload_path = Path(directory) / "addon-settings.json"
-        evidence_path = Path(directory) / "addon-settings-dry-run.json"
-        payload_path.write_text(json.dumps(_odoo_addon_settings_payload()), encoding="utf-8")
-        evidence_path.write_text(json.dumps(_odoo_addon_settings_evidence()), encoding="utf-8")
-        calls: list[dict[str, Any]] = []
-
-        def fake_execute_post(**kwargs: Any) -> int:
-            calls.append(kwargs)
-            return 0
-
-        with temporary_attribute(write_action, "execute_post", fake_execute_post):
-            assert (
-                write_action.main(
-                    ["odoo-addon-settings-dry-run", "--payload-file", str(payload_path)]
-                )
-                == 0
-            )
-            assert (
-                write_action.main(
-                    [
-                        "odoo-addon-settings-apply",
-                        "--payload-file",
-                        str(payload_path),
-                        "--idempotency-key",
-                        "example-testing-shopify-1",
-                        "--reviewed-dry-run",
-                        "--expected-plan-digest",
-                        "a" * 64,
-                        "--dry-run-evidence-file",
-                        str(evidence_path),
-                    ]
-                )
-                == 0
-            )
+            == 0
+        )
     assert [call["path"] for call in calls] == [
         "/v1/product-config/odoo-addon-settings/apply",
         "/v1/product-config/odoo-addon-settings/apply",
@@ -10191,137 +10105,128 @@ def test_odoo_website_settings_projection_fails_closed_on_unknown_fields() -> No
             )
 
 
-def test_odoo_website_settings_body_validates_payload_and_binds_digest() -> None:
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        payload_path = Path(directory) / "website-settings.json"
-        evidence_path = Path(directory) / "website-settings-dry-run.json"
-        payload_path.write_text(json.dumps(_odoo_website_settings_payload()), encoding="utf-8")
-        evidence_path.write_text(json.dumps(_odoo_website_settings_evidence()), encoding="utf-8")
+def test_odoo_website_settings_body_validates_payload_and_binds_digest(tmp_path: Path) -> None:
+    # noinspection HttpUrlsUsage
+    insecure_origin = "http://www.example.com"
+    payload_path = tmp_path / "website-settings.json"
+    payload_path.write_text(json.dumps(_odoo_website_settings_payload()), encoding="utf-8")
+    evidence_path = _write_json(tmp_path, "website-settings-dry-run.json", _odoo_website_settings_evidence())
 
-        dry_run_body = write_action.odoo_website_settings_body(
-            argparse.Namespace(payload_file=str(payload_path), idempotency_key=""),
-            mode="dry-run",
-        )
-        assert dry_run_body["instance"] == "prod"
-        assert dry_run_body["mode"] == "dry-run"
-        assert "reviewed_plan_sha256" not in dry_run_body
+    dry_run_body = write_action.odoo_website_settings_body(
+        argparse.Namespace(payload_file=str(payload_path), idempotency_key=""),
+        mode="dry-run",
+    )
+    assert dry_run_body["instance"] == "prod"
+    assert dry_run_body["mode"] == "dry-run"
+    assert "reviewed_plan_sha256" not in dry_run_body
 
-        apply_args = argparse.Namespace(
-            payload_file=str(payload_path),
-            idempotency_key="example-prod-website-1",
-            reviewed_dry_run=True,
-            expected_plan_digest="a" * 64,
-            dry_run_evidence_file=str(evidence_path),
-        )
-        apply_body = write_action.odoo_website_settings_body(apply_args, mode="apply")
-        assert apply_body["reviewed_plan_sha256"] == "a" * 64
+    apply_args = argparse.Namespace(
+        payload_file=str(payload_path),
+        idempotency_key="example-prod-website-1",
+        reviewed_dry_run=True,
+        expected_plan_digest="a" * 64,
+        dry_run_evidence_file=str(evidence_path),
+    )
+    apply_body = write_action.odoo_website_settings_body(apply_args, mode="apply")
+    assert apply_body["reviewed_plan_sha256"] == "a" * 64
 
-        for overrides, code in (
-            ({"reviewed_dry_run": False}, "reviewed_dry_run_required"),
-            ({"expected_plan_digest": "b" * 64}, "reviewed_dry_run_not_apply_eligible"),
-            ({"expected_plan_digest": "short"}, "invalid_expected_plan_digest"),
-            ({"idempotency_key": ""}, "idempotency_key_required"),
-        ):
-            args = argparse.Namespace(**{**vars(apply_args), **overrides})
-            with pytest.raises(ValueError, match=f"^{code}$"):
-                write_action.odoo_website_settings_body(args, mode="apply")
-
-        other_context = Path(directory) / "other-context-dry-run.json"
-        other_context.write_text(
-            json.dumps(_odoo_website_settings_evidence(context="other")), encoding="utf-8"
-        )
-        args = argparse.Namespace(**{**vars(apply_args), "dry_run_evidence_file": str(other_context)})
-        with pytest.raises(ValueError, match="^reviewed_dry_run_not_apply_eligible$"):
+    for overrides, code in (
+        ({"reviewed_dry_run": False}, "reviewed_dry_run_required"),
+        ({"expected_plan_digest": "b" * 64}, "reviewed_dry_run_not_apply_eligible"),
+        ({"expected_plan_digest": "short"}, "invalid_expected_plan_digest"),
+        ({"idempotency_key": ""}, "idempotency_key_required"),
+    ):
+        args = argparse.Namespace(**{**vars(apply_args), **overrides})
+        with pytest.raises(ValueError, match=f"^{code}$"):
             write_action.odoo_website_settings_body(args, mode="apply")
 
-        def settings_with(**changes: object) -> dict[str, object]:
-            intent = _odoo_website_settings_intent()
-            return {**intent, "settings": {**cast(dict[str, object], intent["settings"]), **changes}}
+    other_context = _write_json(tmp_path, "other-context-dry-run.json", _odoo_website_settings_evidence(context="other"))
+    args = argparse.Namespace(**{**vars(apply_args), "dry_run_evidence_file": str(other_context)})
+    with pytest.raises(ValueError, match="^reviewed_dry_run_not_apply_eligible$"):
+        write_action.odoo_website_settings_body(args, mode="apply")
 
-        for payload, code in (
-            (_odoo_website_settings_payload(instance="testing"), "unsupported_instance"),
-            (_odoo_website_settings_payload(schema_version=1), "unsupported_payload_field"),
-            (
-                _odoo_website_settings_payload(
-                    website_settings=settings_with(public_origin="http://www.example.com")
-                ),
-                "https_public_origin_required",
-            ),
-            (
-                _odoo_website_settings_payload(website_settings=settings_with(ga_secret="x")),
-                "unsupported_website_settings_field",
-            ),
-            (
-                _odoo_website_settings_payload(
-                    website_settings=settings_with(operation="disable_collection")
-                ),
-                "unsupported_website_settings_operation",
-            ),
-            (
-                _odoo_website_settings_payload(website_settings=settings_with(website_id=True)),
-                "website_id_required",
-            ),
-        ):
-            payload_path.write_text(json.dumps(payload), encoding="utf-8")
-            with pytest.raises(ValueError, match=f"^{code}$"):
-                write_action.odoo_website_settings_body(
-                    argparse.Namespace(payload_file=str(payload_path), idempotency_key=""),
-                    mode="dry-run",
-                )
+    def settings_with(**changes: object) -> dict[str, object]:
+        intent = _odoo_website_settings_intent()
+        return {**intent, "settings": {**cast(dict[str, object], intent["settings"]), **changes}}
 
-        missing = _odoo_website_settings_payload()
-        del missing["website_settings"]
-        payload_path.write_text(json.dumps(missing), encoding="utf-8")
-        with pytest.raises(ValueError, match="^website_settings_required$"):
+    for payload, code in (
+        (_odoo_website_settings_payload(instance="testing"), "unsupported_instance"),
+        (_odoo_website_settings_payload(schema_version=1), "unsupported_payload_field"),
+        (
+            _odoo_website_settings_payload(
+                website_settings=settings_with(public_origin=insecure_origin)
+            ),
+            "https_public_origin_required",
+        ),
+        (
+            _odoo_website_settings_payload(website_settings=settings_with(ga_secret="x")),
+            "unsupported_website_settings_field",
+        ),
+        (
+            _odoo_website_settings_payload(
+                website_settings=settings_with(operation="disable_collection")
+            ),
+            "unsupported_website_settings_operation",
+        ),
+        (
+            _odoo_website_settings_payload(website_settings=settings_with(website_id=True)),
+            "website_id_required",
+        ),
+    ):
+        payload_path.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(ValueError, match=f"^{code}$"):
             write_action.odoo_website_settings_body(
                 argparse.Namespace(payload_file=str(payload_path), idempotency_key=""),
                 mode="dry-run",
             )
 
-
-def test_odoo_website_settings_cli_withdraws_pending_intent_with_null() -> None:
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        payload_path = Path(directory) / "website-settings.json"
-        evidence_path = Path(directory) / "website-settings-dry-run.json"
-        payload_path.write_text(
-            json.dumps(_odoo_website_settings_payload(website_settings=None)), encoding="utf-8"
+    missing = _odoo_website_settings_payload()
+    del missing["website_settings"]
+    payload_path.write_text(json.dumps(missing), encoding="utf-8")
+    with pytest.raises(ValueError, match="^website_settings_required$"):
+        write_action.odoo_website_settings_body(
+            argparse.Namespace(payload_file=str(payload_path), idempotency_key=""),
+            mode="dry-run",
         )
-        evidence_path.write_text(
-            json.dumps(
-                _odoo_website_settings_evidence(before=_odoo_website_settings_intent(), after=None)
-            ),
-            encoding="utf-8",
+
+
+def test_odoo_website_settings_cli_withdraws_pending_intent_with_null(tmp_path: Path) -> None:
+    payload_path = _write_json(tmp_path, "website-settings.json", _odoo_website_settings_payload(website_settings=None))
+    evidence_path = _write_json(
+        tmp_path,
+        "website-settings-dry-run.json",
+        _odoo_website_settings_evidence(before=_odoo_website_settings_intent(), after=None),
+    )
+    calls: list[dict[str, Any]] = []
+
+    def fake_execute_post(**kwargs: Any) -> int:
+        calls.append(kwargs)
+        return 0
+
+    with temporary_attribute(write_action, "execute_post", fake_execute_post):
+        assert (
+            write_action.main(
+                ["odoo-website-settings-dry-run", "--payload-file", str(payload_path)]
+            )
+            == 0
         )
-        calls: list[dict[str, Any]] = []
-
-        def fake_execute_post(**kwargs: Any) -> int:
-            calls.append(kwargs)
-            return 0
-
-        with temporary_attribute(write_action, "execute_post", fake_execute_post):
-            assert (
-                write_action.main(
-                    ["odoo-website-settings-dry-run", "--payload-file", str(payload_path)]
-                )
-                == 0
+        assert (
+            write_action.main(
+                [
+                    "odoo-website-settings-apply",
+                    "--payload-file",
+                    str(payload_path),
+                    "--idempotency-key",
+                    "example-prod-website-1",
+                    "--reviewed-dry-run",
+                    "--expected-plan-digest",
+                    "a" * 64,
+                    "--dry-run-evidence-file",
+                    str(evidence_path),
+                ]
             )
-            assert (
-                write_action.main(
-                    [
-                        "odoo-website-settings-apply",
-                        "--payload-file",
-                        str(payload_path),
-                        "--idempotency-key",
-                        "example-prod-website-1",
-                        "--reviewed-dry-run",
-                        "--expected-plan-digest",
-                        "a" * 64,
-                        "--dry-run-evidence-file",
-                        str(evidence_path),
-                    ]
-                )
-                == 0
-            )
+            == 0
+        )
     expected_path = contract.operation_path("apply_odoo_website_settings")
     assert [call["path"] for call in calls] == [expected_path, expected_path]
     assert [call["body"]["mode"] for call in calls] == ["dry-run", "apply"]
@@ -11378,7 +11283,7 @@ def _event_recovery_response(**changes: object) -> dict[str, object]:
             "recovery_digest": "d" * 64, **changes}
 
 
-def _event_recovery_review(directory: str, **changes: object) -> tuple[str, str, dict[str, Any]]:
+def _event_recovery_review(directory: str | Path, **changes: object) -> tuple[str, str, dict[str, Any]]:
     payload = _write_json(directory, "reference.json", _event_recovery_payload())
     status, receipt, posts, _ = _run_main(
         ["generic-web-deploy-recovery-dry-run", "--payload-file", payload],
@@ -11433,17 +11338,16 @@ def test_event_recovery_reference_read_refuses_unsafe_or_wrong_lane(changes: dic
     ("settle_testing_failure", "present", False),
     ("abandon_testing_original", "unknown", False),
 ])
-def test_event_recovery_apply_binds_review_without_caller_key(action: str, outcome: str, retry: bool) -> None:
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        payload, evidence, receipt = _event_recovery_review(
-            directory, proposed_action=action, provider_outcome=outcome, retry_safe=retry)
-        result = {"schema_version": 1, "status": "accepted", "mode": "apply",
-                  "trace_id": "launchplane_req_event_apply", "product": "example-product",
-                  "context": "example", "instance": "testing", "reservation_state": "completed",
-                  "reservation_attempt": 2, "recovery_action": action, "provider_outcome": outcome,
-                  "retry_safe": retry, "recovery_digest": receipt["result"]["recovery_digest"]}
-        status, applied, posts, _ = _run_main(
-            _event_recovery_apply_argv(payload, evidence, result["recovery_digest"]), post=result)
+def test_event_recovery_apply_binds_review_without_caller_key(action: str, outcome: str, retry: bool, tmp_path: Path) -> None:
+    payload, evidence, receipt = _event_recovery_review(
+        tmp_path, proposed_action=action, provider_outcome=outcome, retry_safe=retry)
+    result: dict[str, Any] = {"schema_version": 1, "status": "accepted", "mode": "apply",
+              "trace_id": "launchplane_req_event_apply", "product": "example-product",
+              "context": "example", "instance": "testing", "reservation_state": "completed",
+              "reservation_attempt": 2, "recovery_action": action, "provider_outcome": outcome,
+              "retry_safe": retry, "recovery_digest": receipt["result"]["recovery_digest"]}
+    status, applied, posts, _ = _run_main(
+        _event_recovery_apply_argv(payload, evidence, result["recovery_digest"]), post=result)
     assert status == 0, applied
     assert len(posts) == 1 and posts[0]["idempotency_key"] == ""
     assert posts[0]["body"]["recovery_reference"] == EVENT_REFERENCE
@@ -11467,23 +11371,25 @@ def test_event_recovery_apply_binds_review_without_caller_key(action: str, outco
     ("prod", "abandon_testing_original", "unknown", False, False),
 ])
 def test_explicit_recovery_settlement_preserves_testing_and_evidence_fences(
-    instance: str, action: str, outcome: str, retry: bool, allowed: bool,
+    instance: str, action: str, outcome: str, retry: bool, allowed: bool, tmp_path: Path
 ) -> None:
     private = _generic_web_deploy_recovery_payload()
     private["instance"] = instance
     private["original_deploy"]["deploy"]["instance"] = instance
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        payload = _write_json(directory, "original.json", private)
-        evidence = _write_json(directory, "review.json", _generic_web_deploy_recovery_evidence(
-            instance=instance, proposed_action=action, provider_outcome=outcome, retry_safe=retry))
-        result = {"schema_version": 1, "status": "accepted", "mode": "apply",
-                  "trace_id": "launchplane_req_explicit_apply", "product": "example-product",
-                  "context": "example", "instance": instance, "reservation_state": "completed",
-                  "reservation_attempt": 2, "recovery_action": action, "provider_outcome": outcome,
-                  "retry_safe": retry, "recovery_digest": "a" * 64}
-        status, receipt, posts, reads = _run_main(
-            _event_recovery_apply_argv(payload, evidence, "a" * 64)
-            + ["--idempotency-key", "original-deploy-key-1"], post=result)
+    payload = _write_json(tmp_path, "original.json", private)
+    evidence = _write_json(
+        tmp_path,
+        "review.json",
+        _generic_web_deploy_recovery_evidence(instance=instance, proposed_action=action, provider_outcome=outcome, retry_safe=retry),
+    )
+    result = {"schema_version": 1, "status": "accepted", "mode": "apply",
+              "trace_id": "launchplane_req_explicit_apply", "product": "example-product",
+              "context": "example", "instance": instance, "reservation_state": "completed",
+              "reservation_attempt": 2, "recovery_action": action, "provider_outcome": outcome,
+              "retry_safe": retry, "recovery_digest": "a" * 64}
+    status, receipt, posts, reads = _run_main(
+        _event_recovery_apply_argv(payload, evidence, "a" * 64)
+        + ["--idempotency-key", "original-deploy-key-1"], post=result)
     if allowed:
         assert status == 0, receipt
         assert receipt["status"] == "accepted"
@@ -11500,45 +11406,44 @@ def test_explicit_recovery_settlement_preserves_testing_and_evidence_fences(
 @pytest.mark.parametrize("changes", [
     {"recovery_action": "settle_testing_failure"}, {"recovery_digest": "f" * 64},
 ])
-def test_recovery_apply_reply_must_match_review(reference: bool, changes: dict[str, object]) -> None:
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        if reference:
-            payload, evidence, receipt = _event_recovery_review(
-                directory, proposed_action="abandon_testing_original", provider_outcome="unknown", retry_safe=False)
-        else:
-            private = _generic_web_deploy_recovery_payload()
-            private["instance"] = "testing"
-            private["original_deploy"]["deploy"]["instance"] = private["instance"]
-            payload = _write_json(directory, "original.json", private)
-            receipt = _generic_web_deploy_recovery_evidence(instance=private["instance"])
-            evidence = _write_json(directory, "review.json", receipt)
-        result = {"schema_version": 1, "status": "accepted", "mode": "apply",
-                  "trace_id": "launchplane_req_abandonment_apply", "product": "example-product",
-                  "context": "example", "instance": "testing", "reservation_state": "completed",
-                  "reservation_attempt": 2, "recovery_action": "abandon_testing_original",
-                  "provider_outcome": "unknown", "retry_safe": False,
-                  "recovery_digest": receipt["result"]["recovery_digest"], **changes}
-        if not reference:
-            result.update({"recovery_action": "retry_original_operation", "provider_outcome": "absent",
-                           "retry_safe": True, **changes})
-        argv = _event_recovery_apply_argv(payload, evidence, receipt["result"]["recovery_digest"])
-        if not reference:
-            argv += ["--idempotency-key", "original-deploy-key-1"]
-        status, applied, posts, reads = _run_main(argv, post=result)
+def test_recovery_apply_reply_must_match_review(reference: bool, changes: dict[str, object], tmp_path: Path) -> None:
+    receipt: dict[str, Any]
+    if reference:
+        payload, evidence, receipt = _event_recovery_review(
+            tmp_path, proposed_action="abandon_testing_original", provider_outcome="unknown", retry_safe=False)
+    else:
+        private = _generic_web_deploy_recovery_payload()
+        private["instance"] = "testing"
+        cast(dict[str, Any], private["original_deploy"])["deploy"]["instance"] = private["instance"]
+        payload = _write_json(tmp_path, "original.json", private)
+        receipt = _generic_web_deploy_recovery_evidence(instance=cast(str, private["instance"]))
+        evidence = _write_json(tmp_path, "review.json", receipt)
+    result = {"schema_version": 1, "status": "accepted", "mode": "apply",
+              "trace_id": "launchplane_req_abandonment_apply", "product": "example-product",
+              "context": "example", "instance": "testing", "reservation_state": "completed",
+              "reservation_attempt": 2, "recovery_action": "abandon_testing_original",
+              "provider_outcome": "unknown", "retry_safe": False,
+              "recovery_digest": receipt["result"]["recovery_digest"], **changes}
+    if not reference:
+        result.update({"recovery_action": "retry_original_operation", "provider_outcome": "absent",
+                       "retry_safe": True, **changes})
+    argv = _event_recovery_apply_argv(payload, evidence, receipt["result"]["recovery_digest"])
+    if not reference:
+        argv += ["--idempotency-key", "original-deploy-key-1"]
+    status, applied, posts, reads = _run_main(argv, post=result)
     assert status == 0 and len(posts) == 1 and not reads
     assert applied["status"] == "accepted_unverified"
     assert applied["warnings"][0]["code"] == "apply_response_unverified"
 
 
 @pytest.mark.parametrize("http_status", [408, 502, 504])
-def test_event_abandonment_lost_http_reply_remains_unknown(http_status: int) -> None:
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        payload, evidence, receipt = _event_recovery_review(
-            directory, proposed_action="abandon_testing_original", provider_outcome="unknown", retry_safe=False)
-        failure = urllib.error.HTTPError("https://example.invalid", http_status, "Lost reply",
-                                        hdrs=Message(), fp=io.BytesIO(b"{}"))
-        status, applied, posts, reads = _run_main(
-            _event_recovery_apply_argv(payload, evidence, receipt["result"]["recovery_digest"]), post=failure)
+def test_event_abandonment_lost_http_reply_remains_unknown(http_status: int, tmp_path: Path) -> None:
+    payload, evidence, receipt = _event_recovery_review(
+        tmp_path, proposed_action="abandon_testing_original", provider_outcome="unknown", retry_safe=False)
+    failure = urllib.error.HTTPError("https://example.invalid", http_status, "Lost reply",
+                                    hdrs=Message(), fp=io.BytesIO(b"{}"))
+    status, applied, posts, reads = _run_main(
+        _event_recovery_apply_argv(payload, evidence, receipt["result"]["recovery_digest"]), post=failure)
     assert status == 1 and len(posts) == 1 and not reads
     assert applied["status"] == "outcome_unknown"
 
@@ -11547,12 +11452,11 @@ def test_event_abandonment_lost_http_reply_remains_unknown(http_status: int) -> 
     {"recovery_reference": "event-deploy-" + "f" * 64}, {"reason": "Changed review reason."},
     {"product": "other"}, {"instance": "prod"}, {"original_deploy": {}},
 ])
-def test_event_recovery_changed_review_sends_no_request(changes: dict[str, object]) -> None:
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        payload, evidence, receipt = _event_recovery_review(directory)
-        Path(payload).write_text(json.dumps(_event_recovery_payload(**changes)))
-        status, _, posts, reads = _run_main(
-            _event_recovery_apply_argv(payload, evidence, receipt["result"]["recovery_digest"]))
+def test_event_recovery_changed_review_sends_no_request(changes: dict[str, object], tmp_path: Path) -> None:
+    payload, evidence, receipt = _event_recovery_review(tmp_path)
+    Path(payload).write_text(json.dumps(_event_recovery_payload(**changes)))
+    status, _, posts, reads = _run_main(
+        _event_recovery_apply_argv(payload, evidence, receipt["result"]["recovery_digest"]))
     assert status == 2 and not posts and not reads
 
 
@@ -11568,25 +11472,23 @@ def test_event_recovery_changed_review_sends_no_request(changes: dict[str, objec
     {"proposed_action": "abandon_testing_original", "provider_outcome": "present", "retry_safe": False},
     {"proposed_action": "abandon_testing_original", "provider_outcome": "unknown", "retry_safe": True},
 ])
-def test_event_recovery_held_or_uninspected_review_sends_no_apply(changes: dict[str, object]) -> None:
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        payload, evidence, receipt = _event_recovery_review(directory, **changes)
-        status, failed, posts, reads = _run_main(
-            _event_recovery_apply_argv(payload, evidence, receipt["result"]["recovery_digest"]))
+def test_event_recovery_held_or_uninspected_review_sends_no_apply(changes: dict[str, object], tmp_path: Path) -> None:
+    payload, evidence, receipt = _event_recovery_review(tmp_path, **changes)
+    status, failed, posts, reads = _run_main(
+        _event_recovery_apply_argv(payload, evidence, receipt["result"]["recovery_digest"]))
     assert status == 2 and not posts and not reads
     assert failed["warnings"][0]["code"] == "reviewed_dry_run_not_apply_eligible"
 
 
-def test_event_recovery_rejects_guessed_key_and_unbound_review() -> None:
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        payload, evidence, receipt = _event_recovery_review(directory)
-        argv = _event_recovery_apply_argv(payload, evidence, receipt["result"]["recovery_digest"])
-        status, _, posts, reads = _run_main(argv + ["--idempotency-key", "guessed-key"])
-        assert status == 2 and not posts and not reads
-        receipt["request"].pop("recovery_request_sha256")
-        Path(evidence).write_text(json.dumps(receipt))
-        status, _, posts, reads = _run_main(argv)
-        assert status == 2 and not posts and not reads
+def test_event_recovery_rejects_guessed_key_and_unbound_review(tmp_path: Path) -> None:
+    payload, evidence, receipt = _event_recovery_review(tmp_path)
+    argv = _event_recovery_apply_argv(payload, evidence, receipt["result"]["recovery_digest"])
+    status, _, posts, reads = _run_main(argv + ["--idempotency-key", "guessed-key"])
+    assert status == 2 and not posts and not reads
+    receipt["request"].pop("recovery_request_sha256")
+    Path(evidence).write_text(json.dumps(receipt))
+    status, _, posts, reads = _run_main(argv)
+    assert status == 2 and not posts and not reads
 
 
 def test_reconcile_target_selection_reaches_testing_after_output_bound() -> None:
@@ -11616,24 +11518,22 @@ def test_event_recovery_authorization_denial_never_falls_back() -> None:
 
 
 @pytest.mark.parametrize("changes", [{"product": "other"}, {"instance": "prod"}])
-def test_event_recovery_wrong_response_lane_cannot_supply_review(changes: dict[str, object]) -> None:
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        payload = _write_json(directory, "reference.json", _event_recovery_payload())
-        status, receipt, posts, _ = _run_main(
-            ["generic-web-deploy-recovery-dry-run", "--payload-file", payload],
-            post=_event_recovery_response(**changes),
-        )
+def test_event_recovery_wrong_response_lane_cannot_supply_review(changes: dict[str, object], tmp_path: Path) -> None:
+    payload = _write_json(tmp_path, "reference.json", _event_recovery_payload())
+    status, receipt, posts, _ = _run_main(
+        ["generic-web-deploy-recovery-dry-run", "--payload-file", payload],
+        post=_event_recovery_response(**changes),
+    )
     assert status == 1 and len(posts) == 1
     assert receipt["status"] != "ok" and receipt["result"] == {}
 
 
-def test_event_recovery_product_whitespace_is_normalized_before_review() -> None:
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        payload = _write_json(directory, "reference.json", _event_recovery_payload(product=" example-product "))
-        status, receipt, posts, _ = _run_main(
-            ["generic-web-deploy-recovery-dry-run", "--payload-file", payload],
-            post=_event_recovery_response(),
-        )
+def test_event_recovery_product_whitespace_is_normalized_before_review(tmp_path: Path) -> None:
+    payload = _write_json(tmp_path, "reference.json", _event_recovery_payload(product=" example-product "))
+    status, receipt, posts, _ = _run_main(
+        ["generic-web-deploy-recovery-dry-run", "--payload-file", payload],
+        post=_event_recovery_response(),
+    )
     assert status == 0
     assert posts[0]["body"]["product"] == receipt["request"]["product"] == "example-product"
 
@@ -11663,26 +11563,25 @@ def test_interrupted_http_admin_reads_emit_bounded_json(argv: list[str], kind: s
 
 
 @pytest.mark.parametrize("kind,phase", [('incomplete', 'preflight'), ('incomplete', 'post'), ('incomplete', 'readback'), ('disconnected', 'preflight'), ('disconnected', 'post'), ('disconnected', 'readback'), ('decoding', 'preflight'), ('gateway', 'preflight'), ('gateway', 'post'), ('gateway', 'readback'), ('http_timeout', 'preflight'), ('http_timeout', 'post'), ('http_timeout', 'readback')])
-def test_interrupted_http_verified_apply_preserves_failure_phase(kind: str, phase: str) -> None:
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        evidence = _saved_dry_run_output("product-owner-dry-run", _owner_response(_owner_plan()))
-        path = _write_json(directory, "owner-review.json", evidence)
-        argv = ["product-owner-apply", *OWNER_DRY_RUN_ARGV[1:],
-                *_reviewed_apply_argv(evidence["result"]["plan_sha256"], path)]
-        fault = (write_action.ServiceResponseError({"http_status": 202})
-             if kind == "decoding" else _interrupted_http(kind))
-        if kind in {"gateway", "http_timeout"}:
-            fault = urllib.error.HTTPError("https://private.invalid", 502 if kind == "gateway" else 408,
-                "PRIVATE_SENTINEL", Message(), io.BytesIO(json.dumps({
-                    "trace_id": "launchplane_req_failed_exchange", "error": {
-                        "code": "service_timeout", "message": "PRIVATE_SENTINEL",
-                    },
-                }).encode()))
-        reads = iter([fault] if phase == "preflight" else [_profile_response(), fault])
-        applied = _owner_response(_owner_plan(mode="apply", applied=True))
-        code, payload, posts, gets = _run_main(
-            argv, post=fault if phase == "post" else applied, read=lambda _kwargs: next(reads),
-        )
+def test_interrupted_http_verified_apply_preserves_failure_phase(kind: str, phase: str, tmp_path: Path) -> None:
+    evidence = _saved_dry_run_output("product-owner-dry-run", _owner_response(_owner_plan()))
+    path = _write_json(tmp_path, "owner-review.json", evidence)
+    argv = ["product-owner-apply", *OWNER_DRY_RUN_ARGV[1:],
+            *_reviewed_apply_argv(evidence["result"]["plan_sha256"], path)]
+    fault = (write_action.ServiceResponseError({"http_status": 202})
+         if kind == "decoding" else _interrupted_http(kind))
+    if kind in {"gateway", "http_timeout"}:
+        fault = urllib.error.HTTPError("https://private.invalid", 502 if kind == "gateway" else 408,
+            "PRIVATE_SENTINEL", Message(), io.BytesIO(json.dumps({
+                "trace_id": "launchplane_req_failed_exchange", "error": {
+                    "code": "service_timeout", "message": "PRIVATE_SENTINEL",
+                },
+            }).encode()))
+    reads = iter([fault] if phase == "preflight" else [_profile_response(), fault])
+    applied = _owner_response(_owner_plan(mode="apply", applied=True))
+    code, payload, posts, gets = _run_main(
+        argv, post=fault if phase == "post" else applied, read=lambda _kwargs: next(reads),
+    )
     assert code == 1
     assert payload["status"] == {
         "preflight": "invalid" if kind == "decoding" else "unavailable", "post": "outcome_unknown", "readback": "accepted_unverified",
@@ -11707,37 +11606,36 @@ def test_interrupted_http_verified_apply_preserves_failure_phase(kind: str, phas
 @pytest.mark.parametrize("kind", ["incomplete", "disconnected", "gateway", "denial", "projection", "decoding", "non_object"])
 @pytest.mark.parametrize("mode", ["dry-run", "apply"])
 @pytest.mark.parametrize("purpose", ["staff_testing", "isolation_staging"])
-def test_interrupted_http_simple_post_preserves_write_uncertainty(kind: str, mode: str, purpose: str) -> None:
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        hold = {**cast(dict[str, object], _testing_hold_plan()["after"]), "purpose": purpose}
-        evidence = write_action.summarize_success(
-            operation="testing-hold-dry-run", request={"mode": "dry-run", "purpose": purpose},
-            provider_payload=_testing_hold_response(_testing_hold_plan(after=hold)),
-        )
-        path = _write_json(directory, "hold-review.json", evidence)
-        argv = [f"testing-hold-{mode}", "--product", "example-product", "--context", "example",
-                "--instance", "testing", "--hold", "--purpose", purpose,
-                "--reason", str(_testing_hold_plan()["reason"])]
-        if mode == "apply":
-            argv += _reviewed_apply_argv(evidence["result"]["plan_sha256"], path)
-        fault = _interrupted_http(kind)
-        if kind in {"gateway", "denial"}:
-            error_body = Mock()
-            error_body.read.side_effect = _interrupted_http("incomplete")
-            fault = urllib.error.HTTPError("https://example.invalid", 502 if kind == "gateway" else 403,
-                                           "private-message", Message(), error_body)
-        if kind == "projection":
-            fault = write_action._ServiceResponse({
-                **_testing_hold_response(_testing_hold_plan(after=hold)),
-                "unexpected": "private-provider",
-            }, 202)
-        if kind in {"decoding", "non_object"}:
-            response = Mock(status=202)
-            response.read.return_value = b"PRIVATE_SENTINEL" if kind == "decoding" else b"null"
-            with pytest.raises(write_action.ServiceResponseError) as unreadable:
-                write_action._read_service_response(response)
-            fault = unreadable.value
-        code, payload, posts, _ = _run_main(argv, post=fault)
+def test_interrupted_http_simple_post_preserves_write_uncertainty(kind: str, mode: str, purpose: str, tmp_path: Path) -> None:
+    hold = {**cast(dict[str, object], _testing_hold_plan()["after"]), "purpose": purpose}
+    evidence = write_action.summarize_success(
+        operation="testing-hold-dry-run", request={"mode": "dry-run", "purpose": purpose},
+        provider_payload=_testing_hold_response(_testing_hold_plan(after=hold)),
+    )
+    path = _write_json(tmp_path, "hold-review.json", evidence)
+    argv = [f"testing-hold-{mode}", "--product", "example-product", "--context", "example",
+            "--instance", "testing", "--hold", "--purpose", purpose,
+            "--reason", cast(str, _testing_hold_plan()["reason"])]
+    if mode == "apply":
+        argv += _reviewed_apply_argv(evidence["result"]["plan_sha256"], path)
+    fault = _interrupted_http(kind)
+    if kind in {"gateway", "denial"}:
+        error_body = Mock()
+        error_body.read.side_effect = _interrupted_http("incomplete")
+        fault = urllib.error.HTTPError("https://example.invalid", 502 if kind == "gateway" else 403,
+                                       "private-message", Message(), error_body)
+    if kind == "projection":
+        fault = write_action._ServiceResponse({
+            **_testing_hold_response(_testing_hold_plan(after=hold)),
+            "unexpected": "private-provider",
+        }, 202)
+    if kind in {"decoding", "non_object"}:
+        response = Mock(status=202)
+        response.read.return_value = b"PRIVATE_SENTINEL" if kind == "decoding" else b"null"
+        with pytest.raises(write_action.ServiceResponseError) as unreadable:
+            write_action._read_service_response(response)
+        fault = unreadable.value
+    code, payload, posts, _ = _run_main(argv, post=fault)
     assert code == (0 if kind == "projection" and mode == "apply" else 1)
     assert len(posts) == 1
     assert posts[0]["body"].get("purpose", "staff_testing") == purpose
@@ -11991,15 +11889,14 @@ def test_policy_import_failure_diagnostics_belong_to_the_failing_exchange(mode, 
 
 
 @pytest.mark.parametrize("decoding", [False, True])
-def test_verified_apply_malformed_receipt_keeps_the_apply_diagnostics(decoding):
+def test_verified_apply_malformed_receipt_keeps_the_apply_diagnostics(decoding: bool, tmp_path: Path) -> None:
     response = write_action._ServiceResponse(_owner_response(_owner_plan(mode="apply", applied=True)), 202)
     response["unexpected"] = "PRIVATE_SENTINEL"
     fault = write_action.ServiceResponseError({"http_status": response.http_status}) if decoding else response
-    with TemporaryDirectory(dir=Path.home()) as directory:
-        evidence = _saved_dry_run_output("product-owner-dry-run", _owner_response(_owner_plan()))
-        path = _write_json(directory, "owner-review.json", evidence)
-        argv = ["product-owner-apply", *OWNER_DRY_RUN_ARGV[1:], *_reviewed_apply_argv(evidence["result"]["plan_sha256"], path)]
-        code, payload, posts, reads = _run_main(argv, post=fault, read=_profile_response())
+    evidence = _saved_dry_run_output("product-owner-dry-run", _owner_response(_owner_plan()))
+    path = _write_json(tmp_path, "owner-review.json", evidence)
+    argv = ["product-owner-apply", *OWNER_DRY_RUN_ARGV[1:], *_reviewed_apply_argv(evidence["result"]["plan_sha256"], path)]
+    code, payload, posts, reads = _run_main(argv, post=fault, read=_profile_response())
     assert code == 1 and payload["status"] == "accepted_unverified"
     assert len(posts) == 1 and len(reads) == 1
     assert payload["summary"]["http_status"] == response.http_status
