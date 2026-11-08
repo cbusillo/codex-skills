@@ -26,6 +26,7 @@ SESSION = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(SESSION)
 import github_plan_sessions
 import github_plan_native
+github_agent = importlib.import_module("github_agent")
 
 
 class ResumeTests(unittest.TestCase):
@@ -52,7 +53,8 @@ class ResumeTests(unittest.TestCase):
 
         source_var = {"claude": "CLAUDE_CODE_SESSION_ID", "codex": "CODEX_SESSION_ID", "agy": "ANTIGRAVITY_SOURCE_METADATA"}[harness]
         source = json.dumps({"tool": {"conversationId": worker}}) if harness == "agy" else worker
-        with patch.dict(os.environ, {LAUNCH_LEDGER_ENV: str(ledger)}):
+        with patch.dict(os.environ, {LAUNCH_LEDGER_ENV: str(ledger)}), \
+                patch.dict(github_agent.__dict__, {"ancestor_agent": MagicMock(return_value=None)}):
             for name in ("CLAUDE_CODE_SESSION_ID", "CLAUDECODE", "CODEX_SESSION_ID", "CODEX_THREAD_ID", "ANTIGRAVITY_SOURCE_METADATA"):
                 os.environ.pop(name, None)
             os.environ[source_var] = source
@@ -71,6 +73,11 @@ class ResumeTests(unittest.TestCase):
                     self.assertFalse(execute()["ok"])
                     self.assertFalse(self.queue_requests)
             if harness == "agy":
+                for nested in github_agent.FAMILIES:
+                    with self.subTest(nested=nested), patch.dict(
+                            github_agent.__dict__, {"ancestor_agent": MagicMock(return_value=nested)}):
+                        self.assertFalse(execute()["ok"])
+                        self.assertFalse(self.queue_requests)
                 for inherited in ({"CODEX_THREAD_ID": str(uuid.uuid4())},
                                   {"CLAUDE_CODE_SESSION_ID": str(uuid.uuid4())},
                                   {"CODEX_SESSION_ID": worker, "CLAUDE_CODE_SESSION_ID": worker}):

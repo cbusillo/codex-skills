@@ -33,16 +33,10 @@ from codex_session_proxy import run_client, managed_argv, source_endpoint, read_
 def recorded_lead_home(session: str, ledger: Path | None = None) -> Path:
     if ledger is None and (configured := os.environ.get(LAUNCH_LEDGER_ENV)):
         ledger = Path(configured)
-    if "ANTIGRAVITY_SOURCE_METADATA" in os.environ:
-        agent = github_agent.running_agent(environ=os.environ)
-        if (
-            agent is None
-            and not os.environ.get("CLAUDECODE")
-            and not any(github_agent.native_sessions(family) for family in github_agent.FAMILIES)
-        ):
-            agent = "agy"
-    else:
-        agent = github_agent.running_agent()
+    agent = github_agent.running_agent()
+    if agent is None and "ANTIGRAVITY_SOURCE_METADATA" in os.environ and not any(
+            github_agent.native_sessions(family) for family in github_agent.FAMILIES):
+        agent = "agy"
     identities = set(github_agent.native_sessions(agent).values())
     if ledger is None or not ledger.is_absolute() or len(identities) != 1:
         raise ValueError("queue needs --codex-home or a managed launch ledger with one current native worker")
