@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 from iterm_tab import codex_daemon_endpoint
 import session_liveness
+import session_record
 from session_record import LAUNCH_LEDGER_ENV
 
 SPEC = importlib.util.spec_from_file_location("codex_session", Path(__file__).with_name("codex-session.py"))
@@ -172,6 +173,12 @@ class ResumeTests(unittest.TestCase):
                     ([lead, "malformed"], root)):
                 with self.subTest(rows=rows, caller=caller):
                     self.assertFalse(execute(rows, caller))
+            # A worker of another lead stays recorded even if the ledger vanishes after the first read.
+            rows = [lead, {"session_id": supervisor, "harness": "codex", "supervisor_owned": True, "lead_session_id": other}]
+            ledger.write_text(json.dumps(rows))
+            reads = MagicMock(side_effect=[rows, [], [], []])
+            with patch.dict(SESSION.__dict__, {"read_ledger": reads}), patch.object(session_record, "read_ledger", reads):
+                self.assertFalse(execute(rows, root))
             reused_home = self.root / "reused"
             reused_home.mkdir()
             self.assertFalse(execute([{**lead, "codex_home": str(reused_home)}], root))

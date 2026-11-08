@@ -157,9 +157,13 @@ def read_ledger(path: Path) -> object:
         return []
 
 
-def terminal_entry(path: Path, key: str, identity: str) -> dict:
-    """Select one owned launch without requiring native fields not yet bound."""
-    entries = read_ledger(path)
+def terminal_entry(path: Path, key: str, identity: str, entries: object = None) -> dict:
+    """Select one owned launch without requiring native fields not yet bound.
+
+    Pass ``entries`` from one ``read_ledger`` call to select several rows from one snapshot.
+    """
+    if entries is None:
+        entries = read_ledger(path)
     if not isinstance(entries, list) or not all(isinstance(entry, dict) for entry in entries):
         raise ValueError("ledger must contain session objects")
     matches = [entry for entry in entries if entry.get(key) == identity]

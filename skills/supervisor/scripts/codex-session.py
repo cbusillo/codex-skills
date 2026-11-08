@@ -41,15 +41,13 @@ def recorded_lead_home(session: str, ledger: Path | None = None) -> Path:
     if ledger is None or not ledger.is_absolute() or len(identities) != 1:
         raise ValueError("queue needs --codex-home or a managed launch ledger with one current native session")
     caller = identities.pop()
-    lead = terminal_entry(ledger, "session_id", session)
+    entries = read_ledger(ledger)  # one snapshot for both rows
+    lead = terminal_entry(ledger, "session_id", session, entries)
     home = lead.get("codex_home")
-    entries = read_ledger(ledger)
-    if not isinstance(entries, list) or not all(isinstance(entry, dict) for entry in entries):
-        raise ValueError("ledger must contain session objects")
     # A recorded worker reaches only its lead. A caller with no row, such as the
     # Supervisor that keeps this ledger, reaches only a top-level lead.
-    if any(entry.get("session_id") == caller for entry in entries):
-        worker = terminal_entry(ledger, "session_id", caller)
+    if isinstance(entries, list) and any(entry.get("session_id") == caller for entry in entries):
+        worker = terminal_entry(ledger, "session_id", caller, entries)
         routed = worker.get("harness") == agent and worker.get("lead_session_id") == session
     else:
         routed = lead.get("lead_session_id") is None
