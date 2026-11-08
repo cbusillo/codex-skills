@@ -1487,6 +1487,7 @@ def test_render_manager_brief_markdown() -> None:
         "buckets": {"needs_attention": [attention], "recently_completed": [merged_pr]},
         "priority_sections": [{"name": "Northwind", "items": [attention], "recently_completed": [merged_pr], "recently_completed_count": 4}],
         "limitations": ["Read-only mode"],
+        "workflows": [{"repo": "example-org/code", "conclusion": "success"}, {"repo": "example-org/code", "conclusion": "skipped"}],
     }
 
     rendered = github_work_rollup.render_payload(payload, "markdown")
@@ -1494,7 +1495,7 @@ def test_render_manager_brief_markdown() -> None:
     for expected in (
         "Chris", "Example Company", "low-to-medium", "Northwind", "Read-only mode",
         "[code#101](https://github.com/example-org/code/issues/101) Choose auth direction",
-        "github-plan for planning reconciliation", "Ship session routing",
+        "github-plan for planning reconciliation", "Ship session routing", "1 successful, 0 failed, 2 total",
     ):
         assert expected in rendered
 
