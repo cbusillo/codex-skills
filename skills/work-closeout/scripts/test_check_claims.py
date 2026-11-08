@@ -252,7 +252,8 @@ class ClaimCloseoutTests(unittest.TestCase):
                       "Earlier in this session: the IDE records landed.", "Prior to this session: nothing was claimed.",
                       "Summary: tooling landed during this\nsession: https://github.com/owner/repo/pull/3510",
                       "Summary: we did\nthe work in this\nsession: all green",
-                      "Verified everything (session: see the run above)", "Done, session: all green"):
+                      "Verified everything (session: see the run above)", "Done, session: all green",
+                      f"Native session: {SESSION} (Claude Code), dispatched by 01a1b839-608e-7a73-b683-bb6c7da113a7."):
             with self.subTest(prose=prose):
                 self.comments = [self.source, {**self.release, "body": self.release["body"] + "\n\n" + prose}]
                 result = self.check()
@@ -262,7 +263,8 @@ class ClaimCloseoutTests(unittest.TestCase):
     def test_release_with_foreign_native_session_is_refused(self) -> None:
         foreign = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
         for field in ("Session: {}", "Status for this exact session: {}", "Status for this exact session: ({}).",
-                      "Done, session: ({})", "Tooling landed this\nsession: {}"):
+                      "Done, session: ({})", "Tooling landed this\nsession: {}",
+                      "Native session: {} (Claude Code), dispatched by " + SESSION + "."):
             with self.subTest(field=field):
                 self.comments = [self.source, {**self.release, "body": self.release["body"] + "\n" + field.format(foreign)}]
                 with self.assertRaisesRegex(ValueError, "release names another native session"):

@@ -130,6 +130,10 @@ class ClaimMarkerTests(unittest.TestCase):
                       f"## Lead routing\nNext actor: agent:{session}"):
             with self.subTest(field=field):
                 self.assertFalse(CLAIM.belongs_to_session(status + field, session))
+        lead = "01a1b839-608e-7a73-b683-bb6c7da113a7"
+        dispatched = f"Native session: {session} (Claude Code), dispatched by {lead}."
+        self.assertTrue(CLAIM.belongs_to_session(dispatched, session))
+        self.assertFalse(CLAIM.belongs_to_session(dispatched, lead))
     def test_exact_dispatch_recipient_distinguishes_the_coordinator_without_a_fenced_request(self) -> None:
         actor = "agent:01970242-7941-7f0c-b461-16aa5723fb52"
         request = f"Next actor: {actor}\nBrief:\n````text\nTask.\n```sh\necho example\n```\n````\n"

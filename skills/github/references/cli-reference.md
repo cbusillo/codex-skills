@@ -1673,7 +1673,9 @@ closed automation session with a structured source claim, use the evidence-backe
 follow-ups. Explicit Session/Session ID or Thread ID fields on a related follow-up must
 name the source's native session. Field aliases (session_id/sessionId), spaced
 dash separators and vertical field/value tables are supported. Explicit fields
-remain identity evidence even when malformed. Prose references, including wrapped
+remain identity evidence even when malformed. Inside a field, an ID right after
+`dispatched by` names the dispatch coordinator, not another session; every other
+ID in the field still counts. Prose references, including wrapped
 continuations, need a native session ID; human browser/administrator sessions and
 horizontal tables do not establish agent identity. Non-UUID labels need an explicit
 field. Use the canonical Session field or authored exact-ID recovery for older

@@ -1084,11 +1084,17 @@ class ReleaseTests(ReleaseHarness):
         for field in ("Session: {}", "- **Session:** Claude Code `{}`", "Native session ID: Codex {}",
                       "| Session | Claude Code `{}` |", "Thread ID: {} (Claude Code)",
                       "Session: Codex CLI `{}`", "Session: Claude Code CLI {}", "Session: Codex desktop {}",
-                      "Session: Antigravity {}", "Handoff from session: {}"):
+                      "Session: Antigravity {}", "Handoff from session: {}",
+                      "Native session: {} (Claude Code), dispatched by " + other + ".",
+                      "Session: {} — dispatched by " + other, "Session: {} (dispatched by `" + other + "`)"):
             with self.subTest(field=field):
                 self.assertTrue(release.related_sessions_match(field.format(session), session, require_explicit=True))
                 for value in (other, "prefix-" + session, session + "-suffix", session + " or " + other):
                     self.assertFalse(release.related_sessions_match(field.format(value), session, require_explicit=True))
+        for body in (f"Native session: {other} (Claude Code), dispatched by {session}.", f"Session: dispatched by {session}",
+                     f"Session: {session}, dispatched by {other} and {other}", f"Session: {session}; resumed as {other}",
+                     f"Session: {session}, plus {other}", f"Session: {session}, then dispatched by {session} as {other}"):
+            self.assertFalse(release.related_sessions_match(body, session, require_explicit=True))
         for body in ("No session field", f"```\nSession: {session}\n```", f"Session: {session}\nSession: {other}",
                      f"Previous session: {session}", f"Prior native session ID: {session}",
                      f"Previous Codex session: {session}", f"Prior Claude Code session: {session}",
