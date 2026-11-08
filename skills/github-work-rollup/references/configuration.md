@@ -61,7 +61,7 @@ explicit metadata is more reliable.
 
 The comment radar discovers issues and PRs created in its inclusive time window
 through the shared GraphQL repository paginator, stopping below the creation
-cutoff. PR opening posts keep their backing issue identity; a PR with no comments
+cutoff. PR opening posts keep their backing issue identity; a kept PR with no comments
 still needs the existing REST identity lookup. Open-issue inventory, discussions
 and wait searches use the shared GraphQL readers. A later search-page failure
 keeps earlier candidates and reports incomplete coverage.

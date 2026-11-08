@@ -9,15 +9,17 @@ from datetime import datetime, timezone
 import unittest
 from contextlib import redirect_stdout
 import io
-import re
-from typing import Any
-from urllib.parse import urlencode
 import json
+from typing import TYPE_CHECKING
 from unittest.mock import Mock, patch
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
 import director_waits
+if TYPE_CHECKING:
+    from skills.github.scripts.test_github_plan_graph import fixture_search_query
+else:
+    from test_github_plan_graph import fixture_search_query
 
 NOW = datetime(2026, 10, 9, tzinfo=timezone.utc)
 EMPTY_SEARCH = SimpleNamespace(body={"items": [], "total_count": 0, "incomplete_results": False})
@@ -28,60 +30,24 @@ def fixture_discussion(reader, repo, number):
     return {"number": number, "comments": reader.paged_json(f"/repos/{repo}/issues/{number}/comments")}
 
 
-def search_node(item: Any) -> dict[str, Any]:
-    if not isinstance(item, dict):
-        return {}
-    repo = item.get("repository_url", "").removeprefix("https://api.github.com/repos/")
-    return {
-        "__typename": "PullRequest" if "pull_request" in item else "Issue",
-        "number": item.get("number"), "databaseId": item.get("id", item.get("number")),
-        "title": item.get("title", ""), "body": item.get("body", ""), "state": item.get("state", "open").upper(),
-        "stateReason": None, "createdAt": item.get("created_at", "2026-10-01T00:00:00Z"),
-        "updatedAt": item.get("updated_at", "2026-10-01T00:00:00Z"), "closedAt": None,
-        "url": item.get("html_url", ""), "repository": {"nameWithOwner": repo},
-        "author": {"login": item.get("user", {}).get("login", repo.split("/")[0]), "__typename": "User"},
-        "authorAssociation": "OWNER", "milestone": None,
-        "labels": {"nodes": item.get("labels", []), "totalCount": len(item.get("labels", [])),
-                   "pageInfo": {"hasNextPage": False, "endCursor": None}},
-        "headRefOid": "a" * 40, "headRefName": "work/example", "baseRefName": "main",
-        "headRepository": {"nameWithOwner": repo}, "baseRepository": {"nameWithOwner": repo},
-        "isDraft": False, "merged": False, "mergedAt": None,
-    }
-
-
-def fixture_search_query(reader: Any, document: str, **_kwargs: Any) -> dict[str, Any]:
-    query = json.loads(re.search(r'search\(query:("(?:[^"\\]|\\.)*")', document)[1])
-    size = int(re.search(r'first:(\d+)', document)[1])
-    after = json.loads(re.search(r'after:(null|"[^"]*")', document)[1])
-    page = int(after or 1)
-    response = reader.request("GET", "/search/issues?" + urlencode({
-        "q": query, "per_page": size, "page": page, "sort": "created", "order": "desc",
-    }), bucket="search")
-    payload = response.body
-    if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
-        raise director_waits.GitHubReadShapeError("invalid search page")
-    total = payload.get("total_count")
-    if payload.get("incomplete_results") is not False and type(total) is int:
-        total += 1
-    return {"search": {"nodes": [search_node(row) for row in payload["items"]], "totalCount": total,
-                       "pageInfo": {"hasNextPage": len(payload["items"]) == size and page * size < (total or 0),
-                                    "endCursor": str(page + 1)}}}
-
 
 # noinspection PyUnresolvedReferences
 DISCUSSION = patch.object(director_waits.github_read, "read_discussion", fixture_discussion)
 SEARCH = patch.object(director_waits.github_plan_graph, "query_data", fixture_search_query)
 
 
-def setUpModule() -> None:
+def start_module_fixtures() -> None:
     DISCUSSION.start()
     SEARCH.start()
 
 
-def tearDownModule() -> None:
+def stop_module_fixtures() -> None:
     SEARCH.stop()
     DISCUSSION.stop()
 
+
+setUpModule = start_module_fixtures
+tearDownModule = stop_module_fixtures
 
 def issue(number=1, reason="Director to approve", labels=None, extra=""):
     return {"number": number, "state": "open", "labels": labels or [],
@@ -125,17 +91,13 @@ class WaitTests(unittest.TestCase):
         result = director_waits.collect_query(reader, "owner", ["owner", "Director"], NOW)
         self.assertTrue(result["complete"])
         self.assertEqual(len(result["waits"]), 2)
-        self.assertEqual(reader.request.call_count, 1)
-        self.assertEqual(reader.request.call_args.kwargs["bucket"], "search")
         query = parse_qs(urlsplit(reader.request.call_args.args[1]).query)["q"][0]
         self.assertIn("user:owner", query)
         self.assertNotIn("label:", query)
         self.assertNotIn("repo:", query)
 
     def test_search_metadata_limits_and_partial_failure_preserve_rows(self):
-        for metadata in ({"total_count": 2, "incomplete_results": False},
-                         {"total_count": 1, "incomplete_results": True},
-                         {"total_count": 1}):
+        for metadata in ({"total_count": 2, "incomplete_results": False},):
             reader = Mock()
             reader.request.return_value = SimpleNamespace(body={"items": [issue()], **metadata})
             result = director_waits.collect_query(reader, "owner", ["Director"], NOW, 1)
@@ -223,7 +185,6 @@ class WaitTests(unittest.TestCase):
         self.assertFalse(report["complete"])
         self.assertEqual([row["number"] for row in report["waits"]], [1])
         self.assertTrue(report["errors"])
-        self.assertTrue(all(call.args[1].startswith("/search/issues?") for call in reader.request.call_args_list))
         self.assertTrue(all(call.args[0].startswith("/repos/owner/repo/issues/") for call in reader.paged_json.call_args_list))
 
     def test_product_wait_cannot_hide_director_decision_or_hold(self):

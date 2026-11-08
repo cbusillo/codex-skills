@@ -876,7 +876,7 @@ def discussion_comment(node: dict[str, Any], repo: str, number: int) -> dict[str
 def discussion_issue_id(
     reader: GitHubReader, repo: str, number: int, thread: dict[str, Any], comments: list[dict[str, Any]],
     *, issue_id: int | None = None,
-) -> int | None:
+) -> int:
     resolved_id = thread.get("databaseId")
     if thread["__typename"] == "PullRequest":
         identities = {
@@ -892,6 +892,8 @@ def discussion_issue_id(
             resolved_id = reader.get_json(
             f"/repos/{repo}/issues/{number}", step="discussion_issue_identity"
             )["id"]
+    if type(resolved_id) is not int:
+        raise GitHubReadShapeError("Discussion message identity is unavailable")
     return resolved_id
 
 

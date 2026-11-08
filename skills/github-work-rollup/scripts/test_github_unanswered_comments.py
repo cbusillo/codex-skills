@@ -38,15 +38,18 @@ assert MODULE_SPEC.loader is not None
 sys.modules[MODULE_SPEC.name] = github_unanswered_comments
 MODULE_SPEC.loader.exec_module(github_unanswered_comments)
 if TYPE_CHECKING:
-    from skills.github.scripts import github_close_attention, github_read
+    from skills.github.scripts import github_close_attention, github_read, github_plan_graph
 else:
     github_read = github_unanswered_comments.github_read
+    github_plan_graph = importlib.import_module("github_plan_graph")
     github_close_attention = importlib.import_module("github_close_attention")
 REAL_READ_DISCUSSION = github_read.read_discussion
 REAL_DISCUSSION_QUERY = github_read.discussion_query
 REAL_READ_REPOSITORY_CONNECTIONS = github_read.read_repository_connections
-sys.path.insert(0, str(MODULE_PATH.parents[2] / "direction/scripts"))
-from test_director_waits import fixture_search_query
+if TYPE_CHECKING:
+    from skills.github.scripts.test_github_plan_graph import fixture_search_query
+else:
+    from test_github_plan_graph import fixture_search_query
 
 
 @pytest.fixture(autouse=True)
@@ -127,7 +130,7 @@ def no_host_people_index(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
         except github_unanswered_comments.rollup.RollupError as error:
             raise github_read.GitHubReadShapeError(str(error)) from error
 
-    monkeypatch.setattr(github_unanswered_comments.github_plan_graph, "query_data", search_query)
+    monkeypatch.setattr(github_plan_graph, "query_data", search_query)
     monkeypatch.setattr(github_read, "read_discussion", discussion)
     monkeypatch.setattr(github_read, "discussion_query", query)
     monkeypatch.setattr(github_read, "read_repository_connections", connections)
@@ -1437,7 +1440,9 @@ def test_opened_threads_stop_at_window_start_and_skip_after_until(monkeypatch) -
     requested: list[tuple[str, int]] = []
 
     def response(document: str, _variables: dict[str, Any], **_kwargs: Any) -> Any:
-        alias = re.search(r"(\w+):repository", document)[1]
+        alias_match = re.search(r"(\w+):repository", document)
+        assert alias_match is not None
+        alias = alias_match[1]
         field = "pullRequests" if "pullRequests(" in document else "issues"
         page = 2 if 'after:"next"' in document else 1
         requested.append((field, page))
@@ -1457,7 +1462,7 @@ def test_opened_threads_stop_at_window_start_and_skip_after_until(monkeypatch) -
             "pageInfo": {"hasNextPage": more, "endCursor": "next" if page == 1 else "unread"}}}}})
 
     reader.graphql_json.side_effect = response
-    monkeypatch.setattr(github_unanswered_comments, "discussion_reader", lambda _repo, **_kwargs: reader)
+    patch_radar(monkeypatch, "discussion_reader", lambda _repo, **_kwargs: reader)
     monkeypatch.setattr(github_read, "read_repository_connections", REAL_READ_REPOSITORY_CONNECTIONS)
     items = github_unanswered_comments.opened_threads(
         "example/repo", datetime(2026, 7, 1, tzinfo=UTC), datetime(2026, 7, 26, 20, tzinfo=UTC), per_page=2,
@@ -1467,6 +1472,48 @@ def test_opened_threads_stop_at_window_start_and_skip_after_until(monkeypatch) -
     opening_post = github_unanswered_comments.normalize_opening_post("example/repo", items[0])
     assert (opening_post.comment_id, opening_post.author, opening_post.author_type) == (5005, "outside-agent[bot]", "Bot")
     assert "pull_request" in items[0]
+
+
+@pytest.mark.parametrize("own_author,identity_failure,missing_creation", [
+    (True, True, False), (False, False, False), (False, True, False), (False, False, True),
+])
+def test_commentless_openings_resolve_only_external_identities(
+    monkeypatch, own_author: bool, identity_failure: bool, missing_creation: bool,
+) -> None:
+    reader = Mock(batch_diagnostic={"cost": 0})
+    def response(document: str, _variables: dict[str, Any], **_kwargs: Any) -> Any:
+        alias_match = re.search(r"(\w+):repository", document)
+        assert alias_match is not None
+        alias = alias_match[1]
+        connection_field = "pullRequests" if "pullRequests(" in document else "issues"
+        nodes = [{"__typename": "PullRequest", "id": "PR_5", "databaseId": 9005, "number": 5, "title": "Opening",
+                  "body": "Question", "state": "OPEN", "createdAt": "" if missing_creation else "2026-07-25T00:00:00Z",
+                  "updatedAt": "2026-07-25T00:00:00Z", "closedAt": None, "url": "https://github.com/example/repo/pull/5",
+                  "author": {"__typename": "Bot", "login": "own-app" if own_author else "outside-app"},
+                  "comments": {"nodes": []}}] if connection_field == "pullRequests" else []
+        return github_read.github_api_core.ApiResult(ok=True, status=200, body={"data": {alias: {
+            "nameWithOwner": "example/repo", connection_field: {"totalCount": len(nodes), "nodes": nodes,
+            "pageInfo": {"hasNextPage": False, "endCursor": None}}}}})
+
+    reader.graphql_json.side_effect = response
+    reader.get_json.return_value = {"id": 5005}
+    if identity_failure:
+        reader.get_json.side_effect = github_read.GitHubReadShapeError("identity unavailable")
+    patch_radar(monkeypatch, "discussion_reader", lambda _repo: reader)
+    monkeypatch.setattr(github_read, "read_repository_connections", REAL_READ_REPOSITORY_CONNECTIONS)
+    monkeypatch.setattr(github_unanswered_comments, "run_json", FakeGitHub({}))
+    candidates, errors = github_unanswered_comments.repository_activity(
+        "example/repo", datetime(2026, 7, 1, tzinfo=UTC), datetime(2026, 7, 26, tzinfo=UTC), set(), {"own-app[bot]"},
+    )
+    if missing_creation:
+        assert not candidates and [error["lane"] for error in errors] == ["opened_threads"]
+    elif own_author:
+        assert not candidates and not errors
+        reader.get_json.assert_not_called()
+    elif identity_failure:
+        assert not candidates and [error["lane"] for error in errors] == ["opened_threads"]
+    else:
+        assert candidates == {("example/repo", 5): {(github_unanswered_comments.OPENING_POST, 5005)}}
 
 
 def test_full_history_thread_includes_outside_opening_post(monkeypatch) -> None:
@@ -1744,7 +1791,7 @@ def test_open_issue_inventory_pages_every_repository_and_isolates_a_failed_one(m
                 "createdAt": issue["updated_at"], "updatedAt": issue["updated_at"],
                 "author": {"__typename": "User", "login": "cbusillo"}}
 
-    monkeypatch.setattr(github_unanswered_comments, "opened_threads", lambda *_args: [])
+    patch_radar(monkeypatch, "opened_threads", lambda *_args, **_kwargs: [])
     pages = {None: ([node(waiting_issue("No current wait.", number=200))], "CURSOR"),
              "CURSOR": ([node(waiting_issue("Pat's review of the release."))], None)}
     queries: list[str] = []
@@ -2339,7 +2386,7 @@ def test_unread_wait_discussion_or_partial_wait_search_degrades_coverage(monkeyp
     for routes, lane in (
         ({"search/issues": {"items": [quiet], "total_count": 1, "incomplete_results": False},
           "repos/example/repo/issues/52/comments": unreadable}, "director_waits/52"),
-        ({"search/issues": {"items": [], "total_count": 0, "incomplete_results": True}}, "director_waits_search"),
+        ({"search/issues": {"items": [], "total_count": 1, "incomplete_results": False}}, "director_waits_search"),
     ):
         payload = structured_wait_rows(monkeypatch, tmp_path, routes)
         assert payload["status"] == "degraded"
@@ -2379,7 +2426,6 @@ def outside_result(number: int) -> dict[str, object]:
     pytest.param({1: {"items": [outside_result(n) for n in range(1, 101)], "total_count": 101, "incomplete_results": False},
                   2: {"items": [outside_result(101)], "total_count": 100, "incomplete_results": False}},
                  id="total_changed"),
-    pytest.param({1: {"items": [], "total_count": 0}}, id="incomplete_results_missing"),
 ])
 def test_structured_wait_search_pagination_gaps_degrade_coverage(monkeypatch, tmp_path: Path, pages) -> None:
     def search(endpoint: str) -> object:

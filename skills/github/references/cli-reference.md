@@ -3141,7 +3141,8 @@ read failures. With `allow_partial=True`, it returns previously normalized rows
 alongside `total_count`, `incomplete_results` and an `errors` list. Later-page
 failures, malformed or duplicate identities and changing totals remain explicit
 coverage failures. Consumers must check both metadata and the returned count;
-a bounded result never proves completeness above its limit.
+a bounded result never proves completeness above its limit. Changing totals
+also set `incomplete_results` for strict callers.
 
 Planning `show`, `index`, `search` and repository-local `next` use the existing
 GraphQL adapters by default. `--batch-read` remains a compatibility option for

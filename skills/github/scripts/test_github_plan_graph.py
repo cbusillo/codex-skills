@@ -13,6 +13,7 @@ import os
 import re
 import sys
 import tempfile
+from urllib.parse import urlencode
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -65,6 +66,48 @@ def transport_for(documents: list[dict[str, Any]]) -> Any:
         return github_api.ApiResult(ok=True, status=200, actor="fixture-reader", body=body)
 
     return respond
+
+
+def search_node(item: Any) -> dict[str, Any]:
+    if not isinstance(item, dict):
+        return {}
+    repo = item.get("repository_url", "").removeprefix("https://api.github.com/repos/")
+    return {
+        "__typename": "PullRequest" if "pull_request" in item else "Issue",
+        "number": item.get("number"), "databaseId": item.get("id", item.get("number")),
+        "title": item.get("title", ""), "body": item.get("body", ""), "state": item.get("state", "open").upper(),
+        "stateReason": None, "createdAt": item.get("created_at", "2026-10-01T00:00:00Z"),
+        "updatedAt": item.get("updated_at", "2026-10-01T00:00:00Z"), "closedAt": None,
+        "url": item.get("html_url", ""), "repository": {"nameWithOwner": repo},
+        "author": {"login": item.get("user", {}).get("login", repo.split("/")[0]), "__typename": "User"},
+        "authorAssociation": "OWNER", "milestone": None,
+        "labels": {"nodes": item.get("labels", []), "totalCount": len(item.get("labels", [])),
+                   "pageInfo": {"hasNextPage": False, "endCursor": None}},
+        "headRefOid": "a" * 40, "headRefName": "work/example", "baseRefName": "main",
+        "headRepository": {"nameWithOwner": repo}, "baseRepository": {"nameWithOwner": repo},
+        "isDraft": False, "merged": False, "mergedAt": None,
+    }
+
+
+def fixture_search_query(reader: Any, document: str, **_kwargs: Any) -> dict[str, Any]:
+    query_match = re.search(r'search\(query:("(?:[^"\\]|\\.)*")', document)
+    size_match = re.search(r'first:(\d+)', document)
+    cursor_match = re.search(r'after:(null|"[^"]*")', document)
+    assert query_match is not None and size_match is not None and cursor_match is not None
+    query = json.loads(query_match[1])
+    size = int(size_match[1])
+    after = json.loads(cursor_match[1])
+    page = int(after or 1)
+    response = reader.request("GET", "/search/issues?" + urlencode({
+        "q": query, "per_page": size, "page": page, "sort": "created", "order": "desc",
+    }), bucket="search")
+    payload = response.body
+    if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
+        raise github_read.GitHubReadShapeError("invalid search page")
+    total = payload.get("total_count")
+    return {"search": {"nodes": [search_node(row) for row in payload["items"]], "totalCount": total,
+                       "pageInfo": {"hasNextPage": len(payload["items"]) == size and page * size < (total or 0),
+                                    "endCursor": str(page + 1)}}}
 
 
 def test_recorded_graph_selection_and_request_savings():
@@ -1074,8 +1117,8 @@ def test_root_and_nested_graphql_failures_do_not_invent_missing_targets() -> Non
 
 
 def test_partial_search_retains_candidates_and_strict_reads_still_refuse() -> None:
-    first = {**issue_fixture(), "__typename": "Issue"}
-    first["labels"] = {"totalCount": 0, "nodes": [], "pageInfo": {"hasNextPage": False, "endCursor": None}}
+    first: dict[str, Any] = {**issue_fixture(), "__typename": "Issue",
+                             "labels": {"totalCount": 0, "nodes": [], "pageInfo": {"hasNextPage": False, "endCursor": None}}}
     second = {**copy.deepcopy(first), "number": first["number"] + 1}
 
     def page(nodes: list[dict[str, Any]], total: int, cursor: str | None = None) -> dict[str, Any]:
@@ -1094,8 +1137,8 @@ def test_partial_search_retains_candidates_and_strict_reads_still_refuse() -> No
     else:
         raise AssertionError("Strict callers accepted an unread page")
     duplicate = {**first, "repository": {"nameWithOwner": first["repository"]["nameWithOwner"].upper()}}
-    for nodes, total in (([second], 1), ([duplicate, second], 3), ([{}, second], 3)):
-        rows, metadata = graph.search_records(reader_for(page([first], 2, "next"), page(nodes, total)), "user:owner is:issue",
+    for later_nodes, later_total in (([second], 1), ([duplicate, second], 3), ([{}, second], 3)):
+        rows, metadata = graph.search_records(reader_for(page([first], 2, "next"), page(later_nodes, later_total)), "user:owner is:issue",
                                              limit=1000, allow_partial=True)
         assert [row["number"] for row in rows] == [first["number"], second["number"]]
         assert metadata["incomplete_results"] and metadata["errors"]
@@ -1121,7 +1164,9 @@ def test_repository_stop_preserves_pagination_and_other_repository_failure() -> 
         normalize=lambda repo, node: {**node, "repo": repo}, step="fixture_window",
         stop_when=lambda row: row["repo"] == "owner/window" and row["number"] < 2,
     )
-    assert [row["number"] for row in result["owner/window"]] == [3, 2]
+    window_rows = result["owner/window"]
+    assert isinstance(window_rows, list)
+    assert [row["number"] for row in window_rows] == [3, 2]
     assert isinstance(result["owner/broken"], github_read.GitHubReadShapeError)
     assert reader.graphql_json.call_count == 2
 

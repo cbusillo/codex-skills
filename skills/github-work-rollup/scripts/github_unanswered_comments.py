@@ -655,7 +655,7 @@ def format_api_timestamp(value: datetime) -> str:
 
 
 def opened_threads(
-    repo: str, since: datetime, until: datetime, *, per_page: int = 100,
+    repo: str, since: datetime, until: datetime, *, per_page: int = 100, include: Callable[[Comment], bool] | None = None,
 ) -> list[dict[str, Any]]:
     if not 1 <= per_page <= 100:
         raise ValueError("issue page size must be between 1 and 100")
@@ -663,22 +663,25 @@ def opened_threads(
     opened: list[dict[str, Any]] = []
 
     def normalize(source_repo: str, node: dict[str, Any]) -> dict[str, Any]:
-        created = comment_timestamp(node["createdAt"])
-        opening = node
-        if node["__typename"] == "PullRequest" and since <= created <= until:
-            opening = {**node, "databaseId": github_read.discussion_issue_id(
-                reader, source_repo, node["number"], node, node["comments"]["nodes"],
-            )}
-        return {**github_read.discussion_comment(opening, source_repo, node["number"]),
-                "number": node["number"], "title": node["title"],
-                "state": "closed" if node["state"] in {"CLOSED", "MERGED"} else "open",
-                "closed_at": node["closedAt"],
-                **({"pull_request": {"url": f"https://api.github.com/repos/{source_repo}/pulls/{node['number']}"}}
-                   if node["__typename"] == "PullRequest" else {})}
+        created = rollup.parse_timestamp(str(node.get("createdAt") or ""))
+        if created is None:
+            raise ValueError("Opening creation time unavailable")
+        row = {**github_read.discussion_comment(node, source_repo, node["number"]),
+               "number": node["number"], "title": node["title"],
+               "state": "closed" if node["state"] in {"CLOSED", "MERGED"} else "open",
+               "closed_at": node["closedAt"],
+               **({"pull_request": {"url": f"https://api.github.com/repos/{source_repo}/pulls/{node['number']}"}}
+                  if node["__typename"] == "PullRequest" else {})}
+        candidate_opening = normalize_opening_post(source_repo, row)
+        if node["__typename"] == "PullRequest" and since <= created <= until and (
+            include is None or candidate_opening is not None and include(candidate_opening)
+        ):
+            row["id"] = github_read.discussion_issue_id(reader, source_repo, node["number"], node, node["comments"]["nodes"])
+        return row
 
     try:
-        for field in ("issues", "pullRequests"):
-            def selection(cursor: str | None, connection_field: str = field) -> str:
+        for connection_name in ("issues", "pullRequests"):
+            def selection(cursor: str | None, connection_field: str = connection_name) -> str:
                 return (
                     f"{connection_field}(first:{per_page},after:{json.dumps(cursor)},orderBy:{{field:CREATED_AT,direction:DESC}}) "
                     "{ totalCount nodes { __typename id databaseId number title body state closedAt createdAt updatedAt url "
@@ -688,12 +691,13 @@ def opened_threads(
                 )
 
             rows = github_read.read_repository_connections(
-                reader, [repo], field=field, selection=selection, normalize=normalize, step="radar_opened_threads",
+                reader, [repo], field=connection_name, selection=selection, normalize=normalize, step="radar_opened_threads",
                 stop_when=lambda row: comment_timestamp(row["created_at"]) < since,
             )[repo]
             if isinstance(rows, Exception):
                 raise rows
-            opened.extend(row for row in rows if comment_timestamp(row["created_at"]) <= until)
+            opened.extend(row for row in rows if comment_timestamp(row["created_at"]) <= until
+                          and (include is None or (opening := normalize_opening_post(repo, row)) is not None and include(opening)))
     except (github_read.GitHubReadError, github_read.GitHubReadShapeError, KeyError, TypeError, ValueError) as error:
         raise rollup.RollupError(str(error)) from error
     return sorted(opened, key=lambda row: (row["created_at"], row["number"]), reverse=True)
@@ -794,7 +798,10 @@ def repository_activity(
             if external and in_window(created, updated, since, until):
                 candidate_ids.setdefault((repo, number), set()).add((kind, comment_id))
     try:
-        threads = opened_threads(repo, since, until)
+        threads = opened_threads(repo, since, until, include=partial(
+            is_external_comment, self_logins=self_logins, bot_logins=bot_logins,
+            automation_logins=automation_logins, own_automation=own_automation,
+        ))
     except rollup.RollupError as exc:
         errors.append({"repo": repo, "lane": "opened_threads", "error": rollup.trim(str(exc))})
         threads = []
@@ -805,11 +812,11 @@ def repository_activity(
     return candidate_ids, errors
 
 
-def discussion_reader(repo: str, *, include_archived: bool = False) -> github_read.GitHubReader:
+def discussion_reader(repo: str | None, *, include_archived: bool = False, main_app_only: bool = True) -> github_read.GitHubReader:
     deadline = read_deadline.get()
     return github_read.GitHubReader(
         gh_cmd=GH, operation="github.comment_radar", strict_actor=True, include_archived=include_archived,
-        gh_prefix_args=["--main-app-only"] if Path(GH).name == "gh-with-env-token" else [], repository=repo,
+        gh_prefix_args=["--main-app-only"] if main_app_only and Path(GH).name == "gh-with-env-token" else [], repository=repo,
         deadline_at=time.time() + max(0.0, deadline - time.monotonic()) if deadline is not None
         else time.time() + DISCUSSION_READ_DEADLINE_SECONDS,
     )
@@ -1393,10 +1400,9 @@ def structured_wait_issues(
         query = repository_scope.search_query(
             f'user:{owner} is:issue is:open in:comments "waiting_for"', include_archived=include_archived
         )
-        source_repo = next(repo for repo in scanned.values() if repo.split("/", 1)[0].casefold() == owner.casefold())
         try:
             rows, metadata = github_plan_graph.search_records(
-                discussion_reader(source_repo, include_archived=include_archived), query, limit=1000, allow_partial=True,
+                discussion_reader(None, include_archived=include_archived, main_app_only=False), query, limit=1000, allow_partial=True,
             )
             for item in rows:
                 repo = scanned.get(item["repo"].casefold())
