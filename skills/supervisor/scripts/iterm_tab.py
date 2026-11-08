@@ -1848,28 +1848,54 @@ def guard_lead_launch(operation: Callable[..., Coroutine[Any, Any, Any]]) -> Cal
     return guarded
 
 
+@contextmanager
+def closed_registration_source(path: Path, entry: dict) -> Iterator[dict | None]:
+    import session_record
+    from check_operation import closure, release
+    from codex_session_proxy import source_endpoint
+
+    session = entry["session_id"]
+    if session not in closure.source_records({session}):
+        yield None
+        return
+    with closure.ownership(session, create=True):
+        source = dict(closure.source_records({session}).get(session) or {})
+        if source != session_record.normalize_ledger_entry(path, entry):
+            raise ValueError("restoration requires the unchanged canonical closed source")
+        if source["harness"] != "codex":
+            raise ValueError("closed-source restoration requires the original Codex source")
+        release.validate_closure({**source, "_transcript_roots": release.transcript_roots("codex", None, [], source)},
+                                 source.get("lead_session_id", ""))
+        source_endpoint(session, Path(source["codex_home"]).expanduser().resolve(),
+                        transcript=source["transcript"], for_resume=True)
+        yield source
+
+
 def append_launch_ledger(path: Path, entry: dict) -> None:
     from check_changes import save_state
-    github = str(Path(__file__).resolve().parents[2] / "github/scripts")
-    if github not in sys.path:
-        sys.path.append(github)
-    github_plan_closure = importlib.import_module("github_plan_closure")
+    from check_operation import closure
     if (entry.get("harness") not in {"codex", "claude", "agy"} or entry.get("supervisor_owned") is not True
             or not isinstance(entry.get("session_id"), str) or not entry["session_id"].strip()):
         raise ValueError("launch ledger append needs a native identity and explicit Supervisor ownership")
-    with github_plan_closure.store_lock(path, create=True):
+    with closed_registration_source(path, entry) as source, closure.store_lock(path, create=True):
         entries = read_launch_ledger(path)
         if any(row.get("session_id") == entry["session_id"] for row in entries):
             raise ValueError("native session is already in the launch ledger; inspect before retry")
         if entry.get("lead_session_id") is not None:
-            pending = lead_row(entries, entry["lead_session_id"])["worker_launches"]
+            lead = lead_row(entries, entry["lead_session_id"])
+            pending = lead["worker_launches"]
             launch = entry.get("lead_launch_id")
-            if launch not in pending:
-                raise ValueError("lead worker registration needs its retained launch reservation; preserve the receipt")
-            count = pending.pop(launch) - 1
-            if count:
-                pending[launch] = count
-        save_state(path, [*entries, entry])
+            if source is not None:
+                active = sum(row.get("lead_session_id") == entry["lead_session_id"] for row in entries)
+                if active + sum(pending.values()) + 1 > lead["worker_cap"]:
+                    raise ValueError(f"lead worker cap {lead['worker_cap']} exceeded by closed-source restoration")
+            else:
+                if launch not in pending:
+                    raise ValueError("lead worker registration needs its retained launch reservation; preserve the receipt")
+                count = pending.pop(launch) - 1
+                if count:
+                    pending[launch] = count
+        save_state(path, [*entries, source if source is not None else entry])
 
 
 async def observe_resume_terminal(result: dict) -> None:

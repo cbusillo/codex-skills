@@ -88,6 +88,7 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
         f = ReceiptFixture()
         f.__enter__()
         self.addCleanup(f.__exit__)
+        closure.replace_rows([])
         f.rpc_results["thread/start"] = {"thread": {"id": f.session, "path": str(f.transcript)}}
         native_receipt = f.root / "native-launch.json"
         task, request, response, _ = await self.start_client(f, external=True, launch_receipt=native_receipt)
@@ -262,6 +263,7 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
         f = ReceiptFixture()
         f.__enter__()
         self.addCleanup(f.__exit__)
+        closure.replace_rows([])
         ledger = f.root / "launch-ledger.json"
         unbound = {"iterm_session_id": "unbound-terminal", "supervisor_owned": True}
         ledger.write_text(json.dumps([unbound]))
