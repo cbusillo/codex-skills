@@ -191,9 +191,9 @@ class RetireTests(unittest.TestCase):
             ("earlier output\nRetire refused: unpublished\n \t\n", "", "stdout", "Retire refused: unpublished"),
             ("unused stdout", "Retire refused: busy\n", "stderr", "Retire refused: busy"),
             ("Retire refused: live user\n", " \t\n", "stdout", "Retire refused: live user"),
-            ("", "", None, "no output"),
-            (" \t\n", "\n \t\n", None, "no output"),
-            (None, None, None, "no output"),
+            ("", "", None, ""),
+            (" \t\n", "\n \t\n", None, ""),
+            (None, None, None, ""),
         )
         for refuse, expected_calls in (
             ({"refuse_preview": True}, [("/a", True)]),
@@ -206,9 +206,12 @@ class RetireTests(unittest.TestCase):
                     self.assertEqual(rows[0]["decision"], "kept")
                     detail = "\n".join(rows[0]["detail"])
                     self.assertIn(str(-15), detail)
-                    self.assertIn(message, detail)
                     if stream:
+                        self.assertIn(message, detail)
                         self.assertIn(stream, detail)
+                    else:
+                        self.assertNotIn("stderr", detail)
+                        self.assertNotIn("stdout", detail)
                     self.assertNotIn("earlier", detail)
                     self.assertNotIn("unused stdout", detail)
                     self.assertTrue(all(line.strip() for line in rows[0]["detail"]))
