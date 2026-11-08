@@ -117,7 +117,7 @@ PLAN_COMMAND_CONTEXT: dict[str, tuple[str, str, bool]] = {
     "index": ("composite", "mixed", False),
     "search": ("composite", "mixed", False),
     "show": ("composite", "mixed", False),
-    "claim": ("composite", "rest_core", True),
+    "claim": ("composite", "mixed", True),
     "release-claim": ("composite", "rest_core", True),
     "release": ("composite", "rest_core", True),
     "wait": ("composite", "rest_core", True),
@@ -910,7 +910,11 @@ def plan_read_error(exc: Exception) -> PlanError:
         error = PlanError(
             str(exc),
             failure=github_api_core.FailureDetail(
-                cause="invalid_response", message=str(exc), retryable=False, fallback_eligible=False, disposition="stop"
+                cause="invalid_response",
+                message=str(exc),
+                retryable=exc.retryable,
+                fallback_eligible=False,
+                disposition="retry" if exc.retryable else "stop",
             ),
         )
     else:
@@ -1059,8 +1063,125 @@ def path_with_query(path: str, params: dict[str, Any]) -> str:
 
 def claim_inventory(repo: str, number: int, *, cwd: pathlib.Path | None = None) -> dict[str, Any]:
     local = github_plan_claim.local_inventory(repo, number, cwd=cwd)
-    _, branches = collect_paged_rest_items(f"/repos/{repo}/branches", query={}, bucket="rest_core", step_prefix="claim_remote_branches")
+    reader = next_graph_reader(repo)
+    if reader is None:
+        _, branches = collect_paged_rest_items(
+            f"/repos/{repo}/branches", query={}, bucket="rest_core", step_prefix="claim_remote_branches"
+        )
+    else:
+        try:
+
+            def read(source: github_read.GitHubReader = reader) -> list[dict[str, Any]]:
+                try:
+                    return github_plan_graph.repository_names(source, repo, "branches")
+                finally:
+                    for result in source.results:
+                        record_retry_fields(result)
+
+            branches = NEXT_READS.observe(f"planning_branches:{repo.casefold()}", read) if NEXT_READS else read()
+        except github_read.GitHubReadError as error:
+            if error.rest_recovery_allowed:
+                _, branches = collect_paged_rest_items(
+                    f"/repos/{repo}/branches", query={}, bucket="rest_core", step_prefix="claim_remote_branches"
+                )
+            else:
+                raise plan_read_error(error) from error
+        except (github_read.GitHubReadShapeError, github_next_reads.ReadDeadline, ValueError) as error:
+            raise plan_read_error(error) from error
     return {**local, "remote_branches": [branch["name"] for branch in branches]}
+
+
+def read_planning_inventory(
+    repo: str,
+    *,
+    kind: str = "issue",
+    state: str = "open",
+    sort: str = "created",
+    direction: str = "desc",
+    labels: list[str] | None = None,
+    milestone: int | None = None,
+    limit: int | None = None,
+    metadata: dict[str, dict[str, Any]] | None = None,
+) -> tuple[str, list[dict[str, Any]]]:
+    def rest() -> tuple[str, list[dict[str, Any]]]:
+        if metadata is not None:
+            metadata.pop(repo, None)
+        query = {
+            "state": state,
+            "sort": sort,
+            "direction": direction,
+            **({"labels": ",".join(labels)} if labels else {}),
+            **({"milestone": milestone} if milestone is not None else {}),
+        }
+        return collect_paged_rest_items(
+            f"/repos/{repo}/{'issues' if kind == 'issue' else 'pulls'}",
+            query=query,
+            bucket="rest_core",
+            step_prefix="planning_inventory",
+            limit=limit,
+            issue_only=kind == "issue",
+        )
+
+    reader = next_graph_reader(repo)
+    if reader is None:
+        return rest()
+    try:
+
+        def read(source: github_read.GitHubReader = reader) -> list[dict[str, Any]]:
+            try:
+                return github_plan_graph.repository_records(
+                    source,
+                    repo,
+                    kind=kind,
+                    state=state,
+                    sort=sort,
+                    direction=direction,
+                    labels=labels,
+                    milestone=milestone,
+                    limit=limit,
+                    metadata=metadata,
+                )
+            finally:
+                for result in source.results:
+                    record_retry_fields(result)
+
+        key = json.dumps(["planning_inventory", repo.casefold(), kind, state, sort, direction, labels, milestone, limit])
+        rows = NEXT_READS.observe(key, read) if NEXT_READS else read()
+        return reader.actor or "automation-gh", rows
+    except github_read.GitHubReadError as error:
+        if error.rest_recovery_allowed:
+            return rest()
+        raise plan_read_error(error) from error
+    except (github_read.GitHubReadShapeError, github_next_reads.ReadDeadline, KeyError, TypeError, ValueError) as error:
+        raise plan_read_error(error) from error
+
+
+def read_planning_connection(repo: str, number: int, field: str, *, limit: int | None = None) -> tuple[str, list[dict[str, Any]]]:
+    endpoint = {"blockedBy": "dependencies/blocked_by", "blocking": "dependencies/blocking", "subIssues": "sub_issues"}.get(
+        field, field
+    )
+    path = f"/repos/{repo}/issues/{number}/{endpoint}"
+    observed = NEXT_READS is not None and NEXT_READS.observation(path_with_query(path, {"per_page": 100, "page": 1})) is not None
+    reader = next_graph_reader(repo) if not observed else None
+    if reader is None:
+        return collect_paged_rest_items(path, query={}, bucket="rest_core", step_prefix="planning_connection", limit=limit)
+    try:
+
+        def read(source: github_read.GitHubReader = reader) -> list[dict[str, Any]]:
+            try:
+                return github_plan_graph.issue_connection(source, repo, number, field)
+            finally:
+                for result in source.results:
+                    record_retry_fields(result)
+
+        rows = NEXT_READS.observe(f"planning_connection:{repo.casefold()}#{number}:{field}", read) if NEXT_READS else read()
+        return reader.actor or "automation-gh", rows[:limit]
+    except github_read.GitHubReadError as error:
+        if error.rest_recovery_allowed:
+            return collect_paged_rest_items(path, query={}, bucket="rest_core", step_prefix="planning_connection", limit=limit)
+        raise plan_read_error(error) from error
+    except (github_read.GitHubReadShapeError, github_next_reads.ReadDeadline, KeyError, TypeError, ValueError) as error:
+        raise plan_read_error(error) from error
 
 
 def collect_paged_rest_items(
@@ -1076,71 +1197,6 @@ def collect_paged_rest_items(
     page_metadata: list[dict[str, Any]] | None = None,
     include_archived: bool = False,
 ) -> tuple[str, list[dict[str, Any]]]:
-    match = re.fullmatch(
-        r"/repos/([^/]+/[^/]+)/(issues|pulls|labels|branches)(?:/([1-9]\d*)/(comments|dependencies/blocked_by|dependencies/blocking|sub_issues))?",
-        path,
-    )
-    repo = match[1] if match else os.environ.get("GH_REPO") or repo_from_git()
-    observed = (
-        NEXT_READS is not None and NEXT_READS.observation(path_with_query(path, {**query, "per_page": 100, "page": 1})) is not None
-    )
-    migrated = not CURRENT_IS_WRITE or CURRENT_OPERATION == "github.plan.claim"
-    reader = next_graph_reader(repo) if (match or path == "/search/issues") and not observed and migrated else None
-    if reader is not None:
-        try:
-            if path == "/search/issues":
-                rows, metadata = github_plan_graph.search_records(reader, query["q"], limit=limit or 1000)
-                if issue_only:
-                    rows = [row for row in rows if "pull_request" not in row]
-                if page_metadata is not None:
-                    page_metadata.append(metadata)
-            else:
-                assert match is not None
-                repo = match[1]
-                if match[3]:
-                    field = {"dependencies/blocked_by": "blockedBy", "dependencies/blocking": "blocking", "sub_issues": "subIssues"}.get(
-                        match[4], match[4]
-                    )
-                    rows = github_plan_graph.issue_connection(reader, repo, int(match[3]), field)
-                elif match[2] in {"labels", "branches"}:
-                    rows = github_plan_graph.repository_names(reader, repo, match[2], limit=limit)
-                else:
-                    kinds = ["issue"] if issue_only else ["pullRequest"] if match[2] == "pulls" else ["issue", "pullRequest"]
-                    metadata = {}
-                    rows = [
-                        row
-                        for kind in kinds
-                        for row in github_plan_graph.repository_records(
-                            reader,
-                            repo,
-                            kind=kind,
-                            state=query.get("state", "open"),
-                            labels=query["labels"].split(",") if query.get("labels") else None,
-                            milestone=query.get("milestone"),
-                            sort=query.get("sort", "created"),
-                            direction=query.get("direction", "desc"),
-                            limit=limit,
-                            metadata=metadata,
-                        )
-                    ]
-                    if page_metadata is not None:
-                        page_metadata.append({"repository": {"archived": metadata[repo].get("isArchived")}})
-                    sort = "updated_at" if query.get("sort") == "updated" else "created_at"
-                    rows.sort(key=lambda row: (row[sort], row["number"]), reverse=query.get("direction", "desc") == "desc")
-            if completed_steps is not None:
-                completed_steps.extend(reader.completed_steps)
-            if NEXT_READS is not None and (limit is None or len(rows) < limit) and collection_key is None:
-                for offset in range(0, len(rows) + 1, 100):
-                    NEXT_READS.publish(
-                        path_with_query(path, {**query, "per_page": 100, "page": offset // 100 + 1}),
-                        (reader.actor, rows[offset : offset + 100]),
-                    )
-            return reader.actor or "automation-gh", rows[:limit]
-        except (github_read.GitHubReadError, github_read.GitHubReadShapeError, KeyError, TypeError, ValueError) as error:
-            raise plan_read_error(error) from error
-        finally:
-            for result in reader.results:
-                record_retry_fields(result)
     actor = ""
     items: list[dict[str, Any]] = []
     steps = completed_steps if completed_steps is not None else []
@@ -1397,17 +1453,6 @@ def issue_ref(ref: str, repo: str) -> tuple[str, int]:
 
 def get_issue(ref: str, repo: str) -> tuple[str, dict[str, Any]]:
     issue_repo, number = issue_ref(ref, repo)
-    observed = NEXT_READS is not None and NEXT_READS.observation(f"/repos/{issue_repo}/issues/{number}") is not None
-    reader = next_graph_reader(issue_repo) if not CURRENT_IS_WRITE and not observed else None
-    if reader is not None:
-        try:
-            data = github_plan_graph.issue_record(reader, issue_repo, number)
-            return reader.actor or "automation-gh", data
-        except (github_read.GitHubReadError, github_read.GitHubReadShapeError, KeyError, TypeError, ValueError) as error:
-            raise plan_read_error(error) from error
-        finally:
-            for result in reader.results:
-                record_retry_fields(result)
     actor, data = api_json("GET", f"/repos/{issue_repo}/issues/{number}", failed_step="get_issue")
     data["repo"] = issue_repo
     return actor, data
@@ -1993,26 +2038,20 @@ def ensure_labels(
 
 def cmd_index(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
-    metadata = []
-    actor, data = collect_paged_rest_items(
-        f"/repos/{repo}/issues",
-        query={
-            **({"labels": args.label} if args.label else {}),
-            "state": args.state,
-            "sort": "updated",
-            "direction": "desc",
-        },
-        bucket="rest_core",
-        step_prefix="list_plan_issues",
+    metadata = {}
+    actor, data = read_planning_inventory(
+        repo,
+        state=args.state,
+        labels=args.label.split(",") if args.label else None,
+        sort="updated",
         limit=args.limit + 1,
-        issue_only=True,
-        page_metadata=metadata,
+        metadata=metadata,
     )
     truncated = len(data) > args.limit
     items = [compact_list_issue(repo, item) for item in data[:args.limit]]
     try:
         if metadata:
-            repository = metadata[-1]["repository"]
+            repository = {"archived": metadata[repo].get("isArchived")}
         else:
             _, repository = api_json("GET", f"/repos/{repo}", bucket="rest_core", failed_step="inventory_repository")
         context = github_read.repository_disposition(repository)
@@ -2042,17 +2081,49 @@ def cmd_search(args: argparse.Namespace) -> None:
     if args.state != "all":
         query_parts.append(f"is:{args.state}")
     page_metadata: list[dict[str, Any]] = []
-    actor, data = collect_paged_rest_items(
-        "/search/issues",
-        query={"q": repository_scope.search_query(" ".join(part for part in query_parts if part),
-                                                  include_archived=getattr(args, "include_archived", False))},
-        bucket="search",
-        step_prefix="search_plan_issues",
-        include_archived=getattr(args, "include_archived", False),
-        limit=args.limit,
-        collection_key="items",
-        page_metadata=page_metadata,
+    search_query = repository_scope.search_query(
+        " ".join(part for part in query_parts if part), include_archived=getattr(args, "include_archived", False)
     )
+
+    def rest() -> tuple[str, list[dict[str, Any]]]:
+        return collect_paged_rest_items(
+            "/search/issues",
+            query={
+                "q": repository_scope.search_query(
+                    " ".join(part for part in query_parts if part), include_archived=getattr(args, "include_archived", False)
+                )
+            },
+            bucket="search",
+            step_prefix="search_plan_issues",
+            include_archived=getattr(args, "include_archived", False),
+            limit=args.limit,
+            collection_key="items",
+            page_metadata=page_metadata,
+        )
+
+    reader = next_graph_reader(repo)
+    if reader is None:
+        actor, data = rest()
+    else:
+
+        def read(source: github_read.GitHubReader = reader) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+            try:
+                return github_plan_graph.search_records(source, search_query, limit=args.limit)
+            finally:
+                for result in source.results:
+                    record_retry_fields(result)
+
+        try:
+            data, metadata = read()
+            actor = reader.actor
+            page_metadata.append(metadata)
+        except github_read.GitHubReadError as error:
+            if error.rest_recovery_allowed:
+                actor, data = rest()
+            else:
+                raise plan_read_error(error) from error
+        except (github_read.GitHubReadShapeError, github_next_reads.ReadDeadline, KeyError, TypeError, ValueError) as error:
+            raise plan_read_error(error) from error
     items = []
     for item in data:
         item_repo = issue_repository_name(item)
@@ -2094,6 +2165,8 @@ def read_planning_graph(repo: str, **kwargs: Any) -> list[dict[str, Any]] | None
             row["_graph_actor"] = reader.actor
         BATCH_READ_CONTEXT.update({"used": True, "fallback_reason": None})
         return rows
+    except github_next_reads.ReadDeadline as error:
+        raise plan_read_error(error) from error
     except (github_read.GitHubReadError, github_read.GitHubReadShapeError, KeyError, TypeError, ValueError, AttributeError) as error:
         if isinstance(error, github_read.GitHubReadError):
             # Ctrl-C in the graph's retry wait ends the command; it is not a REST fallback.
@@ -2271,8 +2344,7 @@ def read_decision_discussion(repo: str, number: int) -> dict[str, Any]:
     def read() -> dict[str, Any]:
         try:
             _, source = get_issue(str(number), repo)
-            _, comments = collect_paged_rest_items(f"/repos/{repo}/issues/{number}/comments", query={},
-                bucket="rest_core", step_prefix="wait_decision_comments")
+            _, comments = read_planning_connection(repo, number, "comments")
             return github_direction_next.discussion_snapshot(source, comments, complete=True)
         except PlanError as source_error:
             raise_if_cancelled(source_error)
@@ -2362,10 +2434,7 @@ def claim_snapshot(ref: str, repo: str, *, allow_closed: bool = False,
     if issue.get("state") not in ({"open", "closed"} if allow_closed else {"open"}):
         raise PlanError("Claim requires an open issue or pull request")
     sections, provenance = read_plan_sections(issue)
-    _, comments = collect_paged_rest_items(
-        f"/repos/{issue['repo']}/issues/{issue['number']}/comments",
-        query={}, bucket="rest_core", step_prefix="claim_comments",
-    )
+    _, comments = read_planning_connection(issue['repo'], issue['number'], "comments")
     comments = github_plan_release.verified_comments(comments, _claim_release_evidence)
     seed_decision_discussion(issue["repo"], issue["number"],
         github_direction_next.discussion_snapshot(issue, comments, complete=True))
@@ -3389,15 +3458,12 @@ def claim_once(args: argparse.Namespace) -> None:
         check_inherited_sources(source_comments or [], source_status or "",
                                 node_repo=source_repo, node_number=source_number, node_issue=source_issue,
                                 traversal=traversal)
-        _, children = collect_paged_rest_items(
-            f"/repos/{source_repo}/issues/{source_number}/sub_issues", query={},
-            bucket="rest_core", step_prefix="claim_handoff_children")
+        _, children = read_planning_connection(source_repo, source_number, "subIssues")
         _, history = collect_paged_rest_items(
             f"/repos/{source_repo}/issues/{source_number}/timeline", query={},
             bucket="rest_core", step_prefix="claim_handoff_child_history")
         if sibling_parent is not None:
-            _, siblings = collect_paged_rest_items(f"/repos/{source_repo}/issues/{sibling_parent}/sub_issues", query={},
-                                                  bucket="rest_core", step_prefix="claim_handoff_siblings")
+            _, siblings = read_planning_connection(source_repo, sibling_parent, "subIssues")
             _, sibling_history = collect_paged_rest_items(f"/repos/{source_repo}/issues/{sibling_parent}/timeline", query={},
                                                          bucket="rest_core", step_prefix="claim_handoff_sibling_history")
             children.extend(siblings)
@@ -3520,10 +3586,7 @@ def claim_once(args: argparse.Namespace) -> None:
             raise PlanError("Refresh handoff PR changed or closed during ownership preflight")
         sections, _ = read_plan_sections(target)
         if cached is None:
-            _, target_comments = collect_paged_rest_items(
-                f"/repos/{target_repo}/issues/{pull['number']}/comments", query={},
-                bucket="rest_core", step_prefix="refresh_comments",
-            )
+            _, target_comments = read_planning_connection(target_repo, pull['number'], "comments")
             target_comments = github_plan_release.verified_comments(target_comments, _claim_release_evidence)
             phase_records[key] = (target, sections.get("Current Status", ""), target_comments, False)
         phase_owners.add(key)
@@ -3753,10 +3816,7 @@ def claim_once(args: argparse.Namespace) -> None:
         current_issue, current_status, current_comments, _ = snapshot
         source_info = resume_source(current_comments, current_status) if args.resume_from else (number, current_comments, current_status)
         phase_owners.update(((issue_repo.casefold(), number), (issue_repo.casefold(), source_info[0])))
-        _, phase["open_pulls"] = collect_paged_rest_items(
-            f"/repos/{target_repo}/pulls", query={"state": "open"},
-            bucket="rest_core", step_prefix="claim_pr_readback",
-        )
+        _, phase["open_pulls"] = read_planning_inventory(target_repo, kind="pullRequest")
         phase["inventory"] = claim_inventory(target_repo, number)
         inherited_source = any(record.get("retained_handoff") for text in [current_status, *(comment.get("body") or "" for comment in current_comments)]
                                for record in github_plan_claim.records(text))
@@ -3787,16 +3847,10 @@ def claim_once(args: argparse.Namespace) -> None:
                 if planning_path is None:
                     raise PlanError("Cross-repository refresh requires a verified planning checkout; pass --planning-checkout PATH")
                 phase["planning_inventory"] = claim_inventory(issue_repo, number, cwd=planning_path)
-                _, phase["planning_pulls"] = collect_paged_rest_items(
-                    f"/repos/{issue_repo}/pulls", query={"state": "open"},
-                    bucket="rest_core", step_prefix="refresh_planning_prs",
-                )
+                _, phase["planning_pulls"] = read_planning_inventory(issue_repo, kind="pullRequest")
         phase["blockers"] = []
         if record_kind != "pr":
-            _, phase["blockers"] = collect_paged_rest_items(
-                f"/repos/{issue_repo}/issues/{number}/dependencies/blocked_by",
-                query={}, bucket="rest_core", step_prefix="claim_blockers",
-            )
+            _, phase["blockers"] = read_planning_connection(issue_repo, number, "blockedBy")
         phase["canonical_issue"] = None
         phase["canonical_issues"] = []
         if record_kind == "pr":
@@ -5046,9 +5100,7 @@ def next_dependabot_work(
                     raise PlanError("Repository PR inventory unavailable")
                 pulls = [row for row in pull_inventory[repo.casefold()] if row.get("pull_request")]
             else:
-                _, pulls = collect_paged_rest_items(
-                    f"/repos/{repo}/pulls", query={"state": "open", "sort": "created", "direction": "asc"},
-                    bucket="rest_core", step_prefix="next_dependabot_pulls", limit=scan_limit + 1 if scan_limit is not None else None)
+                _, pulls = read_planning_inventory(repo, kind="pullRequest", direction="asc", limit=scan_limit + 1 if scan_limit is not None else None)
         except PlanError as exc:
             context.update(complete=False, error=next_source_error(exc))
             coverage["complete"] = False
@@ -5070,8 +5122,7 @@ def next_dependabot_work(
                 if "_graph_comments" in pull:
                     comments = pull["_graph_comments"]
                 else:
-                    _, comments = collect_paged_rest_items(f"/repos/{repo}/issues/{pull['number']}/comments",
-                        query={}, bucket="rest_core", step_prefix="next_pr_comments", limit=comment_limit + 1 if comment_limit is not None else None)
+                    _, comments = read_planning_connection(repository_name, pull['number'], "comments", limit=comment_limit + 1 if comment_limit is not None else None)
                 return github_next_pr.project(repository_name, pull, comments[:comment_limit],
                     trusted=trusted, complete=comment_limit is None or len(comments) <= comment_limit,
                     acceptance_reader=next_pr_acceptance)
@@ -5266,9 +5317,7 @@ def cmd_next(args: argparse.Namespace) -> None:
             if "_graph_comments" in issue:
                 comments = issue["_graph_comments"]
             else:
-                _, comments = collect_paged_rest_items(
-                    f"/repos/{repo}/issues/{issue['number']}/comments", query={}, limit=comment_limit + 1 if comment_limit is not None else None,
-                    bucket="rest_core", step_prefix="next_issue_comments")
+                _, comments = read_planning_connection(repo, issue['number'], "comments", limit=comment_limit + 1 if comment_limit is not None else None)
             discussion_complete = comment_limit is None or len(comments) <= comment_limit
             if not discussion_complete:
                 wait_error = "Discussion exceeded the comment read bound"
@@ -5416,9 +5465,39 @@ def next_status_body_time(item: dict[str, Any], trusted: set[str]) -> str | None
 
 def read_queue_ownership(repo: str) -> dict[str, Any]:
     observed: dict[str, Any] = {"complete": False, "coverage": {}}
+    reader = next_graph_reader(repo)
     try:
         bound = None if NEXT_READS is not None else NEXT_PLAN_INVENTORY_LIMIT
-        observed.update(github_work_graph.ownership_inventory(collect_paged_rest_items, repo, limit=bound))
+        inventory = NEXT_READS.inventory.get(repo.casefold()) if NEXT_READS is not None else None
+
+        def graph() -> dict[str, Any]:
+            try:
+                return github_work_graph.ownership_inventory(
+                    collect_paged_rest_items,
+                    repo,
+                    limit=bound,
+                    reader=reader,
+                    pulls=[row for row in inventory if row.get("pull_request")] if inventory is not None else None,
+                )
+            finally:
+                if reader is not None:
+                    for result in reader.results:
+                        record_retry_fields(result)
+
+        def read() -> dict[str, Any]:
+            try:
+                return graph()
+            except github_read.GitHubReadError as error:
+                if not error.rest_recovery_allowed:
+                    raise
+                return github_work_graph.ownership_inventory(
+                    collect_paged_rest_items,
+                    repo,
+                    limit=bound,
+                    pulls=[row for row in inventory if row.get("pull_request")] if inventory is not None else None,
+                )
+
+        observed.update(NEXT_READS.observe(f"ownership_inventory:{repo.casefold()}", read) if NEXT_READS else read())
         if NEXT_READS is not None:
             observed["records"] = [row for rows in NEXT_READS.inventory.values() for row in rows]
         target = pathlib.Path.home() / "Developer" / repo.split("/")[1]
@@ -5430,6 +5509,8 @@ def read_queue_ownership(repo: str) -> dict[str, Any]:
                 observed["coverage"].update(local_artifacts="read")
             except (ValueError, OSError, subprocess.SubprocessError) as exc:
                 observed["coverage"]["local_error"] = str(exc)
+    except (github_read.GitHubReadError, github_read.GitHubReadShapeError, github_next_reads.ReadDeadline, ValueError) as exc:
+        observed["coverage"]["error"] = next_source_error(plan_read_error(exc))
     except PlanError as exc:
         observed["coverage"]["error"] = next_source_error(exc)
     return observed
@@ -5456,8 +5537,7 @@ def annotate_next_queue(items: list[dict[str, Any]], args: argparse.Namespace, *
             continue
         try:
             _, raw = get_issue(str(item["number"]), item["repo"])
-            _, comments = collect_paged_rest_items(f"/repos/{item['repo']}/issues/{item['number']}/comments",
-                query={}, bucket="rest_core", step_prefix="next_queue_comments", limit=comment_limit + 1 if comment_limit is not None else None)
+            _, comments = read_planning_connection(item['repo'], item['number'], "comments", limit=comment_limit + 1 if comment_limit is not None else None)
             item["discussion"] = github_direction_next.discussion_snapshot(raw, comments[:comment_limit], complete=comment_limit is None or len(comments) <= comment_limit)
         except PlanError as exc:
             item["queue"] = {"state": "review", "reason": "incomplete_discussion", "detail": next_source_error(exc)}
@@ -5537,6 +5617,8 @@ def next_source_error(exc: PlanError) -> str:
         NEXT_READS.budget_stop(exc.failure.cause if exc.failure else "read_budget_exhausted",
                               error=exc.__cause__ or exc, retry_at=metadata.get("retry_at"))
         return "global next read deadline prevents this evidence read"
+    if isinstance(exc.__cause__, github_read.GitHubReadShapeError):
+        return github_api_core.redact_string(str(exc))
     if exc.failure is not None and exc.failure.cause not in {"permission_denied", "not_found", "identity_refused"}:
         raise exc
     return github_api_core.redact_string(str(exc))
@@ -5878,7 +5960,7 @@ def next_graph_reader(repo: str | None) -> github_read.GitHubReader | None:
         return None
     return PlanningGraphReader(gh_cmd=str(BOT_GH), expected_actor=EXPECTED_ACTOR, actor=EXPECTED_ACTOR,
         operation=CURRENT_OPERATION, strict_actor=True, repository=repo,
-        deadline_at=NEXT_READS.deadline if NEXT_READS else None,
+        deadline_at=NEXT_READS.deadline if NEXT_READS else time.time() + github_api_core.remaining_retry_timeout_seconds(),
         retry_runtime=NEXT_READS.retry_runtime if NEXT_READS else None)
 
 
@@ -7393,10 +7475,11 @@ def load_direction(repo: str) -> str | None:
     """
     reader = next_graph_reader(repo) if not CURRENT_IS_WRITE else None
     if reader is not None:
-        try:
+
+        def read(source: github_read.GitHubReader = reader) -> str | None:
             owner, name = repo.split("/", 1)
             data = github_plan_graph.query_data(
-                reader,
+                source,
                 f"query {{ repository(owner:{json.dumps(owner)},name:{json.dumps(name)}) {{ "
                 f'object(expression:"HEAD:{DIRECTION_FILE}") {{ ... on Blob {{ text isBinary isTruncated }} }} }} rateLimit {{ cost remaining resetAt }} }}',
                 step="read_direction",
@@ -7416,7 +7499,17 @@ def load_direction(repo: str) -> str | None:
             ):
                 raise github_read.GitHubReadShapeError("Direction file content unavailable or truncated")
             return blob["text"]
-        except (github_read.GitHubReadError, github_read.GitHubReadShapeError, KeyError, TypeError, ValueError) as error:
+
+        try:
+            return NEXT_READS.observe(f"direction:{repo.casefold()}", read) if NEXT_READS else read()
+        except (
+            github_read.GitHubReadError,
+            github_read.GitHubReadShapeError,
+            github_next_reads.ReadDeadline,
+            KeyError,
+            TypeError,
+            ValueError,
+        ) as error:
             raise plan_read_error(error) from error
         finally:
             for result in reader.results:

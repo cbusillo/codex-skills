@@ -19,6 +19,7 @@ import re
 import subprocess
 import time
 import urllib.parse
+from dataclasses import replace
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any, NamedTuple, NoReturn, Optional
@@ -76,9 +77,19 @@ class GitHubReadError(Exception):
         self.result = result
         self.diagnostics = diagnostics
 
+    @property
+    def rest_recovery_allowed(self) -> bool:
+        return (
+            self.result.bucket == "graphql"
+            and self.result.failure is not None
+            and self.result.failure.cause in {"network_provider_failure", "graphql_primary_rate_limited"}
+        )
+
 
 class GitHubReadShapeError(Exception):
-    pass
+    def __init__(self, message: str, *, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.retryable = retryable
 
 
 def _default_cache_dir() -> pathlib.Path:
@@ -609,12 +620,26 @@ def graphql_connection_page(value: Any) -> GraphQLConnection:
 
 def graphql_data(result: github_api_core.ApiResult) -> dict[str, Any]:
     body = result.body
-    if not isinstance(body, dict) or body.get("errors") or not isinstance(body.get("data"), dict):
+    if isinstance(body, dict) and body.get("errors"):
+        raise graphql_failure(result, body["errors"])
+    if not isinstance(body, dict) or not isinstance(body.get("data"), dict):
         raise GitHubReadShapeError("GraphQL returned partial or missing data")
     return body["data"]
 
 
-class RepositoryInventoryUnavailable(ValueError):
+def graphql_failure(result: github_api_core.ApiResult, errors: list[Any]) -> GitHubReadError | GitHubReadShapeError:
+    kinds = {error.get("type") or (error.get("extensions") or {}).get("code") for error in errors if isinstance(error, dict)}
+    status = 404 if kinds == {"NOT_FOUND"} else 403 if kinds and kinds <= {"FORBIDDEN", "INSUFFICIENT_SCOPES"} else None
+    if status is None:
+        return GitHubReadShapeError("GraphQL returned partial or missing data")
+    failure = github_api_core.classify_error(
+        status, result.headers, {"message": "GraphQL source not found" if status == 404 else "GraphQL source access denied"}
+    )
+    failed = replace(result, ok=False, failure=failure)
+    return GitHubReadError(failure.message, result=failed, diagnostics={})
+
+
+class RepositoryInventoryUnavailable(GitHubReadShapeError, ValueError):
     pass
 
 
@@ -681,10 +706,11 @@ def read_repository_connections(
         body = response.body if isinstance(response.body, dict) else {}
         payload = body.get("data")
         data: dict[str, Any] = payload if isinstance(payload, dict) else {}
-        invalid = set()
+        invalid: dict[str, list[Any]] = {}
         for error in body.get("errors") or []:
             path = error.get("path") if isinstance(error, dict) else None
-            invalid.update([path[0]] if isinstance(path, list) and path and path[0] in aliases else aliases)
+            for alias in [path[0]] if isinstance(path, list) and path and path[0] in aliases else aliases:
+                invalid.setdefault(alias, []).append(error)
         rate = data.get("rateLimit")
         cost = rate.get("cost") if isinstance(rate, dict) else None
         previous = reader.batch_diagnostic.get("cost", 0)
@@ -696,9 +722,10 @@ def read_repository_connections(
                 continue
             try:
                 repository_node = data.get(alias)
+                if alias in invalid:
+                    raise graphql_failure(response, invalid[alias])
                 if (
-                    alias in invalid
-                    or not isinstance(repository_node, dict)
+                    not isinstance(repository_node, dict)
                     or str(repository_node.get("nameWithOwner", "")).casefold() != repo.casefold()
                 ):
                     raise RepositoryInventoryUnavailable("repository unavailable or mismatched")
@@ -706,7 +733,7 @@ def read_repository_connections(
                     metadata[repo] = {key: value for key, value in repository_node.items() if key != field}
                 nodes, cursor, total = graphql_connection_page(repository_node.get(field))
                 if total != totals.setdefault(repo, total):
-                    raise RepositoryInventoryUnavailable("inventory changed during pagination")
+                    raise RepositoryInventoryUnavailable("inventory changed during pagination", retryable=True)
                 for node in nodes:
                     key = identity(node) if identity is not None else node.get("number")
                     if key is None or key in identities[repo] or identity is None and (type(key) is not int or key <= 0):
@@ -726,7 +753,9 @@ def read_repository_connections(
                     raise RepositoryInventoryUnavailable("incomplete repository inventory")
             except GitHubReadError as error:
                 result[repo] = error
-            except (RepositoryInventoryUnavailable, GitHubReadShapeError, KeyError, TypeError, ValueError):
+            except GitHubReadShapeError as error:
+                result[repo] = error
+            except (KeyError, TypeError, ValueError):
                 result[repo] = RepositoryInventoryUnavailable("repository inventory unavailable")
         cursors = pending
     result.update({repo: RepositoryInventoryUnavailable("repository pagination exceeded bound") for repo in cursors})

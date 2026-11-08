@@ -159,10 +159,10 @@ def rest_pull_request(node: dict[str, Any], labels: list[dict[str, Any]]) -> dic
         "draft": node["isDraft"],
         "merged": node["merged"],
         "merged_at": node["mergedAt"],
-        "merge_commit_sha": (node["mergeCommit"] or {}).get("oid"),
-        "mergeable": {"MERGEABLE": True, "CONFLICTING": False, "UNKNOWN": None}[node["mergeable"]],
-        "mergeable_state": node["mergeStateStatus"].lower(),
-        "reviewDecision": node["reviewDecision"],
+        "merge_commit_sha": (node.get("mergeCommit") or {}).get("oid"),
+        "mergeable": {"MERGEABLE": True, "CONFLICTING": False, "UNKNOWN": None}.get(node.get("mergeable") or "UNKNOWN"),
+        "mergeable_state": node["mergeStateStatus"].lower() if node.get("mergeStateStatus") else None,
+        "reviewDecision": node.get("reviewDecision"),
         "labels": labels,
         "html_url": node["url"],
         "user": rest_author(node["author"]),
@@ -175,7 +175,7 @@ def rest_pull_request(node: dict[str, Any], labels: list[dict[str, Any]]) -> dic
             "ref": node["baseRefName"],
             "repo": {"full_name": node["baseRepository"]["nameWithOwner"]},
         },
-        "changed_files": node["changedFiles"],
+        "changed_files": node.get("changedFiles"),
         "updated_at": node["updatedAt"],
     }
 

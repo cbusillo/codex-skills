@@ -181,6 +181,7 @@ class ClaimTests(unittest.TestCase):
     def setUp(self):
         # Fixture sessions are labels; the harness running the tests supplies its own native IDs.
         self.enterContext(patch.dict(os.environ))
+        self.enterContext(patch.dict(vars(PLAN), {"next_graph_reader": lambda _repo: None}))
         os.environ["HOME"] = self.enterContext(tempfile.TemporaryDirectory())
         os.environ.pop("DIRECTION_MARKER", None)
         self.enterContext(patch.object(Path, "home", return_value=Path(os.environ["HOME"])))
@@ -4379,7 +4380,6 @@ class ClaimTests(unittest.TestCase):
                                 self.assertEqual(self.emitted.call_args.args[0]["issue"]["launch_check"]["ownership"]["detail"], observed["coverage"]["local_error"])
                             self.inventory, self.blockers, self.issue = old
                             observed.update(complete=True, inventory=self.inventory, coverage={})
-                    source = CLAIM.records(self.comments[0]["body"])[0]
                     self.comments.insert(2, {"id": 44, "body": f"Released claim {self.comments[0]['id']}",
                         "user": {"login": TEST_BOT}, "created_at": "2026-10-01T12:00:00Z"})
                     commands, _ = iterm_tab.prepare_launches(launch)
