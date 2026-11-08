@@ -3118,35 +3118,6 @@ def _saved_dry_run_output(operation: str, response: dict[str, object]) -> dict[s
     )
 
 
-def test_testing_hold_plan_projection_is_bounded_and_fail_closed() -> None:
-    result = _saved_dry_run_output(
-        "testing-hold-dry-run", _testing_hold_response(_testing_hold_plan())
-    )
-    assert result["summary"]["plan_sha256"] == "b" * 64
-    assert result["result"]["before"] is None
-    assert result["result"]["after"]["recorded_by"] == "operator-example"
-    assert "read_back_matches" not in result["result"]
-
-    for plan, code in (
-        (_testing_hold_plan(extra="x"), "unsafe_response_shape"),
-        (_testing_hold_plan(action="delete"), "invalid_response"),
-        (_testing_hold_plan(mode="plan"), "invalid_response"),
-        (_testing_hold_plan(plan_sha256="not-a-digest"), "invalid_response"),
-        (
-            _testing_hold_plan(after={"reason": "Testing.", "token": "x"}),
-            "unsafe_response_shape",
-        ),
-    ):
-        _expect_error(lambda candidate=plan: write_action._project_testing_hold_plan(candidate), code)
-    _expect_error(
-        lambda: write_action._project_success_output(
-            "testing-hold-dry-run",
-            {**_testing_hold_response(_testing_hold_plan()), "records": {"secret": "x"}},
-        ),
-        "unsafe_response_shape",
-    )
-
-
 def test_testing_hold_read_sends_lane_query_and_projects_hold() -> None:
     calls: list[dict[str, Any]] = []
     response = {
@@ -5775,84 +5746,6 @@ def _testing_hold_args(**overrides: object) -> argparse.Namespace:
     return argparse.Namespace(**values)
 
 
-def test_testing_hold_body_binds_apply_to_saved_dry_run(tmp_path: Path) -> None:
-    dry_run = write_action.testing_hold_body(_testing_hold_args(), mode="dry-run")
-    assert dry_run["mode"] == "dry-run"
-    assert dry_run["hold"] is True
-    assert dry_run["context"] == "example"
-    assert "reviewed_plan_sha256" not in dry_run
-    assert write_action.testing_hold_body(_testing_hold_args(hold=False), mode="dry-run")["hold"] is False
-    _expect_error(
-        lambda: write_action.testing_hold_body(_testing_hold_args(reason=" "), mode="dry-run"),
-        "reason_required",
-    )
-
-    evidence_path = _write_json(
-        tmp_path,
-        "testing-hold-dry-run.json",
-        _saved_dry_run_output("testing-hold-dry-run", _testing_hold_response(_testing_hold_plan())),
-    )
-    apply_args = _testing_hold_args(
-        idempotency_key="testing-hold-1",
-        reviewed_dry_run=True,
-        expected_plan_digest="B" * 64,
-        dry_run_evidence_file=str(evidence_path),
-    )
-    body = write_action.testing_hold_body(apply_args, mode="apply")
-    assert body["mode"] == "apply"
-    assert body["reviewed_plan_sha256"] == "b" * 64
-
-    for overrides, code in (
-        ({"reviewed_dry_run": False}, "reviewed_dry_run_required"),
-        ({"idempotency_key": ""}, "idempotency_key_required"),
-        ({"expected_plan_digest": "short"}, "invalid_expected_plan_digest"),
-        ({"expected_plan_digest": "d" * 64}, "reviewed_dry_run_not_apply_eligible"),
-        ({"dry_run_evidence_file": ""}, "reviewed_dry_run_not_apply_eligible"),
-        ({"hold": False}, "reviewed_dry_run_not_apply_eligible"),
-        ({"context": "other"}, "reviewed_dry_run_not_apply_eligible"),
-        ({"reason": "A reason nobody reviewed"}, "reviewed_dry_run_not_apply_eligible"),
-    ):
-        args = argparse.Namespace(**{**vars(apply_args), **overrides})
-        _expect_error(lambda candidate=args: write_action.testing_hold_body(candidate, mode="apply"), code)
-
-
-def test_testing_hold_cli_dispatches_local_extension_route(tmp_path: Path) -> None:
-    lift_plan = _testing_hold_plan(
-        action="clear", before=_testing_hold_plan()["after"], after=None, reason="Testing done."
-    )
-    evidence_path = _write_json(
-        tmp_path, "testing-hold-dry-run.json", _saved_dry_run_output("testing-hold-dry-run", _testing_hold_response(lift_plan))
-    )
-    calls: list[dict[str, Any]] = []
-    lane = ["--product", "example-product", "--context", "example", "--instance", "testing"]
-    with temporary_attribute(write_action, "execute_post", lambda **kwargs: calls.append(kwargs) or 0):
-        assert write_action.main(["testing-hold-dry-run", *lane, "--lift", "--reason", "Testing done."]) == 0
-        assert (
-            write_action.main(
-                [
-                    "testing-hold-apply",
-                    *lane,
-                    "--lift",
-                    "--reason",
-                    "Testing done.",
-                    "--idempotency-key",
-                    "testing-hold-lift-1",
-                    "--reviewed-dry-run",
-                    "--expected-plan-digest",
-                    "b" * 64,
-                    "--dry-run-evidence-file",
-                    str(evidence_path),
-                ]
-            )
-            == 0
-        )
-    route = contract.LOCAL_EXTENSION_ROUTES["testing-hold-apply"]["path"]
-    assert [call["path"] for call in calls] == [route, route]
-    assert [call["body"]["mode"] for call in calls] == ["dry-run", "apply"]
-    assert all(call["body"]["hold"] is False for call in calls)
-    assert "Testing done." not in json.dumps([call["request"] for call in calls])
-
-
 @pytest.mark.parametrize("purpose", ["staff_testing", "isolation_staging"])
 @pytest.mark.parametrize("direction", ["set", "clear", "unchanged"])
 def test_testing_hold_cli_binds_purpose_and_preserves_apply_key(
@@ -5923,276 +5816,509 @@ def test_testing_hold_cli_binds_purpose_and_preserves_apply_key(
             assert status != 0 and len(calls) == previous_calls
 
 
+SERVICE_SETTING_VALUE = '{"synthetic-execution-host":5368709120}'
+REVIEWED_SIMPLE_POST_OPERATIONS = (
+    "testing-hold",
+    "product-repository-identity",
+    "service-runtime-setting",
+    "odoo-addon-settings",
+    "odoo-website-settings",
+)
+
+
 def _repository_identity_plan(**overrides: object) -> dict[str, object]:
-    plan: dict[str, object] = {
-        "status": "ok",
-        "mode": "dry-run",
-        "product": "example-product",
-        "repository": "example-owner/example-repo",
-        "operation": "record",
+    return {
+        "status": "ok", "mode": "dry-run", "product": "example-product",
+        "repository": "example-owner/example-repo", "operation": "record",
         "identity_before": {"repository_id": "", "repository_owner_id": ""},
         "identity_after": {"repository_id": "123456", "repository_owner_id": "7890"},
-        "inventory_record_id": "repository-inventory-123456-1",
-        "inventory_revision": 1,
-        "inventory_digest": "e" * 64,
-        "changed": True,
-        "applied": False,
+        "inventory_record_id": "repository-inventory-123456-1", "inventory_revision": 1,
+        "inventory_digest": "e" * 64, "changed": True, "applied": False,
         "reason": "Route GitHub events by repository id.",
         "source_label": "service:product-repository-identity",
         "profile_record_sha256_before": "f" * 64,
-        "profile_updated_at_before": "2026-09-29T12:00:00Z",
-        "profile_updated_at_after": "",
-        "plan_sha256": "b" * 64,
+        "profile_updated_at_before": "2026-09-29T12:00:00Z", "profile_updated_at_after": "",
+        "plan_sha256": "b" * 64, **overrides,
     }
-    plan.update(overrides)
-    return plan
-
-
-def _repository_identity_response(plan: dict[str, object]) -> dict[str, object]:
-    return {
-        "status": "accepted",
-        "trace_id": "launchplane_req_repository_identity",
-        "records": {"product_profile": "example-product", "repository_inventory": "repository-inventory-123456-1"},
-        "result": plan,
-    }
-
-
-def test_product_repository_identity_projection_is_bounded_and_fail_closed() -> None:
-    result = _saved_dry_run_output(
-        "product-repository-identity-dry-run", _repository_identity_response(_repository_identity_plan())
-    )
-    assert result["summary"]["plan_sha256"] == "b" * 64
-    assert result["result"]["identity_after"] == {"repository_id": "123456", "repository_owner_id": "7890"}
-    assert "read_back" not in result["result"]
-    applied = write_action._project_product_repository_identity_plan(
-        _repository_identity_plan(
-            mode="apply",
-            applied=True,
-            read_back={"repository_id": "123456", "repository_owner_id": "7890"},
-            read_back_matches=True,
-        )
-    )
-    assert applied["read_back_matches"] is True
-
-    for plan, code in (
-        (_repository_identity_plan(extra="x"), "unsafe_response_shape"),
-        (_repository_identity_plan(operation="overwrite"), "invalid_response"),
-        (_repository_identity_plan(inventory_revision=True), "invalid_response"),
-        (
-            _repository_identity_plan(identity_after={"repository_id": "abc", "repository_owner_id": "1"}),
-            "invalid_response",
-        ),
-        (
-            _repository_identity_plan(identity_after={"repository_id": "1", "owner_token": "x"}),
-            "unsafe_response_shape",
-        ),
-        (_repository_identity_plan(inventory_digest="not-a-digest"), "invalid_response"),
-        (
-            _repository_identity_plan(
-                identity_after={"repository_id": "1" * 21, "repository_owner_id": "1"}
-            ),
-            "invalid_response",
-        ),
-    ):
-        _expect_error(
-            lambda candidate=plan: write_action._project_product_repository_identity_plan(candidate), code
-        )
-
-
-def test_product_repository_identity_apply_requires_saved_dry_run(tmp_path: Path) -> None:
-    base = argparse.Namespace(product="example-product", reason="Route GitHub events.", idempotency_key="")
-    dry_run = write_action.product_repository_identity_body(base, mode="dry-run")
-    assert dry_run == {
-        "schema_version": 1,
-        "product": "example-product",
-        "mode": "dry-run",
-        "reason": "Route GitHub events.",
-    }
-
-    evidence_path = _write_json(
-        tmp_path,
-        "repository-identity-dry-run.json",
-        _saved_dry_run_output(
-            "product-repository-identity-dry-run",
-            _repository_identity_response(_repository_identity_plan()),
-        ),
-    )
-    hold_evidence_path = _write_json(
-        tmp_path,
-        "testing-hold-dry-run.json",
-        _saved_dry_run_output("testing-hold-dry-run", _testing_hold_response(_testing_hold_plan())),
-    )
-    apply_args = argparse.Namespace(
-        product="example-product",
-        reason="Route GitHub events.",
-        idempotency_key="repository-identity-1",
-        reviewed_dry_run=True,
-        expected_plan_digest="b" * 64,
-        dry_run_evidence_file=str(evidence_path),
-    )
-    assert write_action.product_repository_identity_body(apply_args, mode="apply")[
-        "reviewed_plan_sha256"
-    ] == "b" * 64
-    for overrides, code in (
-        ({"reviewed_dry_run": False}, "reviewed_dry_run_required"),
-        ({"idempotency_key": " "}, "idempotency_key_required"),
-        ({"expected_plan_digest": "d" * 64}, "reviewed_dry_run_not_apply_eligible"),
-        ({"product": "other-product"}, "reviewed_dry_run_not_apply_eligible"),
-        # Another operation's evidence with the same digest is not this plan's review.
-        ({"dry_run_evidence_file": str(hold_evidence_path)}, "reviewed_dry_run_not_apply_eligible"),
-    ):
-        args = argparse.Namespace(**{**vars(apply_args), **overrides})
-        _expect_error(
-            lambda candidate=args: write_action.product_repository_identity_body(candidate, mode="apply"), code
-        )
-
-    calls: list[dict[str, Any]] = []
-    with temporary_attribute(write_action, "execute_post", lambda **kwargs: calls.append(kwargs) or 0):
-        assert (
-            write_action.main(
-                ["product-repository-identity-dry-run", "--product", "example-product", "--reason", "Route GitHub events."]
-            )
-            == 0
-        )
-    route = contract.LOCAL_EXTENSION_ROUTES["product-repository-identity-apply"]["path"]
-    assert calls[0]["path"] == route
-    assert calls[0]["body"]["mode"] == "dry-run"
-
-
-SERVICE_SETTING_VALUE = '{"synthetic-execution-host":5368709120}'
 
 
 def _service_setting_plan(**overrides: object) -> dict[str, object]:
-    plan: dict[str, object] = {
-        "status": "ok",
-        "actor": "local-operator|director|PRIVATE_SENTINEL",
-        "reason": "Activate the preview floor.",
-        "mode": "dry-run",
+    return {
+        "status": "ok", "actor": "local-operator|director|PRIVATE_SENTINEL",
+        "reason": "Activate the preview floor.", "mode": "dry-run",
         "key": "LAUNCHPLANE_PREVIEW_HOST_MEMORY_FLOORS",
         "value_sha256": hashlib.sha256(SERVICE_SETTING_VALUE.encode()).hexdigest(),
-        "plan_digest": "b" * 64,
-        "trace_id": "launchplane_req_service_setting",
+        "plan_digest": "b" * 64, "trace_id": "launchplane_req_service_setting",
         "runtime_environment": {
-            "action": "updated",
-            "scope": "context",
-            "context": "launchplane",
-            "instance": "",
+            "action": "updated", "scope": "context", "context": "launchplane", "instance": "",
             "keys": ["LAUNCHPLANE_PREVIEW_HOST_MEMORY_FLOORS"],
-            "changed_keys": ["LAUNCHPLANE_PREVIEW_HOST_MEMORY_FLOORS"],
-            "unchanged_keys": [],
+            "changed_keys": ["LAUNCHPLANE_PREVIEW_HOST_MEMORY_FLOORS"], "unchanged_keys": [],
             "env_value_count_after": 5,
-            "retired_provider_keys_before": [],
-            "retired_provider_keys_after": [],
+            "retired_provider_keys_before": [], "retired_provider_keys_after": [],
+        },
+        **overrides,
+    }
+
+
+def _odoo_addon_settings_payload(**overrides: object) -> dict[str, object]:
+    return {
+        "schema_version": 1, "product": "example-odoo", "context": "example",
+        "instance": "testing", "addon": "shopify",
+        "reason": "Load the development store for testing restores.",
+        "shopify": {
+            "shop_url_key": "example-dev-store", "api_version": "2025-07",
+            "api_token_secret_binding_id": "secret-shopify-api-token-binding",
+            "webhook_key_secret_binding_id": "secret-shopify-webhook-key-binding",
+            "test_store": True,
+        },
+        **overrides,
+    }
+
+
+def _odoo_addon_settings_result(*, mode: str = "dry-run", **overrides: object) -> dict[str, object]:
+    return {
+        "status": "ok", "mode": mode, "product": "example-odoo", "context": "example",
+        "instance": "testing", "addon": "shopify", "production_lane": False,
+        "record_exists": True, "changed": True, "applied": mode == "apply", "rendered_action": "apply",
+        "changes": [
+            {
+                "setting": "shop_url_key", "action": "add", "before": None,
+                "after": {
+                    "setting": "shop_url_key", "source": "literal", "value": "example-dev-store",
+                    "value_present": True, "secret_binding_id": "", "secret_binding_present": None,
+                },
+            },
+            {
+                "setting": "api_token", "action": "update",
+                "before": {
+                    "setting": "api_token", "source": "literal", "value": None,
+                    "value_present": True, "secret_binding_id": "", "secret_binding_present": None,
+                },
+                "after": {
+                    "setting": "api_token", "source": "secret_binding", "value": None,
+                    "value_present": True, "secret_binding_id": "secret-shopify-api-token-binding",
+                    "secret_binding_present": True,
+                },
+            },
+        ],
+        "read_back": [], "read_back_matches": True if mode == "apply" else None,
+        "reason": "Load the development store for testing restores.",
+        "source_label": "service:odoo-addon-settings", "record_sha256_before": "b" * 64,
+        "record_sha256_after": "c" * 64 if mode == "apply" else "", "plan_sha256": "a" * 64,
+        "next_actions": ["Run Odoo post-deploy for this lane."], **overrides,
+    }
+
+
+def _odoo_website_settings_intent() -> dict[str, object]:
+    return {
+        "artifact_id": "artifact-example-odoo-1",
+        "settings": {
+            "operation": "apply", "website_id": 1, "public_origin": "https://www.example.com",
+            "public_indexing_enabled": True, "google_analytics_key": "G-EXAMPLE123",
+            "cookies_bar": True, "block_third_party_domains": True,
         },
     }
-    plan.update(overrides)
-    return plan
 
 
-def _service_setting_response(plan: dict[str, object], **top: object) -> dict[str, object]:
+def _odoo_website_settings_payload(**overrides: object) -> dict[str, object]:
     return {
-        "status": "accepted",
-        "trace_id": "launchplane_req_service_setting",
-        "records": {"runtime_environment": "context:launchplane"},
-        "result": plan,
-        **top,
+        "product": "example-odoo", "context": "example",
+        "reason": "Open the public site to search engines and analytics.",
+        "website_settings": _odoo_website_settings_intent(), **overrides,
     }
 
 
-def test_service_runtime_setting_projection_drops_the_actor_and_fails_closed() -> None:
-    result = _saved_dry_run_output(
-        "service-runtime-setting-dry-run", _service_setting_response(_service_setting_plan())
-    )
-    assert result["summary"]["plan_digest"] == "b" * 64
-    assert result["result"]["runtime_environment"]["changed_keys"] == [
-        "LAUNCHPLANE_PREVIEW_HOST_MEMORY_FLOORS"
-    ]
-    assert "PRIVATE_SENTINEL" not in json.dumps(result)
-    for reason in (f"Reset floors to {SERVICE_SETTING_VALUE}", "r" * 2000):
-        projected = _saved_dry_run_output(
-            "service-runtime-setting-dry-run",
-            _service_setting_response(_service_setting_plan(reason=reason)),
-        )
-        assert SERVICE_SETTING_VALUE not in json.dumps(projected)
-        assert projected["result"]["plan_digest"] == "b" * 64
-    replayed = _saved_dry_run_output(
-        "service-runtime-setting-apply",
-        _service_setting_response(_service_setting_plan(mode="apply"), replayed=True),
-    )
-    assert replayed["result"]["replayed"] is True
-    other_context = {
-        **cast(dict[str, object], _service_setting_plan()["runtime_environment"]),
-        "context": "testing",
+def _odoo_website_settings_result(**overrides: object) -> dict[str, object]:
+    return {
+        "product": "example-odoo", "context": "example", "instance": "prod",
+        "record_sha256_before": "b" * 64, "mode": "dry-run", "plan_sha256": "a" * 64,
+        "before": None, "after": _odoo_website_settings_intent(),
+        "changed": True, "applied": False, "read_back_matches": False,
+        "activation": "Client acceptance of the exact release applies these settings; "
+        "preparation changes no Odoo database.",
+        **overrides,
     }
-    for plan, code in (
-        (_service_setting_plan(value="PRIVATE_SENTINEL"), "unsafe_response_shape"),
-        (_service_setting_plan(key="lowercase-key"), "invalid_response"),
-        (_service_setting_plan(plan_digest="not-a-digest"), "invalid_response"),
-        (_service_setting_plan(runtime_environment=other_context), "invalid_response"),
-    ):
-        _expect_error(
-            lambda candidate=plan: write_action._project_service_runtime_setting_plan(candidate), code
-        )
 
 
-def test_service_runtime_setting_apply_requires_the_reviewed_key_and_value(tmp_path: Path) -> None:
-    base = argparse.Namespace(
-        key="LAUNCHPLANE_PREVIEW_HOST_MEMORY_FLOORS",
-        value=SERVICE_SETTING_VALUE,
-        reason="Activate the preview floor.",
-        idempotency_key="",
-    )
-    assert write_action.service_runtime_setting_body(base, mode="dry-run") == {
-        "mode": "dry-run",
-        "key": "LAUNCHPLANE_PREVIEW_HOST_MEMORY_FLOORS",
-        "value": SERVICE_SETTING_VALUE,
-        "reason": "Activate the preview floor.",
-    }
-    evidence_path = _write_json(
-        tmp_path,
-        "service-setting-dry-run.json",
-        _saved_dry_run_output(
-            "service-runtime-setting-dry-run",
-            _service_setting_response(_service_setting_plan()),
+def _reviewed_simple_post_evidence(
+    operation: str, plan: dict[str, object] | None = None, **top: object
+) -> dict[str, Any]:
+    spec: dict[str, tuple[str, dict[str, object], dict[str, object]]] = {
+        "testing-hold": (
+            "launchplane_req_testing_hold",
+            {"product_profile": "example-product", "context": "example", "instance": "testing"},
+            _testing_hold_plan(),
         ),
+        "product-repository-identity": (
+            "launchplane_req_repository_identity",
+            {"product_profile": "example-product", "repository_inventory": "repository-inventory-123456-1"},
+            _repository_identity_plan(),
+        ),
+        "service-runtime-setting": (
+            "launchplane_req_service_setting",
+            {"runtime_environment": "context:launchplane"},
+            _service_setting_plan(),
+        ),
+        "odoo-addon-settings": (
+            "launchplane_req_addon_settings",
+            {"product_profile": "example-odoo", "context": "example", "instance": "testing"},
+            _odoo_addon_settings_result(),
+        ),
+        "odoo-website-settings": (
+            "launchplane_req_website_settings",
+            {"product_profile": "example-odoo", "context": "example", "instance": "prod"},
+            _odoo_website_settings_result(),
+        ),
+    }
+    trace_id, records, default_plan = spec[operation]
+    selected_plan = default_plan if plan is None else plan
+    return _saved_dry_run_output(
+        f"{operation}-dry-run",
+        {"status": "accepted", "trace_id": trace_id, "records": records, "result": selected_plan, **top},
     )
+
+
+@pytest.mark.parametrize("operation", REVIEWED_SIMPLE_POST_OPERATIONS)
+def test_reviewed_simple_post_plan_projection_is_bounded_and_fail_closed(operation: str) -> None:
+    projected = _reviewed_simple_post_evidence(operation)
+    assert projected["status"] == "accepted"
+
+    if operation == "testing-hold":
+        assert projected["summary"]["plan_sha256"] == "b" * 64
+        assert projected["result"]["before"] is None
+        assert projected["result"]["after"]["recorded_by"] == "operator-example"
+        assert "read_back_matches" not in projected["result"]
+        rejections = [
+            (_testing_hold_plan(extra="x"), "unsafe_response_shape"),
+            (_testing_hold_plan(action="delete"), "invalid_response"),
+            (_testing_hold_plan(mode="plan"), "invalid_response"),
+            (_testing_hold_plan(plan_sha256="not-a-digest"), "invalid_response"),
+            (_testing_hold_plan(after={"reason": "Testing.", "token": "x"}), "unsafe_response_shape"),
+        ]
+        _expect_error(
+            lambda: write_action._project_success_output(
+                "testing-hold-dry-run",
+                {**_testing_hold_response(_testing_hold_plan()), "records": {"secret": "x"}},
+            ),
+            "unsafe_response_shape",
+        )
+    elif operation == "product-repository-identity":
+        assert projected["summary"]["plan_sha256"] == "b" * 64
+        assert projected["result"]["identity_after"] == {"repository_id": "123456", "repository_owner_id": "7890"}
+        assert "read_back" not in projected["result"]
+        applied = write_action._project_product_repository_identity_plan(
+            _repository_identity_plan(
+                mode="apply", applied=True,
+                read_back={"repository_id": "123456", "repository_owner_id": "7890"}, read_back_matches=True,
+            )
+        )
+        assert applied["read_back_matches"] is True
+        rejections = [
+            (_repository_identity_plan(extra="x"), "unsafe_response_shape"),
+            (_repository_identity_plan(operation="overwrite"), "invalid_response"),
+            (_repository_identity_plan(inventory_revision=True), "invalid_response"),
+            (
+                _repository_identity_plan(identity_after={"repository_id": "abc", "repository_owner_id": "1"}),
+                "invalid_response",
+            ),
+            (
+                _repository_identity_plan(identity_after={"repository_id": "1", "owner_token": "x"}),
+                "unsafe_response_shape",
+            ),
+            (_repository_identity_plan(inventory_digest="not-a-digest"), "invalid_response"),
+            (
+                _repository_identity_plan(
+                    identity_after={"repository_id": "1" * 21, "repository_owner_id": "1"}
+                ),
+                "invalid_response",
+            ),
+        ]
+    elif operation == "service-runtime-setting":
+        assert projected["summary"]["plan_digest"] == "b" * 64
+        assert projected["result"]["runtime_environment"]["changed_keys"] == [
+            "LAUNCHPLANE_PREVIEW_HOST_MEMORY_FLOORS"
+        ]
+        assert "PRIVATE_SENTINEL" not in json.dumps(projected)
+        for reason in (f"Reset floors to {SERVICE_SETTING_VALUE}", "r" * 2000):
+            redacted = _reviewed_simple_post_evidence(operation, _service_setting_plan(reason=reason))
+            assert SERVICE_SETTING_VALUE not in json.dumps(redacted)
+            assert redacted["result"]["plan_digest"] == "b" * 64
+        replayed = write_action.summarize_success(
+            operation="service-runtime-setting-apply",
+            request={"mode": "apply"},
+            provider_payload={
+                "status": "accepted", "trace_id": "launchplane_req_service_setting",
+                "records": {"runtime_environment": "context:launchplane"},
+                "result": _service_setting_plan(mode="apply"), "replayed": True,
+            },
+        )
+        assert replayed["result"]["replayed"] is True
+        other_context = {
+            **cast(dict[str, object], _service_setting_plan()["runtime_environment"]),
+            "context": "testing",
+        }
+        rejections = [
+            (_service_setting_plan(value="PRIVATE_SENTINEL"), "unsafe_response_shape"),
+            (_service_setting_plan(key="lowercase-key"), "invalid_response"),
+            (_service_setting_plan(plan_digest="not-a-digest"), "invalid_response"),
+            (_service_setting_plan(runtime_environment=other_context), "invalid_response"),
+        ]
+    elif operation == "odoo-addon-settings":
+        assert projected["summary"]["plan_sha256"] == "a" * 64
+        changes = {change["setting"]: change for change in projected["result"]["changes"]}
+        assert changes["shop_url_key"]["after"]["literal"] == "example-dev-store"
+        assert changes["api_token"]["after"]["binding_ref"] == "secret-shopify-api-token-binding"
+        assert changes["api_token"]["after"]["binding_present"] is True
+        assert "literal" not in changes["api_token"]["before"]
+        assert changes["api_token"]["before"]["present"] is True
+        leaked = _odoo_addon_settings_result()
+        cast(list[dict[str, Any]], leaked["changes"])[1]["before"]["value"] = "plaintext-token-value"
+        rejections = [
+            (leaked, "unsafe_response_shape"),
+            (_odoo_addon_settings_result(unexpected="field"), "unsafe_response_shape"),
+        ]
+    else:
+        assert operation == "odoo-website-settings"
+        assert projected["summary"]["plan_sha256"] == "a" * 64
+        assert projected["result"]["after"] == _odoo_website_settings_intent()
+        assert projected["result"]["before"] is None
+        withdrawn = _reviewed_simple_post_evidence(
+            operation, _odoo_website_settings_result(before=_odoo_website_settings_intent(), after=None)
+        )
+        assert withdrawn["result"]["after"] is None
+        assert withdrawn["result"]["before"]["settings"]["website_id"] == 1
+        unknown_setting = _odoo_website_settings_intent()
+        cast(dict[str, object], unknown_setting["settings"])["admin_password"] = "PRIVATE_SENTINEL"
+        rejections = [
+            (_odoo_website_settings_result(unexpected="PRIVATE_SENTINEL"), "unsafe_response_shape"),
+            (_odoo_website_settings_result(after=unknown_setting), "unsafe_response_shape"),
+        ]
+
+    for candidate_plan, code in rejections:
+        _expect_error(lambda item=candidate_plan: _reviewed_simple_post_evidence(operation, item), code)
+
+
+@pytest.mark.parametrize("operation", REVIEWED_SIMPLE_POST_OPERATIONS)
+def test_reviewed_simple_post_body_and_cli_bind_apply_to_saved_dry_run(
+    tmp_path: Path, operation: str
+) -> None:
+    evidence_path = _write_json(tmp_path, f"{operation}-dry-run.json", _reviewed_simple_post_evidence(operation))
     hold_evidence_path = _write_json(
-        tmp_path,
-        "testing-hold-dry-run.json",
-        _saved_dry_run_output("testing-hold-dry-run", _testing_hold_response(_testing_hold_plan())),
+        tmp_path, "other-hold-dry-run.json", _reviewed_simple_post_evidence("testing-hold")
     )
+
+    if operation == "testing-hold":
+        builder = write_action.testing_hold_body
+        base_args = _testing_hold_args()
+        dry_run = builder(base_args, mode="dry-run")
+        assert dry_run["mode"] == "dry-run" and dry_run["hold"] is True and dry_run["context"] == "example"
+        assert "reviewed_plan_sha256" not in dry_run
+        assert builder(_testing_hold_args(hold=False), mode="dry-run")["hold"] is False
+        _expect_error(lambda: builder(_testing_hold_args(reason=" "), mode="dry-run"), "reason_required")
+        digest_key, expected_digest, input_digest = "reviewed_plan_sha256", "b" * 64, "B" * 64
+        extra_apply_rejections: list[tuple[dict[str, Any], str]] = [
+            ({"dry_run_evidence_file": ""}, "reviewed_dry_run_not_apply_eligible"),
+            ({"hold": False}, "reviewed_dry_run_not_apply_eligible"),
+            ({"context": "other"}, "reviewed_dry_run_not_apply_eligible"),
+            ({"reason": "A reason nobody reviewed"}, "reviewed_dry_run_not_apply_eligible"),
+        ]
+        lift_plan = _testing_hold_plan(
+            action="clear", before=_testing_hold_plan()["after"], after=None, reason="Testing done."
+        )
+        lift_evidence = _write_json(tmp_path, "lift.json", _reviewed_simple_post_evidence(operation, lift_plan))
+        lane = ["--product", "example-product", "--context", "example", "--instance", "testing"]
+        cli_runs = [
+            ["testing-hold-dry-run", *lane, "--lift", "--reason", "Testing done."],
+            [
+                "testing-hold-apply", *lane, "--lift", "--reason", "Testing done.",
+                "--idempotency-key", "testing-hold-lift-1", "--reviewed-dry-run",
+                "--expected-plan-digest", "b" * 64, "--dry-run-evidence-file", str(lift_evidence),
+            ],
+        ]
+        expected_route = contract.LOCAL_EXTENSION_ROUTES["testing-hold-apply"]["path"]
+        redacted_request_token = "Testing done."
+    elif operation == "product-repository-identity":
+        builder = write_action.product_repository_identity_body
+        base_args = argparse.Namespace(
+            product="example-product", reason="Route GitHub events.", idempotency_key=""
+        )
+        assert builder(base_args, mode="dry-run") == {
+            "schema_version": 1, "product": "example-product",
+            "mode": "dry-run", "reason": "Route GitHub events.",
+        }
+        digest_key, expected_digest, input_digest = "reviewed_plan_sha256", "b" * 64, "b" * 64
+        extra_apply_rejections = [
+            ({"product": "other-product"}, "reviewed_dry_run_not_apply_eligible"),
+            ({"dry_run_evidence_file": str(hold_evidence_path)}, "reviewed_dry_run_not_apply_eligible"),
+        ]
+        cli_runs = [[
+            "product-repository-identity-dry-run",
+            "--product", "example-product", "--reason", "Route GitHub events.",
+        ]]
+        expected_route = contract.LOCAL_EXTENSION_ROUTES["product-repository-identity-apply"]["path"]
+        redacted_request_token = ""
+    elif operation == "service-runtime-setting":
+        builder = write_action.service_runtime_setting_body
+        base_args = argparse.Namespace(
+            key="LAUNCHPLANE_PREVIEW_HOST_MEMORY_FLOORS", value=SERVICE_SETTING_VALUE,
+            reason="Activate the preview floor.", idempotency_key="",
+        )
+        assert builder(base_args, mode="dry-run") == {
+            "mode": "dry-run", "key": "LAUNCHPLANE_PREVIEW_HOST_MEMORY_FLOORS",
+            "value": SERVICE_SETTING_VALUE, "reason": "Activate the preview floor.",
+        }
+        digest_key, expected_digest, input_digest = "expected_plan_digest", "b" * 64, "b" * 64
+        extra_apply_rejections = [
+            ({"value": '{"synthetic-execution-host":1}'}, "reviewed_dry_run_not_apply_eligible"),
+            ({"key": "LAUNCHPLANE_DISCUSSION_REMINDERS"}, "reviewed_dry_run_not_apply_eligible"),
+            ({"dry_run_evidence_file": str(hold_evidence_path)}, "reviewed_dry_run_not_apply_eligible"),
+        ]
+        cli_runs = [[
+            "service-runtime-setting-dry-run",
+            "--key", "LAUNCHPLANE_PREVIEW_HOST_MEMORY_FLOORS",
+            "--value", SERVICE_SETTING_VALUE, "--reason", "Activate the preview floor.",
+        ]]
+        expected_route = contract.LOCAL_EXTENSION_ROUTES["service-runtime-setting-apply"]["path"]
+        redacted_request_token = SERVICE_SETTING_VALUE
+    elif operation == "odoo-addon-settings":
+        builder = write_action.odoo_addon_settings_body
+        payload_path = _write_json(tmp_path, "addon-settings.json", _odoo_addon_settings_payload())
+        base_args = argparse.Namespace(payload_file=str(payload_path), idempotency_key="")
+        dry_run = builder(base_args, mode="dry-run")
+        assert dry_run["mode"] == "dry-run" and "reviewed_plan_sha256" not in dry_run
+        digest_key, expected_digest, input_digest = "reviewed_plan_sha256", "a" * 64, "a" * 64
+        extra_apply_rejections = [
+            ({"dry_run_evidence_file": str(hold_evidence_path)}, "reviewed_dry_run_not_apply_eligible"),
+        ]
+        plaintext = _odoo_addon_settings_payload()
+        cast(dict[str, object], plaintext["shopify"])["api_token"] = "plaintext"
+        bad_payload_path = _write_json(tmp_path, "addon-plaintext.json", plaintext)
+        _expect_error(
+            lambda: builder(argparse.Namespace(payload_file=str(bad_payload_path), idempotency_key=""), mode="dry-run"),
+            "unsupported_shopify_field",
+        )
+        cli_runs = [
+            ["odoo-addon-settings-dry-run", "--payload-file", str(payload_path)],
+            [
+                "odoo-addon-settings-apply", "--payload-file", str(payload_path),
+                "--idempotency-key", "example-testing-shopify-1", "--reviewed-dry-run",
+                "--expected-plan-digest", "a" * 64, "--dry-run-evidence-file", str(evidence_path),
+            ],
+        ]
+        expected_route = "/v1/product-config/odoo-addon-settings/apply"
+        redacted_request_token = "secret-shopify-api-token-binding"
+    else:
+        assert operation == "odoo-website-settings"
+        builder = write_action.odoo_website_settings_body
+        payload_path = _write_json(tmp_path, "website-settings.json", _odoo_website_settings_payload())
+        base_args = argparse.Namespace(payload_file=str(payload_path), idempotency_key="")
+        dry_run = builder(base_args, mode="dry-run")
+        assert dry_run["instance"] == "prod" and dry_run["mode"] == "dry-run"
+        assert "reviewed_plan_sha256" not in dry_run
+        digest_key, expected_digest, input_digest = "reviewed_plan_sha256", "a" * 64, "a" * 64
+        other_context = _write_json(
+            tmp_path,
+            "other-context-dry-run.json",
+            _reviewed_simple_post_evidence(operation, _odoo_website_settings_result(context="other")),
+        )
+        extra_apply_rejections = [
+            ({"dry_run_evidence_file": str(hold_evidence_path)}, "reviewed_dry_run_not_apply_eligible"),
+            ({"dry_run_evidence_file": str(other_context)}, "reviewed_dry_run_not_apply_eligible"),
+        ]
+
+        def settings_with(**changes: object) -> dict[str, object]:
+            intent = _odoo_website_settings_intent()
+            return {**intent, "settings": {**cast(dict[str, object], intent["settings"]), **changes}}
+
+        missing = _odoo_website_settings_payload()
+        del missing["website_settings"]
+        for index, (bad_payload, code) in enumerate((
+            (_odoo_website_settings_payload(instance="testing"), "unsupported_instance"),
+            (_odoo_website_settings_payload(schema_version=1), "unsupported_payload_field"),
+            (
+                _odoo_website_settings_payload(
+                    website_settings=settings_with(public_origin="http" + "://www.example.com")
+                ),
+                "https_public_origin_required",
+            ),
+            (
+                _odoo_website_settings_payload(website_settings=settings_with(ga_secret="x")),
+                "unsupported_website_settings_field",
+            ),
+            (
+                _odoo_website_settings_payload(
+                    website_settings=settings_with(operation="disable_collection")
+                ),
+                "unsupported_website_settings_operation",
+            ),
+            (
+                _odoo_website_settings_payload(website_settings=settings_with(website_id=True)),
+                "website_id_required",
+            ),
+            (missing, "website_settings_required"),
+        )):
+            bad_path = _write_json(tmp_path, f"bad-website-{index}.json", bad_payload)
+            _expect_error(
+                lambda path=bad_path: builder(argparse.Namespace(payload_file=str(path), idempotency_key=""), mode="dry-run"),
+                code,
+            )
+        withdraw_payload = _write_json(
+            tmp_path, "withdraw.json", _odoo_website_settings_payload(website_settings=None)
+        )
+        withdraw_evidence = _write_json(
+            tmp_path,
+            "withdraw-evidence.json",
+            _reviewed_simple_post_evidence(
+                operation,
+                _odoo_website_settings_result(before=_odoo_website_settings_intent(), after=None),
+            ),
+        )
+        cli_runs = [
+            ["odoo-website-settings-dry-run", "--payload-file", str(withdraw_payload)],
+            [
+                "odoo-website-settings-apply", "--payload-file", str(withdraw_payload),
+                "--idempotency-key", "example-prod-website-1", "--reviewed-dry-run",
+                "--expected-plan-digest", "a" * 64, "--dry-run-evidence-file", str(withdraw_evidence),
+            ],
+        ]
+        expected_route = contract.operation_path("apply_odoo_website_settings")
+        redacted_request_token = "Open the public site"
+
     apply_args = argparse.Namespace(
-        **{**vars(base), "idempotency_key": "service-setting-1"},
+        **{**vars(base_args), "idempotency_key": f"{operation}-1"},
         reviewed_dry_run=True,
-        expected_plan_digest="b" * 64,
+        expected_plan_digest=input_digest,
         dry_run_evidence_file=str(evidence_path),
     )
-    assert write_action.service_runtime_setting_body(apply_args, mode="apply")[
-        "expected_plan_digest"
-    ] == "b" * 64
+    apply_body = builder(apply_args, mode="apply")
+    assert apply_body["mode"] == "apply"
+    assert apply_body[digest_key] == expected_digest
+
     for overrides, code in (
         ({"reviewed_dry_run": False}, "reviewed_dry_run_required"),
         ({"idempotency_key": " "}, "idempotency_key_required"),
+        ({"expected_plan_digest": "short"}, "invalid_expected_plan_digest"),
         ({"expected_plan_digest": "d" * 64}, "reviewed_dry_run_not_apply_eligible"),
-        ({"value": '{"synthetic-execution-host":1}'}, "reviewed_dry_run_not_apply_eligible"),
-        ({"key": "LAUNCHPLANE_DISCUSSION_REMINDERS"}, "reviewed_dry_run_not_apply_eligible"),
-        ({"dry_run_evidence_file": str(hold_evidence_path)}, "reviewed_dry_run_not_apply_eligible"),
+        *extra_apply_rejections,
     ):
-        args = argparse.Namespace(**{**vars(apply_args), **overrides})
-        _expect_error(
-            lambda candidate=args: write_action.service_runtime_setting_body(candidate, mode="apply"), code
-        )
+        candidate = argparse.Namespace(**{**vars(apply_args), **overrides})
+        _expect_error(lambda args=candidate: builder(args, mode="apply"), code)
 
     calls: list[dict[str, Any]] = []
     with temporary_attribute(write_action, "execute_post", lambda **kwargs: calls.append(kwargs) or 0):
-        assert write_action.main([
-            "service-runtime-setting-dry-run",
-            "--key", "LAUNCHPLANE_PREVIEW_HOST_MEMORY_FLOORS",
-            "--value", SERVICE_SETTING_VALUE,
-            "--reason", "Activate the preview floor.",
-        ]) == 0
-    assert calls[0]["path"] == contract.LOCAL_EXTENSION_ROUTES["service-runtime-setting-apply"]["path"]
-    assert SERVICE_SETTING_VALUE not in json.dumps(calls[0]["request"])
+        for argv in cli_runs:
+            assert write_action.main(argv) == 0
+    assert [call["path"] for call in calls] == [expected_route] * len(cli_runs)
+    assert [call["body"]["mode"] for call in calls] == ["dry-run", "apply"][: len(cli_runs)]
+    if redacted_request_token:
+        assert redacted_request_token not in json.dumps([call["request"] for call in calls])
+    if operation == "testing-hold":
+        assert all(call["body"]["hold"] is False for call in calls)
+    elif operation == "odoo-website-settings":
+        assert all(
+            call["body"]["website_settings"] is None and call["request"]["withdraw"] is True
+            for call in calls
+        )
 
 
 def test_product_config_projection_accepts_context_scoped_runtime_environment() -> None:
@@ -9728,429 +9854,6 @@ def test_runtime_sync_denial_and_unsafe_output() -> None:
     unexpected_deploy["result"]["deploy"]["triggered"] = True
     code, _, _ = _run_runtime_sync(argv, [unexpected_deploy])
     assert code == 1
-
-
-
-def _odoo_addon_settings_payload() -> dict[str, object]:
-    return {
-        "schema_version": 1,
-        "product": "example-odoo",
-        "context": "example",
-        "instance": "testing",
-        "addon": "shopify",
-        "reason": "Load the development store for testing restores.",
-        "shopify": {
-            "shop_url_key": "example-dev-store",
-            "api_version": "2025-07",
-            "api_token_secret_binding_id": "secret-shopify-api-token-binding",
-            "webhook_key_secret_binding_id": "secret-shopify-webhook-key-binding",
-            "test_store": True,
-        },
-    }
-
-
-def _odoo_addon_settings_result(*, mode: str = "dry-run") -> dict[str, object]:
-    return {
-        "status": "ok",
-        "mode": mode,
-        "product": "example-odoo",
-        "context": "example",
-        "instance": "testing",
-        "addon": "shopify",
-        "production_lane": False,
-        "record_exists": True,
-        "changed": True,
-        "applied": mode == "apply",
-        "rendered_action": "apply",
-        "changes": [
-            {
-                "setting": "shop_url_key",
-                "action": "add",
-                "before": None,
-                "after": {
-                    "setting": "shop_url_key",
-                    "source": "literal",
-                    "value": "example-dev-store",
-                    "value_present": True,
-                    "secret_binding_id": "",
-                    "secret_binding_present": None,
-                },
-            },
-            {
-                "setting": "api_token",
-                "action": "update",
-                "before": {
-                    "setting": "api_token",
-                    "source": "literal",
-                    "value": None,
-                    "value_present": True,
-                    "secret_binding_id": "",
-                    "secret_binding_present": None,
-                },
-                "after": {
-                    "setting": "api_token",
-                    "source": "secret_binding",
-                    "value": None,
-                    "value_present": True,
-                    "secret_binding_id": "secret-shopify-api-token-binding",
-                    "secret_binding_present": True,
-                },
-            },
-        ],
-        "read_back": [],
-        "read_back_matches": True if mode == "apply" else None,
-        "reason": "Load the development store for testing restores.",
-        "source_label": "service:odoo-addon-settings",
-        "record_sha256_before": "b" * 64,
-        "record_sha256_after": "c" * 64 if mode == "apply" else "",
-        "plan_sha256": "a" * 64,
-        "next_actions": ["Run Odoo post-deploy for this lane."],
-    }
-
-
-def _odoo_addon_settings_evidence(**result_overrides: object) -> dict[str, Any]:
-    projected: dict[str, Any] = write_action.summarize_success(
-        operation="odoo-addon-settings-dry-run",
-        request={"mode": "dry-run", "payload_source": "private_file"},
-        provider_payload={
-            "status": "accepted",
-            "trace_id": "launchplane_req_addon_settings",
-            "records": {"product_profile": "example-odoo", "context": "example", "instance": "testing"},
-            "result": {**_odoo_addon_settings_result(), **result_overrides},
-        },
-    )
-    return projected
-
-
-def test_odoo_addon_settings_projection_redacts_secret_settings() -> None:
-    projected = _odoo_addon_settings_evidence()
-    assert projected["status"] == "accepted"
-    assert projected["summary"]["plan_sha256"] == "a" * 64
-    changes = {change["setting"]: change for change in projected["result"]["changes"]}
-    assert changes["shop_url_key"]["after"]["literal"] == "example-dev-store"
-    assert changes["api_token"]["after"]["binding_ref"] == "secret-shopify-api-token-binding"
-    assert changes["api_token"]["after"]["binding_present"] is True
-    assert "literal" not in changes["api_token"]["before"]
-    assert changes["api_token"]["before"]["present"] is True
-
-    leaked = _odoo_addon_settings_result()
-    leaked_changes = cast(list[dict[str, Any]], leaked["changes"])
-    leaked_before = cast(dict[str, Any], leaked_changes[1]["before"])
-    leaked_before["value"] = "plaintext-token-value"
-    with pytest.raises(write_action.LaunchplaneSafetyError):
-        write_action.summarize_success(
-            operation="odoo-addon-settings-dry-run",
-            request={},
-            provider_payload={"status": "accepted", "records": {}, "result": leaked},
-        )
-
-    extra = {**_odoo_addon_settings_result(), "unexpected": "field"}
-    with pytest.raises(write_action.LaunchplaneSafetyError):
-        write_action.summarize_success(
-            operation="odoo-addon-settings-dry-run",
-            request={},
-            provider_payload={"status": "accepted", "records": {}, "result": extra},
-        )
-
-
-def test_odoo_addon_settings_body_refuses_plaintext_and_binds_digest(tmp_path: Path) -> None:
-    payload_path = tmp_path / "addon-settings.json"
-    payload_path.write_text(json.dumps(_odoo_addon_settings_payload()), encoding="utf-8")
-    evidence_path = _write_json(tmp_path, "addon-settings-dry-run.json", _odoo_addon_settings_evidence())
-
-    dry_run_body = write_action.odoo_addon_settings_body(
-        argparse.Namespace(payload_file=str(payload_path), idempotency_key=""),
-        mode="dry-run",
-    )
-    assert dry_run_body["mode"] == "dry-run"
-    assert "reviewed_plan_sha256" not in dry_run_body
-
-    apply_args = argparse.Namespace(
-        payload_file=str(payload_path),
-        idempotency_key="example-testing-shopify-1",
-        reviewed_dry_run=True,
-        expected_plan_digest="a" * 64,
-        dry_run_evidence_file=str(evidence_path),
-    )
-    apply_body = write_action.odoo_addon_settings_body(apply_args, mode="apply")
-    assert apply_body["reviewed_plan_sha256"] == "a" * 64
-
-    for overrides, code in (
-        ({"reviewed_dry_run": False}, "reviewed_dry_run_required"),
-        ({"expected_plan_digest": "b" * 64}, "reviewed_dry_run_not_apply_eligible"),
-        ({"expected_plan_digest": "short"}, "invalid_expected_plan_digest"),
-        ({"idempotency_key": ""}, "idempotency_key_required"),
-    ):
-        args = argparse.Namespace(**{**vars(apply_args), **overrides})
-        with pytest.raises(ValueError) as caught:
-            write_action.odoo_addon_settings_body(args, mode="apply")
-        assert str(caught.value) == code
-
-    plaintext = _odoo_addon_settings_payload()
-    cast(dict[str, object], plaintext["shopify"])["api_token"] = "plaintext"
-    payload_path.write_text(json.dumps(plaintext), encoding="utf-8")
-    with pytest.raises(ValueError) as caught:
-        write_action.odoo_addon_settings_body(
-            argparse.Namespace(payload_file=str(payload_path), idempotency_key=""),
-            mode="dry-run",
-        )
-    assert str(caught.value) == "unsupported_shopify_field"
-
-
-def test_odoo_addon_settings_cli_dispatches_projected_route(tmp_path: Path) -> None:
-    payload_path = _write_json(tmp_path, "addon-settings.json", _odoo_addon_settings_payload())
-    evidence_path = _write_json(tmp_path, "addon-settings-dry-run.json", _odoo_addon_settings_evidence())
-    calls: list[dict[str, Any]] = []
-
-    def fake_execute_post(**kwargs: Any) -> int:
-        calls.append(kwargs)
-        return 0
-
-    with temporary_attribute(write_action, "execute_post", fake_execute_post):
-        assert (
-            write_action.main(
-                ["odoo-addon-settings-dry-run", "--payload-file", str(payload_path)]
-            )
-            == 0
-        )
-        assert (
-            write_action.main(
-                [
-                    "odoo-addon-settings-apply",
-                    "--payload-file",
-                    str(payload_path),
-                    "--idempotency-key",
-                    "example-testing-shopify-1",
-                    "--reviewed-dry-run",
-                    "--expected-plan-digest",
-                    "a" * 64,
-                    "--dry-run-evidence-file",
-                    str(evidence_path),
-                ]
-            )
-            == 0
-        )
-    assert [call["path"] for call in calls] == [
-        "/v1/product-config/odoo-addon-settings/apply",
-        "/v1/product-config/odoo-addon-settings/apply",
-    ]
-    assert calls[0]["body"]["mode"] == "dry-run"
-    assert calls[1]["body"]["mode"] == "apply"
-    assert "secret-shopify-api-token-binding" not in json.dumps(calls[1]["request"])
-
-
-def _odoo_website_settings_intent() -> dict[str, object]:
-    return {
-        "artifact_id": "artifact-example-odoo-1",
-        "settings": {
-            "operation": "apply",
-            "website_id": 1,
-            "public_origin": "https://www.example.com",
-            "public_indexing_enabled": True,
-            "google_analytics_key": "G-EXAMPLE123",
-            "cookies_bar": True,
-            "block_third_party_domains": True,
-        },
-    }
-
-
-def _odoo_website_settings_payload(**overrides: object) -> dict[str, object]:
-    return {
-        "product": "example-odoo",
-        "context": "example",
-        "reason": "Open the public site to search engines and analytics.",
-        "website_settings": _odoo_website_settings_intent(),
-        **overrides,
-    }
-
-
-def _odoo_website_settings_result(**overrides: object) -> dict[str, object]:
-    return {
-        "product": "example-odoo",
-        "context": "example",
-        "instance": "prod",
-        "record_sha256_before": "b" * 64,
-        "mode": "dry-run",
-        "plan_sha256": "a" * 64,
-        "before": None,
-        "after": _odoo_website_settings_intent(),
-        "changed": True,
-        "applied": False,
-        "read_back_matches": False,
-        "activation": "Client acceptance of the exact release applies these settings; "
-        "preparation changes no Odoo database.",
-        **overrides,
-    }
-
-
-def _odoo_website_settings_evidence(**result_overrides: object) -> dict[str, Any]:
-    projected: dict[str, Any] = write_action.summarize_success(
-        operation="odoo-website-settings-dry-run",
-        request={"mode": "dry-run", "payload_source": "private_file"},
-        provider_payload={
-            "status": "accepted",
-            "trace_id": "launchplane_req_website_settings",
-            "records": {"product_profile": "example-odoo", "context": "example", "instance": "prod"},
-            "result": _odoo_website_settings_result(**result_overrides),
-        },
-    )
-    return projected
-
-
-def test_odoo_website_settings_projection_fails_closed_on_unknown_fields() -> None:
-    projected = _odoo_website_settings_evidence()
-    assert projected["summary"]["plan_sha256"] == "a" * 64
-    assert projected["result"]["after"] == _odoo_website_settings_intent()
-    assert projected["result"]["before"] is None
-
-    withdrawn = _odoo_website_settings_evidence(
-        before=_odoo_website_settings_intent(), after=None
-    )
-    assert withdrawn["result"]["after"] is None
-    assert withdrawn["result"]["before"]["settings"]["website_id"] == 1
-
-    unknown_setting = _odoo_website_settings_intent()
-    cast(dict[str, object], unknown_setting["settings"])["admin_password"] = "PRIVATE_SENTINEL"
-    for result in (
-        _odoo_website_settings_result(unexpected="PRIVATE_SENTINEL"),
-        _odoo_website_settings_result(after=unknown_setting),
-    ):
-        with pytest.raises(write_action.LaunchplaneSafetyError):
-            write_action.summarize_success(
-                operation="odoo-website-settings-dry-run",
-                request={},
-                provider_payload={"status": "accepted", "records": {}, "result": result},
-            )
-
-
-def test_odoo_website_settings_body_validates_payload_and_binds_digest(tmp_path: Path) -> None:
-    # noinspection HttpUrlsUsage
-    insecure_origin = "http://www.example.com"
-    payload_path = tmp_path / "website-settings.json"
-    payload_path.write_text(json.dumps(_odoo_website_settings_payload()), encoding="utf-8")
-    evidence_path = _write_json(tmp_path, "website-settings-dry-run.json", _odoo_website_settings_evidence())
-
-    dry_run_body = write_action.odoo_website_settings_body(
-        argparse.Namespace(payload_file=str(payload_path), idempotency_key=""),
-        mode="dry-run",
-    )
-    assert dry_run_body["instance"] == "prod"
-    assert dry_run_body["mode"] == "dry-run"
-    assert "reviewed_plan_sha256" not in dry_run_body
-
-    apply_args = argparse.Namespace(
-        payload_file=str(payload_path),
-        idempotency_key="example-prod-website-1",
-        reviewed_dry_run=True,
-        expected_plan_digest="a" * 64,
-        dry_run_evidence_file=str(evidence_path),
-    )
-    apply_body = write_action.odoo_website_settings_body(apply_args, mode="apply")
-    assert apply_body["reviewed_plan_sha256"] == "a" * 64
-
-    for overrides, code in (
-        ({"reviewed_dry_run": False}, "reviewed_dry_run_required"),
-        ({"expected_plan_digest": "b" * 64}, "reviewed_dry_run_not_apply_eligible"),
-        ({"expected_plan_digest": "short"}, "invalid_expected_plan_digest"),
-        ({"idempotency_key": ""}, "idempotency_key_required"),
-    ):
-        args = argparse.Namespace(**{**vars(apply_args), **overrides})
-        with pytest.raises(ValueError, match=f"^{code}$"):
-            write_action.odoo_website_settings_body(args, mode="apply")
-
-    other_context = _write_json(tmp_path, "other-context-dry-run.json", _odoo_website_settings_evidence(context="other"))
-    args = argparse.Namespace(**{**vars(apply_args), "dry_run_evidence_file": str(other_context)})
-    with pytest.raises(ValueError, match="^reviewed_dry_run_not_apply_eligible$"):
-        write_action.odoo_website_settings_body(args, mode="apply")
-
-    def settings_with(**changes: object) -> dict[str, object]:
-        intent = _odoo_website_settings_intent()
-        return {**intent, "settings": {**cast(dict[str, object], intent["settings"]), **changes}}
-
-    for payload, code in (
-        (_odoo_website_settings_payload(instance="testing"), "unsupported_instance"),
-        (_odoo_website_settings_payload(schema_version=1), "unsupported_payload_field"),
-        (
-            _odoo_website_settings_payload(
-                website_settings=settings_with(public_origin=insecure_origin)
-            ),
-            "https_public_origin_required",
-        ),
-        (
-            _odoo_website_settings_payload(website_settings=settings_with(ga_secret="x")),
-            "unsupported_website_settings_field",
-        ),
-        (
-            _odoo_website_settings_payload(
-                website_settings=settings_with(operation="disable_collection")
-            ),
-            "unsupported_website_settings_operation",
-        ),
-        (
-            _odoo_website_settings_payload(website_settings=settings_with(website_id=True)),
-            "website_id_required",
-        ),
-    ):
-        payload_path.write_text(json.dumps(payload), encoding="utf-8")
-        with pytest.raises(ValueError, match=f"^{code}$"):
-            write_action.odoo_website_settings_body(
-                argparse.Namespace(payload_file=str(payload_path), idempotency_key=""),
-                mode="dry-run",
-            )
-
-    missing = _odoo_website_settings_payload()
-    del missing["website_settings"]
-    payload_path.write_text(json.dumps(missing), encoding="utf-8")
-    with pytest.raises(ValueError, match="^website_settings_required$"):
-        write_action.odoo_website_settings_body(
-            argparse.Namespace(payload_file=str(payload_path), idempotency_key=""),
-            mode="dry-run",
-        )
-
-
-def test_odoo_website_settings_cli_withdraws_pending_intent_with_null(tmp_path: Path) -> None:
-    payload_path = _write_json(tmp_path, "website-settings.json", _odoo_website_settings_payload(website_settings=None))
-    evidence_path = _write_json(
-        tmp_path,
-        "website-settings-dry-run.json",
-        _odoo_website_settings_evidence(before=_odoo_website_settings_intent(), after=None),
-    )
-    calls: list[dict[str, Any]] = []
-
-    def fake_execute_post(**kwargs: Any) -> int:
-        calls.append(kwargs)
-        return 0
-
-    with temporary_attribute(write_action, "execute_post", fake_execute_post):
-        assert (
-            write_action.main(
-                ["odoo-website-settings-dry-run", "--payload-file", str(payload_path)]
-            )
-            == 0
-        )
-        assert (
-            write_action.main(
-                [
-                    "odoo-website-settings-apply",
-                    "--payload-file",
-                    str(payload_path),
-                    "--idempotency-key",
-                    "example-prod-website-1",
-                    "--reviewed-dry-run",
-                    "--expected-plan-digest",
-                    "a" * 64,
-                    "--dry-run-evidence-file",
-                    str(evidence_path),
-                ]
-            )
-            == 0
-        )
-    expected_path = contract.operation_path("apply_odoo_website_settings")
-    assert [call["path"] for call in calls] == [expected_path, expected_path]
-    assert [call["body"]["mode"] for call in calls] == ["dry-run", "apply"]
-    assert all(call["body"]["website_settings"] is None for call in calls)
-    assert all(call["request"]["withdraw"] is True for call in calls)
-    assert "Open the public site" not in json.dumps(calls[1]["request"])
 
 
 def test_client_named_fields_read_like_their_legacy_owner_names() -> None:
