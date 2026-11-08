@@ -8088,39 +8088,21 @@ def test_production_backup_authority_apply_binds_the_exact_reviewed_payload(tmp_
     }
     assert payload["result"]["read_back_matches"] is True
 
-    # A target the apply reported is missing from the read-back.
-    status, payload, _posts, _reads = _run_main(
-        apply_argv,
-        post=_backup_response(mode="apply", status="applied"),
-        read=_backup_read_response(targets=[], state="missing", ready=False),
-    )
-    assert (status, payload["status"]) == (1, "accepted_unverified")
-    assert payload["result"]["read_back_matches"] is False
-
-    # The response leaves out a reviewed target while reporting the reviewed digest.
-    status, payload, _posts, _reads = _run_main(
-        apply_argv,
-        post=_backup_response(mode="apply", status="applied", targets=[]),
-        read=_backup_read_response(),
-    )
-    assert (status, payload["status"]) == (1, "accepted_unverified")
-    assert "applied_plan_differs_from_review" in [item["code"] for item in payload["warnings"]]
-
-    # Launchplane reports an authority other than the reviewed one.
-    status, payload, _posts, _reads = _run_main(
-        apply_argv,
-        post=_backup_response(mode="apply", status="applied", authority_digest="e" * 64),
-        read=_backup_read_response(),
-    )
-    assert (status, payload["status"]) == (1, "accepted_unverified")
-    assert "applied_plan_differs_from_review" in [item["code"] for item in payload["warnings"]]
-
-    stale_read = _backup_read_response(policy={**_backup_policy_summary(), "record_id": "other-r2"})
-    status, payload, _posts, _reads = _run_main(
-        apply_argv, post=_backup_response(mode="apply", status="applied"), read=stale_read
-    )
-    assert (status, payload["status"]) == (1, "accepted_unverified")
-    assert payload["result"]["read_back_matches"] is False
+    for applied, observed, warning_code in (
+        ({}, {"targets": [], "state": "missing", "ready": False}, "read_back_mismatch"),
+        ({"targets": []}, {}, "applied_plan_differs_from_review"),
+        ({"authority_digest": "e" * 64}, {}, "applied_plan_differs_from_review"),
+        ({}, {"policy": {**_backup_policy_summary(), "record_id": "other-r2"}}, "read_back_mismatch"),
+    ):
+        status, payload, _posts, _reads = _run_main(
+            apply_argv,
+            post=_backup_response(mode="apply", status="applied", **applied),
+            read=_backup_read_response(**observed),
+        )
+        assert (status, payload["status"]) == (1, "accepted_unverified"), (applied, observed)
+        assert warning_code in [item["code"] for item in payload["warnings"]], (applied, observed)
+        if warning_code == "read_back_mismatch":
+            assert payload["result"]["read_back_matches"] is False
 
     # The private payload changed after review: refuse before any request.
     changed = _backup_payload()
