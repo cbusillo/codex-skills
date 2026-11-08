@@ -442,6 +442,26 @@ class ResumeLaunchTests(unittest.TestCase):
 
 
 class ProviderLaunchTests(unittest.TestCase):
+    def test_managed_claude_process_receives_its_launch_ledger_over_an_inherited_pointer(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder).resolve()
+            child, command, brief = root / "claude", root / "command", root / "brief"
+            child.write_text(f'#!{sys.executable}\nimport os\nprint(os.getenv({iterm_tab.LAUNCH_LEDGER_ENV!r}))\n')
+            child.chmod(0o700)
+            command.write_text(f"cd {shlex.quote(str(root))} && exec {shlex.quote(str(child))}")
+            brief.write_text("Read-only anchor: https://github.com/fixture/repo/issues/7\nRules: " + iterm_tab.BRIEF_RULES_URL)
+            ledger = root / "shared ledger.json"
+            args = argparse.Namespace(command_file=[command], brief_file=[brief], ledger=ledger,
+                                      account_provider="anthropic", account_config=None, account=None)
+            choice = {"provider": "anthropic", "env": {}, "source": "cli-login"}
+            with (patch.object(account_choice, "select", return_value=choice),
+                  patch.object(iterm_tab, "folder_trust_writes", return_value=[]),
+                  patch.object(iterm_tab, "check_claude_tools")):
+                commands, _ = iterm_tab.prepare_launch_batch(args)
+            result = subprocess.run(["/bin/sh", "-c", commands[0]], check=True, capture_output=True, text=True,
+                                    env={**os.environ, iterm_tab.LAUNCH_LEDGER_ENV: "/unrelated/inherited-ledger"})
+            self.assertEqual(result.stdout.strip(), str(ledger))
+
     def test_new_launch_preflight_prepares_a_fresh_ledger_location(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             command = Path(folder) / "command"
