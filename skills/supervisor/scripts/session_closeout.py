@@ -161,28 +161,27 @@ def handoff_refusal(comment: dict, evidence: list[dict], session: str, actor: st
     return f"{comment.get('html_url') or comment.get('id')}: {identity}; {proof}"
 
 
-def verify_resumed_handoff(entry: dict, handoff: dict) -> None:
+def handoff_source(entry: dict) -> dict:
     saved = closure.source_records({entry["session_id"]}).get(entry["session_id"], {})
-    generation = saved.get("resumed_generation")
-    keys = ("launch_pid", "launch_generation", "launch_started_at", "pid", "tty", "codex_home", "transcript")
-    require(
-        entry.get("harness") == saved.get("harness") == "codex"
+    if not saved.get("resumed_at") and not saved.get("resumed_generation"):
+        return {}
+    try:
+        generation = native.source_generation(entry, saved)
+    except ValueError as error:
+        raise GateFailed("handoff", str(error)) from error
+    if generation is None:
+        raise GateFailed("handoff", "canonical resumed handoff generation is unavailable; preserve it")
+    require(entry.get("harness") == saved.get("harness") == "codex"
         and saved.get("process_exit_verified") is True
-        and saved.get("handoff_url") == entry["handoff_url"]
-        and bool(saved.get("launch_generation"))
-        and saved["launch_generation"] != entry.get("launch_generation")
-        and isinstance(generation, dict)
-        and all(generation.get(key) and generation[key] == entry.get(key) for key in keys),
-        "handoff",
-        "recorded handoff differs without a matching canonical resumed generation; preserve it",
-    )
+        and saved.get("launch_generation") != entry.get("launch_generation")
+        and isinstance(saved.get("resumed_generation"), dict)
+        and isinstance(generation, dict) and all(generation.get(key) for key in (
+            "launch_pid", "launch_generation", "launch_started_at", "pid", "tty", "codex_home", "transcript")),
+        "handoff", "canonical resumed handoff generation is incomplete; preserve it")
     started = claim_release.stamp(generation["launch_started_at"])
-    require(
-        claim_release.stamp(saved["ended_at"]) < started <= claim_release.stamp(saved["resumed_at"])
-        and claim_release.stamp(handoff["created_at"]) >= started,
-        "handoff",
-        "replacement handoff must be created in the verified resumed generation",
-    )
+    require(claim_release.stamp(saved["ended_at"]) < started <= claim_release.stamp(saved["resumed_at"]),
+            "handoff", "canonical handoff succession does not follow the original closure")
+    return saved
 
 
 def verify_handoff(entry: dict, args: argparse.Namespace, operation: Operation, *, retired: bool) -> None:
@@ -191,7 +190,12 @@ def verify_handoff(entry: dict, args: argparse.Namespace, operation: Operation, 
     actor = github_identity.automation_login()
     if not actor:
         raise GateFailed("handoff", "configured automation identity is unknown")
-    selected = getattr(args, "handoff_url", None) or entry.get("handoff_url") or operation.state.get("handoff", {}).get("url")
+    source = handoff_source(entry) if not retired else {}
+    started = claim_release.stamp(source["resumed_generation"]["launch_started_at"]) if source else None
+    recorded = entry.get("handoff_url")
+    inherited = bool(source and recorded == source.get("handoff_url"))
+    selected = getattr(args, "handoff_url", None) or operation.state.get("handoff", {}).get("url") or (None if inherited else recorded)
+    require(not recorded or inherited or recorded == selected, "handoff", "recorded handoff differs; preserve it")
     evidence = None
     if not selected:
         repo, number = entry.get("repository"), entry.get("issue")
@@ -206,6 +210,7 @@ def verify_handoff(entry: dict, args: argparse.Namespace, operation: Operation, 
                   and row.get("number") == number]
         candidates = [comment for comment in comments
                       if (comment.get("user") or {}).get("login") == actor
+                      and (started is None or claim_release.stamp(comment["created_at"]) >= started)
                       and not live_lines(comment.get("body") or "")
                       and not re.match(r"(?i)^Claimed by\b", (comment.get("body") or "").strip())
                       and (explicit_session(comment.get("body") or "", args.session_id)
@@ -226,9 +231,8 @@ def verify_handoff(entry: dict, args: argparse.Namespace, operation: Operation, 
         handoff = release.handoff(reader, proposed, actor)
     except ValueError as error:
         raise GateFailed("handoff", f"{selected}: {error}") from error
-    if entry.get("handoff_url") and entry["handoff_url"] != selected:
-        require(not retired, "handoff", "retired handoff differs; preserve it")
-        verify_resumed_handoff(entry, handoff)
+    require(started is None or claim_release.stamp(handoff["created_at"]) >= started,
+            "handoff", "handoff must be created in the verified resumed generation")
     if not explicit_session(handoff.get("body") or "", args.session_id):
         evidence = evidence if evidence is not None else claim_evidence(entry, operation, "handoff_comments")
         require(projected_handoff(handoff, evidence, actor, args.session_id),

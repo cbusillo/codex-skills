@@ -85,11 +85,8 @@ Each object needs native `session_id`, `harness` and `transcript` pointers.
 Keep `repository`, `issue` and `brief` from the actual brief, and the verified
 launch's backend, terminal/PID/TTY and generation fields. Explicit
 `supervisor_owned: true` grants only the ownership already established at launch;
-never infer it from a title. Save the actual `handoff_url` after verification.
-After a verified Codex resume, closeout accepts a replacement created during
-the new generation only when the canonical source proves the stored handoff
-belongs to its previous generation. A handoff already recorded for the current
-generation or in its journal remains binding.
+never infer it from a title. Save this launch generation's actual `handoff_url`
+after verification.
 
 Native IDs are unique; Codex UUIDs have no date-prefix restriction. Missing,
 malformed (including nested fields) or changing transcripts prove no idle or

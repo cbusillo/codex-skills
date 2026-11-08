@@ -799,7 +799,8 @@ class RoutineCheckTests(unittest.TestCase):
                                   "user": {"login": "agent[bot]"}, "issue_url": "https://api.github.com/repos/owner/other/issues/9",
                                   "created_at": "2026-11-08T01:59:00Z", "updated_at": "2026-11-08T01:59:00Z"}
         variants: tuple[str | None, ...] = (
-            None, "same_generation", "missing_source", "wrong_old_handoff", "wrong_generation", "wrong_home",
+            None, "discovery", "no_new_handoff", "journal_retry", "path_alias", "legacy_source",
+            "same_generation", "missing_source", "wrong_old_handoff", "wrong_generation", "wrong_home",
             "missing_generation", "unverified_exit", "old_comment", "edited_old_comment", "wrong_author",
             "conflicting_session", "journal_conflict", "ledger_changed", "already_replaced")
         for variant in variants:
@@ -807,8 +808,17 @@ class RoutineCheckTests(unittest.TestCase):
                 saved = json.loads(json.dumps(source))
                 comment = dict(handoff)
                 current = dict(entry)
+                succeeds = variant in {None, "discovery", "journal_retry", "path_alias", "legacy_source"}
+                old = {**handoff, "id": 8, "html_url": old_url, "created_at": source["ended_at"],
+                       "issue_url": "https://api.github.com/repos/owner/repo/issues/7"}
+                if variant == "discovery":
+                    comment.update(html_url=old_url.replace("-8", "-10"), issue_url=old["issue_url"])
                 if variant == "same_generation":
                     saved["launch_generation"] = generation["launch_generation"]
+                elif variant == "path_alias":
+                    saved["resumed_generation"]["transcript"] = str(root / "nested/../native.jsonl")
+                elif variant == "legacy_source":
+                    saved.pop("launch_generation")
                 elif variant == "wrong_old_handoff":
                     saved["handoff_url"] = new_url
                 elif variant in {"wrong_generation", "wrong_home"}:
@@ -833,19 +843,24 @@ class RoutineCheckTests(unittest.TestCase):
                 operation = Operation(root / str(variant), [session])
                 if variant == "journal_conflict":
                     operation.state["handoff"] = {"url": old_url}
-                args = argparse.Namespace(ledger=ledger, session_id=session, handoff_url=new_url)
-                reader = SimpleNamespace(get_json=Mock(return_value=comment))
+                elif variant == "journal_retry":
+                    operation.state["handoff"] = {"url": new_url}
+                args = argparse.Namespace(ledger=ledger, session_id=session,
+                                          handoff_url=None if variant in {"discovery", "no_new_handoff", "journal_retry"} else new_url)
+                reader = SimpleNamespace(get_json=Mock(return_value=old if variant == "no_new_handoff" else comment),
+                                         paged_json=Mock(return_value=[old] if variant == "no_new_handoff" else [old, comment]))
                 with (patch_attr(session_closeout, "GitHubReader", return_value=reader),
                       patch.object(session_closeout.github_identity, "automation_login", return_value="agent[bot]"),
                       patch.object(session_closeout.closure, "source_records",
                                    return_value={} if variant == "missing_source" else {session: saved})):
-                    if variant is None:
+                    if succeeds:
                         session_closeout.verify_handoff(current, args, operation, retired=False)
-                        self.assertEqual(json.loads(ledger.read_text())[0]["handoff_url"], new_url)
-                        self.assertEqual(operation.state["handoff"]["url"], new_url)
+                        self.assertEqual(json.loads(ledger.read_text())[0]["handoff_url"], comment["html_url"])
+                        self.assertEqual(operation.state["handoff"]["url"], comment["html_url"])
                     else:
-                        with self.assertRaises((GateFailed, ValueError)):
+                        with self.assertRaises(GateFailed) as refusal:
                             session_closeout.verify_handoff(current, args, operation, retired=False)
+                        self.assertEqual(refusal.exception.gate, "identity" if variant == "ledger_changed" else "handoff")
                         self.assertEqual(json.loads(ledger.read_text()), rows)
 
     def test_native_handoff_narrative_does_not_hide_a_real_identity_conflict(self) -> None:
