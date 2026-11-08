@@ -1086,6 +1086,10 @@ class ReleaseTests(ReleaseHarness):
 
     def test_related_followup_prose_is_not_a_session_field(self):
         for prose in ("session-start hook", "session-scoped work", "thread-safe cleanup",
+                      "Tooling landed this session: https://github.com/owner/repo/pull/3510 (IDE records) and "
+                      "https://github.com/owner/repo/pull/3519 (claim scope).",
+                      "Status for this exact session: `status` reports completion.",
+                      "Work completed during our session: everything passed.",
                       "Review thread: https://github.com/owner/repo/pull/99",
                       "Next actor: Chris performs Q914 in his existing Launchplane administrator session: "
                       "https://github.com/owner/repo/issues/42#issuecomment-7",

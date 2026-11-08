@@ -247,7 +247,16 @@ def session_fields(text: str, *, include_quotes: bool = True, current_only: bool
                 continue
             end = matches[index + 1].start() if index + 1 < len(matches) else len(line)
             value = line[field.end():end].split("|", 1)[0].strip()
-            if value:
+            if not value:
+                continue
+            explicit = (
+                re.match(r"native|thread|\|", field[0], re.IGNORECASE)
+                or re.search(r"(?:^\s*(?:[-*+]|\d+[.)])?\s*|[;:.(,]\s*|"
+                             r"\b(?:(?:Claimed by:?|Worker:|Owner:)\s+\S+|Ownership record|Handoff from|Continuing from|"
+                             r"Previous|Prior|Earlier|Original|Superseded|Completed)\s+)$",
+                             line[:field.start()], re.IGNORECASE)
+            )
+            if explicit or any(NATIVE_SESSION_ID.fullmatch(token) for token in session_identifiers(value)):
                 values.append(value)
     return values
 
