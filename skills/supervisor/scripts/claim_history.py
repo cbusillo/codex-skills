@@ -5,14 +5,14 @@
 """Read native child histories without inventing a second session registry."""
 from __future__ import annotations
 
-from contextlib import ExitStack, closing, contextmanager
 import json
-from pathlib import Path
 import re
 import sqlite3
 import sys
+from contextlib import ExitStack, closing, contextmanager
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
-from datetime import datetime, timezone
 
 
 def protobuf_fields(data: bytes) -> dict[int, Any]:
@@ -264,8 +264,12 @@ def read_agy_records(path: Path) -> list[dict]:
                 task = protobuf_fields(step[148])
                 call = protobuf_fields(protobuf_fields(step.get(5, b"")).get(4, b""))
                 identity = f"{path.stem}/task-{index}"
-                if task.get(1) == identity.encode() and call.get(2) == b"run_command":
-                    tasks[identity] = {"index": index, "call": call, "status": rows[index][2], "terminal": agy_command_terminal(step)}
+                arguments = json.loads(call.get(3, b"{}"))
+                one_shot = (call.get(2) == b"schedule" and set(arguments) == {"DurationSeconds", "Prompt"}
+                            and type(arguments.get("DurationSeconds")) is int and arguments["DurationSeconds"] > 0
+                            and isinstance(arguments.get("Prompt"), str) and rows[index][1:4] == (132, 3, 0))
+                if task.get(1) == identity.encode() and (call.get(2) == b"run_command" or one_shot):
+                    tasks[identity] = {"index": index, "call": call, "status": rows[index][2], "terminal": agy_task_terminal(step)}
         notified = {protobuf_fields(protobuf_fields(step[114])[4])[3].decode()
                     for row, step in zip(rows, steps, strict=True) if row[1:4] == (101, 3, 0)
                     and agy_task_notification(step, path.stem, row[0], tasks)}
@@ -281,10 +285,10 @@ def read_agy_records(path: Path) -> list[dict]:
     return records
 
 
-def agy_command_terminal(step: dict) -> dict:
+def agy_task_terminal(step: dict) -> dict:
     fields = protobuf_fields
     result = fields(fields(step.get(140, b"")).get(2, b""))
-    return fields(fields(fields(result.get(3, b"")).get(10, b"")).get(3, b""))
+    return fields(fields(result.get(3, b"")).get(10, b""))
 
 
 def agy_task_notification(step: dict, session: str, ordinal: int, tasks: dict[str, dict]) -> bool:
@@ -296,15 +300,23 @@ def agy_task_notification(step: dict, session: str, ordinal: int, tasks: dict[st
     task = tasks.get(envelope.get(3, b"").decode())
     if task is None:
         return False
+    if task["call"].get(2) == b"schedule":
+        terminal = fields(fields(note.get(2, b"")).get(10, b""))
+        arguments = json.loads(task["call"][3])
+        return bool(task["index"] < ordinal and envelope.get(2) == session.encode()
+                    and envelope.get(4) == arguments["Prompt"].encode() and envelope.get(5) == task["status"] == 3
+                    and isinstance(task["terminal"].get(1), bytes) and task["terminal"][1]
+                    and terminal.get(1) == task["terminal"][1])
     origin = fields(fields(envelope.get(12, b"")).get(1, b""))
     call = fields(origin.get(3, b""))
     terminal = fields(fields(fields(note.get(2, b"")).get(10, b"")).get(3, b""))
+    command_terminal = fields(task["terminal"].get(3, b""))
     return bool(origin.get(2, 0) == task["index"] < ordinal
                 and envelope.get(2) == session.encode() == origin.get(1)
                 and (call.get(1), call.get(2)) == (task["call"].get(1), task["call"].get(2))
                 and json.loads(call.get(3, b"{}")) == json.loads(task["call"][3])
-                and terminal.get(1) == task["terminal"].get(1) == json.loads(task["call"][3])["CommandLine"].encode()
-                and terminal.get(2) == task["terminal"].get(2) and terminal.get(3) == task["terminal"].get(3)
+                and terminal.get(1) == command_terminal.get(1) == json.loads(task["call"][3])["CommandLine"].encode()
+                and terminal.get(2) == command_terminal.get(2) and terminal.get(3) == command_terminal.get(3)
                 and (type(terminal.get(3)) is int or
                      task["status"] == 6 and fields(note.get(2, b"")).get(4) == 1))
 
@@ -315,7 +327,7 @@ def agy_step_records(
     fields = protobuf_fields
     metadata = fields(step.get(5, b""))
     clock = fields(metadata.get(8) or metadata.get(1, b""))
-    timestamp = datetime.fromtimestamp(clock[1] + clock.get(2, 0) / 1e9, timezone.utc).isoformat()
+    timestamp = datetime.fromtimestamp(clock[1] + clock.get(2, 0) / 1e9, UTC).isoformat()
     row: dict[str, Any] = {"sessionId": session, "timestamp": timestamp, "type": "user", "message": {"content": ""}}
     pending = ("native child history is unavailable" if children else
                "native step kind is unknown" if kind not in {14, 15, 17, 23, 101, 132} else
@@ -345,15 +357,17 @@ def agy_step_records(
             task = tasks.get(arguments.get("TaskId"), {})
             task_status = (name in {"manage_task", "manage_subagents"} and arguments.get("Action") == "list" or
                            name == "manage_task" and bool(task) and (arguments.get("Action") == "status" or
-                           arguments.get("Action") == "kill" and task["status"] == 6 and task["notified"]))
-            if name not in {"read_file", "write_file", "edit_file", "list_dir", "grep_search", "find_by_name", "search_web", "run_command"} and not task_status:
+                           arguments.get("Action") == "kill" and task["status"] in {3, 6} and task["notified"]))
+            covered = (name in {"read_file", "write_file", "edit_file", "list_dir", "grep_search", "find_by_name", "search_web", "run_command"}
+                       or task_status or name == "schedule" and f"{session}/task-{ordinal}" in tasks)
+            if not covered:
                 pending = pending or f"native tool coverage is unavailable for {name}"
             if status in {3, 6, 7} and kind == 132:
                 result = fields(fields(step.get(140, b"")).get(2, b""))
                 output = result.get(1, b"").decode()
                 failed = status != 3
                 if command and status == 3:
-                    terminal = agy_command_terminal(step)
+                    terminal = fields(agy_task_terminal(step).get(3, b""))
                     if type(terminal.get(3)) is not int or terminal.get(1, b"").decode() != arguments["CommandLine"]:
                         pending = pending or "native command completion is unavailable"
                     else:
