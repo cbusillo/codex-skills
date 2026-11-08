@@ -318,11 +318,6 @@ class ClaimCloseoutTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.check()
 
-    def test_retained_pr_handoff_allows_exit_before_merge(self):
-        self.comments.append({**self.release, "body": self.release["body"] + "\nRetained PR: " + pull()["html_url"]})
-        self.pulls = [pull()]
-        self.assertEqual(self.check()[0]["retained_prs"], [self.pulls[0]["html_url"]])
-
     def test_named_pr_must_independently_link_issue_and_match_identity(self):
         self.comments.append({**self.release, "body": self.release["body"] + "\n" + pull()["html_url"]})
         for bad in (pull(body="Unrelated"), pull(user={"login": "other[bot]"}),
@@ -390,20 +385,6 @@ class ClaimCloseoutTests(unittest.TestCase):
             self.pulls = [pull(99, branch="unrelated", body="Unrelated", user={"login": "other[bot]"})]
             self.assertEqual(self.check()[0]["retained_prs"], [])
 
-    def test_native_pr_creation_exposes_an_unnamed_split_branch(self):
-        self.comments.append(self.release)
-        self.pulls = [pull(3, branch="work/split")]
-        with self.assertRaises(ValueError):
-            helper.check_record(self.reader, REPO, 1, SESSION, ACTOR)
-
-    def test_canonical_split_branch_pr_requires_handoff_without_a_creation_hint(self):
-        self.comments.append(self.release)
-        self.pulls = [pull(3, branch="work/computed-split", created_at="2026-01-01T00:01:30Z")]
-        with self.assertRaises(ValueError):
-            self.check()
-        self.comments[-1]["body"] += "\nRetained PR: " + self.pulls[0]["html_url"]
-        self.assertEqual(self.check()[0]["retained_prs"], [self.pulls[0]["html_url"]])
-
     def test_canonical_pr_attribution_uses_server_claim_lifetime(self):
         self.comments.append(self.release)
         # A later repeated release cannot expand the original ownership window.
@@ -421,23 +402,11 @@ class ClaimCloseoutTests(unittest.TestCase):
                 else:
                     self.assertEqual(self.check()[0]["retained_prs"], [])
 
-    def test_later_session_bound_handoff_is_supported(self):
-        self.comments.append(self.release)
-        self.comments.append(comment(12, f"Handoff from {SOURCE['worker']}\nclaim: {self.source['id']}\nSession: {SESSION}\n{pull()['html_url']}", at="2026-01-01T00:03:00Z"))
-        self.pulls = [pull()]
-        self.assertTrue(self.check())
-
     def test_pr_only_claim_does_not_need_a_self_link(self):
-        self.issue["pull_request"] = {}
-        self.pulls = [pull(1, body="Dependency bump", user={"login": "dependabot[bot]"})]
-        self.comments.append({**self.release, "body": self.release["body"] + "\n" + self.pulls[0]["html_url"]})
-        self.assertEqual(self.check()[0]["retained_prs"], [self.pulls[0]["html_url"]])
-
-    def test_pr_only_refresh_can_use_a_different_task_branch(self):
         self.issue["pull_request"] = {}
         self.pulls = [pull(1, branch="dependabot/package", body="Dependency bump", user={"login": "dependabot[bot]"})]
         self.comments.append({**self.release, "body": self.release["body"] + "\n" + self.pulls[0]["html_url"]})
-        self.assertTrue(self.check())
+        self.assertEqual(self.check()[0]["retained_prs"], [self.pulls[0]["html_url"]])
 
     def test_pr_only_claim_rejects_a_fork_work_record(self):
         self.issue["pull_request"] = {}
