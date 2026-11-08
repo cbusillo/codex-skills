@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextlib
 import ast
+import errno
 import hashlib
 import importlib.util
 import json
@@ -120,7 +121,7 @@ def select_backend(args, host):
         if all(f.endswith(".py") for f in selected):
             return "native", "python_native_route"
         return "native", "configuration_native_route"
-    except (Blocked, host.InspectError, OSError, subprocess.SubprocessError, ValueError):
+    except (Blocked, OSError, subprocess.SubprocessError, ValueError):
         return "unavailable", "native_selection_unavailable"
 
 
@@ -1611,11 +1612,18 @@ def next_action_for_reason(host: Any, receipt: dict[str, Any], reason: str, verd
                            has_advisory: bool = False,
                            default_action: str = "Resolve the reported native prerequisite or execution-coverage gap before a fresh assessment.") -> str:
     product = host.IDE_PRODUCTS[receipt.get("product", PYTHON_PRODUCT_KEY)]
+    if reason == "native_" + receipt.get("error_reason", ""):
+        default_action = receipt.get("next_action") or default_action
     action = "Fix current findings." if verdict == "RED" else "None." if verdict == "GREEN" else default_action
     if has_advisory and verdict != "UNKNOWN":
         action += (" Review the advisory spelling and grammar findings: fix real mistakes, and add real tool, library"
                    " or product names to the repository's .idea/dictionaries/project.xml.")
-    if reason in {"native_owner_activation_required", "native_activation_stop_recorded"}:
+    if reason == "native_report_unreadable":
+        action = "The native result or execution trace could not be read. Report the safe error category and check the worker's report generation before one fresh assessment."
+    elif reason == "native_prerequisite_or_report_failed" and receipt.get("error_type"):
+        action = (f"A native prerequisite failed ({receipt['error_type']}). Check local Git and runtime availability and readable "
+                  "repository, profile and worker inputs before one fresh assessment; do not copy credentials or retry blindly.")
+    elif reason in {"native_owner_activation_required", "native_activation_stop_recorded"}:
         action = "Owner question: the Director must restore the configured independent worker's activation through the product UI using existing entitlements. Stop licensed runs; never start a trial or copy credentials."
     elif reason == "native_populated_profile_required":
         action = ("Use a populated profile committed in Git; untracked local profiles, including ignored ones, do not qualify. "
@@ -1673,7 +1681,7 @@ def next_action_for_reason(host: Any, receipt: dict[str, Any], reason: str, verd
     elif reason.startswith("native_odoo_"):
         action = "Run the workspace's documented dependency sync so its declared addon refs resolve locally. Match the selected addon's version and workspace build.odoo_version to one Odoo core checkout plus the declared addon dependency roots. Supply those clean roots with --native-framework-root; preserve source version declarations."
     elif reason == "native_scope_too_large":
-        action = "Reduce the selected scope or set --max-files to the intended file limit before reassessing."
+        action = host.inspection_scope_error("inspection_lane_scope_too_large").payload["next_action"]
     elif reason == "native_scope_unsupported":
         action = ("The selection has files or lanes this native worker does not inspect. Run agent-inspect without --backend "
                   "native to name them; coverage no native worker offers is unavailable and stays UNKNOWN.")
@@ -1726,6 +1734,8 @@ def envelope(host: Any, receipt: dict[str, Any], findings: list[dict[str, Any]],
               f"{len(receipt.get('coverage', {}).get('covered_by', {}))} inspections covered by repository gates; "
               f"{len(receipt.get('coverage', {}).get('advisory_gaps', []))} advisory coverage gaps; "
               f"{len(gaps)} proof gaps; {len(receipt.get('coverage', {}).get('unproven', []))} inspections unproven.")
+    if reason in {"native_prerequisite_or_report_failed", "native_report_unreadable"} and receipt.get("error_type"):
+        report += f" Error category: {receipt['error_type']}."
     return {"schema_version": host.AGENT_RESULT_SCHEMA_VERSION, "command": "agent-inspect", "backend": "native",
             "status": {"GREEN": "clean", "RED": "findings"}.get(verdict, "error"),
             "agent_result": {"verdict": verdict, "bucket": {"GREEN": "clean", "RED": "findings"}.get(verdict, "environment_blocked"),
@@ -1758,6 +1768,16 @@ def new_receipt(host):
 
 def new_context(host):
     return lifecycle.RunContext(new_receipt(host), common, write_record, remove_sdk)
+
+
+def record_safe_error(receipt: dict[str, Any], error: Exception) -> None:
+    category = next((kind.__name__ for kind in (subprocess.TimeoutExpired, subprocess.CalledProcessError,
+                    subprocess.SubprocessError, ElementTree.ParseError, FileNotFoundError, PermissionError, IsADirectoryError,
+                    NotADirectoryError, TimeoutError, ConnectionError, OSError, json.JSONDecodeError, UnicodeError, ValueError)
+                    if isinstance(error, kind)), "InspectError")
+    receipt["error_type"] = category
+    if isinstance(error, OSError) and type(error.errno) is int and error.errno in errno.errorcode:
+        receipt["error_errno"] = errno.errorcode[error.errno]
 
 
 def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str, Any]:
@@ -2007,9 +2027,13 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
             raise
         if intellij:
             require_gradle_import(receipt)
-        all_findings, registered, languages = read_results(private / "results", project)
-        findings = [finding for finding in all_findings if finding["file"] in selected]
-        trace_tools, trace_failed = proof.read_trace(private / "inspection-trace.json", project)
+        try:
+            all_findings, registered, languages = read_results(private / "results", project)
+            findings = [finding for finding in all_findings if finding["file"] in selected]
+            trace_tools, trace_failed = proof.read_trace(private / "inspection-trace.json", project)
+        except (OSError, ValueError, ElementTree.ParseError) as error:
+            record_safe_error(receipt, error)
+            raise Blocked("native_report_unreadable") from None
         product_proof = {WEBSTORM_PRODUCT_KEY: {"proven_suffixes": proof.WEBSTORM_PROVEN_SUFFIXES, "canary_files": proof.WEBSTORM_CANARY_FILES,
                                                 "clean_twins": proof.WEBSTORM_CLEAN_TWINS},
                          INTELLIJ_PRODUCT_KEY: {"proven_suffixes": proof.INTELLIJ_PROVEN_SUFFIXES, "canary_files": proof.INTELLIJ_CANARY_FILES,
@@ -2054,9 +2078,17 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
         reason = str(error)
         known_terminal = True
     except host.InspectError as error:
-        reason = "native_scope_too_large" if error.payload.get("error_reason") == "inspection_lane_scope_too_large" else "native_prerequisite_or_report_failed"
+        record_safe_error(receipt, error)
+        safe_error = host.safe_inspection_error(error)
+        if safe_error is not None:
+            receipt.update(safe_error.payload)
+            source_reason = safe_error.payload["error_reason"]
+            reason = "native_scope_too_large" if source_reason == "inspection_lane_scope_too_large" else "native_" + source_reason
+        else:
+            reason = "native_prerequisite_or_report_failed"
         known_terminal = True
-    except (OSError, ValueError, ElementTree.ParseError, subprocess.SubprocessError):
+    except (OSError, ValueError, ElementTree.ParseError, subprocess.SubprocessError) as error:
+        record_safe_error(receipt, error)
         reason = "native_prerequisite_or_report_failed"
         known_terminal = True
     finally:

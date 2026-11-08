@@ -459,6 +459,19 @@ class NativeTests(unittest.TestCase):
             self.assertEqual(host.main(), 0)
         self.assertEqual(json.loads(output.getvalue())["agent_result"]["next_action"], error.payload["next_action"])
 
+    def test_auto_selection_does_not_reread_a_failed_configuration(self) -> None:
+        error = host.inspection_lane_config_error("Invalid lane configuration")
+        with patch_attr(host, "native_backend_module", return_value=native), \
+                patch.object(sys, "platform", "darwin"), \
+                patch_attr(native.common, "scope_selection", side_effect=[error, (Path("/fixture"), {}, "files", set())]), \
+                patch_attr(host, "command_native") as worker, \
+                patch.object(sys, "argv", ["jb-inspect", "agent-inspect"]), redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(host.main(), 0)
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["inspection_outcome"]["reason"], error.payload["error_reason"])
+        self.assertEqual(result["agent_result"]["next_action"], error.payload["next_action"])
+        worker.assert_not_called()
+
     def test_retired_desktop_options_return_unknown_without_starting_the_worker(self):
         for argv in (["--backend", "api"], *([option, "value"] for option in host.RETIRED_OPTIONS)):
             with self.subTest(argv=argv), \
@@ -631,11 +644,14 @@ class UnavailableExplanationTests(unittest.TestCase):
                 patch_attr(host, "native_backend_module", return_value=native), \
                 patch_attr(host, "read_global_config", return_value={}), \
                 patch_attr(native, "eligibility_reason", return_value=ineligible), \
+                patch_attr(host, "log_assessment_records") as log, \
                 patch_attr(host, "command_native", side_effect=AssertionError("worker started")), \
                 patch.object(sys, "argv", ["jb-inspect", "agent-inspect", "--repo", str(self.repo), *scope, *selection]), \
                 redirect_stdout(io.StringIO()) as output:
             self.assertEqual(host.main(), 0)
         result = json.loads(output.getvalue())
+        record = host.outcome_log_record(log.call_args.args[0])
+        self.assertEqual(record["backend_selection"], result["diagnostic"]["backend_selection"])
         self.assertEqual((result["agent_result"]["verdict"], result["diagnostic"]["error_reason"]), ("UNKNOWN", "isolated_backend_unavailable"))
         return result["agent_result"]["agent_report"], result["agent_result"]["next_action"], result["diagnostic"]["backend_selection"]
 
@@ -651,6 +667,27 @@ class UnavailableExplanationTests(unittest.TestCase):
         self.assertIn(selection, report)
         self.assertIn("--scope files", action)
         self.assertNotIn("nativeWorkers", action)
+
+    def test_auto_scope_errors_keep_canonical_actions_without_raw_inputs(self) -> None:
+        cases = [("inspection_lane_scope_empty", ["--scope", "files"]),
+                 ("inspection_lane_scope_empty", ["--scope", "directory"]),
+                 ("inspection_lane_scope_unsupported", ["--scope", "private-sentinel"]),
+                 ("inspection_lane_path_outside_worktree", ["--scope", "files", "--file", "/private-sentinel"])]
+        for reason, argv in cases:
+            with self.subTest(reason=reason, argv=argv), patch.object(sys, "platform", "darwin"), \
+                    patch_attr(host, "native_backend_module", return_value=native), \
+                    patch_attr(host, "command_native") as worker, \
+                    patch.object(sys, "argv", ["jb-inspect", "agent-inspect", "--repo", str(self.repo), *argv]), \
+                    redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(host.main(), 0)
+                result = json.loads(output.getvalue())
+                expected = host.inspection_scope_error(reason)
+                self.assertEqual(result["inspection_outcome"]["reason"], expected.payload["error_reason"])
+                self.assertEqual(result["agent_result"]["next_action"], expected.payload["next_action"])
+                self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+                self.assertNotIn("private-sentinel", output.getvalue())
+                self.assertNotIn(str(self.repo), output.getvalue())
+                worker.assert_not_called()
 
     def test_files_no_worker_inspects_are_named(self):
         for name in ("src/app/globals.css", "src/App.svelte"):
@@ -1238,6 +1275,70 @@ print('Done.')
             result = self.assess()
         self.assertEqual(result["inspection_outcome"]["reason"], "native_scope_too_large")
         self.assertNotIn("worker_pid", result["diagnostic"]["native"])
+
+    def test_prerequisite_errors_keep_safe_categories_without_exception_contents(self) -> None:
+        sentinel = "private-sentinel-do-not-emit"
+        errors = [OSError(errno.EACCES, sentinel, f"/{sentinel}"), ValueError(sentinel),
+                  subprocess.TimeoutExpired([sentinel], 30, output=sentinel, stderr=sentinel),
+                  subprocess.CalledProcessError(1, [sentinel], output=sentinel, stderr=sentinel)]
+        for error in errors:
+            with self.subTest(error=type(error).__name__), patch_attr(native.common, "snapshot", side_effect=error):
+                result = self.assess(direct=True)
+            receipt = result["diagnostic"]["native"]
+            self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+            self.assertIs(result["agent_result"]["retry_policy"]["retry"], False)
+            self.assertIn(receipt["error_type"], result["agent_result"]["agent_report"])
+            self.assertEqual(receipt["error_type"], type(error).__name__)
+            if isinstance(error, OSError) and type(error.errno) is int:
+                self.assertEqual(receipt["error_errno"], errno.errorcode[error.errno])
+            self.assertNotIn(sentinel, host.public_json(result))
+            self.assertNotIn(sentinel, json.dumps(host.outcome_log_record(result)))
+            self.assertEqual(result["cleanup"]["status"], "closed")
+
+    def test_native_configuration_error_uses_its_safe_reason_and_canonical_action(self) -> None:
+        for error in (host.inspection_lane_config_error("private-sentinel"),
+                      host.repository_preparation_config_error("private-sentinel")):
+            with self.subTest(reason=error.payload["error_reason"]), \
+                    patch_attr(native.common, "scope_selection", side_effect=error):
+                result = self.assess(direct=True)
+            self.assertEqual("native_" + error.payload["error_reason"], result["inspection_outcome"]["reason"])
+            self.assertEqual(result["agent_result"]["next_action"], error.payload["next_action"])
+            self.assertNotIn("private-sentinel", host.public_json(result))
+            self.assertEqual(result["cleanup"]["status"], "closed")
+
+    def test_unknown_error_payload_and_subclass_name_are_not_public_diagnostics(self) -> None:
+        sentinel = "private_sentinel"
+        unsafe_type = type(sentinel, (OSError,), {})
+        errors = [host.InspectError(sentinel, payload={"error_reason": sentinel, "next_action": sentinel, "hint": sentinel}),
+                  host.InspectError(sentinel, payload={"error_reason": "inspection_lane_config_invalid", "next_action": sentinel}),
+                  unsafe_type(errno.EACCES, sentinel)]
+        for error in errors:
+            with self.subTest(error=type(error).__name__), patch_attr(native.common, "snapshot", side_effect=error):
+                result = self.assess(direct=True)
+                self.assertNotIn(sentinel, host.public_json(result))
+                self.assertNotIn(sentinel, json.dumps(host.outcome_log_record(result)))
+                self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+                self.assertEqual(result["cleanup"]["status"], "closed")
+
+    def test_report_failure_retains_findings_and_cleanup_failure_precedence(self) -> None:
+        with patch_attr(native.proof, "read_trace", side_effect=ValueError("private-sentinel")), \
+                patch_attr(native, "remove_sdk", side_effect=OSError(errno.EACCES, "private-sentinel")):
+            result = self.assess(direct=True)
+        self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+        self.assertTrue(result["findings"])
+        self.assertEqual(result["cleanup"]["status"], "failed")
+        self.assertTrue(result["diagnostic"]["native"]["persistence_failures"])
+        self.assertNotIn("private-sentinel", host.public_json(result))
+
+    def test_report_parse_failure_keeps_report_remedy_and_cleanup(self) -> None:
+        with patch_attr(native, "read_results", side_effect=ElementTree.ParseError("private-sentinel")):
+            result = self.assess(direct=True)
+        self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+        self.assertEqual(result["agent_result"]["next_action"],
+                         native.next_action_for_reason(host, result["diagnostic"]["native"], "native_report_unreadable"))
+        self.assertEqual(result["diagnostic"]["native"]["error_type"], ElementTree.ParseError.__name__)
+        self.assertNotIn("private-sentinel", host.public_json(result))
+        self.assertEqual(result["cleanup"]["status"], "closed")
 
     def test_oversized_file_cannot_borrow_its_controls_execution_proof(self):
         (self.repo / "source.py").write_bytes(b"#" * (native.common.MAX_ANALYZED_FILE_KB * 1024 + 1))
