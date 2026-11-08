@@ -3,6 +3,7 @@
 - Before repository work, read the Director's overall `DIRECTION.md` in `OWNER/direction` when configured, then the repository's `DIRECTION.md` if present, `AGENTS.md`, and relevant sections of `README.md`. Read nested `AGENTS.md` files before working in their paths; in repositories that still have `CLAUDE.md` or other legacy instruction files, read those too.
 - Read relevant repository instruction files explicitly if the host has not supplied them.
 - Keep repository instructions in `AGENTS.md`.
+- Put task evidence under `{evidenceRoot}/<repo>/<task>` and items to keep under `{retainedRoot}/<group>/<repo>/<item>`, whether or not the task made a worktree ([rules](https://github.com/cbusillo/codex-skills/blob/main/skills/github/references/worktrees.md#task-evidence-and-retained-items)).
 - Never commit real secrets or private keys, credential-bearing `.env` files, or private data dumps.
 - Before writing Python or Odoo XML/JavaScript, read the [shared Python and Odoo style](https://github.com/cbusillo/codex-skills/blob/main/skills/references/python-odoo-style.md) in full.
 

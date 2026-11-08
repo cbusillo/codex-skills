@@ -79,11 +79,15 @@ def configuration() -> tuple[Path, Path | None]:
             Path(values["hostHelper"]).expanduser() if "hostHelper" in values else None)
 
 
-def artifact_roots() -> tuple[Path, Path]:
+def configured_roots() -> dict[str, Path]:
     values = settings()
-    roots = [Path(values.get(key, default)).expanduser().absolute() for key, default in (
+    return {key: Path(values.get(key, default)).expanduser().absolute() for key, default in (
         ("evidenceRoot", "~/Developer/task-evidence"), ("retainedRoot", "~/Developer/retained-artifacts"),
-        ("root", "~/Developer/worktrees"))]
+        ("root", "~/Developer/worktrees"))}
+
+
+def artifact_roots() -> tuple[Path, Path]:
+    roots = list(configured_roots().values())
     if roots[0].name != "task-evidence":
         raise Refused("evidenceRoot must be named task-evidence.")
     for root in roots[:2]:
@@ -96,7 +100,7 @@ def artifact_roots() -> tuple[Path, Path]:
         if any(root.resolve().is_relative_to(other.resolve()) or other.resolve().is_relative_to(root.resolve())
                for other in roots[index + 1:]):
             raise Refused("Evidence, retained and worktree roots must not overlap.")
-    mount = values.get("evidenceMount")
+    mount = settings().get("evidenceMount")
     if mount and (not os.path.ismount(Path(mount).expanduser()) or not roots[0].is_relative_to(Path(mount).expanduser())):
         raise Refused("evidenceMount must be mounted and contain evidenceRoot.")
     return roots[0], roots[1]
