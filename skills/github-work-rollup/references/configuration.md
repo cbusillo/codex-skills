@@ -58,3 +58,15 @@ the workstream remains "Example Workstream" and the initiative is "Example
 Initiative". If these
 fields are absent, executive rendering infers a workstream from item titles, but
 explicit metadata is more reliable.
+
+The comment radar discovers issues and PRs created in its inclusive time window
+through the shared GraphQL repository paginator, stopping below the creation
+cutoff. PR opening posts keep their backing issue identity; a PR with no comments
+still needs the existing REST identity lookup. Open-issue inventory, discussions
+and wait searches use the shared GraphQL readers. A later search-page failure
+keeps earlier candidates and reports incomplete coverage.
+
+Repository-wide issue-comment and inline-review-comment feeds remain on REST.
+GraphQL has no equivalent repository-wide connection for those feeds, and thread
+`updatedAt` has not been shown to cover every comment edit. The existing
+updated-since discovery and its coverage therefore remain authoritative.

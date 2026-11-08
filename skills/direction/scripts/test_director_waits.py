@@ -9,6 +9,9 @@ from datetime import datetime, timezone
 import unittest
 from contextlib import redirect_stdout
 import io
+import re
+from typing import Any
+from urllib.parse import urlencode
 import json
 from unittest.mock import Mock, patch
 from types import SimpleNamespace
@@ -25,10 +28,59 @@ def fixture_discussion(reader, repo, number):
     return {"number": number, "comments": reader.paged_json(f"/repos/{repo}/issues/{number}/comments")}
 
 
+def search_node(item: Any) -> dict[str, Any]:
+    if not isinstance(item, dict):
+        return {}
+    repo = item.get("repository_url", "").removeprefix("https://api.github.com/repos/")
+    return {
+        "__typename": "PullRequest" if "pull_request" in item else "Issue",
+        "number": item.get("number"), "databaseId": item.get("id", item.get("number")),
+        "title": item.get("title", ""), "body": item.get("body", ""), "state": item.get("state", "open").upper(),
+        "stateReason": None, "createdAt": item.get("created_at", "2026-10-01T00:00:00Z"),
+        "updatedAt": item.get("updated_at", "2026-10-01T00:00:00Z"), "closedAt": None,
+        "url": item.get("html_url", ""), "repository": {"nameWithOwner": repo},
+        "author": {"login": item.get("user", {}).get("login", repo.split("/")[0]), "__typename": "User"},
+        "authorAssociation": "OWNER", "milestone": None,
+        "labels": {"nodes": item.get("labels", []), "totalCount": len(item.get("labels", [])),
+                   "pageInfo": {"hasNextPage": False, "endCursor": None}},
+        "headRefOid": "a" * 40, "headRefName": "work/example", "baseRefName": "main",
+        "headRepository": {"nameWithOwner": repo}, "baseRepository": {"nameWithOwner": repo},
+        "isDraft": False, "merged": False, "mergedAt": None,
+    }
+
+
+def fixture_search_query(reader: Any, document: str, **_kwargs: Any) -> dict[str, Any]:
+    query = json.loads(re.search(r'search\(query:("(?:[^"\\]|\\.)*")', document)[1])
+    size = int(re.search(r'first:(\d+)', document)[1])
+    after = json.loads(re.search(r'after:(null|"[^"]*")', document)[1])
+    page = int(after or 1)
+    response = reader.request("GET", "/search/issues?" + urlencode({
+        "q": query, "per_page": size, "page": page, "sort": "created", "order": "desc",
+    }), bucket="search")
+    payload = response.body
+    if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
+        raise director_waits.GitHubReadShapeError("invalid search page")
+    total = payload.get("total_count")
+    if payload.get("incomplete_results") is not False and type(total) is int:
+        total += 1
+    return {"search": {"nodes": [search_node(row) for row in payload["items"]], "totalCount": total,
+                       "pageInfo": {"hasNextPage": len(payload["items"]) == size and page * size < (total or 0),
+                                    "endCursor": str(page + 1)}}}
+
+
 # noinspection PyUnresolvedReferences
 DISCUSSION = patch.object(director_waits.github_read, "read_discussion", fixture_discussion)
-setUpModule = DISCUSSION.start
-tearDownModule = DISCUSSION.stop
+SEARCH = patch.object(director_waits.github_plan_graph, "query_data", fixture_search_query)
+
+
+def setUpModule() -> None:
+    DISCUSSION.start()
+    SEARCH.start()
+
+
+def tearDownModule() -> None:
+    SEARCH.stop()
+    DISCUSSION.stop()
 
 
 def issue(number=1, reason="Director to approve", labels=None, extra=""):
@@ -92,14 +144,14 @@ class WaitTests(unittest.TestCase):
             self.assertTrue(result["errors"])
         reader = Mock()
         reader.request.side_effect = [SimpleNamespace(body={
-            "items": [issue(i) for i in range(100)], "total_count": 101,
+            "items": [issue(i) for i in range(1, 101)], "total_count": 101,
             "incomplete_results": False}), director_waits.GitHubReadShapeError("quota exhausted")]
         result = director_waits.collect_query(reader, "owner", ["Director"], NOW)
         self.assertFalse(result["complete"])
         self.assertEqual(len(result["waits"]), 100)
 
     def test_pagination_and_duplicate_or_changed_total_detection(self):
-        first = {"items": [issue(i) for i in range(100)], "total_count": 101, "incomplete_results": False}
+        first = {"items": [issue(i) for i in range(1, 101)], "total_count": 101, "incomplete_results": False}
         for second, complete in (({"items": [issue(101)], "total_count": 101, "incomplete_results": False}, True),
                                  ({"items": [issue(1)], "total_count": 101, "incomplete_results": False}, False),
                                  ({"items": [issue(101)], "total_count": 102, "incomplete_results": False}, False)):

@@ -45,6 +45,8 @@ else:
 REAL_READ_DISCUSSION = github_read.read_discussion
 REAL_DISCUSSION_QUERY = github_read.discussion_query
 REAL_READ_REPOSITORY_CONNECTIONS = github_read.read_repository_connections
+sys.path.insert(0, str(MODULE_PATH.parents[2] / "direction/scripts"))
+from test_director_waits import fixture_search_query
 
 
 @pytest.fixture(autouse=True)
@@ -78,7 +80,26 @@ def no_host_people_index(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
 
     def connections(_reader: Any, repositories: list[str], *, field: str, selection: Any, normalize: Any,
                     **_kwargs: Any) -> dict[str, Any]:
-        """Serve the open-issue inventory from REST-shaped fixtures through the radar's own normalizer."""
+        if "stop_when" in _kwargs:
+            found = {}
+            for repo in repositories:
+                items = github_unanswered_comments.run_json([github_unanswered_comments.GH, "api", f"repos/{repo}/issues?state=all"])
+                rows = []
+                for row in items:
+                    if ("pull_request" in row) != (field == "pullRequests"):
+                        continue
+                    node = {"__typename": "PullRequest" if "pull_request" in row else "Issue", "id": row.get("node_id", ""),
+                            "databaseId": row["id"], "number": row["number"], "title": row["title"], "body": row["body"],
+                            "state": row["state"].upper(), "createdAt": row["created_at"], "updatedAt": row["updated_at"],
+                            "closedAt": row.get("closed_at"), "url": row["html_url"],
+                            "author": {"login": row["user"]["login"], "__typename": row["user"]["type"]},
+                            "comments": {"nodes": [{"issue": {"databaseId": row["id"]}}]}}
+                    normalized = normalize(repo, node)
+                    if _kwargs["stop_when"](normalized):
+                        break
+                    rows.append(normalized)
+                found[repo] = rows
+            return found
         assert field == "issues" and "states:[OPEN]" in selection(None)
         found: dict[str, Any] = {}
         for repo in repositories:
@@ -97,6 +118,16 @@ def no_host_people_index(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
             }) for row in items if isinstance(row, dict) and "pull_request" not in row and row.get("state", "open") == "open"]
         return found
 
+    def search_query(_reader: Any, document: str, **kwargs: Any) -> dict[str, Any]:
+        reader = Mock()
+        reader.request.side_effect = lambda _method, path, **_options: SimpleNamespace(body=github_unanswered_comments.run_json(
+            [github_unanswered_comments.GH, "api", path.lstrip("/")]))
+        try:
+            return fixture_search_query(reader, document, **kwargs)
+        except github_unanswered_comments.rollup.RollupError as error:
+            raise github_read.GitHubReadShapeError(str(error)) from error
+
+    monkeypatch.setattr(github_unanswered_comments.github_plan_graph, "query_data", search_query)
     monkeypatch.setattr(github_read, "read_discussion", discussion)
     monkeypatch.setattr(github_read, "discussion_query", query)
     monkeypatch.setattr(github_read, "read_repository_connections", connections)
@@ -1402,29 +1433,40 @@ def test_own_openings_are_excluded_and_non_own_bot_openings_need_attention(monke
 
 
 def test_opened_threads_stop_at_window_start_and_skip_after_until(monkeypatch) -> None:
-    pages = {
-        1: [opening(number=4, created_at="2026-07-27T00:00:00Z"), opening(number=3, created_at="2026-07-25T00:00:00Z")],
-        2: [opening(number=2, created_at="2026-07-10T00:00:00Z"), opening(number=1, created_at="2026-06-01T00:00:00Z")],
-        3: [opening(number=0, created_at="2026-07-12T00:00:00Z")],
-    }
-    requested: list[int] = []
+    reader = Mock(batch_diagnostic={"cost": 0})
+    requested: list[tuple[str, int]] = []
 
-    def fake_run_json(command: list[str]) -> object:
-        page = int(command[2].rsplit("page=", 1)[1])
-        requested.append(page)
-        return pages[page]
+    def response(document: str, _variables: dict[str, Any], **_kwargs: Any) -> Any:
+        alias = re.search(r"(\w+):repository", document)[1]
+        field = "pullRequests" if "pullRequests(" in document else "issues"
+        page = 2 if 'after:"next"' in document else 1
+        requested.append((field, page))
+        issue_pages = {1: [(4, "2026-07-27T00:00:00Z"), (3, "2026-07-25T00:00:00Z")],
+                       2: [(2, "2026-07-01T00:00:00Z"), (1, "2026-06-01T00:00:00Z")]}
+        pairs = issue_pages[page] if field == "issues" else [(5, "2026-07-26T20:00:00Z")]
+        nodes = [{"__typename": "Issue" if field == "issues" else "PullRequest", "id": f"node-{number}",
+                  "databaseId": 9000 + number, "number": number, "title": "Opening", "body": "Question",
+                  "state": "CLOSED", "createdAt": created, "updatedAt": created, "closedAt": None,
+                  "url": f"https://github.com/example/repo/issues/{number}",
+                  "author": {"__typename": "Bot", "login": "outside-agent"},
+                  "comments": {"nodes": [{"issue": {"databaseId": 5000 + number}}]}}
+                 for number, created in pairs]
+        more = field == "issues"
+        return github_read.github_api_core.ApiResult(ok=True, status=200, body={"data": {alias: {
+            "nameWithOwner": "example/repo", field: {"totalCount": 8 if more else 1, "nodes": nodes,
+            "pageInfo": {"hasNextPage": more, "endCursor": "next" if page == 1 else "unread"}}}}})
 
-    monkeypatch.setattr(github_unanswered_comments, "run_json", fake_run_json)
-
+    reader.graphql_json.side_effect = response
+    monkeypatch.setattr(github_unanswered_comments, "discussion_reader", lambda _repo, **_kwargs: reader)
+    monkeypatch.setattr(github_read, "read_repository_connections", REAL_READ_REPOSITORY_CONNECTIONS)
     items = github_unanswered_comments.opened_threads(
-        "example/repo",
-        datetime(2026, 7, 1, tzinfo=timezone.utc),
-        datetime(2026, 7, 26, 20, 0, tzinfo=timezone.utc),
-        per_page=2,
+        "example/repo", datetime(2026, 7, 1, tzinfo=UTC), datetime(2026, 7, 26, 20, tzinfo=UTC), per_page=2,
     )
-
-    assert [item["number"] for item in items] == [3, 2]
-    assert requested == [1, 2]
+    assert [item["number"] for item in items] == [5, 3, 2]
+    assert requested == [("issues", 1), ("issues", 2), ("pullRequests", 1)]
+    opening_post = github_unanswered_comments.normalize_opening_post("example/repo", items[0])
+    assert (opening_post.comment_id, opening_post.author, opening_post.author_type) == (5005, "outside-agent[bot]", "Bot")
+    assert "pull_request" in items[0]
 
 
 def test_full_history_thread_includes_outside_opening_post(monkeypatch) -> None:
@@ -1702,6 +1744,7 @@ def test_open_issue_inventory_pages_every_repository_and_isolates_a_failed_one(m
                 "createdAt": issue["updated_at"], "updatedAt": issue["updated_at"],
                 "author": {"__typename": "User", "login": "cbusillo"}}
 
+    monkeypatch.setattr(github_unanswered_comments, "opened_threads", lambda *_args: [])
     pages = {None: ([node(waiting_issue("No current wait.", number=200))], "CURSOR"),
              "CURSOR": ([node(waiting_issue("Pat's review of the release."))], None)}
     queries: list[str] = []
@@ -1722,7 +1765,7 @@ def test_open_issue_inventory_pages_every_repository_and_isolates_a_failed_one(m
 
     reader = SimpleNamespace(batch_diagnostic={}, graphql_json=graphql_json, diagnostics=dict)
     monkeypatch.setattr(github_read, "read_repository_connections", REAL_READ_REPOSITORY_CONNECTIONS)
-    patch_radar(monkeypatch, "discussion_reader", lambda _repo: reader)
+    patch_radar(monkeypatch, "discussion_reader", lambda _repo, **_kwargs: reader)
     fake = FakeGitHub({})
     patch_radar(monkeypatch, "run_json", fake)
 
@@ -2553,7 +2596,7 @@ def test_graphql_pr_identity_and_bot_body_anchor_reply(
     reader.get_json.return_value = {"id": issue_id}
     monkeypatch.setattr(github_read, "read_discussion", REAL_READ_DISCUSSION)
     monkeypatch.setattr(github_read, "discussion_query", REAL_DISCUSSION_QUERY)
-    patch_radar(monkeypatch, "discussion_reader", lambda _repo: reader)
+    patch_radar(monkeypatch, "discussion_reader", lambda _repo, **_kwargs: reader)
     patch_radar(monkeypatch, "run_json", FakeGitHub({"repos/example/repo/issues": [issue]}))
     settings = github_unanswered_comments.resolve_settings(args(
         repo=["example/repo"] if scope == "portfolio" else [],

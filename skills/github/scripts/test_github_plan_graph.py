@@ -1073,6 +1073,59 @@ def test_root_and_nested_graphql_failures_do_not_invent_missing_targets() -> Non
             raise AssertionError("Root access failure lost its classification")
 
 
+def test_partial_search_retains_candidates_and_strict_reads_still_refuse() -> None:
+    first = {**issue_fixture(), "__typename": "Issue"}
+    first["labels"] = {"totalCount": 0, "nodes": [], "pageInfo": {"hasNextPage": False, "endCursor": None}}
+    second = {**copy.deepcopy(first), "number": first["number"] + 1}
+
+    def page(nodes: list[dict[str, Any]], total: int, cursor: str | None = None) -> dict[str, Any]:
+        return {"data": {"search": {"nodes": nodes, "totalCount": total,
+                "pageInfo": {"hasNextPage": cursor is not None, "endCursor": cursor}}}}
+
+    failed_page = {"data": {"search": None}, "errors": [{"type": "FORBIDDEN", "path": ["search"]}]}
+    rows, metadata = graph.search_records(reader_for(page([first], 2, "next"), failed_page), "user:owner is:issue", limit=1000,
+                                         allow_partial=True)
+    assert [row["number"] for row in rows] == [first["number"]]
+    assert metadata["incomplete_results"] and metadata["errors"] and metadata["total_count"] == 2
+    try:
+        graph.search_records(reader_for(page([first], 2, "next"), failed_page), "user:owner is:issue", limit=1000)
+    except github_read.GitHubReadError:
+        pass
+    else:
+        raise AssertionError("Strict callers accepted an unread page")
+    duplicate = {**first, "repository": {"nameWithOwner": first["repository"]["nameWithOwner"].upper()}}
+    for nodes, total in (([second], 1), ([duplicate, second], 3), ([{}, second], 3)):
+        rows, metadata = graph.search_records(reader_for(page([first], 2, "next"), page(nodes, total)), "user:owner is:issue",
+                                             limit=1000, allow_partial=True)
+        assert [row["number"] for row in rows] == [first["number"], second["number"]]
+        assert metadata["incomplete_results"] and metadata["errors"]
+
+
+def test_repository_stop_preserves_pagination_and_other_repository_failure() -> None:
+    reader = Mock(batch_diagnostic={"cost": 0})
+    def respond(document: str, _variables: dict[str, Any], **_kwargs: Any) -> github_api.ApiResult:
+        data: dict[str, Any] = {}
+        for alias, repo in re.findall(r'(\w+):repository\(owner:"owner",name:"(\w+)"\)', document):
+            nodes = [{"number": 3}, {"number": 2}, {"number": 1}]
+            data[alias] = {"nameWithOwner": f"owner/{repo}", "issues": {
+                "totalCount": 9, "nodes": nodes,
+                "pageInfo": {"hasNextPage": True, "endCursor": "next"}}}
+            if 'after:"next"' in document:
+                data[alias] = None
+        return github_api.ApiResult(ok=True, status=200, body={"data": data})
+
+    reader.graphql_json.side_effect = respond
+    result = github_read.read_repository_connections(
+        reader, ["owner/window", "owner/broken"], field="issues",
+        selection=lambda cursor: f"issues(first:3,after:{json.dumps(cursor)}) {{ nodes {{ number }} }}",
+        normalize=lambda repo, node: {**node, "repo": repo}, step="fixture_window",
+        stop_when=lambda row: row["repo"] == "owner/window" and row["number"] < 2,
+    )
+    assert [row["number"] for row in result["owner/window"]] == [3, 2]
+    assert isinstance(result["owner/broken"], github_read.GitHubReadShapeError)
+    assert reader.graphql_json.call_count == 2
+
+
 if __name__ == "__main__":
     for name, test in list(globals().items()):
         if name.startswith("test_"):

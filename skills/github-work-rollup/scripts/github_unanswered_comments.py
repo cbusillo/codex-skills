@@ -48,6 +48,7 @@ else:
     github_read = importlib.import_module("github_read")
 import github_direction_next
 import github_plan_wait
+import github_plan_graph
 import github_repository_scope as repository_scope
 
 
@@ -653,27 +654,49 @@ def format_api_timestamp(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
-def opened_threads(repo: str, since: datetime, until: datetime, *, per_page: int = 100) -> list[dict[str, Any]]:
-    """Read issues and PRs created in the window, newest first, stopping at ``since``."""
+def opened_threads(
+    repo: str, since: datetime, until: datetime, *, per_page: int = 100,
+) -> list[dict[str, Any]]:
+    if not 1 <= per_page <= 100:
+        raise ValueError("issue page size must be between 1 and 100")
+    reader = discussion_reader(repo)
     opened: list[dict[str, Any]] = []
-    page = 1
-    while True:
-        query = urlencode({"state": "all", "sort": "created", "direction": "desc", "per_page": per_page, "page": page})
-        payload = run_json([GH, "api", f"repos/{repo}/issues?{query}"])
-        if not isinstance(payload, list):
-            raise rollup.RollupError(f"GitHub returned an invalid issue page for {repo}.")
-        items = [item for item in payload if isinstance(item, dict)]
-        for item in items:
-            created_at = rollup.parse_timestamp(str(item.get("created_at") or ""))
-            if created_at is None:
-                raise rollup.RollupError(f"GitHub returned an issue without a creation time for {repo}.")
-            if created_at < since:
-                return opened
-            if created_at <= until:
-                opened.append(item)
-        if len(payload) < per_page:
-            return opened
-        page += 1
+
+    def normalize(source_repo: str, node: dict[str, Any]) -> dict[str, Any]:
+        created = comment_timestamp(node["createdAt"])
+        opening = node
+        if node["__typename"] == "PullRequest" and since <= created <= until:
+            opening = {**node, "databaseId": github_read.discussion_issue_id(
+                reader, source_repo, node["number"], node, node["comments"]["nodes"],
+            )}
+        return {**github_read.discussion_comment(opening, source_repo, node["number"]),
+                "number": node["number"], "title": node["title"],
+                "state": "closed" if node["state"] in {"CLOSED", "MERGED"} else "open",
+                "closed_at": node["closedAt"],
+                **({"pull_request": {"url": f"https://api.github.com/repos/{source_repo}/pulls/{node['number']}"}}
+                   if node["__typename"] == "PullRequest" else {})}
+
+    try:
+        for field in ("issues", "pullRequests"):
+            def selection(cursor: str | None, connection_field: str = field) -> str:
+                return (
+                    f"{connection_field}(first:{per_page},after:{json.dumps(cursor)},orderBy:{{field:CREATED_AT,direction:DESC}}) "
+                    "{ totalCount nodes { __typename id databaseId number title body state closedAt createdAt updatedAt url "
+                    "author { __typename login } "
+                    + ("comments(first:1) { nodes { issue { databaseId } } } " if connection_field == "pullRequests" else "")
+                    + "} pageInfo { hasNextPage endCursor } }"
+                )
+
+            rows = github_read.read_repository_connections(
+                reader, [repo], field=field, selection=selection, normalize=normalize, step="radar_opened_threads",
+                stop_when=lambda row: comment_timestamp(row["created_at"]) < since,
+            )[repo]
+            if isinstance(rows, Exception):
+                raise rows
+            opened.extend(row for row in rows if comment_timestamp(row["created_at"]) <= until)
+    except (github_read.GitHubReadError, github_read.GitHubReadShapeError, KeyError, TypeError, ValueError) as error:
+        raise rollup.RollupError(str(error)) from error
+    return sorted(opened, key=lambda row: (row["created_at"], row["number"]), reverse=True)
 
 
 def scan_identity(
@@ -782,10 +805,10 @@ def repository_activity(
     return candidate_ids, errors
 
 
-def discussion_reader(repo: str) -> github_read.GitHubReader:
+def discussion_reader(repo: str, *, include_archived: bool = False) -> github_read.GitHubReader:
     deadline = read_deadline.get()
     return github_read.GitHubReader(
-        gh_cmd=GH, operation="github.comment_radar", strict_actor=True,
+        gh_cmd=GH, operation="github.comment_radar", strict_actor=True, include_archived=include_archived,
         gh_prefix_args=["--main-app-only"] if Path(GH).name == "gh-with-env-token" else [], repository=repo,
         deadline_at=time.time() + max(0.0, deadline - time.monotonic()) if deadline is not None
         else time.time() + DISCUSSION_READ_DEADLINE_SECONDS,
@@ -1370,50 +1393,21 @@ def structured_wait_issues(
         query = repository_scope.search_query(
             f'user:{owner} is:issue is:open in:comments "waiting_for"', include_archived=include_archived
         )
-        # Count distinct issues, not entries, and require GitHub to say each page
-        # is complete, as director_waits.collect_query does: a duplicate, a
-        # changing total or a missing incomplete_results can hide a candidate.
-        seen: set[tuple[str, int]] = set()
-        totals: list[int] = []
-        problems: list[str] = []
+        source_repo = next(repo for repo in scanned.values() if repo.split("/", 1)[0].casefold() == owner.casefold())
         try:
-            for page in range(1, 11):
-                payload = run_json([GH, *repository_scope.include_archived_arguments(include_archived, gh_command=GH), "api", "search/issues?" + urlencode({"q": query, "per_page": 100, "page": page})])
-                total = payload.get("total_count") if isinstance(payload, dict) else None
-                if (
-                    not isinstance(payload, dict) or not isinstance(payload.get("items"), list)
-                    or isinstance(total, bool) or not isinstance(total, int) or total < 0
-                ):
-                    raise rollup.RollupError("Invalid structured wait search response.")
-                totals.append(total)
-                if payload.get("incomplete_results") is not False:
-                    problems.append("GitHub did not report complete results")
-                entries = payload["items"]
-                for item in entries:
-                    found_repo = rollup.repo_from_search_url(item.get("repository_url")) if isinstance(item, dict) else None
-                    if not found_repo or not isinstance(item.get("number"), int) or isinstance(item["number"], bool):
-                        problems.append("a result had no issue identity")
-                        continue
-                    key = (str(found_repo).casefold(), item["number"])
-                    if key in seen:
-                        problems.append("an issue repeated during pagination")
-                        continue
-                    seen.add(key)
-                    repo = scanned.get(key[0])
-                    if repo and "pull_request" not in item:
-                        found.setdefault(repo, {})[item["number"]] = item
-                if len(entries) < 100 or len(seen) >= total:
-                    break
-            if len(set(totals)) > 1:
-                problems.append("the result total changed during pagination")
-            if totals and len(seen) < max(totals):
-                problems.append("the search limit or pagination left results unread")
-        except rollup.RollupError as exc:
-            errors.append({"repo": owner, "lane": "director_waits_search", "error": rollup.trim(str(exc))})
-        if problems:
-            errors.append({"repo": owner, "lane": "director_waits_search",
-                           "error": "Structured wait search coverage is incomplete: "
-                                    + "; ".join(dict.fromkeys(problems)) + "."})
+            rows, metadata = github_plan_graph.search_records(
+                discussion_reader(source_repo, include_archived=include_archived), query, limit=1000, allow_partial=True,
+            )
+            for item in rows:
+                repo = scanned.get(item["repo"].casefold())
+                if repo and "pull_request" not in item:
+                    found.setdefault(repo, {})[item["number"]] = item
+            if metadata["incomplete_results"] or metadata["total_count"] is None or len(rows) < metadata["total_count"]:
+                problems = metadata["errors"] or ["search limit or pagination left results unread"]
+                errors.append({"repo": owner, "lane": "director_waits_search",
+                               "error": "Structured wait search coverage is incomplete: " + "; ".join(problems) + "."})
+        except (github_read.GitHubReadError, github_read.GitHubReadShapeError, KeyError, TypeError, ValueError) as error:
+            errors.append({"repo": owner, "lane": "director_waits_search", "error": rollup.trim(str(error))})
     return found, errors
 
 

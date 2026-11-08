@@ -3131,6 +3131,18 @@ retry and exact-head reconciliation.
 
 ### Planning Graph Batches
 
+`github_read.read_repository_connections` accepts an optional `stop_when(row)`
+predicate over normalized rows. A true result excludes that row and stops only
+that repository. Callers must request an ordering that makes their cutoff valid;
+other repositories retain their independent paging and error coverage.
+
+`github_plan_graph.search_records(reader, query, limit=N)` remains strict on
+read failures. With `allow_partial=True`, it returns previously normalized rows
+alongside `total_count`, `incomplete_results` and an `errors` list. Later-page
+failures, malformed or duplicate identities and changing totals remain explicit
+coverage failures. Consumers must check both metadata and the returned count;
+a bounded result never proves completeness above its limit.
+
 Planning `show`, `index`, `search` and repository-local `next` use the existing
 GraphQL adapters by default. `--batch-read` remains a compatibility option for
 `show` and local `next`. Every requested issue, label, comment and relationship

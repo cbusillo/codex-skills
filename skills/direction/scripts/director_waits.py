@@ -23,6 +23,7 @@ sys.path.insert(0, str(SKILLS / "github-work-rollup/scripts"))
 import github_direction_next
 import github_identity
 import github_plan_wait
+import github_plan_graph
 import github_repository_scope as repository_scope
 import github_unanswered_comments as attention
 import github_read
@@ -33,7 +34,6 @@ from github_read import (
     GitHubReadError,
     GitHubReadShapeError,
     automation_only_gh_prefix_args,
-    path_with_query,
 )
 
 
@@ -222,77 +222,51 @@ def collect_query(reader, owner, terms, now, issue_limit=1000, phrase="Waiting f
               "scope": "Visible open issues in owned repositories and recipient-named issues elsewhere, by wait fields in the body "
                        "or structured wait records in comments, resolved from live discussions; recorded answers go to needs_status, "
                        "preserving their holds. Search indexing may lag discovery"}
-    rows, seen, totals = [], set(), []
-    # GitHub Search exposes at most 1,000 results for a query. Read response
-    # metadata on every page so timeouts/truncation cannot look complete.
-    bound = min(issue_limit, 1000)
-    read_count = 0
-    for page in range(1, (bound + 99) // 100 + 1):
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, int]] = set()
+    try:
+        entries, metadata = github_plan_graph.search_records(
+            reader, query + " sort:created-desc", limit=min(issue_limit, 1000), allow_partial=True,
+        )
+    except (GitHubReadError, GitHubReadShapeError, ValueError, TypeError, KeyError) as error:
+        result["errors"].append({"scope": "search", "error": str(error)})
+        return result
+    result["total_count"] = metadata["total_count"]
+    result["errors"].extend({"scope": "search", "error": error} for error in metadata["errors"])
+    if metadata["incomplete_results"] and not metadata["errors"]:
+        result["errors"].append({"scope": "search", "error": "search coverage incomplete or unknown"})
+    if metadata["total_count"] is None or len(entries) < metadata["total_count"]:
+        result["errors"].append({"scope": "search", "error": "search result limit or pagination gap", "returned": len(entries)})
+    for entry in entries:
         try:
-            response = reader.request("GET", path_with_query("/search/issues", {
-                "q": query, "per_page": min(bound, 100), "page": page,
-                "sort": "created", "order": "desc"}), step=f"director_wait_search_page_{page}", bucket="search")
-            payload = response.body
-            if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
-                raise GitHubReadShapeError("search response omitted items")
-            total = payload.get("total_count")
-            if isinstance(total, bool) or not isinstance(total, int) or total < 0:
-                raise GitHubReadShapeError("search response omitted total_count")
-            totals.append(total)
-            result["total_count"] = max(totals)
-            if payload.get("incomplete_results") is not False:
-                result["errors"].append({"scope": "search", "error": "search coverage incomplete or unknown"})
-            items = payload["items"]
-            for entry in items[:bound - read_count]:
-                read_count += 1
-                try:
-                    if not isinstance(entry, dict):
-                        raise GitHubReadShapeError("invalid search issue")
-                    repo_url = entry.get("repository_url", "")
-                    match = re.search(r"/repos/([\w.-]+/[\w.-]+)$", repo_url)
-                    if not match:
-                        raise GitHubReadShapeError("invalid search repository identity")
-                    repo = match[1]
-                    key = (repo, entry["number"])
-                    if key in seen:
-                        result["errors"].append({"scope": "search", "error": "duplicate issue during pagination"})
-                        continue
-                    seen.add(key)
-                    comments = read_discussion(reader, repo, entry["number"], discussions, result["errors"])
-                    if recipient_term and comments is not None:
-                        texts = "\n".join(str(source.get("body") or "") for source in [entry, *comments])
-                        if not github_plan_wait.names_recipient(texts, [recipient_term], {owner.casefold()}):
-                            continue
-                    waits = wait_rows(repo, [entry], terms, owner, now, {entry["number"]: comments}, errors=result["errors"])
-                    resolution = resolve_wait(repo, entry, comments)
-                    wait_record = resolution.record
-                    decisions = []
-                    question_states = []
-                    if waits and wait_record is not None:
-                        question_states = linked_questions(reader, wait_record, owner, discussions, result["errors"], comments)
-                        decisions = [question for question in question_states if question["answers"]]
-                    if question_states and all(question["answers"] for question in question_states):
-                        result["needs_status"].extend({**row, "next_actor": "agent", "recorded_decisions": decisions,
-                                                     "structured_wait": resolution.record,
-                                                     "next_action": "Read the recorded answers; leave the foreign record to its owner." if row["untrusted"] else
-                                                     "Read the recorded answers and reconcile within existing authority; preserve every other hold."}
-                                                    for row in waits)
-                    else:
-                        rows.extend({**row, **({"recorded_decisions": decisions} if decisions else {})} for row in waits)
-                except (GitHubReadShapeError, ValueError, TypeError, KeyError) as error:
-                    result["errors"].append({"scope": "search item", "error": str(error)})
-            if read_count >= total or len(items) < min(bound, 100) or read_count >= bound:
-                break
-        except (GitHubReadError, GitHubReadShapeError, ValueError, TypeError) as error:
-            result["errors"].append({"scope": "search", "error": str(error)})
-            break
-    if result["total_count"] is not None and read_count < result["total_count"]:
-        result["errors"].append({"scope": "search", "error": "search result limit or pagination gap", "returned": read_count})
-    if len(set(totals)) > 1:
-        result["errors"].append({"scope": "search", "error": "search total changed during pagination"})
+            repo = entry["repo"]
+            seen.add((repo, entry["number"]))
+            comments = read_discussion(reader, repo, entry["number"], discussions, result["errors"])
+            if recipient_term and comments is not None:
+                texts = "\n".join(str(source.get("body") or "") for source in [entry, *comments])
+                if not github_plan_wait.names_recipient(texts, [recipient_term], {owner.casefold()}):
+                    continue
+            waits = wait_rows(repo, [entry], terms, owner, now, {entry["number"]: comments}, errors=result["errors"])
+            resolution = resolve_wait(repo, entry, comments)
+            wait_record = resolution.record
+            decisions = []
+            question_states = []
+            if waits and wait_record is not None:
+                question_states = linked_questions(reader, wait_record, owner, discussions, result["errors"], comments)
+                decisions = [question for question in question_states if question["answers"]]
+            if question_states and all(question["answers"] for question in question_states):
+                result["needs_status"].extend({**row, "next_actor": "agent", "recorded_decisions": decisions,
+                                             "structured_wait": resolution.record,
+                                             "next_action": "Read the recorded answers; leave the foreign record to its owner." if row["untrusted"] else
+                                             "Read the recorded answers and reconcile within existing authority; preserve every other hold."}
+                                            for row in waits)
+            else:
+                rows.extend({**row, **({"recorded_decisions": decisions} if decisions else {})} for row in waits)
+        except (GitHubReadShapeError, ValueError, TypeError, KeyError) as error:
+            result["errors"].append({"scope": "search item", "error": str(error)})
     result["waits"] = sorted(rows, key=lambda row: (row["repo"], row["number"]))
     result["repositories_with_matches"] = sorted({repo for repo, _ in seen})
-    result["complete"] = bool(totals) and not result["errors"]
+    result["complete"] = not result["errors"]
     return result
 
 
