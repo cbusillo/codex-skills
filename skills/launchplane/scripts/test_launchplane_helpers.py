@@ -7254,7 +7254,7 @@ def test_expected_config_review_binds_metadata_and_never_prints_owner_instructio
         assert "private-account-context" not in json.dumps(evidence)
         assert "fixture-only" not in json.dumps(evidence)
         assert evidence["result"]["managed_secret_bindings_added_count"] == 1
-        _write_json(directory, "review.json", evidence)
+        evidence_path.write_text(json.dumps(evidence))
         apply_args = [
             "product-expected-config-apply",
             "--payload-file",
@@ -7340,7 +7340,7 @@ def test_expected_config_removal_shape_is_bound_to_the_request() -> None:
         }
         exit_code, receipt, _posts, _reads = _run_main(dry_argv, post=post, settings=settings)
         assert exit_code != 0
-        _write_json(directory, "review.json", receipt)
+        evidence_path.write_text(json.dumps(receipt))
         status, _receipt, _posts, _reads = _run_main(
             [
                 "product-expected-config-apply",
