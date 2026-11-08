@@ -2105,12 +2105,8 @@ class ClaimTests(unittest.TestCase):
                 self.assertEqual((self.inventory, self.pulls, self.closed_pulls), artifacts)
 
     def test_same_native_worker_can_claim_its_exact_attested_next_head(self):
-        self.ordinary_handoff_fixture()
+        self.next_handoff_fixture()
         self.handoff_id = None
-        source = CLAIM.records(self.comments[0]["body"])[0]
-        source.update(worker=self.args.worker, session=self.args.session)
-        self.comments[0]["body"] = CLAIM.marker(source)
-        self.args.branch = self.pulls[0]["head"]["ref"]
         with patch.dict(os.environ, {"CODEX_THREAD_ID": self.args.session, "CODEX_SESSION_ID": self.args.session}):
             self.run_claim()
         result = self.emitted.call_args.args[0]
@@ -2942,6 +2938,7 @@ class ClaimTests(unittest.TestCase):
         self.targets[str(self.issue["number"])] = copy.deepcopy(self.issue)
         self.target_comments[f"/repos/owner/repo/issues/{self.issue['number']}/comments"] = copy.deepcopy(self.comments)
         self.issue = self.targets.pop("41")
+        self.comments = self.target_comments.pop("/repos/owner/repo/issues/41/comments")
 
     def omitted_history_child(self, child):
         node_id = "fixture-sub-issue-added-event"
@@ -3078,7 +3075,6 @@ class ClaimTests(unittest.TestCase):
                     self.target_comments["/repos/owner/repo/issues/42/comments"] = []
                     if claimant == "root":
                         self.select_parent_record()
-                        self.comments = self.target_comments.pop("/repos/owner/repo/issues/41/comments")
                         self.args.issue, self.args.resume_from, self.handoff_id = "41", 1, None
                         self.args.wait_resolved = "Separate source work; preserve qualification wait"
                         source_branch = CLAIM.records(self.comments[0]["body"])[0]["branch"]
@@ -3163,7 +3159,6 @@ class ClaimTests(unittest.TestCase):
                     {"id": 89, "body": "Released claim 88", "user": {"login": TEST_BOT}, "created_at": "2026-10-02T00:00:00Z"}]
                 if route == "parent":
                     self.select_parent_record()
-                    self.comments = self.target_comments.pop("/repos/owner/repo/issues/41/comments")
                     self.args.issue, self.handoff_id = "41", None
                     self.args.wait_resolved = "Independent source follow-through; qualification wait remains"
                     source_branch = CLAIM.records(self.comments[0]["body"])[0]["branch"]
@@ -3351,7 +3346,6 @@ class ClaimTests(unittest.TestCase):
                     {"id": 88, "body": CLAIM.marker(successor), "user": {"login": TEST_BOT}}]
                 if claimant.startswith("parent"):
                     self.select_parent_record()
-                    self.comments = self.target_comments.pop("/repos/owner/repo/issues/41/comments")
                     self.args.issue = "41"
                     self.args.wait_resolved = "Source-only follow-through; preserve parent qualification waits"
                 if claimant == "parent_without_handoff":
@@ -3435,7 +3429,6 @@ class ClaimTests(unittest.TestCase):
                     self.timelines["/repos/owner/repo/issues/41/timeline"][0]["sub_issue"] = None
                 if route == "plain_resume":
                     self.select_parent_record()
-                    self.comments = self.target_comments.pop("/repos/owner/repo/issues/41/comments")
                     self.args.issue, self.handoff_id = "41", None
                     self.args.wait_resolved = "Separate source follow-through; qualification wait stays on the parent"
                     self.pulls[0]["head"]["ref"] = CLAIM.records(self.comments[0]["body"])[0]["branch"]
@@ -3504,7 +3497,6 @@ class ClaimTests(unittest.TestCase):
                 self.setUp()
                 self.parent_handoff_fixture()
                 self.select_parent_record()
-                self.comments = self.target_comments.pop("/repos/owner/repo/issues/41/comments")
                 original = CLAIM.records(self.comments[0]["body"])[0]
                 later = {**OTHER, "worker": "root-resumer", "session": "root-resume-session",
                          "branch": original["branch"], "claimed_at": "2026-10-03T00:00:00Z"}
