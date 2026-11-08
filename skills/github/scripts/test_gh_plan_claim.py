@@ -224,7 +224,7 @@ class ClaimTests(unittest.TestCase):
         self.emitted = Mock()
         self.wait = wait_record.reviewed(evidence="Fixture's full history and ownership reviewed; no person/event hold")
 
-    def get_issue(self, ref, repo):
+    def get_issue(self, ref, repo, **_kwargs):
         self.events.append("read_issue")
         issue = copy.deepcopy(self.targets.get(str(ref), self.issue))
         issue["repo"], issue["number"] = PLAN.issue_ref(ref, repo)

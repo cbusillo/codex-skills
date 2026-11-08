@@ -79,11 +79,14 @@ class GitHubReadError(Exception):
 
     @property
     def rest_recovery_allowed(self) -> bool:
-        return (
-            self.result.bucket == "graphql"
-            and self.result.failure is not None
-            and self.result.failure.cause in {"network_provider_failure", "graphql_primary_rate_limited"}
-        )
+        return graphql_rest_recovery_allowed(self.result)
+
+
+def graphql_rest_recovery_allowed(result: github_api_core.ApiResult) -> bool:
+    cause = result.failure.cause if result.failure is not None else None
+    if cause == "deadline_exceeded" and result.retry_summary is not None:
+        cause = result.retry_summary.wait_cause
+    return result.bucket == "graphql" and cause in {"network_provider_failure", "graphql_primary_rate_limited"}
 
 
 class GitHubReadShapeError(Exception):
@@ -723,7 +726,10 @@ def read_repository_connections(
             try:
                 repository_node = data.get(alias)
                 if alias in invalid:
-                    raise graphql_failure(response, invalid[alias])
+                    error = graphql_failure(response, invalid[alias])
+                    if isinstance(error, GitHubReadShapeError):
+                        raise RepositoryInventoryUnavailable(str(error), retryable=error.retryable)
+                    raise error
                 if (
                     not isinstance(repository_node, dict)
                     or str(repository_node.get("nameWithOwner", "")).casefold() != repo.casefold()

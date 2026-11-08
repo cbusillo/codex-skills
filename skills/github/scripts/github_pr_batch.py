@@ -147,6 +147,10 @@ def rest_author(author):
     }
 
 
+def rest_repository(node: dict[str, Any] | None) -> dict[str, Any] | None:
+    return {"full_name": node["nameWithOwner"]} if node is not None else None
+
+
 def rest_pull_request(node: dict[str, Any], labels: list[dict[str, Any]]) -> dict[str, Any]:
     number, sha = node["number"], node["headRefOid"]
     return {
@@ -169,11 +173,11 @@ def rest_pull_request(node: dict[str, Any], labels: list[dict[str, Any]]) -> dic
         "head": {
             "sha": sha,
             "ref": node["headRefName"],
-            "repo": {"full_name": (node["headRepository"] or {}).get("nameWithOwner")},
+            "repo": rest_repository(node["headRepository"]),
         },
         "base": {
             "ref": node["baseRefName"],
-            "repo": {"full_name": node["baseRepository"]["nameWithOwner"]},
+            "repo": rest_repository(node["baseRepository"]),
         },
         "changed_files": node.get("changedFiles"),
         "updated_at": node["updatedAt"],

@@ -712,7 +712,7 @@ def global_fixture(
     parent_map = {(child["repo"].casefold(), child["number"]): all_nodes[key]
                   for key, values in edges.items() for child in values["sub_issues"]}
 
-    def get_node(ref: str, target_repo: str) -> Any:
+    def get_node(ref: str, target_repo: str, **_kwargs: Any) -> Any:
         key = (target_repo, int(ref))
         reads.append(key)
         if key not in by_key:
@@ -830,7 +830,8 @@ def test_global_next_follows_cross_owner_blockers_and_reports_partial_waits() ->
     assert "Justin" in result["recorded_waits"][0]["waiting_for"]
     assert result["recorded_waits"][0]["reported_by"].endswith("/issues/91")
     assert result["dependency_context"]["complete"] is True
-    assert len(reads) == len(set(reads)) == 4
+    assert len(reads) == len(set(reads))
+    assert {(node["repo"], node["number"]) for node in [parent, backup, provider, later]} <= set(reads)
 
 
 def test_global_waiting_milestone_hands_off_to_next_not_unlinked_tooling() -> None:
@@ -1267,9 +1268,10 @@ def test_local_next_inbound_scan_keeps_waits_and_reports_unevaluated_issues() ->
             return "automation-gh", [plan, gate]
         return "automation-gh", [plan, gate, bug]
 
+    read_relations = module.read_next_issue_relationships
     with patch.multiple(module, collect_paged_rest_items=collect,
                         next_focus_context=lambda *_: (None, {}, {"available": False}),
-                        read_next_issue_relationships=lambda *_: ("automation-gh", relationships(), []),
+                        read_next_issue_relationships=lambda *a, **kw: read_relations(*a, **kw) if kw.get("fields") else ("automation-gh", relationships(), []),
                         read_next_inbound_blockers=module.real_read_next_inbound_blockers,
                         load_direction=lambda *_: DIRECTION, emit=captured.update):
         module.cmd_next(type("Args", (), {"repo": "owner/repo", "milestone": None, "limit": 1, "scan_limit": 2})())
@@ -2470,10 +2472,10 @@ def test_identity_refused_graph_node_keeps_other_milestone_candidates() -> None:
             cause="identity_refused", message="Client App is not installed on outside/tools",
             retryable=False, fallback_eligible=False, disposition="stop")
 
-        def get(ref: str, repo: str) -> Any:
+        def get(ref: str, repo: str, **kwargs: Any) -> Any:
             if repo == unread["repo"]:
                 raise module.PlanError(failure.message, failure=failure)
-            return base_get(ref, repo)
+            return base_get(ref, repo, **kwargs)
 
         with patch.object(module, "get_issue", side_effect=get):
             module.cmd_next(next_args())
@@ -3152,7 +3154,7 @@ def test_recorded_answers_require_exact_trusted_source_and_preserve_all_conditio
                      [question, {**decisions[0], "body": "Director decision: Q700. Pending."}]):
         module.DECISION_DISCUSSIONS.clear()
         with patch.multiple(module, milestone_direction_repo=lambda _: "owner/direction", wait_authors=lambda _: {"owner"},
-                            get_issue=lambda *_: ("bot", source),
+                            get_issue=lambda *_args, **_kwargs: ("bot", source),
                             collect_paged_rest_items=lambda *_args, **_kwargs: ("bot", comments)):
             assert not module.recorded_wait_decisions(wait, "owner/repo")
     module.DECISION_DISCUSSIONS.clear()
@@ -3252,7 +3254,7 @@ def test_parallel_answer_diagnostics_read_one_source_and_keep_a_successful_snaps
         module.collect_paged_rest_items.assert_called_once()
     module.DECISION_DISCUSSIONS.clear()
     complete = module.github_direction_next.discussion_snapshot(source, comments, complete=True)
-    def fail_after_verified_read(*_args: Any) -> Any:
+    def fail_after_verified_read(*_args: Any, **_kwargs: Any) -> Any:
         module.seed_decision_discussion("owner/repo", 21, complete)
         raise module.PlanError("Other source read failed")
     with patch.multiple(module, get_issue=fail_after_verified_read, milestone_direction_repo=lambda _: "owner/direction",

@@ -9,6 +9,7 @@ from typing import Any
 
 import github_plan_graph as graph
 import github_read
+import github_pr_batch
 
 PAGE_SIZE = 20
 COMMON_FIELDS = """number title body state createdAt updatedAt lastEditedAt url
@@ -82,11 +83,11 @@ def rest_record(node: dict[str, Any], *, kind: str) -> dict[str, Any]:
             "head": {
                 "sha": node["headRefOid"],
                 "ref": node["headRefName"],
-                "repo": {"full_name": (node.get("headRepository") or {}).get("nameWithOwner")},
+                "repo": github_pr_batch.rest_repository(node.get("headRepository")),
             },
             "base": {
                 "ref": node["baseRefName"],
-                "repo": {"full_name": node["baseRepository"]["nameWithOwner"]},
+                "repo": github_pr_batch.rest_repository(node["baseRepository"]),
             },
             "_graph_comments": [graph.rest_comment(row) for row in node["comments"]],
             "_graph_comments_complete": True,
