@@ -1289,7 +1289,7 @@ print('Done.')
             self.assertIs(result["agent_result"]["retry_policy"]["retry"], False)
             self.assertIn(receipt["error_type"], result["agent_result"]["agent_report"])
             self.assertEqual(receipt["error_type"], type(error).__name__)
-            if isinstance(error, OSError):
+            if isinstance(error, OSError) and type(error.errno) is int:
                 self.assertEqual(receipt["error_errno"], errno.errorcode[error.errno])
             self.assertNotIn(sentinel, host.public_json(result))
             self.assertNotIn(sentinel, json.dumps(host.outcome_log_record(result)))

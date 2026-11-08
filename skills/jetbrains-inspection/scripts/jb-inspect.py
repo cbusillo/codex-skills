@@ -337,8 +337,8 @@ def classify_cleanup_leases_exit(result: dict[str, Any]) -> int:
 
 
 def run_agent_inspect(args: argparse.Namespace) -> int:
+    selection = "explicit"
     try:
-        selection = "explicit"
         if args.backend == "auto":
             selection = "native_selection_unavailable"
             native_backend = native_backend_module()

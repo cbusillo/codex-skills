@@ -1776,7 +1776,7 @@ def record_safe_error(receipt: dict[str, Any], error: Exception) -> None:
                     NotADirectoryError, TimeoutError, ConnectionError, OSError, json.JSONDecodeError, UnicodeError, ValueError)
                     if isinstance(error, kind)), "InspectError")
     receipt["error_type"] = category
-    if isinstance(error, OSError) and error.errno in errno.errorcode:
+    if isinstance(error, OSError) and type(error.errno) is int and error.errno in errno.errorcode:
         receipt["error_errno"] = errno.errorcode[error.errno]
 
 
