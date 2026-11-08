@@ -824,7 +824,8 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual(len(codex_idle_watch.poll(self.ledger, seen, 90, 1005)), 1)
         self.write([event("task_started")])
         self.assertEqual(codex_idle_watch.poll(self.ledger, seen, 90, 1006), [])
-        self.write([event("agent_message", message="Safe to exit: yes"), event("task_complete")])
+        self.write([event("agent_message", message="Safe to exit: yes"),
+                    {**event("task_complete"), "timestamp": "2026-10-03T00:01:00Z"}])
         self.assertEqual(len(codex_idle_watch.poll(self.ledger, seen, 90, 1007)), 1)
 
     def test_early_closeout_requires_owned_completed_unqualified_response(self):
@@ -920,6 +921,7 @@ class LedgerTests(unittest.TestCase):
                        for value in state if value.startswith(codex_idle_watch.ATTEMPT_NOTIFICATION))
         self.assertEqual(attempt["recipient"], self.recipient)
         self.assertIn(json.dumps(attempt["notice"], sort_keys=True), state)
+        args = self.persistent_args(once=True)
         args.delivered_state.unlink()
         with patch.object(review_notifications, "send", side_effect=PermissionError("denied")) as notify, \
                 contextlib.redirect_stdout(io.StringIO()):
@@ -1084,8 +1086,7 @@ class LedgerTests(unittest.TestCase):
         self.ledger.write_text(json.dumps([self.entry]))
         command = [sys.executable, str(Path(finished_map.__file__)),
                    "--ledger", str(self.ledger), "--session-id", self.entry["session_id"]]
-        result = subprocess.run(command, capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
+        result = subprocess.run(command, capture_output=True, text=True, check=True)
         candidate = json.loads(result.stdout)[0]
         self.assertTrue(candidate["candidate"])
         self.assertEqual(candidate["closeout_request"]["harness"], self.entry["harness"])
@@ -1094,9 +1095,9 @@ class LedgerTests(unittest.TestCase):
             stream.write(json.dumps({"type": "user", "sessionId": self.entry["session_id"],
                                      "message": {"content": "Continue working."}}) + "\n")
         self.assertIsNone(finished_map.candidates(self.ledger, self.entry["session_id"])[0]["closeout_request"])
-        result = subprocess.run(command[:-1] + ["other-session"], capture_output=True, text=True)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("error", json.loads(result.stdout))
+        with self.assertRaises(subprocess.CalledProcessError) as ctx:
+            subprocess.run(command[:-1] + ["other-session"], capture_output=True, text=True, check=True)
+        self.assertIn("error", json.loads(ctx.exception.stdout))
 
     def test_claude_closeout_with_live_background_task_stays_open(self):
         self.entry["harness"] = "claude"
@@ -2044,16 +2045,18 @@ class ProcessArgumentsTests(unittest.TestCase):
         from unittest.mock import mock_open
 
         argv = ["codex", "resume " + self.other, "", "--"]
-        data = len(argv).to_bytes(4, sys.byteorder) + b"/fixture/codex\0\0\0" + b"\0".join(arg.encode() for arg in argv) + b"\0DO_NOT_READ=\xff\0"
+        tail = b"\0".join(arg.encode() for arg in argv) + b"\0DO_NOT_READ=\xff\0"
+        data = len(argv).to_bytes(4, sys.byteorder) + b"/fixture/codex\0\0\0" + tail
+        native_data = len(argv).to_bytes(4, sys.byteorder) + b"/fixture/codex\0\0" + tail
         self.assertEqual(session_liveness.darwin_arguments(data), argv)
         for malformed in (b"", b"\0" * 4, data[:4] + b"/fixture/codex\0codex"):
             with self.subTest(malformed=malformed), self.assertRaises(ValueError):
                 session_liveness.darwin_arguments(malformed)
 
         def sysctl(_mib: Any, _count: int, destination: Any, size: Any, _new: Any, _newsize: int) -> int:
-            size._obj.value = len(data)
+            size._obj.value = len(native_data)
             if destination is not None:
-                session_liveness.ctypes.memmove(destination, data, len(data))
+                session_liveness.ctypes.memmove(destination, native_data, len(native_data))
             return 0
 
         library = SimpleNamespace(sysctl=Mock(side_effect=sysctl))
@@ -2398,7 +2401,8 @@ class CodexProjectTests(unittest.TestCase):
         self.enterContext(patch.object(iterm_tab, "check_launch_issue"))
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
-        self.root = Path(folder.name).resolve()
+        self.raw_root = Path(folder.name)
+        self.root = self.raw_root.resolve()
         self.enterContext(patch.object(iterm_tab, "CHROME_OPT_IN", self.root / "absent"))
 
     def test_codex_cannot_skip_preflight_through_another_provider(self) -> None:
@@ -2449,9 +2453,9 @@ class CodexProjectTests(unittest.TestCase):
             iterm_tab.check_codex_project(command, choice)
 
     def test_directory_options_and_selected_home_trust(self) -> None:
-        repository = self.root / "brief's repository"
+        repository = self.raw_root / "brief's repository"
         repository.mkdir()
-        home = self.root / "selected"
+        home = self.raw_root / "selected"
         choice = {"provider": "openai", "env": {"CODEX_HOME": str(home)}}
         write_codex_project_fixture(repository, home)
         before = (home / "config.toml").read_bytes()
@@ -3435,8 +3439,8 @@ class TerminalTests(unittest.TestCase):
             )
             result = asyncio.run(iterm_tab.operate(app, args))
             self.assertEqual(result["session_id"], sid)
+            self.assertEqual(app.async_refresh.await_count, 2 if late else 0)
             if late:
-                self.assertEqual(app.async_refresh.await_count, 2)
                 self.assertTrue(all(call.args == ("newtab",) for call in app.get_tab_by_id.call_args_list))
             window.async_create_tab.assert_awaited_once_with(select=False)
             previous.async_select.assert_not_awaited()
