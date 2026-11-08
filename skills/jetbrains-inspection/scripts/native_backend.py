@@ -190,7 +190,7 @@ def listing(labels: set[str]) -> str:
 
 
 def coverage_gaps(host: Any, repo: Path, config: dict[str, Any], selected: set[str]):
-    lanes = host.parse_inspection_lanes(config) if config.get("lanes") else ()
+    lanes = host.parse_inspection_lanes(config)
     odoo = any(Path(f).suffix == ".xml" for f in selected) and is_odoo(repo, selected)
     groups: dict[tuple[str, tuple[tuple[str, str], ...]], set[str]] = {}
     for path in sorted(selected):
@@ -1620,9 +1620,15 @@ def next_action_for_reason(host: Any, receipt: dict[str, Any], reason: str, verd
                    " or product names to the repository's .idea/dictionaries/project.xml.")
     if reason == "native_report_unreadable":
         action = "The native result or execution trace could not be read. Report the safe error category and check the worker's report generation before one fresh assessment."
-    elif reason == "native_prerequisite_or_report_failed" and receipt.get("error_type"):
-        action = (f"A native prerequisite failed ({receipt['error_type']}). Check local Git and runtime availability and readable "
+    elif reason in {"native_prerequisite_failed", "native_prerequisite_or_report_failed"}:
+        category = f" ({receipt['error_type']})" if receipt.get("error_type") else ""
+        action = (f"A native prerequisite failed{category}. Check local Git and runtime availability and readable "
                   "repository, profile and worker inputs before one fresh assessment; do not copy credentials or retry blindly.")
+    elif reason == "native_preparation_failed":
+        setup = ("the lane project's frozen lockfile install with the configured Node runtime" if product.key == WEBSTORM_PRODUCT_KEY
+                 else "the repository's documented Python setup and declared prepare.python or packaging support dependencies")
+        action = (f"Preparation in the private snapshot failed. Check {setup} and availability of its declared dependency sources; "
+                  "resolve the failure before one fresh assessment. Do not retry blindly or copy credentials.")
     elif reason in {"native_owner_activation_required", "native_activation_stop_recorded"}:
         action = "Owner question: the Director must restore the configured independent worker's activation through the product UI using existing entitlements. Stop licensed runs; never start a trial or copy credentials."
     elif reason == "native_populated_profile_required":

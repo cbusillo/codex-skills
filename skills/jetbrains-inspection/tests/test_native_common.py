@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from functools import partial
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -90,6 +91,37 @@ class NativeCommonTests(unittest.TestCase):
         self.assertTrue(common.lane_gaps(host, config, {"src/a.py", "src/A.kt"}))
         nested = {"lanes": [{"id": "python", "ide": "PyCharm", "include": ["**/*.py"], "projectPath": "src"}]}
         self.assertTrue(common.lane_gaps(host, nested, {"src/a.py"}))
+
+    def test_selection_helpers_use_canonical_lane_validation(self) -> None:
+        args = host.build_parser().parse_args(["agent-inspect", "--repo", str(self.repo), "--scope", "files", "--file", "src/a.py"])
+        for value in ([], [{}], False, 0, "", {}):
+            config = {"lanes": value}
+            self.declare_inspection(config)
+            with self.assertRaises(host.InspectError) as canonical:
+                host.parse_inspection_lanes(config)
+            calls = (partial(common.scope_selection, args, host),
+                     partial(common.lane_gaps, host, config, {"src/a.py"}),
+                     partial(common.configured_product_key, host, config, {"src/a.py"}),
+                     partial(common.configured_product_key, host, config, set()),
+                     partial(common.web_project_path, host, self.repo, config, {"src/a.py"}))
+            for call in calls:
+                with self.subTest(value=value, helper=call.func.__name__):
+                    with self.assertRaises(host.InspectError) as observed:
+                        call()
+                    self.assertEqual(observed.exception.payload, canonical.exception.payload)
+
+    def test_absent_null_and_valid_lanes_keep_supported_selection(self) -> None:
+        (self.repo / "src/a.js").write_text("let value = 1;\n")
+        args = host.build_parser().parse_args(["agent-inspect", "--repo", str(self.repo), "--scope", "files", "--file", "src/a.js"])
+        for config in ({"ide": "WebStorm"}, {"ide": "WebStorm", "lanes": None},
+                       {"lanes": [{"id": "web", "ide": "WebStorm", "include": ["**/*.js"]}]}):
+            with self.subTest(config=config):
+                self.declare_inspection(config)
+                selected = common.scope_selection(args, host)[3]
+                self.assertEqual(selected, {"src/a.js"})
+                self.assertEqual(common.configured_product_key(host, config, selected), "webstorm")
+                self.assertEqual(common.lane_gaps(host, config, selected, "webstorm"), [])
+                self.assertEqual(common.web_project_path(host, self.repo, config, selected), Path("."))
 
     def test_snapshot_refuses_credential_locations_before_any_read_or_copy(self) -> None:
         for name in ("pycharm.key", "plugin_TEST.license", ".env", ".env.local",
