@@ -1538,7 +1538,7 @@ def test_attachment_passthrough_and_failures_never_replay() -> None:
                 if mode == "bad_readback":
                     readback["body"] = "no uploaded image"
                 if mode == "extra_prose":
-                    readback["body"] += "\nUnexpected report prose"
+                    readback["body"] = readback["body"].replace("/image)", "/image) Unexpected report prose ![extra](https://github.com/user-attachments/assets/other)")
                 if mode == "crlf_body":
                     readback["body"] = readback["body"].replace("\n", "\r\n")
                 if mode in ("wrong_author", "missing_author"):

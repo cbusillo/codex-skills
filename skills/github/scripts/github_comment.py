@@ -1469,11 +1469,12 @@ def upload_attachment_comment(
     saved_author = str(saved_user.get("login") or "") if isinstance(saved_user, dict) else ""
     saved_body = str(saved.get("body", "")) if isinstance(saved, dict) else ""
     asset = r"https://github\.com/user-attachments/assets/[A-Za-z0-9_-]+"
-    markup = [line.strip() for line in saved_body.removeprefix(body).splitlines() if line.strip()]
+    markup = rf"!?\[.*?]\({asset}\)|{asset}"
+    remainder = saved_body.removeprefix(body)
     if (not isinstance(saved, dict) or saved.get("id") != int(match[1])
             or saved.get("html_url") != url or saved_author.casefold() != actor
-            or not saved_body.startswith(body) or len(markup) != len(attachments)
-            or any(not re.fullmatch(rf"!?\[[^\r\n]*]\({asset}\)|{asset}", line) for line in markup)):
+            or not saved_body.startswith(body) or len(re.findall(markup, remainder, re.DOTALL)) != len(attachments)
+            or re.sub(markup, "", remainder, flags=re.DOTALL).strip()):
         raise _local_error(
             "Attachment readback did not confirm the comment, author, agent line and uploaded asset; read the thread before retrying",
             operation=operation, cause="invalid_response", actor=actor, expected_actor=actor,
