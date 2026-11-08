@@ -1428,7 +1428,7 @@ def body_director_wait(issue: dict[str, Any], repo: str, terms: list[str], login
 
 
 OPEN_ISSUE_FIELDS = "number title body url createdAt updatedAt author { __typename login }"
-OPEN_ISSUE_BATCH = 10  # repositories per query, keeping each page of issue bodies small
+REPOSITORIES_PER_OPEN_ISSUE_QUERY = 10
 
 
 def open_issue_selection(cursor: str | None) -> str:
@@ -1450,8 +1450,8 @@ def open_issues(repositories: list[str]) -> dict[str, list[dict[str, Any]] | Exc
         by_owner.setdefault(repo.split("/", 1)[0].casefold(), []).append(repo)
     for repos in by_owner.values():
         reader = discussion_reader(repos[0])
-        for offset in range(0, len(repos), OPEN_ISSUE_BATCH):
-            batch = repos[offset:offset + OPEN_ISSUE_BATCH]
+        for offset in range(0, len(repos), REPOSITORIES_PER_OPEN_ISSUE_QUERY):
+            batch = repos[offset:offset + REPOSITORIES_PER_OPEN_ISSUE_QUERY]
             try:
                 found.update(github_read.read_repository_connections(
                     reader, batch, field="issues", selection=open_issue_selection, normalize=open_issue,
