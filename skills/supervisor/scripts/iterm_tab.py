@@ -1522,7 +1522,7 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
     """Validate the full batch and prepare accounts before creating terminals."""
     if getattr(args, "resume_session_id", None):
         return prepare_resume(args)
-    override = getattr(args, "agent_override", None)
+    override: str | None = getattr(args, "agent_override", None)
     if override is not None:
         if not override.strip() or any(character in override for character in "\n\r"):
             raise ValueError("--agent-override needs the explicit Director decision or instruction on one nonempty line")

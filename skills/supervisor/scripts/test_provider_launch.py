@@ -134,7 +134,7 @@ class LaunchIssueTests(unittest.TestCase):
                                       account_config=None, account=None, tmux_socket="fixture")
             window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock())
             app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
-            payload = {"ok": True, "issue": {"recorded_current_status": "Next actor: agent:supervisor\nBrief:\n```text\nDo the task.\n```",
+            payload: dict[str, Any] = {"ok": True, "issue": {"recorded_current_status": "Next actor: agent:supervisor\nBrief:\n```text\nDo the task.\n```",
                        "provenance": {"section_updates_allowed": True}, "labels": [], "launch_check": {"allowed": True}}}
             with (patch.dict(sys.modules, {"iterm2": SimpleNamespace()}),
                   patch.object(iterm_tab.subprocess, "run", side_effect=lambda *_a, **_k:
@@ -169,7 +169,7 @@ class LaunchIssueTests(unittest.TestCase):
             command, brief = Path(folder) / "command", Path(folder) / "brief"
             brief.write_text(f"Anchor and claim: {issue}\nRules: {iterm_tab.BRIEF_RULES_URL}")
             args = argparse.Namespace(command_file=[command], brief_file=[brief])
-            payload = {"ok": True, "issue": {"recorded_current_status": "Next actor: agent:supervisor\nBrief:\n```text\nDo the task.\n```",
+            payload: dict[str, Any] = {"ok": True, "issue": {"recorded_current_status": "Next actor: agent:supervisor\nBrief:\n```text\nDo the task.\n```",
                        "provenance": {"section_updates_allowed": True}, "labels": [], "launch_check": {"allowed": True}}}
             with patch.object(iterm_tab.subprocess, "run", side_effect=lambda *_a, **_k:
                               subprocess.CompletedProcess([], 0, json.dumps(payload))):
@@ -199,7 +199,7 @@ class LaunchIssueTests(unittest.TestCase):
             command, brief = Path(folder) / "command", Path(folder) / "brief"
             command.write_text("claude")
             args = argparse.Namespace(command_file=[command], brief_file=[brief], agent_override="Explicit Director instruction")
-            payload = {"ok": True, "issue": {"labels": ["agent:codex"], "launch_check": {"allowed": True}}}
+            payload: dict[str, Any] = {"ok": True, "issue": {"labels": ["agent:codex"], "launch_check": {"allowed": True}}}
             with patch.object(iterm_tab.subprocess, "run", side_effect=lambda *_a, **_k:
                               subprocess.CompletedProcess([], 0, json.dumps(payload))):
                 for anchor, labels in (("Read-only anchor:", ["agent:codex"]), ("Anchor:", ["agent:claude"]), ("Anchor:", []), ("Context:", [])):
@@ -238,7 +238,7 @@ class LaunchIssueTests(unittest.TestCase):
 
     def test_assignment_override_does_not_bypass_unknown_labels_or_other_launch_refusals(self) -> None:
         anchor = "Anchor: https://github.com/fixture/repo/issues/7"
-        payload = {"ok": True, "issue": {"launch_check": {"allowed": True}}}
+        payload: dict[str, Any] = {"ok": True, "issue": {"launch_check": {"allowed": True}}}
         with patch.object(iterm_tab.subprocess, "run", side_effect=lambda *_a, **_k:
                           subprocess.CompletedProcess([], 0, json.dumps(payload))):
             for override in (None, "Explicit Director instruction"):
