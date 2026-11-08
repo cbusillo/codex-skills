@@ -18,6 +18,8 @@ import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
 import github_plan_closure as closure
+from session_record import LAUNCH_LEDGER_ENV, terminal_entry
+github_agent = importlib.import_module("github_agent")
 native_operations = importlib.import_module("github_plan_native")
 queue_input = native_operations.queue_input
 read_queue = native_operations.read_queue
@@ -26,6 +28,22 @@ cancel_queue = native_operations.cancel_queue
 QueueNotSent = native_operations.QueueNotSent
 NativeRequestRejected = native_operations.NativeRequestRejected
 from codex_session_proxy import run_client, managed_argv, source_endpoint, read_launch_receipt
+
+
+def recorded_lead_home(session: str, ledger: Path | None = None) -> Path:
+    if ledger is None and (configured := os.environ.get(LAUNCH_LEDGER_ENV)):
+        ledger = Path(configured)
+    agent = github_agent.running_agent()
+    identities = set(github_agent.native_sessions(agent).values())
+    if ledger is None or not ledger.is_absolute() or len(identities) != 1:
+        raise ValueError("queue needs --codex-home or a managed launch ledger with one current native worker")
+    worker = terminal_entry(ledger, "session_id", identities.pop())
+    lead = terminal_entry(ledger, "session_id", session)
+    home = lead.get("codex_home")
+    if (worker.get("harness") != agent or worker.get("lead_session_id") != session
+            or lead.get("harness") != "codex" or not isinstance(home, str) or not Path(home).is_absolute()):
+        raise ValueError("queue without --codex-home requires this worker's recorded Codex lead and source home")
+    return Path(home)
 
 
 def run(args) -> int:
@@ -74,7 +92,7 @@ def run(args) -> int:
                 status["queue_error"] = str(error)
         print(json.dumps(status))
         return 0
-    home = args.codex_home.expanduser().resolve(strict=True)
+    home = (args.codex_home or recorded_lead_home(args.session_id, args.ledger)).expanduser().resolve(strict=True)
     if args.command == "queue-cancel":
         result = asyncio.run(cancel_queue(home, args.session_id, ledger=args.ledger,
             termination_record=args.termination_record, apply=args.apply,
@@ -106,7 +124,8 @@ def main() -> int:
     parser.add_argument("command", choices=("launch", "native", "resume", "queue", "steer", "interrupt", "queue-cancel", "status"))
     parser.add_argument("--session-id")
     parser.add_argument("--launch-receipt", type=Path)
-    parser.add_argument("--codex-home", type=Path)
+    parser.add_argument("--codex-home", type=Path,
+                        help="Source account home; omit for a managed lead lookup from --ledger or the launcher")
     parser.add_argument("--expected-turn-id", help="Exact observed active turn ID; required for steer and interrupt")
     parser.add_argument("--proxy", type=Path)
     parser.add_argument("--proxy-parent", type=int)
@@ -114,19 +133,21 @@ def main() -> int:
     group.add_argument("--message")
     group.add_argument("--message-file", type=Path)
     authority = parser.add_mutually_exclusive_group()
-    authority.add_argument("--ledger", type=Path)
+    authority.add_argument("--ledger", type=Path, help="Supervisor ledger for queue home lookup or queue-cancel")
     authority.add_argument("--termination-record", type=Path)
     parser.add_argument("--queued-submission-id")
     parser.add_argument("--entry-sha256")
     parser.add_argument("--apply", action="store_true")
     args, native = parser.parse_known_args()
     args.native_args = native
+    if args.command == "queue" and args.codex_home is not None and args.ledger is not None:
+        parser.error("queue accepts only one source home: --codex-home or --ledger")
     if args.launch_receipt and (args.command not in {"launch", "status"} or args.session_id):
         parser.error("--launch-receipt belongs to launch or status, without --session-id")
     if args.command not in {"launch", "native"} and (native or not (args.session_id or args.launch_receipt)):
         parser.error("use --session-id with resume, queue, steer, interrupt or status; native argv belongs to launch")
-    if args.command != "status" and args.codex_home is None:
-        parser.error("resume, queue, steer and interrupt require --codex-home")
+    if args.command not in {"status", "queue"} and args.codex_home is None:
+        parser.error("this command requires --codex-home; only queue to a recorded lead can use the launch ledger")
     if args.command == "native" and (args.proxy is None or args.proxy_parent is None):
         parser.error("native is the internal guarded child bootstrap")
     if args.command in {"queue", "steer"} and args.message is None and args.message_file is None:
@@ -137,7 +158,9 @@ def main() -> int:
         parser.error("--expected-turn-id belongs to steer and interrupt")
     if args.command == "queue-cancel" and args.ledger is None and args.termination_record is None:
         parser.error("queue-cancel requires --ledger or --termination-record")
-    if args.command != "queue-cancel" and (args.ledger or args.termination_record or args.apply or args.queued_submission_id or args.entry_sha256):
+    if args.command != "queue-cancel" and (
+            args.ledger and args.command != "queue" or args.termination_record
+            or args.apply or args.queued_submission_id or args.entry_sha256):
         parser.error("cleanup arguments belong to queue-cancel")
     try:
         return run(args)

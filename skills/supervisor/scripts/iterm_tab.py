@@ -37,7 +37,7 @@ import claude_trust
 import agent_tools
 import gui_launch
 import claim_history
-from session_record import read_ledger
+from session_record import LAUNCH_LEDGER_ENV, read_ledger
 
 CLAUDE_SUGGESTION_SETTING = "promptSuggestionEnabled"
 CLAUDE_AUTO_MEMORY_SETTING = "autoMemoryEnabled"
@@ -1660,6 +1660,9 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
                                  f"retained after rollback failed ({type(rollback).__name__}); "
                                  "inspect shared GUI state before release") from error
             raise
+    if ledger := getattr(args, "ledger", None):
+        command_texts = [scoped_environment(text, f"{LAUNCH_LEDGER_ENV}={shlex.quote(str(ledger.resolve()))}")
+                         for text in command_texts]
     return command_texts, choices
 
 

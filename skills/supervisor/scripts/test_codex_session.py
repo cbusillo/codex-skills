@@ -19,15 +19,74 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 from iterm_tab import codex_daemon_endpoint
 import session_liveness
+from session_record import LAUNCH_LEDGER_ENV
 
 SPEC = importlib.util.spec_from_file_location("codex_session", Path(__file__).with_name("codex-session.py"))
 SESSION = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(SESSION)
 import github_plan_sessions
 import github_plan_native
+github_agent = importlib.import_module("github_agent")
 
 
 class ResumeTests(unittest.TestCase):
+    def test_queue_uses_the_recorded_lead_home_only_for_its_current_managed_worker(self) -> None:
+        worker = str(uuid.uuid4())
+        ledger = self.root / "launch-ledger.json"
+        rows = [{"session_id": worker, "harness": "claude", "supervisor_owned": True, "lead_session_id": self.native},
+                {"session_id": self.native, "harness": "codex", "supervisor_owned": True, "codex_home": str(self.home)}]
+        argv = ["codex-session.py", "queue", "--session-id", self.native, "--message", "https://github.com/fixture/repo/issues/7"]
+        self.thread_state = "idle"
+
+        def execute() -> dict:
+            output = io.StringIO()
+            with patch.object(sys, "argv", argv), contextlib.redirect_stdout(output):
+                code = SESSION.main()
+            result = json.loads(output.getvalue())
+            self.assertEqual(code, 0 if result["ok"] else 1)
+            return result
+
+        with patch.dict(os.environ, {LAUNCH_LEDGER_ENV: str(ledger), "CLAUDE_CODE_SESSION_ID": worker}), \
+                patch.dict(github_agent.__dict__, {"running_agent": MagicMock(return_value="claude")}):
+            ledger.write_text(json.dumps(rows))
+            self.assertTrue(execute()["ok"])
+            self.assertEqual(len(self.queue_requests), 1)
+            self.queue_requests.clear()
+            with patch.dict(os.environ):
+                os.environ.pop("CLAUDE_CODE_SESSION_ID")
+                self.assertFalse(execute()["ok"])
+                self.assertFalse(self.queue_requests)
+            for changed in ([rows[1]], [*rows, rows[0]], [*rows, rows[1]],
+                            [{**rows[0], "supervisor_owned": False}, rows[1]],
+                            [{**rows[0], "harness": "codex"}, rows[1]],
+                            [{**rows[0], "lead_session_id": "other"}, rows[1]],
+                            [rows[0], {**rows[1], "supervisor_owned": False}],
+                            [rows[0], {**rows[1], "harness": "claude"}],
+                            [rows[0], {**rows[1], "codex_home": "relative-home"}],
+                            [rows[0], {**rows[1], "codex_home": None}]):
+                with self.subTest(rows=changed):
+                    ledger.write_text(json.dumps(changed))
+                    self.assertFalse(execute()["ok"])
+                    self.assertFalse(self.queue_requests)
+            ledger.write_text("malformed")
+            self.assertFalse(execute()["ok"])
+            ledger.unlink()
+            self.assertFalse(execute()["ok"])
+            os.environ.pop(LAUNCH_LEDGER_ENV)
+            self.assertFalse(execute()["ok"])
+            self.assertFalse(self.queue_requests)
+            ledger.write_text(json.dumps(rows))
+            argv.extend(["--ledger", ledger.name])
+            with contextlib.chdir(self.root):
+                self.assertFalse(execute()["ok"])
+                self.assertFalse(self.queue_requests)
+            argv[-1] = str(ledger)
+            self.assertTrue(execute()["ok"])
+            self.assertEqual(len(self.queue_requests), 1)
+            argv.extend(["--codex-home", str(self.home)])
+            with patch.object(sys, "argv", argv), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                SESSION.main()
+
     def test_queue_cli_preserves_certain_absence_but_never_relabels_permission_or_native_refusal(self) -> None:
         for cause, not_sent in ((ValueError("not loaded"), True), (PermissionError("denied"), False),
                                 (SESSION.NativeRequestRejected("rejected"), False)):
