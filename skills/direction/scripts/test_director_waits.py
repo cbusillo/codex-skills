@@ -20,6 +20,17 @@ NOW = datetime(2026, 10, 9, tzinfo=timezone.utc)
 EMPTY_SEARCH = SimpleNamespace(body={"items": [], "total_count": 0, "incomplete_results": False})
 
 
+def fixture_discussion(reader, repo, number):
+    """Serve each fake reader's per-issue comment fixture through the shared discussion reader."""
+    return {"number": number, "comments": reader.paged_json(f"/repos/{repo}/issues/{number}/comments")}
+
+
+# noinspection PyUnresolvedReferences
+DISCUSSION = patch.object(director_waits.github_read, "read_discussion", fixture_discussion)
+setUpModule = DISCUSSION.start
+tearDownModule = DISCUSSION.stop
+
+
 def issue(number=1, reason="Director to approve", labels=None, extra=""):
     return {"number": number, "state": "open", "labels": labels or [],
             "title": "Wait", "html_url": f"https://github.com/owner/repo/issues/{number}",

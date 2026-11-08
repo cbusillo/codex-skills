@@ -1427,20 +1427,52 @@ def body_director_wait(issue: dict[str, Any], repo: str, terms: list[str], login
     return director_wait_reason(repo, issue, terms, logins, record if recorded else None) is not None
 
 
+OPEN_ISSUE_FIELDS = "number title body url createdAt updatedAt author { __typename login }"
+REPOSITORIES_PER_OPEN_ISSUE_QUERY = 10
+
+
+def open_issue_selection(cursor: str | None) -> str:
+    return (f"issues(first:100, after:{json.dumps(cursor)}, states:[OPEN], orderBy:{{field:CREATED_AT, direction:DESC}}) "
+            f"{{ totalCount nodes {{ {OPEN_ISSUE_FIELDS} }} pageInfo {{ hasNextPage endCursor }} }}")
+
+
+def open_issue(_repo: str, node: dict[str, Any]) -> dict[str, Any]:
+    return {"number": node["number"], "title": node["title"], "body": node["body"], "state": "open",
+            "html_url": node["url"], "created_at": node["createdAt"], "updated_at": node["updatedAt"],
+            "user": github_read.graphql_author(node["author"])}
+
+
+def open_issues(repositories: list[str]) -> dict[str, list[dict[str, Any]] | Exception]:
+    """Every open issue in each repository, read in batched GraphQL pages per owner."""
+    found: dict[str, list[dict[str, Any]] | Exception] = {}
+    by_owner: dict[str, list[str]] = {}
+    for repo in repositories:
+        by_owner.setdefault(repo.split("/", 1)[0].casefold(), []).append(repo)
+    for repos in by_owner.values():
+        reader = discussion_reader(repos[0])
+        for offset in range(0, len(repos), REPOSITORIES_PER_OPEN_ISSUE_QUERY):
+            batch = repos[offset:offset + REPOSITORIES_PER_OPEN_ISSUE_QUERY]
+            try:
+                found.update(github_read.read_repository_connections(
+                    reader, batch, field="issues", selection=open_issue_selection, normalize=open_issue,
+                    step="director_waits_open_issues"))
+            except (github_read.GitHubReadError, github_read.GitHubReadShapeError, ValueError) as error:
+                found.update(dict.fromkeys(batch, error))
+    return found
+
+
 def unasked_director_waits(
     repo: str,
     terms: list[str],
     director_logins: set[str],
     decision_authors: set[str],
-    structured: dict[int, dict[str, Any]] | None = None,
-    recent: set[int] | None = None,
-    discussions: dict[tuple[str, int], dict[str, Any]] | None = None,
+    structured: dict[int, dict[str, Any]],
+    recent: set[int],
+    discussions: dict[tuple[str, int], dict[str, Any]] | None,
+    issues: list[dict[str, Any]] | Exception,
 ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
-    query = urlencode({"state": "open", "per_page": 100})
-    try:
-        issues = api_list(f"repos/{repo}/issues?{query}")
-    except rollup.RollupError as exc:
-        return [], [{"repo": repo, "lane": "director_waits", "error": rollup.trim(str(exc))}]
+    if isinstance(issues, Exception):
+        return [], [{"repo": repo, "lane": "director_waits", "error": rollup.trim(str(issues))}]
     candidates = {issue["number"]: issue for issue in issues if isinstance(issue.get("number"), int)
                   and (issue["number"] in (recent or set()) or issue["number"] in (structured or {})
                        or body_director_wait(issue, repo, terms, director_logins))}
@@ -1753,10 +1785,12 @@ def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, .
                                 {**scans, **{repo.casefold(): lanes for repo, lanes in repository_scans.items()}})
             except OSError as exc:
                 coverage_errors.append({"repo": "-", "lane": "scan_state", "error": rollup.trim(str(exc))})
+            inventory = bounded_discovery(partial(open_issues, repositories))
             wait_futures = [
                 executor.submit(bounded_discovery,
                     partial(unasked_director_waits, repo, wait_terms, self_logins, bot_logins,
-                            structured_waits.get(repo, {}), recent_waits[repo], settings["discussion_sources"]))
+                            structured_waits.get(repo, {}), recent_waits[repo], settings["discussion_sources"],
+                            inventory.get(repo, rollup.RollupError("open issues were not read"))))
                 for repo in repositories
             ]
             for future in as_completed(wait_futures):

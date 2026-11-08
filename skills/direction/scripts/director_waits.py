@@ -25,6 +25,7 @@ import github_identity
 import github_plan_wait
 import github_repository_scope as repository_scope
 import github_unanswered_comments as attention
+import github_read
 import question_id
 from github_plan_status import questions
 from github_read import (
@@ -159,10 +160,8 @@ def read_discussion(reader, repo, number, discussions, errors):
     key = (repo.casefold(), number)
     if key not in discussions:
         try:
-            comments = reader.paged_json(f"/repos/{repo}/issues/{number}/comments", step_prefix="director_wait_comments")
-            if not isinstance(comments, list) or not all(isinstance(comment, dict) for comment in comments):
-                raise GitHubReadShapeError("issue comments response was not a list of comments")
-        except (GitHubReadError, GitHubReadShapeError, ValueError, TypeError) as error:
+            comments = github_read.read_discussion(reader, repo, number)["comments"]
+        except (GitHubReadError, GitHubReadShapeError, ValueError, TypeError, KeyError) as error:
             comments = None
             errors.append({"scope": "discussion", "repo": repo, "number": number, "error": str(error)})
         discussions[key] = comments
