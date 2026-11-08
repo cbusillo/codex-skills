@@ -7,8 +7,10 @@
 
 import argparse
 import asyncio
+import copy
 import errno
 import fcntl
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -47,6 +49,85 @@ def patch_attr(target: object, name: str, **kwargs: Any) -> Any:
 
 
 class LaunchIssueTests(unittest.TestCase):
+    def test_reporter_status_dispatch_uses_current_bot_source_and_preserves_holds(self) -> None:
+        spec = importlib.util.spec_from_file_location(
+            "dispatch_plan", Path(__file__).resolve().parents[2] / "github/scripts/gh-plan.py")
+        assert spec and spec.loader
+        plan: Any = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(plan)
+        issue_url = "https://github.com/fixture/repo/issues/7"
+        lead = "fixture-lead"
+        task = "### Goal\nKeep  spacing and `quotes`.\n<!-- Preserve authored context. -->\n"
+        status = f"Next actor: agent:{lead}\nBrief:\n```text\n{task}```"
+        issue: dict[str, Any] = {"repo": "fixture/repo", "number": 7, "title": "Human request", "state": "open", "labels": [],
+                 "user": {"login": "reporter"}, "body": "Keep the human request unchanged.\n",
+                 "updated_at": "2026-01-01T00:00:00Z"}
+        managed: dict[str, Any] = {"id": 8, "user": {"login": "fixture-bot[bot]"}, "body": "## Current Status\n" + status,
+                   "created_at": "2026-01-02T00:00:00Z"}
+        clear = plan.github_plan_wait.reviewed(evidence="Fictional request reviewed; no holds")
+        ownership = {"complete": True, "records": [], "pulls": [],
+                     "inventory": {"local_branches": [], "remote_branches": [], "worktrees": [], "sessions": []}}
+        with tempfile.TemporaryDirectory() as folder:
+            command, brief = Path(folder) / "command", Path(folder) / "header"
+            command.write_text("agy")
+            brief.write_text(f"Brief from the Supervisor. Trial token: FIXTURE.\nAnchor and claim: {issue_url}\n"
+                             f"Rules: {iterm_tab.BRIEF_RULES_URL}\n")
+            args = argparse.Namespace(command_file=[command], brief_file=[brief], brief_issue=[issue_url], lead_session_id=lead)
+            for case in ("current", "untrusted", "human-owner", "stale", "recipient", "missing-brief", "wait", "blocker", "closed"):
+                current, comment, wait = copy.deepcopy(issue), copy.deepcopy(managed), clear
+                blockers = []
+                comments = [comment]
+                if case == "untrusted":
+                    comments.append({**comment, "id": 10, "user": {"login": "outsider"},
+                                     "created_at": "2026-01-04T00:00:00Z",
+                                     "body": comment["body"].replace(lead, "another-lead")})
+                elif case == "human-owner":
+                    comment["user"]["login"] = "fixture"
+                elif case == "stale":
+                    current["body"] += "## Current Status\nNext actor: agent\n"
+                    comment["created_at"] = "2025-12-31T00:00:00Z"
+                elif case == "recipient":
+                    comment["body"] = comment["body"].replace(lead, "another-lead")
+                elif case == "missing-brief":
+                    comment["body"] = "## Current Status\nNext actor: agent:" + lead
+                elif case == "wait":
+                    wait = plan.github_plan_wait.reviewed(evidence="Fictional device test pending",
+                        waiting_for="Device test", ends_when="Tester reports the result")
+                elif case == "blocker":
+                    blockers = [{"repo": "fixture/repo", "number": 6, "state": "open"}]
+                elif case == "closed":
+                    current["state"] = "closed"
+                wait_comment = {"id": 9, "user": {"login": "fixture-bot[bot]"}, "body": plan.github_plan_wait.marker(wait),
+                                "created_at": "2026-01-03T00:00:00Z"}
+                def read(argv: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+                    with patch_attr(plan, "emit") as emitted:
+                        plan.cmd_show(plan.build_parser().parse_args(argv[3:]))
+                    return subprocess.CompletedProcess(argv, 0, json.dumps(emitted.call_args.args[0]))
+                with (self.subTest(case=case),
+                      patch.multiple(plan, get_issue=Mock(return_value=("automation-gh", current)),
+                          EXPECTED_ACTOR="fixture-bot[bot]", load_config=Mock(return_value={}),
+                          collect_paged_rest_items=Mock(return_value=("automation-gh", [*comments, wait_comment])),
+                          read_planning_graph=Mock(return_value=None),
+                          read_issue_relationships=Mock(return_value=("automation-gh",
+                              {"blocked_by": blockers, "blocking": [], "sub_issues": []})),
+                          next_status_body_time=Mock(return_value=current["updated_at"]),
+                          read_queue_ownership=Mock(return_value=ownership),
+                          wait_authors=Mock(return_value={"fixture", "fixture-bot[bot]"}),
+                          api_json=Mock(side_effect=AssertionError("Unexpected network or write")),
+                          rest_edit_issue=Mock(side_effect=AssertionError("Human request edit"))),
+                      patch_attr(plan.github_identity, "configured_bot_logins", return_value=["fixture-bot[bot]"]),
+                      patch.object(iterm_tab.subprocess, "run", side_effect=read)):
+                    if case in {"current", "untrusted"}:
+                        commands, _ = iterm_tab.prepare_launches(args)
+                        prompt = next(word.removeprefix("--prompt-interactive=") for word in shlex.split(commands[0])
+                                      if word.startswith("--prompt-interactive="))
+                        self.assertTrue(prompt.endswith("\n\n" + task))
+                        self.assertIn(shlex.join(["--dispatch-recipient", lead]), prompt)
+                    else:
+                        with self.assertRaises(ValueError) as refused:
+                            iterm_tab.prepare_launches(args)
+                        self.assertIsNone(refused.exception.__cause__)
+
     def test_child_issue_brief_reaches_worker_verbatim_under_supervisor_header(self) -> None:
         issue = "https://github.com/fixture/repo/issues/7"
         task = ("Keep  two spaces.\n\n### Goal\nUse `quotes`, 'apostrophes' and $literal.\n> Preserve this.\n"
@@ -61,7 +142,7 @@ class LaunchIssueTests(unittest.TestCase):
             args = argparse.Namespace(command_file=[command], brief_file=[brief], brief_issue=[issue])
             for newline in ("\n", "\r\n"):
                 payload: dict[str, Any] = {"ok": True, "issue": {"recorded_current_status": status.replace("\n", newline),
-                           "provenance": {"section_updates_allowed": True},
+                           "provenance": {"current_status_managed": True},
                            "body": "## Current Status\n" + status.replace(task, "Wrong original-request brief.\n"),
                            "labels": [], "launch_check": {"allowed": True}}}
                 with self.subTest(newline=newline), patch.object(iterm_tab.subprocess, "run", return_value=
@@ -85,11 +166,11 @@ class LaunchIssueTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "Next actor"):
                     iterm_tab.prepare_launches(args)
             del args.lead_session_id
-            payload["issue"]["provenance"]["section_updates_allowed"] = False
+            payload["issue"]["provenance"]["current_status_managed"] = False
             with patch.object(iterm_tab.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps(payload))):
                 with self.assertRaisesRegex(ValueError, "managed Current Status"):
                     iterm_tab.prepare_launches(args)
-            payload["issue"]["provenance"]["section_updates_allowed"] = True
+            payload["issue"]["provenance"]["current_status_managed"] = True
             brief.write_text(header.replace(iterm_tab.BRIEF_RULES_URL, "missing"))
             with patch.object(iterm_tab.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps(payload))):
                 with self.assertRaisesRegex(ValueError, "brief must link"):
@@ -135,7 +216,7 @@ class LaunchIssueTests(unittest.TestCase):
             window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock())
             app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
             payload: dict[str, Any] = {"ok": True, "issue": {"recorded_current_status": "Next actor: agent:supervisor\nBrief:\n```text\nDo the task.\n```",
-                       "provenance": {"section_updates_allowed": True}, "labels": [], "launch_check": {"allowed": True}}}
+                       "provenance": {"current_status_managed": True}, "labels": [], "launch_check": {"allowed": True}}}
             with (patch.dict(sys.modules, {"iterm2": SimpleNamespace()}),
                   patch.object(iterm_tab.subprocess, "run", side_effect=lambda *_a, **_k:
                                subprocess.CompletedProcess([], 0, json.dumps(payload))),
@@ -170,7 +251,7 @@ class LaunchIssueTests(unittest.TestCase):
             brief.write_text(f"Anchor and claim: {issue}\nRules: {iterm_tab.BRIEF_RULES_URL}")
             args = argparse.Namespace(command_file=[command], brief_file=[brief])
             payload: dict[str, Any] = {"ok": True, "issue": {"recorded_current_status": "Next actor: agent:supervisor\nBrief:\n```text\nDo the task.\n```",
-                       "provenance": {"section_updates_allowed": True}, "labels": [], "launch_check": {"allowed": True}}}
+                       "provenance": {"current_status_managed": True}, "labels": [], "launch_check": {"allowed": True}}}
             with patch.object(iterm_tab.subprocess, "run", side_effect=lambda *_a, **_k:
                               subprocess.CompletedProcess([], 0, json.dumps(payload))):
                 for _, agent, _ in HARNESS_CHOICES:

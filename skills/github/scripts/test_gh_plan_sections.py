@@ -254,6 +254,30 @@ class SectionTests(unittest.TestCase):
         self.assertIn("Next action: New step.", result["issue"]["recorded_current_status"])
         self.assertNotIn("Old step", result["issue"]["recorded_current_status"])
 
+    def test_actor_only_comment_update_preserves_brief_without_copying_live_records(self) -> None:
+        self.issue["user"] = {"login": "reporter"}
+        self.issue["body"] = "Original human request."
+        task = "### Goal\nKeep  spacing.\n<!-- Keep authored context. -->\n"
+        status = "Next actor: agent:lead-a\nBrief:\n```text\n" + task + "```"
+        wait = PLAN.github_plan_wait.marker(PLAN.github_plan_wait.reviewed(evidence="Fictional reviewed request"))
+        for records in ("", PLAN.github_plan_claim.marker(CLAIM) + "\n" + wait):
+            body = PLAN.github_api_core.body_with_operation_marker("## Current Status\n" + status + "\n" + records, "a" * 32)
+            comment = {"id": 7, "user": {"login": "fixture-bot[bot]"}, "body": body,
+                       "created_at": "2026-02-01T00:00:00Z"}
+            posted = Mock(return_value={"comment": {"id": 8}})
+            with self.subTest(records=bool(records)), patch.multiple(PLAN.github_comment_core, comment=posted):
+                code, _result, edit, errors = self.run_update("--next-actor", "agent:lead-b", section="Current Status",
+                    collect_paged_rest_items=Mock(return_value=("automation-gh", [comment])),
+                    next_status_body_time=Mock(return_value="2026-01-01T00:00:00Z"),
+                    wait_authors=Mock(return_value={"fixture-bot[bot]"}),
+                    comment_route=Mock(return_value=("automation-gh", "bot-gh", "fixture-bot[bot]")))
+                self.assertEqual(code, 0, errors)
+                edited_status = PLAN.section_map(posted.call_args.args[2])["Current Status"]
+                self.assertEqual(PLAN.github_plan_next_actor.launch_brief(edited_status), task)
+                self.assertEqual(PLAN.github_plan_next_actor.read(edited_status), "agent:lead-b")
+                self.assertEqual(PLAN.section_machine_markers(edited_status), {})
+                edit.assert_not_called()
+
     def assert_prewrite_failure(self, args: tuple[str, ...], step: str | None = None, **overrides: Any) -> None:
         code, result, edit, errors = self.run_update(*args, **overrides)
         self.assertNotEqual(code, 0)

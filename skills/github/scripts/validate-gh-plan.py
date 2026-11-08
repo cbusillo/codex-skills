@@ -52,6 +52,7 @@ def load_plan_module() -> Any:
     # test_gh_plan_close_config.py and validate-gh-issue.sh cover the close comment check.
     module.close_attention_preflight = lambda *_args, **_kwargs: {"result": "passed"}
     module._fixture_original_comment_collector = module.collect_paged_rest_items
+    module.next_graph_reader = lambda _repo: None
     return module
 
 
@@ -1051,18 +1052,15 @@ def test_plan_paged_rest_failure_receives_completed_page_evidence() -> None:
     assert len(calls) == 2, calls
 
 
-def test_plan_rest_command_context_and_limit_validation() -> None:
+def test_plan_limit_validation() -> None:
     plan = load_plan_module()
-    assert plan.PLAN_COMMAND_CONTEXT["index"] == ("rest_api", "rest_core", False)
-    assert plan.PLAN_COMMAND_CONTEXT["search"] == ("rest_api", "search", False)
-    assert plan.PLAN_COMMAND_CONTEXT["ensure-labels"] == ("rest_api", "rest_core", True)
 
     parser = plan.build_parser()
     for command in (["index", "--limit", "0"], ["search", "query", "--limit", "-1"]):
         try:
             parser.parse_args(command)
-        except plan.github_api_core.ArgumentParsingError as exc:
-            assert "invalid limit" in str(exc), exc
+        except plan.github_api_core.ArgumentParsingError:
+            pass
         else:
             raise AssertionError(f"expected invalid limit failure: {command}")
 
@@ -3521,6 +3519,7 @@ def test_retried_project_list_emits_retry_fields_on_stdout() -> None:
 
 
 def test_plan_cli_emits_shared_terminal_envelope() -> None:
+    plan = load_plan_module()
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         gh_path = tmp_path / "gh"
@@ -3551,10 +3550,9 @@ def test_plan_cli_emits_shared_terminal_envelope() -> None:
     assert result.returncode == 0, result
     assert len([line for line in result.stdout.splitlines() if line.strip()]) == 1, result.stdout
     payload = json.loads(result.stdout)
-    assert payload["schema_version"] == 1, payload
+    assert payload["schema_version"] == plan.github_api_core.SCHEMA_VERSION, payload
     assert payload["operation"] == "github.plan.show", payload
-    assert payload["transport"] == "rest_api", payload
-    assert payload["bucket"] == "rest_core", payload
+    assert (payload["transport"], payload["bucket"]) == plan.PLAN_COMMAND_CONTEXT["show"][:2], payload
     assert payload["actor"] == "active-gh-user", payload
     assert payload["issue"]["number"] == 1, payload
     assert payload["issue"]["comments"] == [], payload

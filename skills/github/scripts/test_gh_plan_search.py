@@ -46,6 +46,7 @@ class SearchTests(unittest.TestCase):
                 "repo_from_git": lambda: current_repo,
                 "api_json": read,
                 "emit": emit,
+                "next_graph_reader": lambda _repo: None,
             },
         ):
             PLAN.cmd_search(args)
