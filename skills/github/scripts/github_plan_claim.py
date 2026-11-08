@@ -240,42 +240,45 @@ def session_fields(text: str, *, include_quotes: bool = True, current_only: bool
             continue
         matches = list(fields.finditer(line))
         for index, field in enumerate(matches):
-            if human_session_reference(context, len(context) - len(line) + field.start()):
-                continue
             if current_only and re.search(r"\b(?:previous|prior|earlier|original|superseded)\b[^:|;\n]*$",
                                           line[:field.start()], re.IGNORECASE):
                 continue
             end = matches[index + 1].start() if index + 1 < len(matches) else len(line)
             value = line[field.end():end].split("|", 1)[0].strip()
-            if not value:
+            if not value or prose_session_reference(context, len(context) - len(line) + field.start(), value):
                 continue
-            explicit = (
-                re.match(r"native|thread|\|", field[0], re.IGNORECASE)
-                or re.search(r"(?:^\s*(?:[-*+]|\d+[.)])?\s*|[;:.(,]\s*|"
-                             r"\b(?:(?:Claimed by:?|Worker:|Owner:)\s+\S+|Ownership record|Handoff from|Continuing from|"
-                             r"Previous|Prior|Earlier|Original|Superseded|Completed)\s+)$",
-                             line[:field.start()], re.IGNORECASE)
-            )
-            if explicit or any(NATIVE_SESSION_ID.fullmatch(token) for token in session_identifiers(value)):
-                values.append(value)
+            values.append(value)
     return values
 
 
 def session_identifiers(value: str) -> set[str]:
-    tokens = [token.strip("()<>").removesuffix(".") for token in re.findall(r"[^\s,;|]+", value)]
+    tokens = [token.strip("()<>").removesuffix(".").strip("()<>") for token in re.findall(r"[^\s,;|]+", value)]
     native = {token for token in tokens if NATIVE_SESSION_ID.fullmatch(token)}
     return native or {value}
 
 
-def human_session_reference(text: str, position: int) -> bool:
-    if not re.match(r"session[ \t]*:", text[position:], re.IGNORECASE):
+def prose_session_reference(text: str, position: int, value: str) -> bool:
+    if not re.match(r"session(?:[ \t]*[:=]|[ \t]+[—-][ \t]+)", text[position:], re.IGNORECASE):
         return False
     prefix = text[:position]
-    return bool(re.search(
+    ownership = re.search(r"\b(?:Claimed by:?|Worker:|Owner:)\s+\S+\s+$", prefix, re.IGNORECASE)
+    if re.search(
         r"\b\w+[ \t]+(?:administrator|browser|human)(?:[ \t]+|[ \t]*\n[ \t]*)\Z", prefix, re.IGNORECASE,
-    )) and not bool(re.search(
-        r"\b(?:Claimed by:?|Worker:|Owner:)\s+\S+\s+$", prefix, re.IGNORECASE,
-    ))
+    ) and not ownership:
+        return True
+    if any(NATIVE_SESSION_ID.fullmatch(token) for token in session_identifiers(value)):
+        return False
+    if re.search(r"\b(?:this|that|our|your|my|their|exact)[ \t]*\n[ \t]*$", prefix, re.IGNORECASE):
+        return True
+    line_prefix = prefix.rsplit("\n", 1)[-1]
+    return not (
+        ownership
+        or re.search(r"\bnative[ \t_-]*$", prefix, re.IGNORECASE)
+        or re.fullmatch(r"\s*(?:[-*+]|\d+[.)])?\s*\(?", line_prefix)
+        or (text[position].isupper() and re.search(r"[;:.(,]\s*$", line_prefix))
+        or re.search(r"\b(?:Ownership record|Handoff from|Continuing from|Previous|Prior|Earlier|Original|"
+                     r"Superseded|Completed)\s+$", line_prefix, re.IGNORECASE)
+    )
 
 
 def ownership_assertions(
@@ -319,14 +322,14 @@ def ownership_assertions(
     assertions = []
     matches = list(re.finditer(r"owned by|claimed by|\b(?:worker|session)\s*:", text, re.IGNORECASE))
     for index, match in enumerate(matches):
-        if human_session_reference(text, match.start()):
-            continue
         raw_prefix = re.split(boundary, text[:match.start()])[-1]
         raw_prefix = raw_prefix.lstrip(" -*+").rstrip()
         prefix = re.sub(r"^[^:]+:\s*", "", raw_prefix)
         end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
         ending = re.split(rf"({boundary})", text[match.end():end], maxsplit=1)
         suffix = ending[0].strip()
+        if prose_session_reference(text, match.start(), suffix):
+            continue
         # Conditional or contrastive denials are not proof that nobody holds it.
         uncertain = (
             len(ending) > 1 and ending[1] == "?"

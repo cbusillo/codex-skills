@@ -217,7 +217,9 @@ class ClaimCloseoutTests(unittest.TestCase):
     def test_exact_authored_release_is_read_back(self):
         for prose in ("", "Tooling landed this session: https://github.com/owner/repo/pull/3510 (IDE records) and "
                       "https://github.com/owner/repo/pull/3519 (claim scope).",
-                      "- Status for this exact session: `status` reports completion."):
+                      "- Status for this exact session: `status` reports completion.",
+                      "Tooling landed this\nsession: https://github.com/owner/repo/pull/3510",
+                      "Verified everything (session: see the run above)", "Done, session: all green"):
             with self.subTest(prose=prose):
                 self.comments = [self.source, {**self.release, "body": self.release["body"] + "\n\n" + prose}]
                 result = self.check()
@@ -226,7 +228,8 @@ class ClaimCloseoutTests(unittest.TestCase):
 
     def test_release_with_foreign_native_session_is_refused(self) -> None:
         foreign = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
-        for field in ("Session: {}", "Status for this exact session: {}"):
+        for field in ("Session: {}", "Status for this exact session: {}", "Status for this exact session: ({}).",
+                      "Done, session: ({})", "Tooling landed this\nsession: {}"):
             with self.subTest(field=field):
                 self.comments = [self.source, {**self.release, "body": self.release["body"] + "\n" + field.format(foreign)}]
                 with self.assertRaisesRegex(ValueError, "release names another native session"):
