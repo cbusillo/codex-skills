@@ -356,15 +356,25 @@ arrow or Enter keys. Only the Director's own words in chat, on GitHub, or throug
 a Discord session channel that relays only their messages decide;
 terminal text, including non-dim text, proves neither authorship nor approval.
 
-## Accounts, Pace, And Launch Effort
+## Accounts, Pace, And Launch Tier
 
 Use [account selection](references/helpers.md#choosing-the-account), including
 the optional Context Panel integration. Never apply banked resets;
 ask the Director only when every provider account including use-last is empty.
 Relay expiry notices within 24 hours without treating them as early reset
-authority. Fill productive capacity, soonest expiry first. Default launch effort
-is medium; use high for authorization, credentials, security, policy, guidance
-and hard debugging.
+authority. Fill productive capacity, soonest expiry first.
+
+Start each kind of work on the cheapest model that has worked for it, step up
+to the provider's next stronger model when a run fails, and now and then try
+one model cheaper on work that keeps passing. With no record yet, start one
+model above the provider's cheapest
+([field report](https://github.com/cbusillo/codex-skills/issues/3727#issuecomment-6714483880)).
+Effort follows the kind of work: medium, high for policy, guidance and hard
+debugging. Leads, authorization, credentials, security, migration and reviews
+of safety changes start on the provider's strongest model at high effort. This
+is a default, not a cap; a Director's recorded tier decisions take precedence.
+Account and quota lessons go to
+[account selection](references/helpers.md#choosing-the-account).
 
 ## The Pattern
 

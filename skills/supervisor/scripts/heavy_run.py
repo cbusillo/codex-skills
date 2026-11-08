@@ -33,6 +33,21 @@ STATE_PATH = Path(".local/state/codex-skills/heavy-run")
 MIN_NANO_CPUS = 10**7
 MIN_MEMORY = 6 * 1024**2
 CANCEL_SIGNALS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
+WORKLOAD_ENTRYPOINT = """import signal, subprocess, sys
+canceled = 0
+try:
+    child = subprocess.Popen(sys.argv[1:])
+    def forward(signum: int, _frame: object) -> None:
+        global canceled
+        canceled = signum
+        child.send_signal(signum)
+    for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(signum, forward)
+    status = child.wait()
+except (OSError, ValueError):
+    sys.exit(255)
+sys.exit(128 + canceled if canceled else 128 - status if status < 0 else status if status < 128 else 127)
+"""
 
 
 def locked_file(path: Path) -> BinaryIO:
@@ -501,7 +516,7 @@ class Docker:
             if process.wait():
                 raise RuntimeError("Docker input copy failed; see private run.log")
 
-    def create(self, container: dict, network: str, cpus: str, memory: str, evidence: Path) -> str:
+    def create(self, container: dict, network: str, cpus: str, memory: str, evidence: Path, *, workload: bool = False) -> str:
         args = [
             "create",
             "--pull",
@@ -543,7 +558,15 @@ class Docker:
             if environment:
                 env_file.write_text("".join(f"{name}={value}\n" for name, value in environment.items()))
                 args.extend(["--env-file", str(env_file)])
-            return self.call(*args, container["image"], *container.get("command", []))
+            command = container.get("command", [])
+            if workload:
+                config = json.loads(self.call("image", "inspect", "--format", "{{json .Config}}", container["image"]))
+                command = [*(config.get("Entrypoint") or []), *(command or config.get("Cmd") or [])]
+                if not command:
+                    raise ValueError("The workload image requires an entrypoint or command")
+                args.extend(["--entrypoint", "python3"])
+                command = ["-I", "-c", WORKLOAD_ENTRYPOINT, *command]
+            return self.call(*args, container["image"], *command)
         finally:
             env_file.unlink(missing_ok=True)
 
@@ -554,7 +577,7 @@ class Docker:
         self.call("network", "create", "--internal", "--label", self.label, network)
         identifiers = {}
         for container in containers:
-            identifier = self.create(container, network, cpus, memory, evidence)
+            identifier = self.create(container, network, cpus, memory, evidence, workload=container["name"] == manifest["job"])
             identifiers[container["name"]] = identifier
             for copy in container.get("copies", []):
                 self.copy_input(identifier, copy)
