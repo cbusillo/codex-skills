@@ -168,19 +168,13 @@ def verify_handoff(entry: dict, args: argparse.Namespace, operation: Operation, 
     if not actor:
         raise GateFailed("handoff", "configured automation identity is unknown")
     started = claim_release.stamp(entry["launch_started_at"]) if entry.get("launch_started_at") else None
-    recorded = entry.get("handoff_url")
     try:
         saved = closure.source_records({entry["session_id"]}).get(entry["session_id"]) if not retired else None
-        inherited = release.inherited_handoff(entry, saved, reader=reader, actor=actor)
-        canonical = saved.get("handoff_url") if saved else None
-        if canonical and (inherited if canonical == recorded else release.inherited_handoff(
-                {**entry, "handoff_url": canonical}, saved, reader=reader, actor=actor)):
-            canonical = None
+        associated = release.handoff_association(entry, saved, reader=reader, actor=actor)
     except ValueError as error:
         raise GateFailed("handoff", str(error)) from error
-    selected = getattr(args, "handoff_url", None) or operation.state.get("handoff", {}).get("url") or canonical or (None if inherited else recorded)
-    require(not canonical or canonical == selected, "handoff", "canonical handoff differs; preserve it")
-    require(not recorded or inherited or recorded == selected, "handoff", "recorded handoff differs; preserve it")
+    selected = getattr(args, "handoff_url", None) or operation.state.get("handoff", {}).get("url") or associated
+    require(not associated or associated == selected, "handoff", "current handoff differs; preserve it")
     evidence = None
     if not selected:
         repo, number = entry.get("repository"), entry.get("issue")
@@ -217,7 +211,7 @@ def verify_handoff(entry: dict, args: argparse.Namespace, operation: Operation, 
     except ValueError as error:
         raise GateFailed("handoff", f"{selected}: {error}") from error
     require(started is None or claim_release.stamp(handoff["created_at"]) >= started,
-            "handoff", "handoff must be created in the verified resumed generation")
+            "handoff", "handoff must be created in this launch generation")
     if not explicit_session(handoff.get("body") or "", args.session_id):
         evidence = evidence if evidence is not None else claim_evidence(entry, operation, "handoff_comments")
         require(projected_handoff(handoff, evidence, actor, args.session_id),

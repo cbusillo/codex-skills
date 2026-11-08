@@ -247,8 +247,7 @@ def _closure_guard(path, entry, *, create=False):
         yield shared, saved, held
 
 
-def record_closure(path: Path, entry: dict, supervisor_session: str, *, persist: bool = True,
-                   reader: GitHubReader | None = None, actor: str | None = None) -> dict:
+def record_closure(path: Path, entry: dict, supervisor_session: str, *, persist: bool = True) -> dict:
     with _closure_guard(path, entry, create=persist) as (shared, saved, _held):
         native = None
         if shared and entry.get("harness") == "codex" and (closure.action_pending(entry["session_id"])
@@ -257,7 +256,7 @@ def record_closure(path: Path, entry: dict, supervisor_session: str, *, persist:
             native = asyncio.run(github_plan_native.prove_end(entry))
             if persist:
                 github_plan_native.resolve_pending(entry["session_id"], native)
-        closed, source = _record_closure(path, entry, supervisor_session, persist=persist, native=native, reader=reader, actor=actor)
+        closed, source = _record_closure(path, entry, supervisor_session, persist=persist, native=native)
         if not shared:
             # Keep the private identity, never a process proof, for later boundaries.
             closed["_closure_source"] = {"path": str(path.resolve()), "source": source}
@@ -310,8 +309,8 @@ def _saved_closure(path, session, *, create=False):
     return original, session_record.normalize_ledger_entry(path, original[0]) if original else None
 
 
-def _record_closure(path: Path, entry: dict, supervisor_session: str, *, persist: bool = True, native: dict | None = None,
-                    reader: GitHubReader | None = None, actor: str | None = None) -> tuple[dict, dict | None]:
+def _record_closure(path: Path, entry: dict, supervisor_session: str, *, persist: bool = True,
+                    native: dict | None = None) -> tuple[dict, dict | None]:
     """Return closure and saved identity; preserve the actual end time on retry."""
     original, saved = _saved_closure(path, entry["session_id"], create=persist)
     existing = [saved] if saved is not None else []
@@ -323,14 +322,9 @@ def _record_closure(path: Path, entry: dict, supervisor_session: str, *, persist
     else:
         process = github_plan_native._source_process(entry, saved)
         github_plan_native.recheck_source_process(process)
-    associated = saved is not None and saved.get("handoff_url") != entry.get("handoff_url")
-    inherited = False
-    if saved and (saved.get("resumed_generation") or associated):
-        inherited = inherited_handoff(entry, saved, reader=reader, actor=actor)
-        if inherited:
-            previous = {**entry, "handoff_url": saved.get("handoff_url")}
-            previous_inherited = inherited_handoff(previous, saved, reader=reader, actor=actor)
-            entry = {**entry, "handoff_url": None if previous_inherited else previous["handoff_url"]}
+    if saved and (saved.get("resumed_generation") or saved.get("handoff_url") != entry.get("handoff_url")):
+        entry = {**entry, "handoff_url": handoff_association(entry, saved)}
+    association_changed = saved is not None and saved.get("handoff_url") != entry.get("handoff_url")
     recovered = False
     if existing and existing[0].get("resumed_at") and not existing[0].get("resumed_generation") and native:
         # An invalidation is not a launch. Full current native/source proof can
@@ -359,10 +353,6 @@ def _record_closure(path: Path, entry: dict, supervisor_session: str, *, persist
         saved_identity, current_identity = _closure_identity(existing[0]), _closure_identity(entry)
         changed = [key for key in ("pid", "tty", "harness", "supervisor_owned", "transcript")
                    if saved_identity[key] != current_identity[key]]
-        associated = saved_identity["handoff_url"] != current_identity["handoff_url"]
-        if (associated and saved_identity["handoff_url"] and not inherited
-                and not inherited_handoff({**entry, "handoff_url": saved_identity["handoff_url"]}, saved, reader=reader, actor=actor)):
-            changed.append("handoff_url")
         if changed:
             raise ValueError(f"closure log identity changed ({', '.join(changed)}); preserve the original record")
         closed = {**existing[0], "handoff_url": entry.get("handoff_url"),
@@ -394,7 +384,7 @@ def _record_closure(path: Path, entry: dict, supervisor_session: str, *, persist
         current = json.loads(path.read_text()) if path.exists() else []
         if closure.selected_source_rows(current, entry["session_id"]) != original:
             raise ValueError("source closure changed during verification; preserve the current generation")
-        if not persist or existing and not (recovered or associated):
+        if not persist or existing and not (recovered or association_changed):
             return closed, saved
         retained = [r for r in current if r.get("session_id") != entry["session_id"]]
         closure.replace_rows([*retained, {k: v for k, v in closed.items() if not k.startswith("_")}], path=path)
@@ -562,18 +552,28 @@ def handoff(reader: GitHubReader, entry: dict, actor: str) -> dict:
     return evidence
 
 
-def inherited_handoff(entry: dict, saved: dict | None, *, reader: GitHubReader | None = None,
-                      actor: str | None = None) -> bool:
-    if not entry.get("handoff_url") or not entry.get("launch_started_at"):
-        return False
+def handoff_association(entry: dict, saved: dict | None, *, reader: GitHubReader | None = None,
+                        actor: str | None = None) -> str | None:
+    if saved is None:
+        return entry.get("handoff_url")
     generation = native_closure.source_generation(entry, saved)
-    if generation is None or not generation.get("launch_started_at"):
-        return False
-    actor = actor or github_identity.automation_login()
-    if not actor:
-        raise ValueError("configured automation identity is unknown")
-    reader = reader or GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 60)
-    return release.stamp(handoff(reader, entry, actor)["created_at"]) < release.stamp(generation["launch_started_at"])
+    started = release.stamp(generation["launch_started_at"]) if generation and generation.get("launch_started_at") else None
+    canonical = saved.get("handoff_url")
+    current = None
+    for url in dict.fromkeys((canonical, entry.get("handoff_url"))):
+        if not url or saved.get("resumed_generation") and url == canonical:
+            continue
+        if started is not None:
+            actor = actor or github_identity.automation_login()
+            if not actor:
+                raise ValueError("configured automation identity is unknown")
+            reader = reader or GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 60)
+            if release.stamp(handoff(reader, {**entry, "handoff_url": url}, actor)["created_at"]) < started:
+                continue
+        if current and current != url:
+            raise ValueError("recorded handoff differs from canonical handoff_url; preserve it")
+        current = url
+    return current
 
 
 def inventory_source_context(reader, entry, actor):
@@ -1035,7 +1035,6 @@ def main():
         actor = github_identity.automation_login()
         if not actor:
             raise ValueError("requires the configured automation identity")
-        reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + args.deadline_seconds)
         if args.mode == "finish":
             if not args.ledger or not args.session_id:
                 raise ValueError("finish requires --ledger and one --session-id")
@@ -1048,9 +1047,9 @@ def main():
             # or a fresh observation time for a new closure. A ledger timestamp
             # alone is not proof that this generation has already ended.
             if args.apply:
-                entries = [record_closure(args.closed_log, entries[0], args.supervisor_session, reader=reader, actor=actor)]
+                entries = [record_closure(args.closed_log, entries[0], args.supervisor_session)]
             else:
-                entries = [record_closure(args.closed_log, entries[0], args.supervisor_session, persist=False, reader=reader, actor=actor)]
+                entries = [record_closure(args.closed_log, entries[0], args.supervisor_session, persist=False)]
             entries[0]["_finish"] = True
             entries[0]["_finish_scope"] = "explicit scope" if args.repo else "accessible repositories under the requested owner"
         else:
@@ -1093,6 +1092,7 @@ def main():
                                     "claim_comment": r["claim_comment_id"], "status": "preserved"}
                                     for r in inventory_rows]})
         entries = verified
+        reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + args.deadline_seconds)
         if not entries:
             raise ValueError("no verified closed sessions; inspect the per-session reports")
         if all(e.get("_inventory") for e in entries):

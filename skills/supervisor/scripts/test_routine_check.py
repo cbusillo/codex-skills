@@ -811,7 +811,7 @@ class RoutineCheckTests(unittest.TestCase):
                             for name, number, stamp in (("old", 8, "2026-11-07T22:31:00Z"),
                                                        ("intermediate", 9, "2026-11-08T00:31:00Z"),
                                                        ("new", 10, "2026-11-08T01:59:00Z"))}
-                if variant == "intermediate":
+                if variant in {"intermediate", "unknown_comment"}:
                     current["handoff_url"] = urls["intermediate"]
                 elif variant == "manual_closed":
                     saved = {**current, "ended_at": "2026-11-08T02:00:00Z", "process_exit_verified": True}
@@ -840,17 +840,24 @@ class RoutineCheckTests(unittest.TestCase):
                     operation.state["handoff"] = {"url": urls["old" if variant == "journal_conflict" else "new"]}
                 args = argparse.Namespace(ledger=ledger, session_id=session, handoff_url=selected)
                 by_id = {str(row["id"]): row for row in comments.values()}
-                reader = SimpleNamespace(get_json=Mock(side_effect=partial(lambda mapping, path, **_kw: mapping[path.rsplit("/", 1)[-1]], by_id)),
+                if variant in {"explicit", "intermediate", "discovery", "journal_retry"}:
+                    by_id.pop("8")
+                def read_comment(mapping: dict[str, dict], path: str, **_kwargs: Any) -> dict:
+                    if path.rsplit("/", 1)[-1] not in mapping:
+                        raise session_closeout.GitHubReadError("prior handoff deleted", result=ApiResult(False, status=404, body=None), diagnostics={})
+                    return mapping[path.rsplit("/", 1)[-1]]
+
+                reader = SimpleNamespace(get_json=Mock(side_effect=partial(read_comment, by_id)),
                                          paged_json=Mock(return_value=[comments["old"]] if variant == "no_new_handoff" else list(comments.values())))
                 if variant == "unknown_comment":
                     reader.get_json.side_effect = session_closeout.GitHubReadError(
                         "comment source unavailable", result=ApiResult(False, status=503, body=None), diagnostics={})
-                error = {"same_generation": "recorded handoff differs", "aborted_conflict": "canonical handoff differs",
-                         "missing_source": "recorded handoff differs", "wrong_generation": "source authority",
+                error = {"same_generation": "current handoff differs", "aborted_conflict": "current handoff differs",
+                         "missing_source": "current handoff differs", "wrong_generation": "source authority",
                          "unknown_source": "source unavailable", "unknown_comment": "comment source unavailable",
                          "old_selected": "created in", "no_new_handoff": "found 0 candidates",
                          "journal_conflict": "journal already records", "ledger_changed": "ledger generation changed",
-                         "canonical_conflict": "canonical handoff differs"}.get(variant)
+                         "canonical_conflict": "current handoff differs"}.get(variant)
                 with (patch_attr(session_closeout, "GitHubReader", return_value=reader),
                       patch.object(session_closeout.github_identity, "automation_login", return_value="agent[bot]"),
                       patch.object(session_closeout.closure, "source_records", return_value={} if variant == "missing_source" else {session: saved},

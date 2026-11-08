@@ -139,8 +139,6 @@ class ReleaseTests(unittest.TestCase):
         self.reader.batch_diagnostic = {}
         self.reader.get_json.return_value = {**comment(99, "Handoff"),
             "issue_url": "https://api.github.com/repos/test/a/issues/1"}
-        self.enterContext(patch_attribute(helper, "GitHubReader", return_value=self.reader))
-        self.enterContext(patch_attribute(identity, "automation_login", return_value=ACTOR))
         self.inventory = patch.object(helper, "inventory", return_value=[])
         self.inventory.start()
         self.addCleanup(self.inventory.stop)
@@ -691,6 +689,8 @@ class ReleaseTests(unittest.TestCase):
                                             "resumed_at": (ended - timedelta(minutes=1)).isoformat(),
                                             "resumed_generation": metadata}]))
             with self.subTest(recovery=recovered), \
+                    patch_attribute(helper, "GitHubReader", return_value=self.reader), \
+                    patch_attribute(identity, "automation_login", return_value=ACTOR), \
                     patch.object(tmux_terminal.Terminal, "list", return_value=[pane]), \
                     patch.object(helper, "inventory", return_value=[(456, entry["tty"], "codex --remote unix:///new-client")]), \
                     patch.object(helper.closure, "process_started_at", return_value=ended + timedelta(seconds=22)), \
@@ -1406,7 +1406,8 @@ class ReleaseTests(unittest.TestCase):
         self.reader.get_json.side_effect = lambda path, **_kw: {
             **posted, "id": int(path.rsplit("/", 1)[-1]),
             "created_at": "2026-01-01T00:00:45Z" if path.endswith("/100") else posted["created_at"]}
-        retained = helper.record_closure(log, {**self.entry, **metadata}, "supervisor")
+        with patch_attribute(helper, "GitHubReader", return_value=self.reader), patch_attribute(identity, "automation_login", return_value=ACTOR):
+            retained = helper.record_closure(log, {**self.entry, **metadata}, "supervisor")
         self.assertEqual(retained["handoff_url"], current["handoff_url"])
         self.assertEqual(retained["ended_at"], current["ended_at"])
         self.assertEqual(json.loads(log.read_text())[0]["handoff_url"], current["handoff_url"])
@@ -1429,10 +1430,15 @@ class ReleaseTests(unittest.TestCase):
                 self.reader.get_json.side_effect = partial(lambda evidence, path, **_kw: {
                     **evidence, "id": int(path.rsplit("/", 1)[-1]),
                     "created_at": "2026-01-01T00:00:20Z" if path.endswith("/98") else evidence["created_at"]}, posted)
-                closed = helper.record_closure(log, current, "supervisor")
+                if not intermediate:
+                    self.reader.get_json.side_effect = AssertionError("canonical prior handoff needs no read")
+                with patch_attribute(helper, "GitHubReader", return_value=self.reader), patch_attribute(identity, "automation_login", return_value=ACTOR):
+                    closed = helper.record_closure(log, current, "supervisor")
                 self.assertIsNone(closed.get("handoff_url"))
                 self.assertIsNone(json.loads(log.read_text())[0].get("handoff_url"))
-                retried = helper.record_closure(log, current, "supervisor")
+                self.reader.get_json.side_effect = None
+                with patch_attribute(helper, "GitHubReader", return_value=self.reader), patch_attribute(identity, "automation_login", return_value=ACTOR):
+                    retried = helper.record_closure(log, current, "supervisor")
                 self.assertIsNone(retried.get("handoff_url"))
                 self.assertEqual(retried["ended_at"], closed["ended_at"])
 
