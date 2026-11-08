@@ -1517,8 +1517,23 @@ def test_attachment_passthrough_and_failures_never_replay() -> None:
             "success", "old_cli", "failed_upload", "bad_readback", "wrong_author", "missing_author",
             "canonical_case", "prewrite_refusal", "forged_receipt", "help_failure", "crlf_body", "readback_failure",
             "attributed_question", "question_binding_failure", "bot_failure", "bot_actor", "extra_prose",
+            "launch_failure", "unmatched_bracket", "escaped_alt",
         )
-        successful_modes = {"success", "canonical_case", "crlf_body", "attributed_question"}
+        successful_modes = {"success", "canonical_case", "crlf_body", "attributed_question", "escaped_alt"}
+        upload_url_modes = {"failed_upload", "bad_readback", "wrong_author", "missing_author", "readback_failure",
+                            "extra_prose", "unmatched_bracket"}
+
+        def assert_upload_reconciliation(mode: str, reconciliation: dict[str, Any]) -> None:
+            assert reconciliation["required_before_retry"] is True, reconciliation
+            if mode in upload_url_modes:
+                assert reconciliation == {**reconciliation, "strategy": "read_comment_by_url", "url": url}, reconciliation
+            elif mode in ("forged_receipt", "launch_failure"):
+                assert reconciliation["strategy"] == "list_actor_comments_and_compare_body", reconciliation
+                assert reconciliation["actor"] == github_comment.ATTACHMENT_OWNER, reconciliation
+                assert reconciliation["body_starts_with"] == f"[{github_comment.AGENT_POSTED_LINE}]({bot_url})", reconciliation
+                assert "url" not in reconciliation, reconciliation
+            else:
+                assert reconciliation["url"] == bot_url, reconciliation
         def exercise(kind: str, mode: str) -> None:
             calls: list[list[str]] = []
             posted: list[str] = []
@@ -1534,7 +1549,13 @@ def test_attachment_passthrough_and_failures_never_replay() -> None:
                 assert command[command.index("--repo") + 1].casefold() == repo
                 assert [command[index + 1] for index, value in enumerate(command) if value == "--attach"] == attachments
                 assert kwargs["input"] == f"[{github_comment.AGENT_POSTED_LINE}]({bot_url})"
+                if mode == "launch_failure":
+                    raise OSError("gh could not start")
                 readback["body"] = kwargs["input"] + "\n\n![proof](https://github.com/user-attachments/assets/image)\n\nhttps://github.com/user-attachments/assets/video"
+                if mode == "escaped_alt":
+                    readback["body"] = readback["body"].replace("![proof]", r"![a\]b\[c\\]")
+                if mode == "unmatched_bracket":
+                    readback["body"] = readback["body"].replace("\n\n![proof]", "\n\n[Unexpected report prose\n\n![proof]")
                 if mode == "bad_readback":
                     readback["body"] = "no uploaded image"
                 if mode == "extra_prose":
@@ -1598,7 +1619,8 @@ def test_attachment_passthrough_and_failures_never_replay() -> None:
                     if not before_post and mode != "bot_failure":
                         assert error.payload["url"] == bot_url
                         assert error.payload["attachment_write_outcome"] == ("not_started" if mode in ("prewrite_refusal", "question_binding_failure") else
-                                                                          "unknown" if mode in ("failed_upload", "forged_receipt") else "applied")
+                                                                          "unknown" if mode in ("failed_upload", "forged_receipt", "launch_failure") else "applied")
+                        assert_upload_reconciliation(mode, error.payload["reconciliation"])
                 else:
                     assert mode in successful_modes
                     assert result["actor"] == "fixture-automation"

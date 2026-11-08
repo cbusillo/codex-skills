@@ -16,6 +16,7 @@ import json
 import os
 import pathlib
 import re
+import shlex
 import subprocess
 import sys
 import urllib.parse
@@ -44,6 +45,9 @@ QUIET_MENTION_OPEN, QUIET_MENTION_CLOSE = "<code>", "</code>"
 ATTACHMENT_OWNER = "cbusillo"
 AGENT_POSTED_LINE = "Posted by an agent."
 ATTACHMENT_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".mp4", ".mov", ".webm"}
+_UPLOADED_ASSET = r"https://github\.com/user-attachments/assets/[A-Za-z0-9_-]+"
+# https://github.com/cli/cli/blob/v2.103.2/internal/attachments/userasset.go#L88
+CLI_ATTACHMENT_MARKUP = re.compile(rf"!\[(?:[^\\\[\]\r\n]|\\.)*]\({_UPLOADED_ASSET}\)|{_UPLOADED_ASSET}")
 
 
 class CommentError(Exception):
@@ -1388,31 +1392,45 @@ def attached_comment(
             str(error), operation=operation, cause="invalid_response", failed_step="verify_attachment_source",
         )
         failure = upload_error.failure
-        partial_error = _local_error(
-            "The automation report is saved. Do not replay the combined attachment command; "
-            f"Reconcile the upload and question source before using GH_WITH_ENV_TOKEN_OWN_USER=1 gh-with-env-token {kind} comment {number} "
-            f"--repo {resolved_repo} --body-file FILE --attach IMAGE; FILE must contain only {upload_body}. "
-            f"{error}",
+        upload_outcome = failure.write_outcome if upload_started else "not_started"
+        reconciliation, instruction = upload_reconciliation(
+            upload_outcome, upload_error.payload.get("url"), agent_comment["url"], upload_body,
+        )
+        upload_only = shlex.join(["gh-with-env-token", kind, "comment", str(number), "--repo", resolved_repo,
+                                  "--body-file", "-", *[value for path in attachments for value in ("--attach", path)]])
+        raise _local_error(
+            f"The automation report is saved at {agent_comment['url']}. Do not replay the combined attachment command. "
+            f"{instruction} Only if no attachment comment exists, upload just the attachments with:\n"
+            f"printf '%s\\n' {shlex.quote(upload_body)} | GH_WITH_ENV_TOKEN_OWN_USER=1 {upload_only}\n{error}",
             operation=operation, cause=failure.cause,
             actor=agent_comment["actor"], expected_actor=agent_comment["expected_actor"],
             completed_steps=[*agent_comment["completed_steps"], *failure.completed_steps],
             failed_step=failure.failed_step or "attach_comment",
             write_outcome="applied", payload={
                 "url": agent_comment["url"], "agent_comment": agent_comment,
-                "attachment_write_outcome": failure.write_outcome if upload_started else "not_started",
+                "attachment_write_outcome": upload_outcome,
                 "attachment_error": upload_error.payload,
                 "outcome_certainty": "unknown" if failure.write_outcome == "unknown" else "confirmed_partially_applied",
                 "recommended_next_action": "follow_operation_reconciliation_strategy", "retry_eligible": False,
-                "reconciliation": {"strategy": "read_comment_by_url", "required_before_retry": True,
-                                   "url": upload_error.payload.get("url") or agent_comment["url"]},
+                "reconciliation": reconciliation,
             },
-        )
-        if partial_error.api_result is not None:
-            for field in ("outcome_certainty", "recommended_next_action", "reconciliation", "retry_eligible"):
-                partial_error.api_result[field] = partial_error.payload[field]
-        raise partial_error from error
+        ) from error
     return {**agent_comment, "attachment_comment": uploaded,
             "completed_steps": [*agent_comment["completed_steps"], *uploaded["completed_steps"]]}
+
+
+def upload_reconciliation(
+    upload_outcome: str | None, upload_url: str | None, bot_url: str, upload_body: str,
+) -> tuple[dict[str, Any], str]:
+    if upload_url:
+        return ({"strategy": "read_comment_by_url", "required_before_retry": True, "url": upload_url},
+                f"Read {upload_url} first; it may already carry the attachments.")
+    if upload_outcome == "unknown":
+        return ({"strategy": "list_actor_comments_and_compare_body", "required_before_retry": True,
+                 "actor": ATTACHMENT_OWNER, "body_starts_with": upload_body},
+                f"First list {ATTACHMENT_OWNER}'s comments on this thread for one starting with {upload_body}.")
+    return ({"strategy": "read_comment_by_url", "required_before_retry": True, "url": bot_url},
+            "The upload did not start; resolve the cause below first.")
 
 
 def upload_attachment_comment(
@@ -1465,13 +1483,11 @@ def upload_attachment_comment(
     saved_user = saved.get("user") if isinstance(saved, dict) else None
     saved_author = str(saved_user.get("login") or "") if isinstance(saved_user, dict) else ""
     saved_body = str(saved.get("body", "")) if isinstance(saved, dict) else ""
-    asset = r"https://github\.com/user-attachments/assets/[A-Za-z0-9_-]+"
-    markup = rf"!?\[.*?]\({asset}\)|{asset}"
     remainder = saved_body.removeprefix(body)
     if (not isinstance(saved, dict) or saved.get("id") != int(match[1])
             or saved.get("html_url") != url or saved_author.casefold() != actor
-            or not saved_body.startswith(body) or len(re.findall(markup, remainder, re.DOTALL)) != len(attachments)
-            or re.sub(markup, "", remainder, flags=re.DOTALL).strip()):
+            or not saved_body.startswith(body) or len(CLI_ATTACHMENT_MARKUP.findall(remainder)) != len(attachments)
+            or CLI_ATTACHMENT_MARKUP.sub("", remainder).strip()):
         raise _local_error(
             "Attachment readback did not confirm the comment, author, agent line and uploaded asset; read the thread before retrying",
             operation=operation, cause="invalid_response", actor=actor, expected_actor=actor,

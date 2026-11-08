@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -1089,10 +1090,15 @@ def test_attachment_route_enforces_limits_through_real_wrapper() -> None:
             assert partial["url"] == bot_url, partial
             assert partial["retry_eligible"] is False, partial
             assert partial["outcome_certainty"] == "confirmed_partially_applied", partial
-            assert partial["recommended_next_action"] == "follow_operation_reconciliation_strategy", partial
             assert partial["reconciliation"]["url"] == bot_url, partial
             effects = [json.loads(line)[0] for line in calls_file.read_text().splitlines()]
             assert effects.count("bot_body") == 1 and effects.count("upload_body") == 0, effects
+            recovery = next(line for line in partial["error"].splitlines() if line.startswith("printf "))
+            recovered = subprocess.run(["sh", "-c", recovery.replace("gh-with-env-token", shlex.quote(str(SCRIPT)), 1)],
+                                       env=env, text=True, capture_output=True, timeout=15)
+            assert recovered.returncode == 0, (recovery, recovered.stderr)
+            assert recovered.stdout.strip().endswith("#issuecomment-20"), recovered.stdout
+            assert (root / "uploaded.md").read_text().strip() == body
         cases = [
             (args, "ordinary text", {}),
             ([*args[:-1], str(pdf)], body, {}),

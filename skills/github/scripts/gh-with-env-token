@@ -1058,9 +1058,10 @@ except (ValueError, OSError, github_comment.CommentError) as error:
     raise SystemExit(1)
 PY
 	) || exit $?
-	act_as_own_user "$attachment_repository" "$@" >"$stdout_file" || exit $?
+	attachment_status=0
+	act_as_own_user "$attachment_repository" "$@" >"$stdout_file" || attachment_status=$?
 	cat "$stdout_file"
-	exit 0
+	exit "$attachment_status"
 fi
 
 # Under the caller's opt-in, a read only the person's account can answer and a
