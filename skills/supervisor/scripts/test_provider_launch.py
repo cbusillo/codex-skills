@@ -63,7 +63,7 @@ class LaunchIssueTests(unittest.TestCase):
                 payload: dict[str, Any] = {"ok": True, "issue": {"recorded_current_status": status.replace("\n", newline),
                            "provenance": {"section_updates_allowed": True},
                            "body": "## Current Status\n" + status.replace(task, "Wrong original-request brief.\n"),
-                           "launch_check": {"allowed": True}}}
+                           "labels": [], "launch_check": {"allowed": True}}}
                 with self.subTest(newline=newline), patch.object(iterm_tab.subprocess, "run", return_value=
                         subprocess.CompletedProcess([], 0, json.dumps(payload))):
                     commands, _ = iterm_tab.prepare_launches(args)
@@ -125,9 +125,115 @@ class LaunchIssueTests(unittest.TestCase):
                 terminal.return_value.run.assert_not_called()
                 window.async_create_tab.assert_not_called()
 
+    def test_family_mismatch_refuses_both_brief_routes_before_native_creation(self) -> None:
+        issue = "https://github.com/fixture/repo/issues/7"
+        with tempfile.TemporaryDirectory() as folder:
+            command, brief = Path(folder) / "command", Path(folder) / "brief"
+            brief.write_text(f"Anchor and claim: {issue}\nRules: {iterm_tab.BRIEF_RULES_URL}")
+            args = argparse.Namespace(command="new", window_id="chosen", command_file=[command], brief_file=[brief],
+                                      account_config=None, account=None, tmux_socket="fixture")
+            window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock())
+            app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
+            payload = {"ok": True, "issue": {"recorded_current_status": "Next actor: agent:supervisor\nBrief:\n```text\nDo the task.\n```",
+                       "provenance": {"section_updates_allowed": True}, "labels": [], "launch_check": {"allowed": True}}}
+            with (patch.dict(sys.modules, {"iterm2": SimpleNamespace()}),
+                  patch.object(iterm_tab.subprocess, "run", side_effect=lambda *_a, **_k:
+                               subprocess.CompletedProcess([], 0, json.dumps(payload))),
+                  patch.object(account_choice, "select", side_effect=AssertionError("Mismatch reached account selection")) as select,
+                  patch.object(iterm_tab, "preflight_codex_daemon") as daemon,
+                  patch.object(account_choice, "prepare_launch") as prepare,
+                  patch.object(account_choice, "record_launch") as receipt,
+                  patch.object(tmux_terminal, "Terminal") as terminal):
+                for provider, agent, _ in HARNESS_CHOICES[:2]:
+                    assigned = "claude" if agent == "codex" else "codex"
+                    command.write_text(f"cd /fixture/repo && exec {agent}")
+                    args.account_provider = provider
+                    payload["issue"]["labels"] = [f"agent:{assigned}"]
+                    for route in ("file", "issue"):
+                        args.brief_issue = [issue] if route == "issue" else []
+                        for backend in ("iterm", "tmux"):
+                            with self.subTest(agent=agent, route=route, backend=backend):
+                                with self.assertRaisesRegex(ValueError, f"agent:{assigned}") as caught:
+                                    asyncio.run(iterm_tab.operate(app, args) if backend == "iterm" else tmux_terminal.operate(args))
+                                self.assertIn(agent, str(caught.exception))
+                select.assert_not_called()
+                daemon.assert_not_called()
+                prepare.assert_not_called()
+                receipt.assert_not_called()
+                terminal.return_value.run.assert_not_called()
+                window.async_create_tab.assert_not_called()
+
+    def test_family_matches_unlabeled_and_explicit_override_preserve_brief_delivery(self) -> None:
+        issue = "https://github.com/fixture/repo/issues/7"
+        reason = "Director authorized this session in the supplied brief"
+        with tempfile.TemporaryDirectory() as folder:
+            command, brief = Path(folder) / "command", Path(folder) / "brief"
+            brief.write_text(f"Anchor and claim: {issue}\nRules: {iterm_tab.BRIEF_RULES_URL}")
+            args = argparse.Namespace(command_file=[command], brief_file=[brief])
+            payload = {"ok": True, "issue": {"recorded_current_status": "Next actor: agent:supervisor\nBrief:\n```text\nDo the task.\n```",
+                       "provenance": {"section_updates_allowed": True}, "labels": [], "launch_check": {"allowed": True}}}
+            with patch.object(iterm_tab.subprocess, "run", side_effect=lambda *_a, **_k:
+                              subprocess.CompletedProcess([], 0, json.dumps(payload))):
+                for _, agent, _ in HARNESS_CHOICES:
+                    command.write_text(f"cd /fixture/repo && exec {agent}")
+                    for route in ("file", "issue"):
+                        args.brief_issue = [issue] if route == "issue" else []
+                        for labels in ([], [f"agent:{agent}"]) if agent != "agy" else ([],):
+                            payload["issue"]["labels"] = labels
+                            args.agent_override = None
+                            with self.subTest(agent=agent, route=route, labels=labels):
+                                commands, _ = iterm_tab.prepare_launches(args)
+                                self.assertIn("Anchor and claim:", commands[0])
+                        if agent == "agy":
+                            continue
+                        payload["issue"]["labels"] = ["agent:claude" if agent == "codex" else "agent:codex"]
+                        args.agent_override = reason
+                        with self.subTest(agent=agent, route=route, override=True):
+                            commands, _ = iterm_tab.prepare_launches(args)
+                            words = shlex.split(commands[0])
+                            prompt = words[-1]
+                            claim_line = next(line for line in prompt.splitlines() if line.startswith("--agent-override "))
+                            self.assertEqual(shlex.split(claim_line), ["--agent-override", reason])
+                            self.assertEqual(payload["issue"]["labels"], ["agent:claude" if agent == "codex" else "agent:codex"])
+
+    def test_batch_assignment_uses_each_command_instead_of_inherited_lead_family(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            commands, briefs = [root / "codex", root / "claude"], [root / "first", root / "second"]
+            for command, brief in zip(commands, briefs):
+                command.write_text(command.name)
+                brief.write_text(f"Anchor: https://github.com/fixture/repo/issues/7\nRules: {iterm_tab.BRIEF_RULES_URL}")
+            args = argparse.Namespace(command_file=commands, brief_file=briefs)
+            for second_assignment in ("codex", "claude"):
+                responses = [{"ok": True, "issue": {"labels": [f"agent:{assigned}"], "launch_check": {"allowed": True}}}
+                             for assigned in ("codex", second_assignment)]
+                with (self.subTest(second_assignment=second_assignment),
+                      patch.dict(os.environ, {"CODEX_SESSION_ID": "lead", "CLAUDECODE": "1"}),
+                      patch.object(iterm_tab.subprocess, "run", side_effect=[subprocess.CompletedProcess([], 0, json.dumps(row))
+                                                                                 for row in responses])):
+                    if second_assignment == "codex":
+                        with self.assertRaises(ValueError):
+                            iterm_tab.prepare_launches(args)
+                    else:
+                        self.assertEqual(len(iterm_tab.prepare_launches(args)[0]), len(commands))
+
+    def test_assignment_override_does_not_bypass_unknown_labels_or_other_launch_refusals(self) -> None:
+        anchor = "Anchor: https://github.com/fixture/repo/issues/7"
+        payload = {"ok": True, "issue": {"launch_check": {"allowed": True}}}
+        with patch.object(iterm_tab.subprocess, "run", side_effect=lambda *_a, **_k:
+                          subprocess.CompletedProcess([], 0, json.dumps(payload))):
+            for override in (None, "Explicit Director instruction"):
+                with self.subTest(override=override), self.assertRaises(ValueError):
+                    iterm_tab.check_launch_issue(anchor, command_text="claude", agent_override=override)
+            payload["issue"]["labels"] = ["agent:codex"]
+            iterm_tab.check_launch_issue(anchor.replace("Anchor:", "Read-only anchor:"), command_text="claude")
+            payload["issue"]["launch_check"] = {"allowed": False, "error": {"message": "Fixture custody conflict"}}
+            with self.assertRaises(ValueError):
+                iterm_tab.check_launch_issue(anchor, command_text="claude", agent_override="Explicit Director instruction")
+
     def test_changed_prerequisite_allows_a_fresh_check_and_read_only_work_does_not_claim(self) -> None:
         brief = "Anchor: https://github.com/fixture/repo/issues/7"
-        cleared = {"ok": True, "issue": {"launch_check": {"allowed": True}}}
+        cleared = {"ok": True, "issue": {"labels": [], "launch_check": {"allowed": True}}}
         parser = runpy.run_path(str(Path(__file__).resolve().parents[2] / "github/scripts/gh-plan.py"))["build_parser"]()
         calls = []
         def read(argv: list[str], **_kwargs: Any) -> subprocess.CompletedProcess:

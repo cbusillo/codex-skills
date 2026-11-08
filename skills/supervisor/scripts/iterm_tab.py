@@ -1378,7 +1378,7 @@ def launch_resume_source(brief: str) -> str | None:
 
 
 def check_launch_issue(brief: str, *, dispatch_recipient: str | None = None, dispatch_issue: str | None = None,
-                       wait_resolved: str | None = None) -> None:
+                       wait_resolved: str | None = None, command_text: str | None = None, agent_override: str | None = None) -> None:
     labels = re.findall(r"(?mi)^\s*(?:[-*] )?(?:\*\*)?(Read-only anchor|Anchor(?: and claim)?):(?:\*\*)?[^\S\n]*([^\n]*)", brief)
     anchors = []
     for mode, value in labels:
@@ -1389,6 +1389,7 @@ def check_launch_issue(brief: str, *, dispatch_recipient: str | None = None, dis
             raise ValueError("An explicit issue anchor needs its full https://github.com/OWNER/REPO/issues/N URL")
     if not anchors:
         return
+    agent = launch_agent(command_text) if command_text is not None else None
     read_only_anchors = {anchor.casefold() for mode, anchor in anchors if mode.casefold() == "read-only anchor"}
     execution_anchors = {anchor.casefold() for mode, anchor in anchors if mode.casefold() != "read-only anchor"}
     if read_only_anchors & execution_anchors:
@@ -1406,6 +1407,10 @@ def check_launch_issue(brief: str, *, dispatch_recipient: str | None = None, dis
     heading = next((line for line in brief.splitlines() if line.strip() and not line.startswith("GUI task:")), "")
     worker = re.search(r"\bTrial token:[ \t]*(\S+)", heading)
     helper = Path(__file__).resolve().parents[2] / "github/scripts/gh-plan.py"
+    if str(helper.parent) not in sys.path:
+        sys.path.append(str(helper.parent))
+    import github_agent
+
     for mode, anchor in dict.fromkeys(anchors):
         repo = "/".join(anchor.split("/")[3:5])
         argv = ["uv", "run", str(helper), "--repo", repo, "show", anchor, "--full", "--launch-check"]
@@ -1445,6 +1450,18 @@ def check_launch_issue(brief: str, *, dispatch_recipient: str | None = None, dis
                              f"For review/legacy waits, read gh-plan.py --repo {repo} wait {anchor}; "
                              "preserve actual waits; use --clear --evidence only for verified absence or genuine resolution. "
                              "For another source issue, use its full issue-comment URL in Resume from")
+
+        if mode.casefold() != "read-only anchor":
+            issue = payload["issue"]
+            if not isinstance(issue.get("labels"), list):
+                raise ValueError(f"Launch assignment unavailable for {anchor}; read its current labels before dispatch")
+            mismatch = github_agent.exclusion(issue, agent)
+            if mismatch and not agent_override:
+                names = ", ".join(mismatch["agent_labels"])
+                raise ValueError(f"Launch refused for {anchor}: issue carries {names}; intended command is {agent or 'unknown'}. "
+                                 "Use a command file for the assigned codex or claude family with its matching --account-provider, "
+                                 "or resolve conflicting assignment labels. Only an explicit Director override permits "
+                                 "--agent-override REASON; the worker must pass that same reason to its own claim.")
 
 
 def prepare_launches(args: argparse.Namespace) -> tuple[list[str], list[dict | None]]:
@@ -1502,6 +1519,12 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
     """Validate the full batch and prepare accounts before creating terminals."""
     if getattr(args, "resume_session_id", None):
         return prepare_resume(args)
+    override = getattr(args, "agent_override", None)
+    if override is not None:
+        override = override.strip()
+        if not override:
+            raise ValueError("--agent-override needs the explicit Director decision or instruction")
+        validate_text(override)
     provider = getattr(args, "account_provider", None)
     if getattr(args, "ledger", None) and provider not in account_choice.PROVIDERS:
         raise ValueError("fresh --ledger registration needs --account-provider")
@@ -1551,7 +1574,11 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
     for index, brief in enumerate(headers):
         validate_brief_rules(brief)
         check_launch_issue(brief, dispatch_recipient=getattr(args, "lead_session_id", None) if brief_issues else None,
-                           dispatch_issue=brief_issues[index] if brief_issues else None, wait_resolved=resolutions[index])
+                           dispatch_issue=brief_issues[index] if brief_issues else None, wait_resolved=resolutions[index],
+                           command_text=command_texts[index], agent_override=override)
+    if override:
+        instruction = "\n\nFor this issue's own-identity gh-plan.py claim, pass the explicit Director override:\n"
+        briefs = [brief + instruction + shlex.join(["--agent-override", override]) + "\n" for brief in briefs]
     validate_computer_use_launch(args, command_texts, briefs)
     apps = [gui_launch.declared_app(brief) for brief in briefs]
     if (getattr(args, "ledger", None) and provider == "openai" and not any(apps)
@@ -2497,6 +2524,8 @@ def main():
                      help="nonempty prompt to append as one argument; one per command file, in launch order")
     new.add_argument("--brief-issue", action="append",
                      help="child issue URL; append its Current Status Brief verbatim to --brief-file's standard header")
+    new.add_argument("--agent-override", metavar="REASON",
+                     help="explicit Director family exception; forwards the same reason to the worker claim")
     new.add_argument("--resume-session-id", help="resume one exact Supervisor-owned Codex source from --ledger")
     new.add_argument("--ledger", type=Path, help="private source ledger for resume or atomic fresh managed Codex registration")
     new.add_argument("--lead-session-id", help="launch workers for this lead's native session in the shared ledger")
