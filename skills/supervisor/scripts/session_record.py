@@ -15,6 +15,8 @@ from pathlib import Path
 import claim_history
 import session_outcomes
 
+LAUNCH_LEDGER_ENV = "CODEX_SKILLS_SUPERVISOR_LEDGER"
+
 MEMORY_CITATION_TAIL = re.compile(
     r"^<oai-mem-citation>(?:(?!</?oai-mem-citation>).)*"
     r"^</oai-mem-citation>\s*\Z",

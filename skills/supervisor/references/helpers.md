@@ -1322,9 +1322,14 @@ For a new milestone lead, the Supervisor adds `--ledger <shared-ledger>` and
 The lead launches workers with that same ledger, `--lead-session-id
 <lead-native-id>`, and an explicit allowed `--account` from its brief. Worker
 rows and retained launch receipts carry `lead_session_id` and `lead_launch_id`.
-Worker briefs include the lead's native ID and shared ledger pointer. For a
-Codex lead, also supply its ledger's absolute `codex_home` and notify it from the catalog with
-`uv run skills/supervisor/scripts/codex-session.py queue --session-id <lead-id> --codex-home <source-home> --message <issue-url>`.
+Worker briefs include the lead's native ID and shared ledger pointer. Notify a
+Codex lead from the catalog with
+`uv run skills/supervisor/scripts/codex-session.py queue --session-id <lead-id> --message <issue-url>`.
+Fresh local launches supply their ledger pointer. Existing, resumed or remote
+workers can pass `--ledger <shared-ledger>` when that pointer is unavailable.
+The helper requires this native worker's unique Supervisor-owned row to name
+the unique Supervisor-owned Codex lead, then reads its home. Other callers use
+`--codex-home <source-home>` instead. Existing native delivery checks still apply.
 Claude leads use the tmux backend and `review_notifications.send(lead_entry,
 issue_url)`, which verifies the ledger identity, idle prompt and empty composer.
 On `NotSent`, retain the request and recheck when idle; never force terminal
