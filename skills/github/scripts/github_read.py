@@ -19,6 +19,7 @@ import re
 import subprocess
 import time
 import urllib.parse
+from dataclasses import replace
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any, NamedTuple, NoReturn, Optional
@@ -76,9 +77,23 @@ class GitHubReadError(Exception):
         self.result = result
         self.diagnostics = diagnostics
 
+    @property
+    def rest_recovery_allowed(self) -> bool:
+        return graphql_rest_recovery_allowed(self.result)
+
+
+def graphql_rest_recovery_allowed(result: github_api_core.ApiResult) -> bool:
+    cause = result.failure.cause if result.failure is not None else None
+    if cause == "deadline_exceeded" and result.retry_summary is not None:
+        cause = result.retry_summary.wait_cause
+    return result.bucket == "graphql" and cause in {"network_provider_failure", "graphql_primary_rate_limited"}
+
 
 class GitHubReadShapeError(Exception):
-    pass
+    def __init__(self, message: str, *, retryable: bool = False, rest_recovery_allowed: bool = False) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+        self.rest_recovery_allowed = rest_recovery_allowed
 
 
 def _default_cache_dir() -> pathlib.Path:
@@ -249,6 +264,7 @@ class GitHubReader:
         include_archived: bool = False,
     ) -> None:
         self.gh_cmd = gh_cmd
+        self.repository = repository
         # Resolve before constructing the opt-in cache: bodies and actor checks
         # must use the same identity as shared transport and quota admission.
         self._identity_error: Optional[github_identity.GitHubAppError] = None
@@ -313,6 +329,7 @@ class GitHubReader:
             deadline_at=self.deadline_at if deadline_at is None else deadline_at,
             allow_escape_sequences=allow_escape_sequences,
             conditional_cache=not self.cache_enabled if conditional_cache is None else conditional_cache,
+            **({"repository": self.repository} if github_api_core.is_graphql_path(path) and self.repository is not None else {}),
         )
 
     def graphql_json(
@@ -605,14 +622,46 @@ def graphql_connection_page(value: Any) -> GraphQLConnection:
     return GraphQLConnection(nodes, cursor, total)
 
 
-def graphql_data(result: github_api_core.ApiResult) -> dict[str, Any]:
+def graphql_data(result: github_api_core.ApiResult, *, root_path: tuple[str, ...] = ()) -> dict[str, Any]:
     body = result.body
-    if not isinstance(body, dict) or body.get("errors") or not isinstance(body.get("data"), dict):
+    if isinstance(body, dict) and body.get("errors"):
+        raise graphql_failure(result, body["errors"], root_path=root_path)
+    if not isinstance(body, dict) or not isinstance(body.get("data"), dict):
         raise GitHubReadShapeError("GraphQL returned partial or missing data")
     return body["data"]
 
 
-class RepositoryInventoryUnavailable(ValueError):
+def graphql_failure(
+    result: github_api_core.ApiResult, errors: list[Any], *, root_path: tuple[str, ...] = ()
+) -> GitHubReadError | GitHubReadShapeError:
+    kinds = {error.get("type") or (error.get("extensions") or {}).get("code") for error in errors if isinstance(error, dict)}
+    paths = [error.get("path") for error in errors if isinstance(error, dict)]
+    complete_paths = len(paths) == len(errors)
+    direct = bool(root_path and paths and complete_paths) and all(
+        isinstance(path, list) and path and tuple(path) == root_path[: len(path)] for path in paths
+    )
+    nested = bool(root_path and paths and complete_paths) and all(
+        isinstance(path, list) and len(path) > len(root_path) and tuple(path[: len(root_path)]) == root_path for path in paths
+    )
+    root = result.body.get("data") if isinstance(result.body, dict) else None
+    for part in root_path:
+        root = root.get(part) if isinstance(root, dict) else None
+    status = 404 if kinds == {"NOT_FOUND"} else 403 if kinds and kinds <= {"FORBIDDEN", "INSUFFICIENT_SCOPES"} else None
+    if not direct:
+        return GitHubReadShapeError(
+            "GraphQL returned partial or missing data",
+            rest_recovery_allowed=nested and isinstance(root, dict) and status is not None,
+        )
+    if status is None:
+        return GitHubReadShapeError("GraphQL returned partial or missing data")
+    failure = github_api_core.classify_error(
+        status, result.headers, {"message": "GraphQL source not found" if status == 404 else "GraphQL source access denied"}
+    )
+    failed = replace(result, ok=False, failure=failure)
+    return GitHubReadError(failure.message, result=failed, diagnostics={})
+
+
+class RepositoryInventoryUnavailable(GitHubReadShapeError, ValueError):
     pass
 
 
@@ -625,6 +674,9 @@ def read_repository_connections(
     normalize: Callable[[str, dict[str, Any]], dict[str, Any]],
     step: str,
     retry_policy: github_api_core.RetryPolicy | None = None,
+    limit: int | None = None,
+    identity: Callable[[dict[str, Any]], Any] | None = None,
+    metadata: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, list[dict[str, Any]] | Exception]:
     repos = list(dict.fromkeys(repositories))
     if any(not isinstance(repo, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo) for repo in repos):
@@ -641,12 +693,16 @@ def read_repository_connections(
                     normalize=normalize,
                     step=step,
                     retry_policy=retry_policy,
+                    limit=limit,
+                    identity=identity,
+                    metadata=metadata,
                 )
             )
         return grouped
     result: dict[str, list[dict[str, Any]] | Exception] = {repo: [] for repo in repos}
     cursors: dict[str, str | None] = dict.fromkeys(repos)
     totals, seen = {}, {repo: set() for repo in repos}
+    identities: dict[str, set[Any]] = {repo: set() for repo in repos}
     for _ in range(GRAPHQL_INVENTORY_PAGE_LIMIT):
         if not cursors:
             return result
@@ -672,10 +728,11 @@ def read_repository_connections(
         body = response.body if isinstance(response.body, dict) else {}
         payload = body.get("data")
         data: dict[str, Any] = payload if isinstance(payload, dict) else {}
-        invalid = set()
+        invalid: dict[str, list[Any]] = {}
         for error in body.get("errors") or []:
             path = error.get("path") if isinstance(error, dict) else None
-            invalid.update([path[0]] if isinstance(path, list) and path and path[0] in aliases else aliases)
+            for alias in [path[0]] if isinstance(path, list) and path and path[0] in aliases else aliases:
+                invalid.setdefault(alias, []).append(error)
         rate = data.get("rateLimit")
         cost = rate.get("cost") if isinstance(rate, dict) else None
         previous = reader.batch_diagnostic.get("cost", 0)
@@ -687,20 +744,33 @@ def read_repository_connections(
                 continue
             try:
                 repository_node = data.get(alias)
+                if alias in invalid:
+                    error = graphql_failure(response, invalid[alias], root_path=(alias,))
+                    if isinstance(error, GitHubReadShapeError):
+                        raise RepositoryInventoryUnavailable(
+                            str(error), retryable=error.retryable, rest_recovery_allowed=error.rest_recovery_allowed
+                        )
+                    raise error
                 if (
-                    alias in invalid
-                    or not isinstance(repository_node, dict)
+                    not isinstance(repository_node, dict)
                     or str(repository_node.get("nameWithOwner", "")).casefold() != repo.casefold()
                 ):
                     raise RepositoryInventoryUnavailable("repository unavailable or mismatched")
+                if metadata is not None:
+                    metadata[repo] = {key: value for key, value in repository_node.items() if key != field}
                 nodes, cursor, total = graphql_connection_page(repository_node.get(field))
                 if total != totals.setdefault(repo, total):
-                    raise RepositoryInventoryUnavailable("inventory changed during pagination")
+                    raise RepositoryInventoryUnavailable("inventory changed during pagination", retryable=True)
                 for node in nodes:
-                    number = node.get("number")
-                    if type(number) is not int or number <= 0 or any(record["number"] == number for record in records):
+                    key = identity(node) if identity is not None else node.get("number")
+                    if key is None or key in identities[repo] or identity is None and (type(key) is not int or key <= 0):
                         raise RepositoryInventoryUnavailable("invalid or duplicate record")
+                    identities[repo].add(key)
                     records.append(normalize(repo, node))
+                    if limit is not None and len(records) >= limit:
+                        break
+                if limit is not None and len(records) >= limit:
+                    continue
                 if cursor:
                     if cursor in seen[repo]:
                         raise RepositoryInventoryUnavailable("repository cursor repeated")
@@ -710,7 +780,9 @@ def read_repository_connections(
                     raise RepositoryInventoryUnavailable("incomplete repository inventory")
             except GitHubReadError as error:
                 result[repo] = error
-            except (RepositoryInventoryUnavailable, GitHubReadShapeError, KeyError, TypeError, ValueError):
+            except GitHubReadShapeError as error:
+                result[repo] = error
+            except (KeyError, TypeError, ValueError):
                 result[repo] = RepositoryInventoryUnavailable("repository inventory unavailable")
         cursors = pending
     result.update({repo: RepositoryInventoryUnavailable("repository pagination exceeded bound") for repo in cursors})
@@ -733,6 +805,7 @@ DISCUSSION_REACTIONS = """reactions(first:10, orderBy:{field:CREATED_AT,directio
 DISCUSSION_COMMENT_FIELDS = f"""__typename id databaseId body createdAt updatedAt url author {{ __typename login }}
  ... on Comment {{ lastEditedAt editor {{ login }} }}
  ... on Reactable {{ {DISCUSSION_REACTIONS} }}"""
+DISCUSSION_ISSUE_COMMENT_FIELDS = DISCUSSION_COMMENT_FIELDS + " issue { databaseId }"
 DISCUSSION_INLINE_FIELDS = DISCUSSION_COMMENT_FIELDS + " replyTo { databaseId }"
 DISCUSSION_REVIEW_FIELDS = DISCUSSION_COMMENT_FIELDS + " submittedAt " + (
     "comments(first:10) { totalCount nodes { " + DISCUSSION_INLINE_FIELDS + " } pageInfo { hasNextPage endCursor } }"
@@ -795,7 +868,7 @@ def discussion_comment(node: dict[str, Any], repo: str, number: int) -> dict[str
 
 def read_discussion(reader: GitHubReader, repo: str, number: int, *, issue_id: int | None = None) -> dict[str, Any]:
     owner, name = repo.split("/")
-    fields = DISCUSSION_COMMENT_FIELDS + " number title state closedAt " + discussion_connection("comments", DISCUSSION_COMMENT_FIELDS)
+    fields = DISCUSSION_COMMENT_FIELDS + " number title state closedAt " + discussion_connection("comments", DISCUSSION_ISSUE_COMMENT_FIELDS)
     review_fields = discussion_connection("reviews", DISCUSSION_REVIEW_FIELDS)
     document = (
         "query($owner:String!,$name:String!,$number:Int!) { repository(owner:$owner,name:$name) { "
@@ -807,16 +880,27 @@ def read_discussion(reader: GitHubReader, repo: str, number: int, *, issue_id: i
     thread = repository_node.get("issueOrPullRequest") if isinstance(repository_node, dict) else None
     if not isinstance(thread, dict) or thread.get("__typename") not in {"Issue", "PullRequest"}:
         raise GitHubReadShapeError(f"GitHub did not expose {repo}#{number}")
+    comments = discussion_nodes(reader, thread, "comments", DISCUSSION_ISSUE_COMMENT_FIELDS)
     resolved_id = thread.get("databaseId")
     if thread["__typename"] == "PullRequest":
-        resolved_id = issue_id if issue_id is not None else reader.get_json(
+        identities = {
+            value
+            for node in comments
+            if isinstance(source := node.get("issue"), dict)
+            if type(value := source.get("databaseId")) is int and value > 0
+        }
+        if len(identities) > 1 or issue_id is not None and identities and issue_id not in identities:
+            raise GitHubReadShapeError("PR backing issue identity changed")
+        resolved_id = issue_id if issue_id is not None else next(iter(identities), None)
+        if resolved_id is None:
+            resolved_id = reader.get_json(
             f"/repos/{repo}/issues/{number}", step="discussion_issue_identity"
-        )["id"]
+            )["id"]
     result: dict[str, Any] = {
         **discussion_comment({**thread, "databaseId": resolved_id}, repo, number), "number": thread["number"], "title": thread["title"],
         "state": "closed" if thread["state"] in {"CLOSED", "MERGED"} else "open",
         "closed_at": thread["closedAt"],
-        "comments": [discussion_comment(node, repo, number) for node in discussion_nodes(reader, thread, "comments", DISCUSSION_COMMENT_FIELDS)],
+        "comments": [discussion_comment(node, repo, number) for node in comments],
         "reviews": [], "review_comments": [],
     }
     if thread["__typename"] == "PullRequest":

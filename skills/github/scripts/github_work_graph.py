@@ -19,9 +19,10 @@ import github_next_reads
 import github_plan_graph
 import github_read
 import github_repository_scope
-from github_plan_graph import rest_author as graphql_author
-from github_plan_graph import rest_comment as graphql_comment
-from github_plan_graph import rest_related_issue as graphql_relationship
+
+graphql_author = github_plan_graph.rest_author
+graphql_comment = github_plan_graph.rest_comment
+graphql_relationship = github_plan_graph.rest_related_issue
 
 CHILD_LIMIT = 50
 TRACK_COMMENTS = 100
@@ -403,7 +404,8 @@ def read_live_breakage_batch(
                     raise github_read.GitHubReadShapeError("Live-breakage inventory changed during pagination")
                 totals[name] = total
                 for node in nodes:
-                    row = github_plan_graph.rest_related_issue(node)
+                    row = compact_relationship_issue(github_plan_graph.rest_related_issue(node), "live-breakage")
+                    row["html_url"] = row.pop("url")
                     number = row["number"]
                     if (
                         type(number) is not int
@@ -512,6 +514,7 @@ def complete_issue_pages(row: dict[str, Any]) -> dict[str, list[dict[str, Any]]]
         field: values
         for field, values in row.get("_graph_relationships", {}).items()
         if field not in row.get("_graph_truncated", [])
+        and all(value.get("state") != "closed" or github_plan_graph.closed_relationship_metadata_complete(value) for value in values)
     }
     if row.get("_graph_comments_complete"):
         collections["comments"] = row["_graph_comments"]
@@ -824,15 +827,30 @@ def cached_reads(
     return read
 
 
-def ownership_inventory(read: Callable[..., Any], repo: str, *, limit: int | None) -> dict[str, Any]:
-    _, pulls = read(
-        f"/repos/{repo}/pulls",
-        query={"state": "open", "sort": "created", "direction": "asc"},
-        bucket="rest_core",
-        step_prefix="next_queue_pulls",
-        limit=limit + 1 if limit is not None else None,
-    )
-    _, branches = read(f"/repos/{repo}/branches", query={}, bucket="rest_core", step_prefix="next_queue_branches", limit=limit + 1 if limit is not None else None)
+def ownership_inventory(
+    read: Callable[..., Any],
+    repo: str,
+    *,
+    limit: int | None,
+    reader: github_read.GitHubReader | None = None,
+    pulls: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    bound = limit + 1 if limit is not None else None
+    if pulls is None:
+        if reader is not None:
+            pulls = github_plan_graph.repository_records(reader, repo, kind="pullRequest", direction="asc", limit=bound)
+        else:
+            _, pulls = read(
+                f"/repos/{repo}/pulls",
+                query={"state": "open", "sort": "created", "direction": "asc"},
+                bucket="rest_core",
+                step_prefix="next_queue_pulls",
+                limit=bound,
+            )
+    if reader is not None:
+        branches = github_plan_graph.repository_names(reader, repo, "branches", limit=bound)
+    else:
+        _, branches = read(f"/repos/{repo}/branches", query={}, bucket="rest_core", step_prefix="next_queue_branches", limit=bound)
     complete = limit is None or (len(pulls) <= limit and len(branches) <= limit)
     return {
         "pulls": pulls[:limit],

@@ -16,7 +16,7 @@ import github_plan_claim as claim
 import github_plan_wait as wait
 import ready_handoff
 from github_next_reads import NextReads, ReadDeadline
-from test_gh_plan_dependabot import discover, load_module, pull
+from test_gh_plan_dependabot import NOW, discover, load_module, pull
 from test_github_next_queue import evidence, item
 
 HEAD = "a" * 40
@@ -163,8 +163,17 @@ def test_acceptance_reads_preserve_deadline_coverage_and_bound_the_child() -> No
                 queued = github_next_queue.classify(row, observed, trusted={"owner", "bot"},
                                                    acceptance_reader=module.next_pr_acceptance)
                 assert queued["state"] == "review"
-                with patch.multiple(module, wait_authors=lambda *_: {"owner", "bot"}):
-                    result, _ = discover(module, [{**observed["pulls"][0], "_graph_comments": comments}])
+                with patch.multiple(
+                    module, wait_authors=lambda *_: {"owner", "bot"},
+                    read_next_train_enrollment=Mock(return_value={"status": "enrolled", "targets": [{"baseBranch": "main"}]}),
+                ):
+                    result = module.next_dependabot_work(
+                        [{"repo": row["repo"]}], scan_limit=50, limit=10, now=NOW,
+                        pull_inventory={row["repo"]: [{
+                            **observed["pulls"][0], "_graph_comments": comments,
+                            "pull_request": {"url": observed["pulls"][0]["html_url"]},
+                        }]},
+                    )
                 assert not result["pr_followthrough_context"]["complete"]
                 assert sum(reads.budget_stops.values()) == 1
                 assert reads.reused

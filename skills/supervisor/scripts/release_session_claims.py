@@ -436,11 +436,9 @@ def read_status_batch(reader: GitHubReader, repos: list[str], since: str) -> dic
     )
     for status_rows in statuses.values():
         if isinstance(status_rows, GitHubReadError):
-            failure = status_rows.result.failure
-            cause = failure.cause if failure else None
-            if cause == "deadline_exceeded" and status_rows.result.retry_summary is not None:
-                cause = status_rows.result.retry_summary.wait_cause
-            if cause not in {"network_provider_failure", "graphql_primary_rate_limited"}:
+            if status_rows.result.failure and status_rows.result.failure.cause in {"not_found", "permission_denied"}:
+                continue
+            if not status_rows.rest_recovery_allowed:
                 raise status_rows
     return statuses
 

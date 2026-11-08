@@ -11,6 +11,7 @@ from typing import Any
 from unittest.mock import Mock, patch
 
 import test_gh_plan_next as cli
+import github_api
 from test_github_work_graph import connection, node, replay, unavailable
 
 
@@ -67,15 +68,21 @@ def run_native_graph(
     with cli.global_fixture(roots, nodes, edges, discovered=discovered) as (module, result, _individual_reads):
         collect = module.collect_paged_rest_items
         fallback_relationships = module.read_next_issue_relationships
-        reader = object.__new__(module.PlanningGraphReader)
-        reader.request_actor = reader.actor = "automation-gh"
-        reader.expected_actor = "automation-gh"
-        reader.deadline_at = None
-        reader.results = []
+        reader = module.PlanningGraphReader(gh_cmd="fake-gh", actor="automation-gh", expected_actor="automation-gh")
 
         def transport(self: Any, query: str, variables: dict[str, Any], **kwargs: Any) -> Any:
             clock["now"] += 1
-            response = replayed.graphql_json(query, variables, **kwargs)
+            if "refs(" in query or "pullRequests(" in query:
+                field = "refs" if "refs(" in query else "pullRequests"
+                repositories = re.findall(r'(\w+)\s*:\s*repository\(owner:"([^"]+)",name:"([^"]+)"\)', query)
+                endpoint = "branches" if field == "refs" else "pulls"
+                ownership.extend(f"/repos/{owner}/{name}/{endpoint}" for _, owner, name in repositories)
+                response = github_api.ApiResult(ok=True, status=200, body={"data": {
+                    alias: {"nameWithOwner": f"{owner}/{name}", field: connection([])}
+                    for alias, owner, name in repositories
+                }})
+            else:
+                response = replayed.graphql_json(query, variables, **kwargs)
             self.results.append(response)
             return response
 
@@ -201,8 +208,6 @@ class GlobalWorkGraphTests(unittest.TestCase):
         with cli.global_fixture(roots, [leaf, incident], edges, discovered=[incident]) as (module, result, _reads):
             relationship_reads = module.read_next_issue_relationships
             observed = []
-            get_issue = Mock(wraps=module.get_issue)
-            module.get_issue = get_issue
 
             def read(repo: str, number: int, *args: Any, **kwargs: Any) -> Any:
                 observed.append(number)
@@ -212,9 +217,8 @@ class GlobalWorkGraphTests(unittest.TestCase):
             reference = {key: incident[key] for key in ("repo", "number", "title", "html_url", "state")}
             module.next_live_breakage = lambda *_args: ([reference], {"complete": True})
             module.cmd_next(cli.next_args())
-            get_issue.assert_any_call(str(incident["number"]), incident["repo"])
-            self.assertLess(observed.index(incident["number"]), observed.index(roots[0]["number"]))
             self.assertEqual(result["candidates"][0]["number"], incident["number"])
+            self.assertLess(observed.index(incident["number"]), observed.index(roots[0]["number"]))
 
     def test_success_recommendation_reflects_read_coverage_and_preserves_specific_transport_guidance(self) -> None:
         roots = [cli.track("someone/direction", 1, "First"), cli.track("someone/direction", 2, "Second")]
