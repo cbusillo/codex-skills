@@ -6,6 +6,7 @@ from .discussion import unquoted_lines
 from .waits import agent_step
 
 SUPERVISOR_ROLES = ("milestone", "tooling", "cleanup")
+SUPERVISOR_ACTORS = frozenset({"agent:supervisor", *(f"agent:supervisor-{role}" for role in SUPERVISOR_ROLES)})
 
 
 def validate(actor: str) -> str:

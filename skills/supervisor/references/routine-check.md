@@ -15,8 +15,8 @@ table's instructions. No running-seat inventory is kept or read.
 
 | Seat | First read | Lane rule | Row kinds it takes |
 | --- | --- | --- | --- |
-| milestone | Current milestone blockers at source in DIRECTION order | Never fixes tools or closes records | Milestone work, lead coordination and its Director questions |
-| tooling | Stop log, then digest | Never redirects a milestone lead or edits a milestone issue status | Tool defects, refusals, Renovate, train, catalog verification and its Director questions |
+| milestone | Current milestone blockers at source in DIRECTION order | Never fixes tools or closes records | Milestone work, lead coordination, Client waits and its Director questions |
+| tooling | Current tool stops on the queue, then digest | Never redirects a milestone lead or edits a milestone issue status | Tool defects, refusals, Renovate, train, catalog verification, our helpers and services, and its Director questions |
 | cleanup | Stale, ask-link, closed-dependency, finished-session and watcher rows, then issue trial | Never launches product work; fits none: cleanup sorts it | Record reconciliation, finished sessions, watcher recovery and its Director questions |
 
 Address a seat with `Next actor: agent:supervisor-milestone`,
@@ -139,8 +139,8 @@ within the held roles; with no role they all apply.
    five-hour windows both have quota left, by name with `--account`, and note
    the sessions still running on the empty one. A refused preview or `null`
    value means the signal is unavailable; say so and continue. Refill
-   available capacity and take the table's rows, oldest `SUPERVISOR_ACTION`
-   first, including deferred-question conditions and unasked Director waits.
+   available capacity, handle `STALE` rows and deferred-question conditions,
+   and act on the oldest `SUPERVISOR_ACTION` rows and unasked Director waits.
    A `PRODUCTION_READ_REFUSED` row follows its handoff in
    [task scope](../../references/execution-scope.md).
    A `SUPERVISOR_ACTION` repeats as an error after one interval until its issue

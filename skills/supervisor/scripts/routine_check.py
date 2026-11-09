@@ -21,7 +21,7 @@ import compact_check
 import foreign_watch
 import github_access
 import oq
-from github_plan_status.next_actor import SUPERVISOR_ROLES
+from github_plan_status.next_actor import SUPERVISOR_ACTORS, SUPERVISOR_ROLES
 from question_delivery import run_queue, source_item
 
 if TYPE_CHECKING:
@@ -74,15 +74,19 @@ def recorded_time(value: Any) -> datetime | None:
 
 def supervisor_actors() -> set[str]:
     native = (os.environ.get(name) for name in ("CODEX_SESSION_ID", "CLAUDE_CODE_SESSION_ID"))
-    return {"agent:supervisor", *(f"agent:supervisor-{role}" for role in SUPERVISOR_ROLES),
-            *(f"agent:{value}".casefold() for value in native if value)}
+    return {*SUPERVISOR_ACTORS, *(f"agent:{value}".casefold() for value in native if value)}
 
 
 def role_prompt(roles: tuple[str, ...]) -> list[str]:
     table = Path(__file__).resolve().parents[1] / "references/routine-check.md"
-    rows = [tuple(cell.strip() for cell in line.strip("|").split("|")) for line in table.read_text().splitlines() if line.startswith("|")]
-    return [f"SEAT {role}: First read: {first}. Lane: {lane}. Takes: {kinds}."
-            for role, first, lane, kinds in rows if role in roles]
+    prompts = []
+    for line in table.read_text().splitlines():
+        row = [cell.strip() for cell in line.strip("|").split("|")]
+        if len(row) != 4 or row[0] not in roles:
+            continue
+        role, first, lane, kinds = row
+        prompts.append(f"SEAT {role}: First read: {first}. Lane: {lane}. Takes: {kinds}.")
+    return prompts
 
 
 def seat_note(row: dict, roles: tuple[str, ...], now: datetime) -> str | None:
