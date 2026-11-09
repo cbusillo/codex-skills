@@ -293,13 +293,22 @@ inside the existing queued `prepare` callback to apply the
 [input-copy permissions](#local-heavy-runs). Use a fresh staging tree inside a
 private enclosing directory, never a host original or retained lower.
 
-Cleanup stops/removes containers, verifies lower content and filesystem
-identity, removes the labeled overlay volumes before their backing volumes,
+Cleanup stops/removes containers, verifies the lower's paths, modes, ownership
+and bytes, removes the labeled overlay volumes before their backing volumes,
 then removes the owned network. Recovery performs the same checks. A remaining
 volume, failed unmount or changed lower retains cleanup custody and prevents a
 successor. Writable file-store state is not exported into evidence automatically.
 Normal outputs remain explicit. Omit `overlay` for the existing independent
 copy behavior when a run needs its own base.
+
+A volume labeled before the digest became content-only recorded device and
+inode numbers, which change across a host remount and were never saved
+anywhere else, so its label cannot be recomputed. Cleanup clears such a volume
+only when the `complete.json` beside its `inputs/N` lower lists exactly the
+lower's files with matching hashes, and every entry is owned by the receiver,
+has the plain staged mode (0666 files, 0777 directories) and sits under a
+recorded file's directory. Anything else retains custody. That inventory cannot
+show an originally executable file later reset to 0666.
 
 A private executor may resolve a copy's `retained_from` to an existing original
 input under its own custody and frozen-transfer verification. It must preserve
