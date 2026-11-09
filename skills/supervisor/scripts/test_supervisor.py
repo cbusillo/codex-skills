@@ -2372,6 +2372,19 @@ def launch_terminal_fixture() -> tuple[SimpleNamespace, SimpleNamespace, SimpleN
     return terminal, window, app
 
 
+def launch_case(root: Path, *commands: str, provider: str | None = "anthropic", **options: Any) -> tuple[Any, ...]:
+    names = ("launch.txt",) if len(commands) == 1 else ("first.txt", "second.txt")
+    files = [root / name for name in names]
+    for path, command in zip(files, commands, strict=True):
+        path.write_text(command)
+    return account_launch_args(files[0] if len(files) == 1 else files, provider, **options), *launch_terminal_fixture()
+
+
+def assert_untouched(*effects: Mock) -> None:
+    for effect in effects:
+        effect.assert_not_called()
+
+
 def git_fixture(*args: str) -> None:
     subprocess.run(["git", *args], capture_output=True, check=True)
 
@@ -2505,9 +2518,7 @@ class CodexProjectTests(unittest.TestCase):
               patch.object(account_choice, "record_launch") as receipt,
               self.assertRaises(ValueError)):
             iterm_tab.prepare_launches(args)
-        daemon.assert_not_called()
-        prepare.assert_not_called()
-        receipt.assert_not_called()
+        assert_untouched(daemon, prepare, receipt)
 
     def test_prepared_command_preserves_explicit_directory_and_brief(self) -> None:
         with tempfile.TemporaryDirectory(dir="/tmp") as folder:
@@ -3094,12 +3105,10 @@ class TerminalTests(unittest.TestCase):
                                    'parser.add_argument("--dangerously-skip-permissions", action="store_true", required=True)\n'
                                    'parser.add_argument("--prompt-interactive", required=True)\n'
                                    'print(parser.parse_args().prompt_interactive, end="")\n')
-        launch = self.root / "launch.txt"
-        launch.write_text("cd / && exec " + shlex.quote(str(child)))
-        args = account_launch_args(launch, "google", account_config=config_path)
+        args, terminal, _window, app = launch_case(self.root, "cd / && exec " + shlex.quote(str(child)),
+                                                   provider="google", account_config=config_path)
         brief = "--Google brief\nKeep $(touch injected) literal.\n" + BRIEF
         args.brief_file[0].write_text(brief)
-        terminal, _window, app = launch_terminal_fixture()
         with (patch.object(account_choice, "read_snapshot", return_value=(google_snapshot(), None)),
               patch.object(iterm_tab.claude_trust, "plan", return_value=[]),
               patch.object(account_choice, "receipt_route", return_value={"storage_root": self.root})):
@@ -3116,20 +3125,15 @@ class TerminalTests(unittest.TestCase):
 
     def test_google_wrong_harness_or_home_override_refuses_before_tabs_and_receipts(self) -> None:
         choice = account_choice.choose("google", accounts_config(GOOGLE_TOML), google_snapshot(), None)
-        launch = self.root / "launch.txt"
-        _terminal, window, app = launch_terminal_fixture()
         for command in ("codex", "claude", "HOME=/alt agy", "cd / && env HOME=/alt exec agy", "CODEX_HOME=/alt agy"):
-            launch.write_text(command)
-            args = account_launch_args(launch, "google")
+            args, _terminal, window, app = launch_case(self.root, command, provider="google")
             with (self.subTest(command=command),
                   patch.object(account_choice, "select", return_value=choice),
                   patch.object(account_choice, "prepare_launch") as prepare,
                   patch.object(account_choice, "record_launch") as receipt,
                   self.assertRaises(ValueError)):
                 asyncio.run(iterm_tab.operate(app, args))
-            prepare.assert_not_called()
-            receipt.assert_not_called()
-            window.async_create_tab.assert_not_called()
+            assert_untouched(prepare, receipt, window.async_create_tab)
 
     def test_brief_cannot_be_discarded_by_a_comment_or_shell_wrapper(self) -> None:
         for command in ("codex --remote unix:// # launch", "bash -c 'codex'",
@@ -3149,13 +3153,10 @@ class TerminalTests(unittest.TestCase):
                                    'args = sys.argv[1:]\n'
                                    'prompt = args[args.index("--") + 1:]\n'
                                    'print(len(prompt))\nprint(prompt[0])\n')
-        launch = self.root / "launch.txt"
-        launch.write_text("cd / && exec " + shlex.quote(str(child)))
         brief = self.root / "brief.txt"
         content = "--Don't substitute $(touch injected) or `touch injected`\n\tFollow the issue.\n" + BRIEF
         brief.write_text(content)
-        args = account_launch_args(launch, brief_file=[brief])
-        terminal, _window, app = launch_terminal_fixture()
+        args, terminal, _window, app = launch_case(self.root, "cd / && exec " + shlex.quote(str(child)), brief_file=[brief])
         with (patch.object(account_choice, "select", return_value={"provider": "anthropic", "env": {}}),
               patch.object(account_choice, "prepare_launch"),
               patch.object(account_choice, "record_launch")):
@@ -3167,21 +3168,15 @@ class TerminalTests(unittest.TestCase):
         self.assertFalse((self.root / "injected").exists())
 
     def test_invalid_batch_brief_refuses_every_launch(self) -> None:
-        files = [self.root / "first.txt", self.root / "second.txt"]
-        for path in files:
-            path.write_text("codex --remote unix://")
-        args = account_launch_args(files)
+        args, _, window, app = launch_case(self.root, "codex --remote unix://", "codex --remote unix://")
         args.brief_file[1].write_text("")
-        _, window, app = launch_terminal_fixture()
         with (patch.object(account_choice, "select_batch") as select,
               patch.object(account_choice, "record_launch") as receipt):
             for briefs in (args.brief_file, args.brief_file[:1], None):
                 args.brief_file = briefs
                 with self.subTest(briefs=briefs), self.assertRaises(ValueError):
                     asyncio.run(iterm_tab.operate(app, args))
-                select.assert_not_called()
-                receipt.assert_not_called()
-                window.async_create_tab.assert_not_awaited()
+                assert_untouched(select, receipt, window.async_create_tab)
 
     def test_missing_or_empty_brief_refuses_before_launch_side_effects(self) -> None:
         launch = self.root / "launch.txt"
@@ -3211,12 +3206,7 @@ class TerminalTests(unittest.TestCase):
                     brief.write_text(content)
                 with self.subTest(content=content), self.assertRaises((ValueError, OSError)):
                     asyncio.run(iterm_tab.operate(app, args))
-                select.assert_not_called()
-                prepare.assert_not_called()
-                receipt.assert_not_called()
-                daemon.assert_not_called()
-                window.async_create_tab.assert_not_awaited()
-                terminal.async_send_text.assert_not_awaited()
+                assert_untouched(select, prepare, receipt, daemon, window.async_create_tab, terminal.async_send_text)
 
     def test_brief_links_or_includes_the_current_rules(self) -> None:
         rules = iterm_tab.brief_rules_block()
@@ -3235,11 +3225,8 @@ class TerminalTests(unittest.TestCase):
             endpoint.parent.mkdir(parents=True)
             choice = {"provider": "openai", "name": "selected", "source": "context-panel",
                       "reason": "use next", "env": {"CODEX_HOME": str(home)}}
-            launch = root / "launch.txt"
             write_codex_project_fixture(root, home)
-            launch.write_text("codex --remote unix:// -C " + shlex.quote(str(root)))
-            terminal, window, app = launch_terminal_fixture()
-            args = account_launch_args(launch, "openai")
+            args, terminal, window, app = launch_case(root, "codex --remote unix:// -C " + shlex.quote(str(root)), provider="openai")
             with (patch.dict(os.environ, {"CODEX_HOME": str(root / "inherited")}),
                   patch.object(account_choice, "select", return_value=choice),
                   patch.object(account_choice, "prepare_launch") as prepare,
@@ -3269,10 +3256,7 @@ class TerminalTests(unittest.TestCase):
                     self.assertIn(str(home), reason)
                     recovery = reason.split("run ", 1)[1].split(", then retry", 1)[0]
                     self.assertEqual(shlex.split(recovery), [f"CODEX_HOME={home}", "codex", "app-server", "daemon", "start"])
-                    window.async_create_tab.assert_not_awaited()
-                    terminal.async_send_text.assert_not_awaited()
-                    receipt.assert_not_called()
-                    prepare.assert_not_called()
+                    assert_untouched(window.async_create_tab, terminal.async_send_text, receipt, prepare)
 
     def test_codex_batch_checks_all_homes_before_first_launch(self) -> None:
         with tempfile.TemporaryDirectory(dir="/tmp") as folder:
@@ -3281,13 +3265,10 @@ class TerminalTests(unittest.TestCase):
             endpoint = home / "app-server-control/app-server-control.sock"
             endpoint.parent.mkdir(parents=True)
             choices = [{"provider": "openai", "env": {"CODEX_HOME": str(h)}} for h in (home, root / "down")]
-            files = [root / "first.txt", root / "second.txt"]
             for choice in choices:
                 write_codex_project_fixture(root, Path(choice["env"]["CODEX_HOME"]))
-            for path in files:
-                path.write_text("codex --remote unix:// -C " + shlex.quote(str(root)))
-            _, window, app = launch_terminal_fixture()
-            args = account_launch_args(files, "openai")
+            command = "codex --remote unix:// -C " + shlex.quote(str(root))
+            args, _, window, app = launch_case(root, command, command, provider="openai")
             with (socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as daemon,
                   patch.object(account_choice, "select_batch", return_value=choices),
                   patch.object(account_choice, "prepare_launch") as prepare,
@@ -3297,9 +3278,7 @@ class TerminalTests(unittest.TestCase):
                 daemon.listen()
                 with self.assertRaisesRegex(ValueError, str(root / "down")):
                     asyncio.run(iterm_tab.operate(app, args))
-                window.async_create_tab.assert_not_awaited()
-                prepare.assert_not_called()
-                receipt.assert_not_called()
+                assert_untouched(window.async_create_tab, prepare, receipt)
                 self.assertEqual([call.kwargs["env"]["CODEX_HOME"] for call in start.call_args_list],
                                  [choice["env"]["CODEX_HOME"] for choice in choices])
 
@@ -3342,12 +3321,9 @@ class TerminalTests(unittest.TestCase):
             (FileNotFoundError("codex unavailable"), "FileNotFoundError"),
             (subprocess.TimeoutExpired("codex", 30), "TimeoutExpired"),
         ]
-        launch = self.root / "launch.txt"
         choice = {"provider": "openai", "env": {"CODEX_HOME": str(self.root / "selected")}}
         write_codex_project_fixture(self.root, Path(choice["env"]["CODEX_HOME"]))
-        launch.write_text("codex --remote unix:// -C " + shlex.quote(str(self.root)))
-        _, window, app = launch_terminal_fixture()
-        args = account_launch_args(launch, "openai")
+        args, _, window, app = launch_case(self.root, "codex --remote unix:// -C " + shlex.quote(str(self.root)), provider="openai")
         for failure, reason in failures:
             probe = Mock()
             with (self.subTest(reason=reason),
@@ -3365,16 +3341,12 @@ class TerminalTests(unittest.TestCase):
                         runner.run(iterm_tab.operate(app, args))
                 self.assertIn(choice["env"]["CODEX_HOME"], str(refused.exception))
                 self.assertGreater(start.call_args.kwargs["timeout"], 0)
-                probe.assert_not_called()
-                window.async_create_tab.assert_not_awaited()
-                prepare.assert_not_called()
-                receipt.assert_not_called()
+                assert_untouched(probe, window.async_create_tab, prepare, receipt)
 
     def test_claude_preflight_never_starts_codex(self) -> None:
         with patch.object(iterm_tab.subprocess, "run") as start, patch.object(iterm_tab.socket, "socket") as probe:
             self.assertIsNone(iterm_tab.check_codex_daemon({"provider": "anthropic", "env": {}}))
-        start.assert_not_called()
-        probe.assert_not_called()
+        assert_untouched(start, probe)
 
     def test_default_claude_launch_clears_inherited_profile_after_cd(self) -> None:
         config = accounts_config(ACCOUNTS_TOML.replace('env = { CLAUDE_CONFIG_DIR = "~/claude-main" }', 'env = {}'))
@@ -3418,9 +3390,7 @@ class TerminalTests(unittest.TestCase):
         terminal.async_send_text.assert_not_awaited()
 
     def test_launch_explicit_window_without_moving_focus(self) -> None:
-        command = self.root / "launch.txt"
-        command.write_text("codex\n")
-        args = account_launch_args(command, None)
+        args, *_ = launch_case(self.root, "codex\n", provider=None)
         for sid, late in (("new", False), ("late", True)):
             terminal = SimpleNamespace(session_id=sid, async_send_text=AsyncMock())
             created = SimpleNamespace(tab_id="newtab", current_session=None if late else terminal)
@@ -3439,8 +3409,7 @@ class TerminalTests(unittest.TestCase):
             if late:
                 self.assertTrue(all(call.args == ("newtab",) for call in app.get_tab_by_id.call_args_list))
             window.async_create_tab.assert_awaited_once_with(select=False)
-            previous.async_select.assert_not_awaited()
-            previous.async_send_text.assert_not_awaited()
+            assert_untouched(previous.async_select, previous.async_send_text)
             self.assertEqual(terminal.async_send_text.await_count, 2)
             self.assertEqual(terminal.async_send_text.await_args_list[-1].args, ("\r",))
 
@@ -3467,17 +3436,13 @@ class TerminalTests(unittest.TestCase):
         async def short_wait(target_app: Any, target_tab: Any) -> Any:
             return await wait(target_app, target_tab, timeout=0.01)
 
-        command = self.root / "launch.txt"
-        command.write_text("codex\n")
-        args = account_launch_args(command, None)
+        args, *_ = launch_case(self.root, "codex\n", provider=None)
         with (patch.object(iterm_tab, "wait_for_session", side_effect=short_wait),
               patch.object(iterm_tab, "send", new_callable=AsyncMock) as send,
               self.assertRaisesRegex(ValueError, "newtab.*no session after")):
             asyncio.run(iterm_tab.operate(app, args))
-        send.assert_not_awaited()
         window.async_create_tab.assert_awaited_once_with(select=False)
-        previous.async_select.assert_not_awaited()
-        previous.async_send_text.assert_not_awaited()
+        assert_untouched(send, previous.async_select, previous.async_send_text)
         terminal = SimpleNamespace(async_send_text=AsyncMock())
         closed_app = SimpleNamespace(
             async_refresh=AsyncMock(),
@@ -3506,21 +3471,18 @@ class TerminalTests(unittest.TestCase):
         self.assertEqual(launched.stdout.splitlines(), [choice["env"]["CODEX_HOME"], *settings])
 
     def test_launch_on_chosen_account_prefixes_env_only(self) -> None:
-        terminal, window, app = launch_terminal_fixture()
         choice = account_choice.decision(accounts_config()["accounts"][1], "context-panel", "resets soonest")
-        command = self.root / "launch.txt"
         child = fixture_executable(self.root / "claude", f'#!{sys.executable}\nimport os, sys\n'
                                    'args = sys.argv[1:]\n'
                                    'print(os.getenv("CLAUDE_CONFIG_DIR"))\n'
                                    'print(os.getenv("CLAUDE_ACCOUNT_MOVE_ENABLED"))\n'
                                    'print(args[args.index("--") + 1])\n')
-        command.write_text("cd / && " + shlex.quote(str(child)) + "\n")
-        args = account_launch_args(command)
+        args, terminal, window, app = launch_case(self.root, "cd / && " + shlex.quote(str(child)) + "\n")
         with (patch.object(account_choice, "select", return_value=choice),
               patch.object(account_choice, "record_launch") as receipt,
               patch.object(account_choice, "prepare_launch")):
             result = asyncio.run(iterm_tab.operate(app, args))
-            command.write_text("env CLAUDE_CONFIG_DIR=/other claude\n")
+            args.command_file.write_text("env CLAUDE_CONFIG_DIR=/other claude\n")
             with self.assertRaisesRegex(ValueError, "already sets"):
                 asyncio.run(iterm_tab.operate(app, args))
         sent = terminal.async_send_text.await_args_list[0].args[0].removeprefix("\x1b[200~").removesuffix("\x1b[201~")
@@ -3532,9 +3494,7 @@ class TerminalTests(unittest.TestCase):
         self.assertNotIn("env", result["account"])
 
     def test_batch_creates_one_count_only_receipt_before_each_command(self) -> None:
-        files = [self.root / "first.txt", self.root / "second.txt"]
-        for index, path in enumerate(files):
-            path.write_text(f"claude brief-{index}")
+        args, *_ = launch_case(self.root, "claude brief-0", "claude brief-1")
         snapshot = AccountChoiceTests.snapshot()
         config = accounts_config()
         config["snapshot_command"] = ["reader", "--storage-root", str(self.root)]
@@ -3547,7 +3507,6 @@ class TerminalTests(unittest.TestCase):
         tabs = [SimpleNamespace(tab_id=f"tab-{i}", current_session=t) for i, t in enumerate(terminals)]
         window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock(side_effect=tabs))
         app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
-        args = account_launch_args(files)
         with patch.object(account_choice, "load_config", return_value=config), patch.object(account_choice, "read_snapshot", return_value=(snapshot, None)):
             results = asyncio.run(iterm_tab.operate(app, args))
         self.assertEqual([r["account"]["name"] for r in results], ["spare", "main"])
@@ -3565,9 +3524,7 @@ class TerminalTests(unittest.TestCase):
             iterm_tab.main()
         self.assertEqual(failed.exception.code, 2)
         fake.run_until_complete.assert_not_called()
-        path = self.root / "launch.txt"
-        _, window, app = launch_terminal_fixture()
-        args = account_launch_args(path, None)
+        args, _, window, app = launch_case(self.root, "", provider=None)
         for command, pattern in (
             ("env CODEX_HOME=/manual codex brief", "account settings need --account-provider"),
             ("export CLAUDE_CONFIG_DIR=/manual && claude brief", "account settings need --account-provider"),
@@ -3576,7 +3533,7 @@ class TerminalTests(unittest.TestCase):
             ("codex --remote unix://\x1b", ""),
             ("codex --remote unix://\t", ""),
         ):
-            path.write_text(command)
+            args.command_file.write_text(command)
             with self.subTest(command=command), self.assertRaisesRegex(ValueError, pattern):
                 asyncio.run(iterm_tab.operate(app, args))
         window.async_create_tab.assert_not_awaited()
@@ -3632,12 +3589,9 @@ class TerminalTests(unittest.TestCase):
         self.assertEqual(result.stdout.splitlines(), [choice["env"]["CLAUDE_CONFIG_DIR"], content])
 
     def test_unwritable_receipt_root_refuses_before_any_tab_and_creates_no_receipt(self) -> None:
-        path = self.root / "launch.txt"
-        path.write_text("claude brief")
         choice = account_choice.choose("anthropic", accounts_config(), AccountChoiceTests.snapshot(), None)
         choice["storage_root"] = self.root / "missing-store"
-        _, window, app = launch_terminal_fixture()
-        args = account_launch_args(path)
+        args, _, window, app = launch_case(self.root, "claude brief")
         with patch.object(account_choice, "select", return_value=choice), self.assertRaises(ValueError) as failed:
             asyncio.run(iterm_tab.operate(app, args))
         window.async_create_tab.assert_not_awaited()
@@ -3660,9 +3614,7 @@ class TerminalTests(unittest.TestCase):
         self.assertNotIn("--record-launch", reasons[errno.EACCES])
 
     def test_partial_batch_failure_preserves_started_and_failed_launch_identities(self) -> None:
-        files = [self.root / "first.txt", self.root / "second.txt"]
-        for path in files:
-            path.write_text("claude brief")
+        args, *_ = launch_case(self.root, "claude brief", "claude brief")
         choices = account_choice.choose_batch("anthropic", accounts_config(), AccountChoiceTests.snapshot(), None, count=2)
         for choice in choices:
             choice["storage_root"] = self.root
@@ -3670,7 +3622,6 @@ class TerminalTests(unittest.TestCase):
         tabs = [SimpleNamespace(tab_id=f"tab-{i}", current_session=t) for i, t in enumerate(terminals)]
         window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock(side_effect=tabs))
         app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
-        args = account_launch_args(files)
         with (patch.object(account_choice, "select_batch", return_value=choices),
               patch.object(account_choice, "record_launch", side_effect=[self.root / "receipt.json", PermissionError("private-root")]),
               self.assertRaises((ValueError, OSError)) as caught):
@@ -3686,12 +3637,9 @@ class TerminalTests(unittest.TestCase):
         terminals[1].async_send_text.assert_not_awaited()
 
     def test_receipt_failure_prevents_command_submission(self) -> None:
-        terminal, window, app = launch_terminal_fixture()
+        args, terminal, window, app = launch_case(self.root, "claude brief")
         choice = account_choice.choose("anthropic", accounts_config(), AccountChoiceTests.snapshot(), None)
         choice["storage_root"] = self.root
-        path = self.root / "launch.txt"
-        path.write_text("claude brief")
-        args = account_launch_args(path)
         with (patch.object(account_choice, "select", return_value=choice),
               patch.object(account_choice, "record_launch", side_effect=OSError("disk full")),
               patch.object(account_choice, "prepare_launch"),
@@ -3708,19 +3656,14 @@ class TerminalTests(unittest.TestCase):
         self.assertNotIn("private RPC payload", json.dumps(failed.exception.detail))
 
     def test_batch_refusal_and_bad_second_command_create_no_tabs_or_receipts(self) -> None:
-        _, window, app = launch_terminal_fixture()
-        files = [self.root / "first.txt", self.root / "second.txt"]
-        files[0].write_text("claude brief")
-        files[1].write_text("env CLAUDE_CONFIG_DIR=/other claude")
-        args = account_launch_args(files)
+        args, _, window, app = launch_case(self.root, "claude brief", "env CLAUDE_CONFIG_DIR=/other claude")
         choices = account_choice.choose_batch("anthropic", accounts_config(), AccountChoiceTests.snapshot(), None, count=2)
         with (patch.object(account_choice, "select_batch", return_value=choices),
               patch.object(account_choice, "record_launch") as receipt,
               patch.object(account_choice, "prepare_launch"),
               self.assertRaisesRegex(ValueError, "already sets")):
             asyncio.run(iterm_tab.operate(app, args))
-        window.async_create_tab.assert_not_awaited()
-        receipt.assert_not_called()
+        assert_untouched(window.async_create_tab, receipt)
         with patch.object(account_choice, "select_batch", side_effect=ValueError("no choice")), self.assertRaises(ValueError):
             asyncio.run(iterm_tab.operate(app, args))
         window.async_create_tab.assert_not_awaited()
