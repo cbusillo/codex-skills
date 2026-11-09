@@ -409,13 +409,13 @@ Split old oversized issues into PR-sized deliverables when working them;
 preserve their original requests under the
 [issue ownership rules](issue-templates.md), rather than rewriting them.
 
-For a Client's or outside reporter's issue awaiting confirmation, request it
-on the issue through the authorized communication path, linking existing
-validation evidence, and record that confirmation as the event wait.
-Keep closing keywords off that issue until
-the reporter/current user confirms the result or explicitly asks to close it;
-a separate completed implementation issue may close on merge. The wait does
-not require creating a separate issue.
+A Client's or outside reporter's issue closes under the
+[Finish Line rule](issue-templates.md#finish-line) once an observable fact shows
+the reported problem is resolved; their reply is not required. Until then, or
+until they ask to close it, keep closing keywords off and record the real wait
+for the missing evidence, person or event. When only the reporter's own system
+can show the result, which a local test does not, ask on the issue through the
+authorized communication path, linking existing validation evidence.
 
 The session responsible for landing reconciles GitHub issue state and planning
 metadata as part of the landing: the Supervisor after an assigned handoff,
