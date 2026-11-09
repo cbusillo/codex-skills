@@ -126,7 +126,8 @@ decisions, statuses or narrative; open linked records for action.
    names another actor, a wait or a claim. A `NO_HANDOFF` row is an open
    non-draft PR whose checks pass by Ready's rule and whose current head has no
    Ready, Client handoff, stated hold or recorded wait. It repeats with its age
-   until one appears; its owner readies it, states the hold or makes it draft.
+   until one appears; the session or lead holding it readies it, states the
+   hold or makes it draft.
    Nudge stalls with exact evidence and process finished
    notices immediately. Polling watchers keep own automation question notices and
    verified own issue-mention activity in the log without exiting for them.
