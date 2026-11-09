@@ -996,12 +996,12 @@ class PrimaryReadTests(unittest.TestCase):
                     self.assertEqual(row["url"] in output, not held or role in held)
                     if not held or role in held:
                         self.assertIn("SUPERVISOR_ACTION " + row["url"], output)
-            for age in (2 * routine_check.ROUTINE_INTERVAL, 2 * routine_check.ROUTINE_INTERVAL + timedelta(seconds=1)):
+            for age in (routine_check.ROUTINE_INTERVAL * 2, routine_check.ROUTINE_INTERVAL * 2 + timedelta(seconds=1)):
                 row["queue"]["status_recorded_at"] = (self.now - age).isoformat()
                 for held in routine_check.SUPERVISOR_ROLES:
                     with self.subTest(role=role, held=held, age=age):
                         output = routine_check.digest({"next": {"needs_status": [row]}}, roles=(held,))
-                        self.assertEqual(row["url"] in output, held == role or age > 2 * routine_check.ROUTINE_INTERVAL)
+                        self.assertEqual(row["url"] in output, held == role or age > routine_check.ROUTINE_INTERVAL * 2)
             row["queue"]["status_recorded_at"] = self.now.isoformat()
             output = routine_check.digest({"next": {"candidates": [row]}}, roles=(role,))
             self.assertNotIn("FALLBACK", output)
@@ -1018,7 +1018,7 @@ class PrimaryReadTests(unittest.TestCase):
                         self.assertIn("FALLBACK", output)
 
     def test_role_prompts_cover_each_seat_and_ignore_unrelated_tables(self) -> None:
-        text = (Path(routine_check.__file__).resolve().parents[1] / "references/routine-check.md").read_text()
+        text = (Path(__file__).resolve().parents[1] / "references/routine-check.md").read_text()
         with patch.object(Path, "read_text", return_value=text + "\n| Other | Table |\n"):
             for role in routine_check.SUPERVISOR_ROLES:
                 self.assertEqual(len(routine_check.role_prompt((role,))), 1)
