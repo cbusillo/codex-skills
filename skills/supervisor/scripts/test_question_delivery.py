@@ -58,6 +58,72 @@ class DeliveryTests(unittest.TestCase):
                 self.comments[-1] = {**withdrawal, **changes}
                 self.assertEqual(self.run_queue(items=[])["queue_length"], len(self.questions))
 
+    def remaining(self, *records: dict) -> set[str]:
+        return {q["url"] for q in delivery.inventory(self.questions, list(records), self.owner, self.authors)["questions"]}
+
+    def record(self, body: str, **changes) -> dict:
+        return {"author": self.authors[0], "body": body, "created_at": self.fixture["observed_at"],
+                "url": "https://github.com/example/direction/issues/1#issuecomment-9001", **changes}
+
+    def test_decision_records_as_the_supervisor_writes_them_settle_only_their_question(self) -> None:
+        target = self.questions[0]
+        number = delivery.question_id(target["body"])
+        others = {q["url"] for q in self.questions[1:]}
+        settled = (f'Director decision {number} (Chris, Supervisor chat, about 1:50 PM ET): "{number} yes done"',
+                   f'Director decision {number} (Chris, Supervisor chat), option "Native": "no Authentik here"',
+                   f'Director decision on {number}, recorded by the Supervisor, about 12:35 PM ET.\n\nChris: "{number} agree"',
+                   f"Director answer to [{number}]({target['url']}), received in the same conversation:\n\n> none of them",
+                   f"**Director decision {number}**: yes")
+        for body in settled:
+            with self.subTest(body=body):
+                self.assertEqual(self.remaining(self.record(body)), others)
+        unsettled = (f"Director decision {number} pending",
+                     f"Director decision on {number} is still pending",
+                     f'Director decision {number} (Chris, Supervisor chat): "not yet"',
+                     f"Director response to {number} (Chris, Supervisor chat): can't we do this another way?",
+                     f"Waiting for Director answer to {number}: the choice of design",
+                     f"> Director decision {number} (Chris, Supervisor chat): yes",
+                     f"Director decision on Q999, recorded by the Supervisor, about noon.\n\nyes")
+        for body in unsettled:
+            with self.subTest(body=body):
+                self.assertIn(target["url"], self.remaining(self.record(body)))
+        with self.subTest(author="outsider"):
+            self.assertIn(target["url"], self.remaining(self.record(settled[0], author="outsider")))
+
+    def test_supervisor_notice_withdraws_only_for_the_asker(self) -> None:
+        target = self.questions[0]
+        number = delivery.question_id(target["body"])
+        others = {q["url"] for q in self.questions[1:]}
+        notice = f"Supervisor: {number} is withdrawn; it is not a Director question."
+        self.assertEqual(self.remaining(self.record(notice, author=target["author"])), others)
+        decisions = delivery.oq.questions([target], self.owner, self.authors, [self.record(notice)], recorded_decisions_only=True)
+        self.assertEqual(decisions[0]["answers"], [])
+        for changes in ({"author": "outsider"}, {"body": f"> {notice}"},
+                        {"body": f"Supervisor: {number} is not withdrawn."}, {"body": "Supervisor: Q999 is withdrawn."}):
+            with self.subTest(changes=changes):
+                self.assertIn(target["url"], self.remaining({**self.record(notice, author=target["author"]), **changes}))
+
+    def test_supervisor_answer_from_the_record_needs_a_cited_recorded_decision(self) -> None:
+        target = self.questions[0]
+        number = delivery.question_id(target["body"])
+        others = {q["url"] for q in self.questions[1:]}
+        source = target["url"].split("#", 1)[0] + "#issuecomment-9000"
+        elsewhere = "https://github.com/example/direction/issues/1#issuecomment-9000"
+        cited = self.record('Director decision (Chris, Supervisor chat): "Retire."', url=source, created_at=target["created_at"])
+        answer = self.record(f"Supervisor answer to {number} from the record, no new Director turn: yes, remove them. "
+                             f"Chris said so at {source}.", author=target["author"])
+        self.assertEqual(self.remaining(cited, answer), others)
+        answers = delivery.oq.questions([target], self.owner, self.authors, [cited, answer], recorded_decisions_only=True)
+        self.assertEqual(answers[0]["answers"], [])
+        for records in ((answer,),
+                        ({**cited, "body": "Worth considering: retire it."}, answer),
+                        ({**cited, "body": "Director decision Q999: pending"}, answer),
+                        ({**cited, "author": "outsider"}, answer),
+                        ({**cited, "url": elsewhere}, {**answer, "body": answer["body"].replace(source, elsewhere)}),
+                        (cited, {**answer, "body": f"Supervisor answer to {number}: yes, remove them. {source}"})):
+            with self.subTest(records=records):
+                self.assertIn(target["url"], self.remaining(*records))
+
     def test_ambiguous_question_number_does_not_hide_either_source(self) -> None:
         target = self.questions[0]
         number = delivery.question_id(target["body"])

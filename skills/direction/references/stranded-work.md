@@ -67,7 +67,10 @@ unknown), next actor and review requirement:
   ordinary mentions, untrusted authors and replies predating the question do
   not settle it.
   The queue also omits a later trusted withdrawal by the original asker using
-  this same form; Supervisor yes/no answers remain digest-only dispositions.
+  this same form or `Supervisor: Q<number> is withdrawn`, and that asker's
+  `Supervisor answer to Q<number> from the record` when the comment cites a
+  recorded Director decision on the question's own thread. Other Supervisor
+  yes/no answers remain digest-only dispositions.
 - Current-head Ready handoffs still open past the age threshold, with or
   without the enqueue label. Since
   [launchplane#3834](https://github.com/cbusillo/launchplane/pull/3834) the

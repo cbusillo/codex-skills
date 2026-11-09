@@ -162,7 +162,7 @@ def inventory(source_comments, queue_comments, owner, decision_authors, now=None
     candidates = {q["url"]: q["answers"] for q in oq.questions(source_comments, owner, decision_authors, answers)}
     source_authors = {c["url"]: (c.get("author") or "") for c in source_comments}
     source_updates = {c["url"]: c.get("updated_at") for c in source_comments}
-    withdrawn = oq.question_records.supervisor_settled_questions([*source_comments, *answers], trusted, withdrawals_only=True)
+    withdrawn = oq.question_records.supervisor_settled_questions([*source_comments, *answers], trusted, asker_only=True)
     for question in found:
         if question["status"] == "answered" or question["url"] in withdrawn:
             continue

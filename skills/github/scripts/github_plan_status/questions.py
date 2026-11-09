@@ -23,13 +23,32 @@ def heading_id(body: str) -> str | None:
 
 QUESTION_PREFIXES = ("Director question:", "Owner question:")
 DECISION_HEADING = re.compile(
-    r"^(?:Director|Owner) decision(?: (?P<number>Q[1-9][0-9]*)\s*:"
-    r"| \((?P<parenthetical_number>Q[1-9][0-9]*)\)\s*:|[:,]| \([^\n)]*\)[:,]|\*\*| (?=https://))"
+    r"^(?:Director|Owner) (?:decision(?: on)?|answer to)"
+    r"(?: \[?(?P<number>Q[1-9][0-9]*)]?(?:\(https://[^)\s]*\))?| \((?P<parenthetical_number>Q[1-9][0-9]*)\))?"
+    r"(?: \([^\n)]*\))?(?:\s*[:,]|\*\*| (?=https://))"
 )
 
 
 def recorded_decision(text: str) -> re.Match[str] | None:
     return DECISION_HEADING.match(text.lstrip().lstrip("*"))
+
+
+def decision_parts(body: str, decision: re.Match[str]) -> tuple[str | None, str]:
+    """A heading's leading Q ID, if any, and the text it records."""
+    content = body.lstrip().lstrip("*")[decision.end():].replace("*", "").strip(" ,:\t\r\n")
+    leading = QUESTION.match(content)
+    content = re.sub(r"^Q[1-9][0-9]*\s*[:=,.—-]?\s*", "", content)
+    return leading[0] if leading else None, re.sub(r"https://\S+", "", content).strip()
+
+
+def deferred(content: str) -> bool:
+    paragraph = re.split(r"\r?\n(?:[ \t]*\r?\n|[ \t]*(?:Question:|<!--))", content, 1)[0]
+    return re.fullmatch(r"(?i)[\"'“”]*(?:later|not now|not yet|waiting|pending)[\"'“”\s.;!—-]*", paragraph) is not None
+
+
+def substantive_decision(body: str) -> bool:
+    decision = recorded_decision(body)
+    return decision is not None and not deferred(decision_parts(body, decision)[1])
 
 
 def questions(comments: list[dict[str, Any]], owner: str, decision_authors: Iterable[str],
@@ -57,14 +76,9 @@ def questions(comments: list[dict[str, Any]], owner: str, decision_authors: Iter
             )
             if recorded_decisions_only and not recorded:
                 continue
-            content = re.sub(r"^(?:Director|Owner) decision(?:\s*\([^)]*\))?[, :*]*", "", text)
-            content = content.replace("*", "").strip()
-            number_match = QUESTION.match(content)
-            decision_number = heading_number or (number_match[0] if number_match else None)
-            content = re.sub(r"^Q[1-9][0-9]*\s*[:=,.—-]?\s*", "", content)
-            content = re.sub(r"https://\S+", "", content).strip()
-            paragraph = re.split(r"\r?\n(?:[ \t]*\r?\n|[ \t]*(?:Question:|<!--))", content, 1)[0]
-            if recorded and re.fullmatch(r"(?i)(?:later|not now|not yet|waiting|pending)[\s.;!—-]*", paragraph):
+            leading_number, content = decision_parts(answer.get("body", ""), decision) if decision else (None, "")
+            decision_number = heading_number or leading_number
+            if recorded and deferred(content):
                 continue
             numbered = (
                 recorded and number is not None and numbers[number] == 1
@@ -89,10 +103,10 @@ def questions(comments: list[dict[str, Any]], owner: str, decision_authors: Iter
 
 
 SUPERVISOR_SETTLEMENT = re.compile(
-    r"^(?:Supervisor answer to (Q[1-9][0-9]*)\b"
+    r"^(?:Supervisor answer to (?P<answered>Q[1-9][0-9]*)\b(?P<from_record> from the record\b[^:\n]*)?"
     r"(?:[ \t]*\([^)\n]*\))?[ \t]*[.:][ \t]*"
     r"(?i:(?:yes|no)(?=[,.:!?]|$)|this is already decided\b)"
-    r"|(Q[1-9][0-9]*) withdrawn by the Supervisor\b)"
+    r"|(?P<notice>Supervisor:[ \t]*)?(?P<withdrawn>Q[1-9][0-9]*)(?(notice) is withdrawn| withdrawn by the Supervisor)\b)"
 )
 
 
@@ -105,28 +119,38 @@ def settlement_time(value: Any) -> datetime | None:
 
 
 def supervisor_settled_questions(comments: list[dict[str, Any]], trusted: set[str], *,
-                                withdrawals_only: bool = False) -> set[str]:
+                                asker_only: bool = False) -> set[str]:
+    """With asker_only, only what the asking identity may close: its withdrawal or its question's cited Director decision."""
     def author(source: dict[str, Any]) -> str:
         return str((source.get("user") or {}).get("login") or source.get("author") or "").casefold()
 
+    decisions = {comment.get("html_url") or comment.get("url") for comment in comments
+                 if author(comment) in trusted and substantive_decision(str(comment.get("body") or ""))}
     settlements: dict[str, list[dict[str, Any]]] = {}
     for comment in comments:
         if author(comment) not in trusted:
             continue
-        heading = str(comment.get("body") or "").strip().partition("\n")[0].replace("*", "")
+        body = str(comment.get("body") or "")
+        heading = body.strip().partition("\n")[0].replace("*", "")
         match = SUPERVISOR_SETTLEMENT.match(heading)
         when = settlement_time(comment.get("created_at"))
-        if match and when and (not withdrawals_only or match[2]):
-            settlements.setdefault(match[1] or match[2], []).append({"when": when, "author": author(comment)})
+        if not match or not when:
+            continue
+        cited_threads = {(link[1], link[2]) for link in COMMENT_URL.finditer(body) if link[0] in decisions}
+        if not asker_only or match["withdrawn"] or match["from_record"]:
+            settlements.setdefault(match["answered"] or match["withdrawn"], []).append(
+                {"when": when, "author": author(comment), "needs_citation": bool(match["from_record"]), "cited_threads": cited_threads})
     sources = {comment.get("html_url") or comment["url"]: comment for comment in comments}
     numbers = Counter(heading_id(str(comment.get("body") or "").strip()) for comment in sources.values())
     settled = set()
     for comment in sources.values():
         question = heading_id(str(comment.get("body") or "").strip())
         asked = settlement_time(comment.get("created_at"))
-        if not question or not asked or (withdrawals_only and numbers[question] != 1):
+        if not question or not asked or (asker_only and numbers[question] != 1):
             continue
-        if any(entry["when"] > asked and (not withdrawals_only or entry["author"] == author(comment))
+        own = COMMENT_URL.fullmatch(comment.get("html_url") or comment["url"])
+        if any(entry["when"] > asked and (not asker_only or entry["author"] == author(comment))
+               and (not entry["needs_citation"] or (own is not None and (own[1], own[2]) in entry["cited_threads"]))
                for entry in settlements.get(question, [])):
             settled.add(comment.get("html_url") or comment["url"])
     return settled

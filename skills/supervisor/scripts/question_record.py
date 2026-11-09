@@ -232,7 +232,7 @@ def update(record: Any, args: argparse.Namespace, storage: QuestionStorage, fetc
         question = next((q for q in delivery.oq.questions(comments, args.owner, args.decision_author, related)
                          if q["url"] == args.url), None)
         withdrawn = delivery.oq.question_records.supervisor_settled_questions(
-            [*comments, *related], trusted, withdrawals_only=True,
+            [*comments, *related], trusted, asker_only=True,
         )
         if question is None or question["answers"] or args.url in withdrawn:
             raise ValueError("question is unavailable, answered or withdrawn; do not revise it")
