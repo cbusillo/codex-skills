@@ -70,6 +70,7 @@ import github_plan_release
 import github_plan_landing
 import github_plan_status
 from github_plan_status.discussion import CurrentStatus, current_status_record, section_ranges
+from github_plan_status import events as github_plan_events
 from github_plan_status import next_actor as github_plan_next_actor
 from github_plan_status import questions as github_plan_questions
 import github_agent
@@ -4569,6 +4570,70 @@ def record_native_blockers(issue: dict[str, Any], targets: list[dict[str, Any]])
             link_native_dependency(issue, target, failed_step="wait_link_blocked_by")
 
 
+def merge_event_urls(wait: dict[str, Any]) -> set[str]:
+    return {entry["event"]["url"].casefold() for entry in wait["waits"]
+            if entry.get("event", {}).get("kind") == "pr_merged"}
+
+
+def merge_wait_holders(issue: dict[str, Any], urls: set[str]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Read who already waits on these merges from current wait records; what stayed unread is UNKNOWN."""
+    unread: list[str] = []
+
+    def pages(path: str, **query: str) -> list[dict[str, Any]] | None:
+        try:
+            return collect_paged_rest_items(path, query=query, bucket="rest_core", step_prefix="merge_wait_inventory")[1]
+        except PlanError as exc:
+            raise_if_cancelled(exc)
+            unread.append(f"{path}: {exc}")
+            return None
+
+    pulls = [match for url in sorted(urls) if (match := github_plan_events.TARGET.fullmatch(url))]
+    repositories = {repo.casefold(): repo for repo in (issue["repo"], *(pull[1] for pull in pulls))}
+    candidates: dict[tuple[str, int], dict[str, Any]] = {}
+    for repo in repositories.values():
+        for item in pages(f"/repos/{repo}/issues", state="open") or []:
+            if "pull_request" not in item:
+                candidates[repo.casefold(), item["number"]] = {**item, "repo": repo}
+    for pull in pulls:
+        for event in pages(f"/repos/{pull[1]}/issues/{pull[3]}/timeline") or []:
+            source = ((event.get("source") or {}).get("issue") or {}) if event.get("event") == "cross-referenced" else {}
+            if source.get("state") == "open" and "pull_request" not in source and source.get("repository"):
+                repo = source["repository"]["full_name"]
+                candidates.setdefault((repo.casefold(), source["number"]), {**source, "repo": repo})
+    holders = []
+    for item in candidates.values():
+        if str(item.get("title", "")).startswith("Track:"):
+            continue
+        comments = pages(f"/repos/{item['repo']}/issues/{item['number']}/comments")
+        if comments is None:
+            continue
+        try:
+            if merge_event_urls(current_wait(item, comments, item["repo"])) & urls:
+                holders.append(item)
+        except ValueError as exc:
+            unread.append(f"{item.get('html_url')}: {exc}")
+    return holders, {"pull_requests": sorted(urls), "read_repositories": sorted(repositories.values()),
+                     "issues_read": len(candidates), "unread": unread,
+                     "other_repositories": "UNKNOWN beyond open issues that reference the pull request"}
+
+
+def require_first_merge_wait(issue: dict[str, Any], wait: dict[str, Any], *,
+                             held: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """GitHub has no native edge to a pull request, so a second wait on one is found by reading the first."""
+    urls = merge_event_urls(wait) - (merge_event_urls(held) if held else set())
+    if not urls or "pull_request" in issue or str(issue.get("title", "")).startswith("Track:"):
+        return None
+    holders, coverage = merge_wait_holders(issue, urls)
+    if not holders:
+        return coverage
+    first = min(holders, key=lambda item: (item["repo"].casefold() != issue["repo"].casefold(), item["number"]))
+    link = (f"run gh-plan.py --repo {issue['repo']} link {issue['number']} blocked-by {first['html_url']}" if issue["number"]
+            else f"create this issue without that wait, then link it blocked-by {first['html_url']}")
+    raise PlanError(f"{first['html_url']} already waits for {', '.join(sorted(urls))} to merge, so a second wait for it is "
+                    f"refused. To follow it, {link}, or close this issue as a duplicate of it. "
+                    "If something beyond that merge holds this issue, name that condition without the pull request.")
+
+
 def require_recheck_dates(repo: str, wait: dict[str, Any]) -> None:
     asked = set(director_question_gate.waits_on_director(repo.split("/")[0], wait))
     unchecked = [entry["waiting_for"] for entry in wait["waits"]
@@ -4652,6 +4717,7 @@ def wait_once(args: argparse.Namespace) -> None:
     wait, native_targets = split_dependency_waits(issue, recorded)
     require_asked_wait(issue["repo"], wait)
     require_recheck_dates(issue["repo"], wait)
+    merge_coverage = require_first_merge_wait(issue, wait, held=current)
     summary = wait_summary(wait)
     if native_targets:
         summary += "\n\nBlocked natively by " + ", ".join(target["html_url"] for target in native_targets) + "."
@@ -4683,7 +4749,8 @@ def wait_once(args: argparse.Namespace) -> None:
                         "completed_steps": ["post_wait"],
                         "recovery": "Read the published comment and latest wait before any retry"}) from exc
     emit({"ok": True, "actor": actor, "structured_wait": wait, "comment": result,
-          "issue": compact_issue(observed), "completed_steps": ["post_wait", "wait_record_readback"]})
+          "issue": compact_issue(observed), "completed_steps": ["post_wait", "wait_record_readback"],
+          **({"merge_wait_coverage": merge_coverage} if merge_coverage else {})})
 
 
 def cmd_create(args: argparse.Namespace) -> None:
@@ -4719,8 +4786,10 @@ def cmd_create(args: argparse.Namespace) -> None:
     elif (getattr(args, "ends_when", None) or getattr(args, "wait_evidence", None)
           or any(getattr(args, field, None) for field in ("release_product", "release_commit", "release_next_action", "not_before", "event", "recheck"))):
         raise PlanError("Choose --wait-clear or --waiting-for with --ends-when and --wait-evidence")
+    merge_coverage = None
     if wait is not None:
         require_asked_wait(repo, wait, creating=True)
+        merge_coverage = require_first_merge_wait({"repo": repo, "number": 0, "title": title}, wait)
     release_summary = wait_summary(wait) if wait and any("release" in entry or "recheck" in entry for entry in wait["waits"]) else ""
     completed_steps: list[str] = []
     actor, exact = find_existing_plan_issues(repo, title, completed_steps=completed_steps)
@@ -4834,6 +4903,7 @@ def cmd_create(args: argparse.Namespace) -> None:
         "project_fields": project_fields_set,
         "issue": compact_issue(issue),
         "completed_steps": completed_steps,
+        **({"merge_wait_coverage": merge_coverage} if merge_coverage else {}),
     }
     for key in ("operation_marker", "reconciled", "reconciliation"):
         if key in issue:
