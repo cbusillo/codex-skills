@@ -75,6 +75,7 @@ def changed(reader: github_read.GitHubReader, owners: list[str], since: datetime
 def search(reader: github_read.GitHubReader, query: str) -> tuple[int, list[Thread]]:
     threads: list[Thread] = []
     after: str | None = None
+    first_total: int | None = None
     while True:
         result = reader.graphql_json(QUERY, {"q": query, "after": after}, step="change_feed_search")
         if not result.ok:
@@ -83,6 +84,9 @@ def search(reader: github_read.GitHubReader, query: str) -> tuple[int, list[Thre
         total = page["issueCount"]
         if total > SEARCH_RESULT_CAP:
             return total, []
+        if first_total is not None and total != first_total:
+            raise ValueError("change search results shifted between pages")
+        first_total = total
         for node in page["nodes"]:
             kind = {"Issue": "issue", "PullRequest": "pull_request"}[node["__typename"]]
             number = node["number"]
@@ -91,6 +95,8 @@ def search(reader: github_read.GitHubReader, query: str) -> tuple[int, list[Thre
             threads.append(Thread(node["repository"]["nameWithOwner"], number, kind, node["updatedAt"]))
         info = page["pageInfo"]
         if not info["hasNextPage"]:
+            if len({(thread.repository.casefold(), thread.number) for thread in threads}) != len(threads):
+                raise ValueError("change search listed a thread twice")
             return total, threads
         if info["endCursor"] in (None, after):
             raise ValueError("change search cursor did not advance")

@@ -81,6 +81,18 @@ def test_unlisted_or_unreadable_threads_make_the_feed_incomplete() -> None:
     assert not failed.complete and "search unavailable" in (failed.reason or "")
 
 
+def test_results_that_shift_between_pages_make_the_feed_incomplete() -> None:
+    pages = iter([(201, [node("director/a", number) for number in range(1, 202)]),
+                  (200, [node("director/a", number) for number in range(2, 202)])])
+    shifting = feed.changed(answering(lambda _q: next(pages)), ["director"], SINCE, until=UNTIL)
+    assert not shifting.complete and "shifted" in (shifting.reason or "")
+
+
+def test_a_thread_listed_twice_makes_the_feed_incomplete() -> None:
+    twice = feed.changed(answering(lambda _q: (2, [node("director/a", 1), node("director/a", 1)])), ["director"], SINCE, until=UNTIL)
+    assert not twice.complete and "twice" in (twice.reason or "")
+
+
 def test_a_burst_too_dense_to_split_is_incomplete() -> None:
     dense = feed.changed(answering(lambda _q: (feed.SEARCH_RESULT_CAP + 1, [])), ["director"], SINCE, until=UNTIL)
     assert not dense.complete and "more than" in (dense.reason or "")

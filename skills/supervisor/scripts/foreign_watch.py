@@ -48,6 +48,7 @@ from session_record import load_ledger, read_jsonl, session_status, text_content
 REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 MENTIONS = "director-mentions"  # watermark key; not a repository name
 FULL_SCAN_WATERMARK = "full-scan"
+CHANGE_FEED_WATERMARK = "change-feed"
 FULL_SCAN_FOR_CHANGES_SEARCH_MISSES_EVERY = timedelta(hours=6)
 # Search indexing can lag; each mention search overlaps the previous one and
 # skips thread versions already reported.
@@ -363,28 +364,25 @@ def read_error(repo: str, error: Exception) -> dict:
     }
 
 
-def changed_repositories(reader: GitHubReader, watched: list[str], watermarks: dict[str, str], started: str) -> list[str]:
-    if not watched:
-        return []
-    since = min(timestamp(watermarks[repo]) for repo in watched)
-    feed = github_change_feed.changed(reader, sorted({repo.split("/")[0] for repo in watched}, key=str.casefold), since)
+def changed_repositories(reader: GitHubReader, watched: list[str], last_look: str) -> list[str]:
+    owners = sorted({repo.split("/")[0] for repo in watched}, key=str.casefold)
+    feed = github_change_feed.changed(reader, owners, timestamp(last_look))
     if not feed.complete:
         return watched
     changed = feed.repositories()
-    advance_quiet_watermarks([repo for repo in watched if repo.casefold() not in changed], watermarks, started)
     return [repo for repo in watched if repo.casefold() in changed]
-
-
-def advance_quiet_watermarks(quiet: list[str], watermarks: dict[str, str], started: str) -> None:
-    quiet_through = timestamp(started) - github_change_feed.SEARCH_INDEX_LAG
-    for repo in quiet:
-        if timestamp(watermarks[repo]) < quiet_through:
-            watermarks[repo] = quiet_through.isoformat()
 
 
 def full_scan_due(watermarks: dict[str, str], started: str) -> bool:
     last = watermarks.get(FULL_SCAN_WATERMARK)
-    return last is None or timestamp(started) - timestamp(last) >= FULL_SCAN_FOR_CHANGES_SEARCH_MISSES_EVERY
+    return (CHANGE_FEED_WATERMARK not in watermarks or last is None
+            or timestamp(started) - timestamp(last) >= FULL_SCAN_FOR_CHANGES_SEARCH_MISSES_EVERY)
+
+
+def record_feed_pass(watermarks: dict[str, str], started: str, *, full: bool) -> None:
+    watermarks[CHANGE_FEED_WATERMARK] = started
+    if full:
+        watermarks[FULL_SCAN_WATERMARK] = started
 
 
 def scan(repos: list[str], watermarks: dict[str, str], own_logins: list[str], launchplane_logins: list[str],
@@ -1128,6 +1126,7 @@ def watch(args, repos, initial, deadline):
             **github_access.reader_options(getattr(args, "github_cli_login", None)),
             deadline_at=time.time() + max(0, deadline - time.monotonic()),
         )
+        feed_pass: bool | None = None
         try:
             watched = repos or installed_repositories(reader, args.owner, getattr(args, "github_cli_login", None))
         except READ_ERRORS as error:
@@ -1135,11 +1134,11 @@ def watch(args, repos, initial, deadline):
         else:
             cover(watermarks, [repo for repo in watched if repo not in covered], initial, args.since is not None and not persistent)
             covered.update(watched)
-            full = rewind or full_scan_due(watermarks, started)
-            scanned = watched if full else changed_repositories(reader, watched, watermarks, started)
+            installation_wide = not repos
+            full = not installation_wide or rewind or full_scan_due(watermarks, started)
+            scanned = watched if full else changed_repositories(reader, watched, watermarks[CHANGE_FEED_WATERMARK])
             notices, errors, watermarks = scan(scanned, watermarks, args.own_login, args.launchplane_login, started, reader, getattr(args, "client_agent_logins", ()))
-            if full and not errors:
-                watermarks[FULL_SCAN_WATERMARK] = started
+            feed_pass = full if installation_wide and not errors else None
             mentions, gaps, mention_errors, watermarks, seen = scan_mentions(
                 args, watched, watermarks, seen, args.own_login, started, reader
             )
@@ -1162,6 +1161,8 @@ def watch(args, repos, initial, deadline):
             print(json.dumps({"notices": notices, "errors": errors, "coverage_gaps": gaps, "untrusted": True}), flush=True)
             for repo in retry_repos:
                 watermarks[repo] = checkpoint.get("watermarks", {}).get(repo, initial)
+            if feed_pass is not None and not retry_repos:
+                record_feed_pass(watermarks, started, full=feed_pass)
             save_state(args.state, watermarks, seen, dispatched, deliveries)
         rewind = False
         if errors and getattr(args, "events", False) and any(not error["retryable"] for error in errors):
