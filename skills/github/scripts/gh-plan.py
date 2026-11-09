@@ -4152,9 +4152,9 @@ def claim_once(args: argparse.Namespace) -> None:
         completed.append("ownership_preflight")
         writer, writer_command, writer_login = comment_route()
 
-        def post(body: str, step: str) -> dict[str, Any]:
+        def post(comment_text: str, step: str) -> dict[str, Any]:
             return github_comment_core.comment(
-                kind, number, body, repo=issue_repo, gh_cmd=writer_command, expected_actor=writer_login,
+                kind, number, comment_text, repo=issue_repo, gh_cmd=writer_command, expected_actor=writer_login,
                 operation=CURRENT_OPERATION, completed_steps=completed, failed_step=step, dedupe_body=True)
 
         claim_comment = post(live_claim_text(kind), "post_claim")
