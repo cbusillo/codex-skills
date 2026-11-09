@@ -52,8 +52,8 @@ the links remain intact, including account homes sharing one target. Generated
 content in a linked dotfiles file is refreshed in place too; backups are written
 beside the target with owner-only permissions. Recognition
 uses current, previously installed, or committed shared sources with the
-authoritative private source. Receipts distinguish generated outputs the installer
-managed from skipped sources, so private-source edits propagate through links
+authoritative private source. Receipts distinguish generated outputs the catalog
+wrote from skipped sources, so private-source edits propagate through links
 while hand edits remain protected. Targets
 inside the catalog checkout and read-only targets are preserved.
 Unmanaged personal targets stay unchanged. Later edits to those linked sources
@@ -735,8 +735,9 @@ settings or diagnostic records, and does not prevent startup. It checks file fre
 surface loaded it; the Explore/Plan exception above still applies.
 For a manual preview, use `scripts/install-catalog.py --refresh-instructions`
 with those same destinations, then add `--write`. The standalone sync remains
-available for initial setup and explicit reconciliation; rerun the installer
-afterward so its receipt follows the written files. For running-session recovery,
+available for initial setup and explicit reconciliation; rendering from a
+catalog's own sources, it records what it writes for that catalog's registered
+destinations in the install receipt. For running-session recovery,
 see [runtime binding lookup](#runtime-binding-lookup).
 
 The plugin's `SessionStart` hook, `hooks/direction_check_hook.py`, keeps the small

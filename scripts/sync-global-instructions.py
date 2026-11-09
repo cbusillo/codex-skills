@@ -508,6 +508,30 @@ def synchronize(content: str, destinations: list[Path], *, write: bool, local_so
     return results
 
 
+def record_in_install_receipt(source: Path, local_source: Path, outputs: list[dict[str, str]]) -> None:
+    catalog = source.resolve().parent.parent
+    receipt_path = catalog / ".local" / "catalog-install.json"
+    if (source.resolve() != catalog / "instructions" / "global.md" or local_source.resolve() != catalog / ".local" / "global-instructions.md"
+            or not receipt_path.is_file()):
+        return
+    sys.path.insert(0, str(ROOT))
+    from skills.github.scripts import github_catalog_health
+
+    generated = {Path(entry["path"]).resolve(): entry["sha256"] for entry in outputs if entry["state"] in ("written", "current")}
+    with github_catalog_health.installation_lock(catalog):
+        receipt = github_catalog_health.read_record(receipt_path)
+        hashes = receipt.get("instruction_hashes")
+        generated_hashes = receipt.setdefault("generated_instruction_hashes", {})
+        if not isinstance(hashes, dict) or not isinstance(generated_hashes, dict):
+            return
+        registered = {path: generated[Path(path).resolve()] for path in hashes if Path(path).resolve() in generated}
+        if not registered:
+            return
+        hashes.update(registered)
+        generated_hashes.update(registered)
+        github_catalog_health.write_locked_installation(catalog, receipt)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, default=ROOT / "instructions" / "global.md")
@@ -543,6 +567,7 @@ def main() -> int:
         outputs = [] if args.hooks_only else synchronize_instructions(render(args.source, args.local_source, direction_content(args.home_dir or Path.home())),
             destinations, write=args.write, local_source_missing=local_missing, allow_missing_local=args.allow_missing_local)
         if args.write:
+            record_in_install_receipt(args.source, args.local_source, outputs)
             if hook_outputs:
                 outputs.extend(write_codex_hooks(hook_outputs, codex_dir))
         else:
