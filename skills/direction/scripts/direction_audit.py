@@ -1003,7 +1003,8 @@ def record_drift(
             if match:
                 evidence.append({"kind": "impossible_ends_when", "url": row["url"], "matched": match.strip()[:240], "recorded_at": row.get("created_at"), "ends_when": entry["ends_when"]})
                 break
-        named = {(ref["repo"], ref["number"]) for ref in github_direction_next.issue_references(f"{entry['waiting_for']}\n{entry['ends_when']}", repo=repo)}
+        named = {(ref["repo"], ref["number"]) for ref in github_direction_next.issue_references(
+            f"{github_plan_wait.first_step(entry['waiting_for'])}\n{entry['ends_when']}", repo=repo)}
         for target_repo, target_number in sorted(named - {(repo, number)}):
             try:
                 target = read(f"repos/{target_repo}/issues/{target_number}")
@@ -1019,6 +1020,8 @@ def record_drift(
             asks.append({"number": number, **ask})
             if ask["ask_url"] is None:
                 evidence.append({"kind": "ask_link_missing", "matched": entry["waiting_for"]})
+            elif ask["found"] is False:
+                evidence.append({"kind": "ask_comment_missing", "url": ask["ask_url"], "matched": entry["waiting_for"]})
     status_time = next(filter(None, (_parse_time(value) for value in (
         status_last_verified(status), issue.get("last_edited_at"), (issue.get("discussion") or {}).get("body_recorded_at")))), None)
     refs = {(ref[1] or ref[4] or repo, int(ref[3] or ref[5])) for ref in WAIT_REFERENCE.finditer(status)}

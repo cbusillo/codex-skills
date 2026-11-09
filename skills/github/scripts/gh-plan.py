@@ -92,6 +92,8 @@ PEOPLE_RESOLVER = SKILL_DIR.parent / "people/scripts/resolve_person.py"
 API_VERSION_ARGS = ["-H", f"X-GitHub-Api-Version: {github_api_core.DEFAULT_API_VERSION}"]
 EXPECTED_ACTOR = github_identity.automation_login()
 CURRENT_OPERATION = "github.plan.unknown"
+DEPENDENCY_WORDS = re.compile(r"https://github\.com/\S+|[\w.-]*(?:/[\w.-]+)?#\d+"
+                              r"|(?i:\b(?:it|the|this|that|a|an|issue|pr|pull request|canonical|complet\w*|merg\w*|land\w*|clos\w*|finish\w*|resolv\w*|done|of|on|to|be|for|when)\b)")
 CURRENT_TRANSPORT = "helper"
 CURRENT_BUCKET = "unknown"
 CURRENT_IS_WRITE = False
@@ -4505,16 +4507,15 @@ def dependency_references(issue: dict[str, Any], entry: dict[str, Any]) -> list[
     return [ref for ref in named if (ref["repo"].casefold(), ref["number"]) != (issue["repo"].casefold(), issue["number"])]
 
 
-def issue_pull_closes(pull: dict[str, Any], repo: str, number: int) -> dict[str, Any]:
-    reader = github_read.GitHubReader(operation="github.plan.wait")
-    references = github_plan_landing.closing_references(reader, repo, number, landed=False)[1]
-    issues = [get_issue(str(ref_number), ref_repo)[1] for ref_repo, ref_number in references]
-    target = next((issue for issue in issues if issue.get("state") == "open"), None)
-    if target is None:
-        raise PlanError(f"{pull['html_url']} closes no open issue, and GitHub refuses a pull request as a native blocker. "
-                        "Add `Closes #N` to the PR, or record the wait with --event "
-                        f'\'{{"version": 1, "kind": "pr_merged", "url": "{pull["html_url"]}", "evidence": "..."}}\'.')
-    return target
+def names_nothing_but_dependencies(entry: dict[str, Any]) -> bool:
+    remainder = DEPENDENCY_WORDS.sub(" ", f"{github_plan_wait.first_step(entry['waiting_for'])} {entry['ends_when']}")
+    return not re.sub(r"[\W_]+", "", remainder)
+
+
+def refuse_mixed_dependency(issue: dict[str, Any], entry: dict[str, Any], reference: dict[str, Any]) -> None:
+    raise PlanError(f'"{entry["waiting_for"]}" names {reference["url"]} and more than that finishing. If only that is in the way, '
+                    f'run gh-plan.py --repo {issue["repo"]} link {issue["number"]} blocked-by {reference["url"]}, then clear this wait. '
+                    "If something else is also in the way, name that condition without the reference.")
 
 
 def native_blocker(issue: dict[str, Any], ref: dict[str, Any]) -> dict[str, Any]:
@@ -4523,11 +4524,14 @@ def native_blocker(issue: dict[str, Any], ref: dict[str, Any]) -> dict[str, Any]
         raise PlanError(f"{target['html_url']} is already closed, so there is nothing to wait for. "
                         "Clear the wait, or name what is still in the way.")
     if "pull_request" in target:
-        target = issue_pull_closes(target, ref["repo"], ref["number"])
+        raise PlanError(f"GitHub refuses a pull request as a native blocker ({target['html_url']}). Record the merge as the event: "
+                        f'--event \'{{"version": 1, "kind": "pr_merged", "url": "{target["html_url"]}", "evidence": "..."}}\', '
+                        "or link blocked-by the issue that PR closes when that issue is the real dependency.")
     _, blocking = collect_paged_rest_items(f"/repos/{target['repo']}/issues/{target['number']}/dependencies/blocking",
                                            query={}, bucket="rest_core", step_prefix="wait_dependency")
+    own_url = f"https://github.com/{issue['repo']}/issues/{issue['number']}".casefold()
     holders = [edge for edge in blocking
-               if edge.get("state") == "open" and edge.get("number") != issue["number"]
+               if edge.get("state") == "open" and str(edge.get("html_url")).casefold() != own_url
                and not str(edge.get("title", "")).startswith("Track:")]
     if holders:
         first = min(holders, key=lambda edge: edge["number"])
@@ -4541,10 +4545,12 @@ def split_dependency_waits(issue: dict[str, Any], wait: dict[str, Any]) -> tuple
     kept, targets = [], []
     for entry in wait["waits"]:
         references = dependency_references(issue, entry)
-        if references:
-            targets.extend(native_blocker(issue, reference) for reference in references)
-        else:
+        if not references:
             kept.append(entry)
+            continue
+        if not names_nothing_but_dependencies(entry):
+            refuse_mixed_dependency(issue, entry, references[0])
+        targets.extend(native_blocker(issue, reference) for reference in references)
     if not targets:
         return wait, []
     links = ", ".join(target["html_url"] for target in targets)
@@ -4641,7 +4647,7 @@ def wait_once(args: argparse.Namespace) -> None:
                   "body": issue.get("body") or "", "comments": comments},
               "next_action": "Read the full evidence once; record each actual person/event hold with "
                              "--waiting-for and --ends-when, or --clear after verifying absence. "
-                             "The review also covers any prose-only current owner; preserve it as a wait until released."})
+                             "A prose-only current owner is a Next actor, not a wait."})
         return
     wait, native_targets = split_dependency_waits(issue, recorded)
     require_asked_wait(issue["repo"], wait)

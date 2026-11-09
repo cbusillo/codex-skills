@@ -25,6 +25,7 @@ WRITTEN_LOGIN = re.compile(r"(?<![\w/])@([a-z\d](?:[a-z\d-]*[a-z\d])?)(?![\w/-])
 class AskedPerson(NamedTuple):
     logins: frozenset[str]
     director: bool
+    client: bool
 
 
 for scripts in ("github-work-rollup/scripts", "supervisor/scripts"):
@@ -32,11 +33,20 @@ for scripts in ("github-work-rollup/scripts", "supervisor/scripts"):
         sys.path.append(str(SKILLS / scripts))
 
 
+@functools.cache
+def people_source(owner: str) -> dict[str, Any]:
+    import github_unanswered_comments as radar
+
+    identities = radar.people_identities({radar.normalize_login(owner)}, None)
+    if identities["status"] == "error":
+        raise ValueError(f"The people index could not be read, so a wait cannot be checked: {identities['error']}")
+    return identities
+
+
 def director_terms(owner: str) -> list[str]:
     import github_unanswered_comments as radar
 
-    names = radar.people_identities({radar.normalize_login(owner)}, None)["director_names"]
-    return [owner, *names, *radar.DIRECTOR_ROLE_WORDS]
+    return [owner, *people_source(owner)["director_names"], *radar.DIRECTOR_ROLE_WORDS]
 
 
 def waits_on_director(owner: str, wait: dict[str, Any]) -> list[str]:
@@ -49,9 +59,7 @@ def waits_on_director(owner: str, wait: dict[str, Any]) -> list[str]:
 
 @functools.cache
 def address_book(owner: str) -> dict[str, frozenset[str]]:
-    import github_unanswered_comments as radar
-
-    identities = radar.people_identities({radar.normalize_login(owner)}, None)
+    identities = people_source(owner)
     robots = {*identities["automation"], *identities["own_automation"]}
     book: dict[str, set[str]] = {}
     for login, names in identities["address_names"].items():
@@ -72,20 +80,14 @@ def asked_person(owner: str, waiting_for: str) -> AskedPerson | None:
     named = {login for name, logins in book.items()
              if github_plan_wait.names_recipient(asserted, [name], known_logins) for login in logins}
     named |= {login.casefold() for login in WRITTEN_LOGIN.findall(asserted)}
-    if not (director or named or CLIENT_ROLE.search(asserted)):
+    client = CLIENT_ROLE.search(asserted) is not None
+    if not (director or named or client):
         return None
-    return AskedPerson(frozenset(named), director)
-
-
-def person_on_wait(owner: str, entry: dict[str, Any]) -> AskedPerson | None:
-    person = asked_person(owner, entry["waiting_for"])
-    if person is None or (github_plan_wait.machine_checked(entry) and not person.director):
-        return None
-    return person
+    return AskedPerson(frozenset(named), director, client)
 
 
 def person_waits(owner: str, wait: dict[str, Any]) -> list[tuple[dict[str, Any], AskedPerson]]:
-    found = [(entry, person_on_wait(owner, entry)) for entry in wait["waits"]] if wait["state"] == "waiting" else []
+    found = [(entry, asked_person(owner, entry["waiting_for"])) for entry in wait["waits"]] if wait["state"] == "waiting" else []
     return [(entry, person) for entry, person in found if person is not None]
 
 
@@ -157,7 +159,7 @@ def unasked_director_message(owner: str, waiting_for: str, queue: str | None) ->
 
 
 def unasked_person_message(waiting_for: str, ask_url: str | None) -> str:
-    finding = (f"{ask_url} does not @mention them and is not their own or the Director's words" if ask_url
+    finding = (f"{ask_url} does not @mention them and is not the Director's own words" if ask_url
                else "nothing links the comment that asks them")
     return (f'The wait "{waiting_for}" names a person, and {finding}. If they should be asked now, post a comment that '
             "@mentions them and record the wait with --ask-url COMMENT_URL. If nobody should be asked yet, record what is "
@@ -169,7 +171,16 @@ def ask_is_real(comment: dict[str, Any], person: AskedPerson, owner: str, truste
     if is_director_record(comment, owner, trusted):
         return True
     mentioned = comment_mentions(comment) - trusted
-    return comment_author(comment) in person.logins or bool(mentioned & person.logins if person.logins else mentioned)
+    return person.logins <= mentioned if person.logins else bool(mentioned)
+
+
+def resolve_client(person: AskedPerson, repo: str) -> AskedPerson:
+    if not person.client or person.logins:
+        return person
+    import github_client
+
+    recorded = github_client.recorded_client(repo)
+    return person._replace(logins=frozenset({recorded["login"]})) if recorded.get("status") == "recorded" else person
 
 
 def read_ask_comment(url: str, read_comment: Callable[[str], Any]) -> dict[str, Any] | None:
@@ -198,27 +209,31 @@ def ask_gap(repo: str, wait: dict[str, Any], *, read_comment: Callable[[str], An
             if comment is None or not director_asked(comment, url):
                 return unasked_director_message(owner, entry["waiting_for"], queue)
             continue
-        if comment is None or not ask_is_real(comment, person, owner, trusted):
+        if comment is None or not ask_is_real(comment, resolve_client(person, repo), owner, trusted):
             return unasked_person_message(entry["waiting_for"], url)
     return None
 
 
 def ask_status(owner: str, wait: dict[str, Any], entry: dict[str, Any], *, trusted: set[str],
                read_thread: Callable[[str, int], list[dict[str, Any]] | None]) -> dict[str, Any] | None:
-    person = person_on_wait(owner, entry)
+    person = asked_person(owner, entry["waiting_for"])
     if person is None:
         return None
-    status: dict[str, Any] = {"waiting_for": entry["waiting_for"], "ask_url": entry.get("ask_url"), "author": None, "replied_since": None}
+    status: dict[str, Any] = {"waiting_for": entry["waiting_for"], "ask_url": entry.get("ask_url"), "author": None,
+                              "replied_since": None, "found": None}
     if status["ask_url"] is None and person.director and (
             link := COMMENT_LINK.search(f"{entry['waiting_for']} {entry['ends_when']} {wait['evidence']}")):
         status["ask_url"] = link[0]
     if status["ask_url"] is None:
         return status
     link = COMMENT_LINK.fullmatch(status["ask_url"])
-    thread = read_thread(link[1], int(link[2])) or []
+    thread = read_thread(link[1], int(link[2]))
+    if thread is None:
+        return status
     position = next((index for index, row in enumerate(thread) if row["url"].casefold() == status["ask_url"].casefold()), None)
     if position is None:
-        return status
+        return {**status, "found": False}
     ask = thread[position]
     asked = person.logins | ({owner.casefold()} if person.director else set()) or (comment_mentions(ask) - trusted)
-    return {**status, "author": ask["author"], "replied_since": any(row["author"].casefold() in asked for row in thread[position + 1:])}
+    return {**status, "found": True, "author": ask["author"],
+            "replied_since": any(row["author"].casefold() in asked for row in thread[position + 1:])}

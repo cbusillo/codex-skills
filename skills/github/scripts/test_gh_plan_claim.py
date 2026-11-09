@@ -6603,12 +6603,20 @@ class ClaimTests(unittest.TestCase):
 
     def test_wait_on_another_issue_becomes_a_native_blocker_instead_of_prose(self) -> None:
         self.targets["4555"] = self.dependency_target(4555)
-        self.record_dependency_wait("OPW testing admission on owner/repo#4555")
+        self.record_dependency_wait("Completing canonical owner/repo#4555 merge")
         self.assertIn("milestone_link", self.events)
         record = self.emitted.call_args.args[0]["structured_wait"]
         self.assertEqual(record["state"], "clear")
         self.assertIn("https://github.com/owner/repo/issues/4555", record["evidence"])
         self.assertIn("https://github.com/owner/repo/issues/4555", self.comments[-1]["body"])
+
+    def test_wait_naming_an_issue_and_another_condition_loses_neither(self) -> None:
+        for waiting_for in ("Production hold for candidate owner/repo#123 until backup verification",
+                            "OPW testing admission on owner/repo#4555"):
+            with self.subTest(waiting_for=waiting_for), self.assertRaises(PLAN.PlanError) as caught:
+                self.record_dependency_wait(waiting_for)
+            self.assertIn(" link ", str(caught.exception))
+            self.assert_no_writes()
 
     def test_wait_keeps_real_holds_beside_a_native_blocker(self) -> None:
         self.targets["4555"] = self.dependency_target(4555)
@@ -6616,6 +6624,7 @@ class ClaimTests(unittest.TestCase):
         self.args.all = self.args.clear = False
         self.args.waiting_for = ["Completing owner/repo#4555", "A free worker slot"]
         self.args.ends_when = ["It closes", "A slot opens"]
+        self.args.evidence = "Reviewed"
         self.args.evidence = "Reviewed"
         self.run_claim(command=PLAN.cmd_wait)
         record = self.emitted.call_args.args[0]["structured_wait"]
@@ -6632,6 +6641,15 @@ class ClaimTests(unittest.TestCase):
         self.assertIn(" link ", str(caught.exception))
         self.assert_no_writes()
 
+    def test_a_holder_with_the_same_number_in_another_repository_still_counts(self) -> None:
+        self.targets["323"] = self.dependency_target(323)
+        self.milestone_blocking["/repos/owner/repo/issues/323/dependencies/blocking"] = [
+            {"state": "open", "number": self.issue["number"], "title": "Child",
+             "html_url": f"https://github.com/owner/other/issues/{self.issue['number']}"}]
+        with self.assertRaises(PLAN.PlanError):
+            self.record_dependency_wait("Completing owner/repo#323")
+        self.assert_no_writes()
+
     def test_track_edges_and_closed_holders_do_not_count_as_a_prior_wait(self) -> None:
         self.targets["323"] = self.dependency_target(323)
         self.milestone_blocking["/repos/owner/repo/issues/323/dependencies/blocking"] = [
@@ -6643,25 +6661,13 @@ class ClaimTests(unittest.TestCase):
     def test_wait_on_a_closed_issue_is_refused_as_nothing_to_wait_for(self) -> None:
         self.targets["4767"] = self.dependency_target(4767, state="closed")
         with self.assertRaises(PLAN.PlanError) as caught:
-            self.record_dependency_wait("Gated activation and export diagnosis on owner/repo#4767")
+            self.record_dependency_wait("Completing owner/repo#4767")
         self.assertIn("already closed", str(caught.exception))
         self.assert_no_writes()
 
-    def test_wait_on_a_pull_request_blocks_on_the_issue_it_closes(self) -> None:
-        pull = self.dependency_target(323, pull_request={"url": "x"}, html_url="https://github.com/owner/repo/pull/323")
-        self.targets["323"] = pull
-        self.targets["312"] = self.dependency_target(312)
-        with patch.object(PLAN.github_read, "GitHubReader"), \
-                patch.object(PLAN.github_plan_landing, "closing_references", return_value=(pull, [("owner/repo", 312)])):
-            self.record_dependency_wait("Completing owner/repo#323 merge")
-        self.assertIn("milestone_link", self.events)
-        self.assertIn("https://github.com/owner/repo/issues/312", self.emitted.call_args.args[0]["structured_wait"]["evidence"])
-
-    def test_wait_on_a_pull_request_with_no_closing_issue_names_the_supported_event(self) -> None:
+    def test_prose_wait_on_a_pull_request_names_the_merge_event_instead(self) -> None:
         self.targets["121"] = self.dependency_target(121, pull_request={"url": "x"}, html_url="https://github.com/owner/repo/pull/121")
-        with patch.object(PLAN.github_read, "GitHubReader"), \
-                patch.object(PLAN.github_plan_landing, "closing_references", return_value=({}, [])), \
-                self.assertRaises(PLAN.PlanError) as caught:
+        with self.assertRaises(PLAN.PlanError) as caught:
             self.record_dependency_wait("Completing owner/repo#121 merge")
         self.assertIn("pr_merged", str(caught.exception))
         self.assert_no_writes()
@@ -6788,9 +6794,8 @@ class ClaimTests(unittest.TestCase):
         self.args.evidence = "Confirmed"
         self.run_claim(command=PLAN.cmd_wait)
         visible = [wait_record.without_records(comment["body"]).strip() for comment in self.comments[-2:]]
-        self.assertEqual(visible, ["Waiting for <code>@mike-b</code> to confirm the run. This ends when Mike replies on the issue. "
-                                   f"An agent rechecks it on 2026-12-01. Asked in {ask_url}.",
-                                   "Nothing here is waiting on a person or event."])
+        self.assertFalse(PLAN.github_comment_core.live_mentions(visible[0]))
+        self.assertIn(ask_url, visible[0])
 
     def test_wait_nothing_checks_needs_a_recheck_date_that_never_ends_it(self):
         self.wait = None

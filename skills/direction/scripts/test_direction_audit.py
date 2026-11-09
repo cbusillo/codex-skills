@@ -2299,7 +2299,28 @@ def test_a_later_comment_never_ends_or_clears_a_person_wait() -> None:
         report = drift_report(module, {**issue(7, "Release"), "state": "open", "structured_wait": wait},
                               {"repos/owner/catalog/issues/7/comments": [ask, drift_comment(6, 7, "Looks good!", author="justin-login")]})
     assert report["items"] == []
-    assert wait["state"] == "waiting"
+    assert report["asks"][0]["replied_since"] is True
+
+
+def test_deleted_ask_comment_is_stale_and_an_unreadable_one_stays_unknown() -> None:
+    module = load()
+    ask = drift_comment(5, 7, "Please confirm, @justin-login")
+    wait = drift_wait("Justin creates the guest", "The guest exists", ask_url=ask["html_url"], recheck="2026-11-20")
+    row = {**issue(7, "Guest"), "state": "open", "structured_wait": wait}
+    with people_book(module):
+        deleted = drift_report(module, row, {"repos/owner/catalog/issues/7/comments": []})
+        unread = drift_report(module, row, {"repos/owner/catalog/issues/7/comments": module.AuditError("denied")})
+    assert [item["kind"] for item in deleted["items"][0]["evidence"]] == ["ask_comment_missing"]
+    assert unread["items"] == []
+    assert unread["asks"][0]["found"] is None and unread["complete"] is False
+
+
+def test_issue_named_only_after_then_is_not_the_current_wait() -> None:
+    module = load()
+    wait = drift_wait("A free worker slot, then owner/catalog#4555 lands", "A slot opens", recheck="2026-11-20")
+    report = drift_report(module, {**issue(7, "Slot"), "state": "open", "structured_wait": wait},
+                          {"repos/owner/catalog/issues/4555": {"state": "closed", "state_reason": "completed"}})
+    assert report["items"] == []
 
 
 def test_wait_naming_a_closed_issue_is_stale_from_either_field() -> None:

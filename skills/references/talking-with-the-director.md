@@ -334,7 +334,7 @@ When asking, follow [Director Questions](#director-questions).
   as approval. Continue independent authorized work. "Don't land yet" holds
   merging, not preparation or validation.
 - A wait on the Director is asked only by a numbered `Director question:`
-  whose link is in the wait's `--evidence` and that is registered in the
+  whose link is the wait's `--ask-url` and that is registered in the
   question queue below. `gh-plan.py wait`, `create --waiting-for` and
   `gh-pr.py ready` refuse an unasked one and name the fix
   ([wait records](../github/references/cli-reference.md#planning-claim)). A

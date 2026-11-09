@@ -1220,27 +1220,52 @@ authorizes changing waits or taking custody.
 
 Before the first claim of a legacy issue or PR, read its full body/discussion
 and run `gh-plan.py wait <issue>` for the one-time review report. Record every
-actual person, decision, external-event or prose-only executing-session hold:
+actual person, decision or external-event hold. An agent, session id or worker
+name is a Next actor, never a wait:
 
 ```bash
 uv run scripts/gh-plan.py wait 123 \
   --waiting-for "Director's device test" \
   --ends-when "Director records acceptance on this issue" \
-  --evidence "Asked in https://github.com/OWNER/REPO/issues/123#issuecomment-456"
+  --ask-url "https://github.com/OWNER/REPO/issues/123#issuecomment-456" \
+  --evidence "Reviewed the request"
 ```
 
 A wait that the comment radar's Director-wait classifier reads as on the
-Director now is refused unless the record links, by full comment URL, either a
+Director now is refused unless `--ask-url` links, by full comment URL, either a
 numbered `Director question:` or `Owner question:` registered in the
 Supervisor question queue, or the Director's own comment or a
 `Director decision:` record for a hold the Director set or agreed to. A wait
 whose current step is a timer or someone else's ("Two weeks with no use, then
 the Director retires it") is not on the Director. A linked comment that cannot
-be read is skipped, and the refusal names it. The queue is `[questions] queue` in the private `skill-data/supervisor.toml`
+be read refuses the wait, and the refusal names it. The queue is `[questions] queue` in the private `skill-data/supervisor.toml`
 ([question delivery](../../supervisor/references/helpers.md#acknowledged-question-delivery));
 with none configured, a numbered question is enough. The refusal names the
 registration command. On `create`, the issue has no question yet: create it
 without the wait, post and register the question on it, then run `wait`.
+
+Any other wait whose current step names a person (a login, a name from the
+people index, or `Client`) needs `--ask-url` too, one per person wait in order.
+That comment must @mention every person named, or the recorded Client, or be
+the Director's own words as above. An event or date does not replace the ask.
+If nobody should be asked yet, record what is really in the way first and name
+the person after "then". The Client's own acceptance of a release is still
+recorded in Launchplane; a wait record does not stand in for it.
+
+A wait that names nothing but another issue finishing becomes a native
+`blocked-by` edge instead of prose, and any other holds in the record are kept.
+A wait that names an issue and something more is refused with both ways
+forward, so no condition is dropped. A second wait on a blocker another open
+issue already holds is refused with a pointer to it; `gh-plan.py link` to that
+issue, or close this one as its duplicate. A wait that names a pull request
+needs `--event` with `pr_merged`, because GitHub refuses a pull request as a
+native blocker (`Target issue may only be an issue`); who waits on a given PR
+cannot be listed, so those waits are not duplicate-checked.
+
+`next` and the routine digest show each person wait's ask link, its author and
+whether the person has commented since. A missing or deleted ask, and a named
+issue or PR that has closed, are STALE rows with the reason. Neither releases
+the hold, and a later comment is never an answer, acceptance or permission.
 
 Repeat `--waiting-for` and `--ends-when` in matching order when several holds
 remain. To record verified absence or a resolved hold, use
