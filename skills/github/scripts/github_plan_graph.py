@@ -54,7 +54,10 @@ ISSUE_FIELDS = """databaseId number title body state stateReason createdAt updat
  issueDependenciesSummary { blockedBy blocking totalBlockedBy totalBlocking }
  subIssuesSummary { total completed percentCompleted }"""
 RELATED_FIELDS = "number title state url repository { nameWithOwner }"
-CLOSURE_FIELDS = RELATED_FIELDS + " body stateReason closedAt updatedAt subIssuesSummary { total completed percentCompleted }"
+CLOSURE_FIELDS = (
+    RELATED_FIELDS + " body stateReason closedAt updatedAt subIssuesSummary { total completed percentCompleted }"
+    " issueDependenciesSummary { blockedBy blocking totalBlockedBy totalBlocking }"
+)
 CONNECTIONS = {
     "labels": "name",
     "blockedBy": CLOSURE_FIELDS,
@@ -357,6 +360,15 @@ def complete_issue(
 rest_author = github_read.graphql_author
 
 
+def rest_dependency_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "blocked_by": summary["blockedBy"],
+        "blocking": summary["blocking"],
+        "total_blocked_by": summary["totalBlockedBy"],
+        "total_blocking": summary["totalBlocking"],
+    }
+
+
 def rest_related_issue(node: dict[str, Any]) -> dict[str, Any]:
     return {
         "repo": node["repository"]["nameWithOwner"],
@@ -368,6 +380,7 @@ def rest_related_issue(node: dict[str, Any]) -> dict[str, Any]:
         **({"state_reason": node["stateReason"].lower() if node["stateReason"] else None} if "stateReason" in node else {}),
         **({"closed_at": node["closedAt"]} if "closedAt" in node else {}),
         **({"updated_at": node["updatedAt"]} if "updatedAt" in node else {}),
+        **({"issue_dependencies_summary": rest_dependency_summary(node["issueDependenciesSummary"])} if node.get("issueDependenciesSummary") else {}),
         **(
             {
                 "sub_issues_summary": {
@@ -434,18 +447,7 @@ def rest_issue(node: dict[str, Any]) -> dict[str, Any]:
         "labels": node["labels"],
         "milestone": rest_milestone(node["milestone"]),
         **({"parent": rest_related_issue(node["parent"]) if node["parent"] is not None else None} if "parent" in node else {}),
-        **(
-            {
-                "issue_dependencies_summary": {
-                    "blocked_by": deps["blockedBy"],
-                    "blocking": deps["blocking"],
-                    "total_blocked_by": deps["totalBlockedBy"],
-                    "total_blocking": deps["totalBlocking"],
-                }
-            }
-            if deps is not None
-            else {}
-        ),
+        **({"issue_dependencies_summary": rest_dependency_summary(deps)} if deps is not None else {}),
         **(
             {
                 "sub_issues_summary": {

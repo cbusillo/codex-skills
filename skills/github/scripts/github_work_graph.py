@@ -767,7 +767,7 @@ def read_native_graph(
             source = f"{repo}#{number}:{endpoint}"
             valid: list[dict[str, Any]] = []
             try:
-                fields, truncated = read_relationship_rows(repo, number, {}, read, limit=relationship_limit, fields=(field,))
+                fields, truncated = read_relationship_rows(repo, number, records.get((repo.casefold(), number), {}), read, limit=relationship_limit, fields=(field,))
                 for candidate in fields[field]:
                     github_plan_graph.native_issue_key(candidate)
                     valid.append(candidate)
