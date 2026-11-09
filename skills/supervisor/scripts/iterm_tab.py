@@ -470,8 +470,7 @@ def codex_daemon_without_ingress(command_text):
         word == "--remote" or word.startswith("--remote=") for word in words[1:])
 
 
-def production_read_notice(brief):
-    """First-screen notice for a declared production read; informative, never a launch gate."""
+def production_read_notice(brief: str) -> str:
     reads = re.findall(r"(?mi)^[^\S\n]*(?:[-*] )?(?:\*\*)?Production read:(?:\*\*)?[^\S\n]*(\S[^\n]*)$", brief)
     if not reads:
         return ""

@@ -202,9 +202,8 @@ def pointer(row: dict) -> str:
 
 def refused_read(row: dict) -> str:
     queue = row.get("queue") or {}
-    # A request naming its lead keeps the worker's words here once the queue rewrites next_action.
-    named = queue.get("reason") == "named_recipient_requires_reconciliation"
-    match = REFUSED_READ.match(queue.get("recorded_next_action" if named else "next_action") or "")
+    queue_replaced_workers_action = queue.get("reason") == "named_recipient_requires_reconciliation"
+    match = REFUSED_READ.match(queue.get("recorded_next_action" if queue_replaced_workers_action else "next_action") or "")
     return " ".join(match[1].split()) if match else ""
 
 
