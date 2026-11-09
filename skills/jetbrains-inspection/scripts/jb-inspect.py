@@ -1180,8 +1180,8 @@ def resolve_inspection_lane_selection(
 
 def inspection_scope_paths(args: argparse.Namespace, worktree_root: Path, scope: str) -> list[str]:
     if scope == "files":
-        files = [str(path) for path in (getattr(args, "files", []) or []) if clean_optional(path)]
-        if not files:
+        files = [str(path) for path in (getattr(args, "files", []) or [])]
+        if not any(clean_optional(path) for path in files):
             raise inspection_scope_error("inspection_lane_scope_empty")
         return files
     if scope == "changed_files":

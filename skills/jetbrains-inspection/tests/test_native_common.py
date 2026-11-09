@@ -233,14 +233,15 @@ class NativeCommonTests(unittest.TestCase):
         args = host.build_parser().parse_args(["agent-inspect", "--repo", str(self.repo), "--scope", "files", "--file", "src/a.py"])
         for inspection in ({}, lanes):
             self.declare_inspection(inspection)
-            for unavailable in (["src/missing.py"], ["src"], ["src/missing.py", "src"]):
+            for unavailable in (["src/missing.py"], ["src"], ["src/missing.py", "src"], [""], ["   "]):
                 with self.subTest(inspection=inspection, unavailable=unavailable):
                     args.files = ["src/a.py", *unavailable]
                     with self.assertRaises(host.InspectError) as refusal:
                         common.scope_selection(args, host)
                     self.assertEqual(refusal.exception.payload["error_reason"], host.EXPLICIT_INPUT_UNAVAILABLE)
                     self.assertEqual(refusal.exception.payload["skipped_files"],
-                                     [{"file": name, "reason": host.inspection_path_skip_reason(self.repo / name)} for name in unavailable])
+                                     [{"file": (self.repo / name).resolve().relative_to(self.repo).as_posix(),
+                                       "reason": host.inspection_path_skip_reason(self.repo / name)} for name in unavailable])
             args.files = ["src/a.py", "src/b.py"]
             self.assertEqual(common.scope_selection(args, host)[3], {"src/a.py", "src/b.py"})
 
