@@ -5575,6 +5575,7 @@ class ClaimTests(unittest.TestCase):
                             "body": "Closed session session-b\nEnded at: 2026-10-01T00:01:00Z\nSafe to exit: yes",
                             "issue_url": "https://api.github.com/repos/owner/control/issues/884"}
                 self.closed_pulls[88] = evidence
+                self.target_comments["/repos/owner/control/issues/884/comments"] = [evidence]
                 release["body"] = release_helper.prepare_release(
                     source, evidence, self.comments[:2], self.inventory, actor=TEST_BOT, role="supervisor",
                     releaser_session="supervisor-native", evidence_url="https://github.com/owner/control/issues/884#issuecomment-88",
@@ -5610,6 +5611,8 @@ class ClaimTests(unittest.TestCase):
                     "issue_url": f"https://api.github.com/repos/{thread}"}
         self.comments = [source, note] + ([] if elsewhere else [evidence])
         self.closed_pulls[88] = evidence
+        if elsewhere:
+            self.target_comments["/repos/owner/control/issues/884/comments"] = [evidence]
         self.comments.append({"id": 3, "user": {"login": TEST_BOT}, "created_at": "2026-10-01T00:08:00Z",
             "body": release_helper.prepare_release(
                 source, evidence, self.comments, self.inventory, actor=TEST_BOT, role="supervisor",

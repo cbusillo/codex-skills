@@ -2396,15 +2396,36 @@ def recorded_wait_decisions(wait: dict[str, Any], _repo: str) -> list[dict[str, 
     return found
 
 
-def _claim_release_evidence(evidence_repo, _number, evidence_id):
-    try:
-        _, evidence = api_json("GET", f"/repos/{evidence_repo}/issues/comments/{evidence_id}",
-                               bucket="rest_core", failed_step="claim_release_evidence")
-        return evidence
-    except PlanError as error:
-        if plan_error_status(error) not in {403, 404}:
-            raise
+def _release_evidence_comment(comments: list[dict[str, Any]], evidence_id: int) -> dict[str, Any] | None:
+    """Return the cited comment's release fields, identical from GraphQL and REST recovery."""
+    comment = next((c for c in comments if c.get("id") == evidence_id), None)
+    if comment is None:
         return None
+    match = github_plan_release.COMMENT_URL.fullmatch(comment.get("html_url") or "")
+    bound = f"https://api.github.com/repos/{match[1]}/issues/{match[2]}" if match else None
+    user = comment.get("user")
+    return {**{key: comment.get(key) for key in ("id", "body", "created_at", "updated_at")},
+            "issue_url": comment["issue_url"] if "issue_url" in comment else bound,
+            "user": {"login": user.get("login")} if isinstance(user, dict) else user}
+
+
+def _claim_release_evidence(repo: str, number: int, comments: list[dict[str, Any]]) -> Any:
+    """Read each cited discussion once per phase; GraphQL has no comment lookup by numeric ID."""
+    discussions = {(repo.casefold(), number): comments}
+
+    def read(evidence_repo: str, evidence_number: int, evidence_id: int) -> dict[str, Any] | None:
+        key = evidence_repo.casefold(), evidence_number
+        if key not in discussions:
+            try:
+                _, discussions[key] = read_planning_connection(evidence_repo, evidence_number, "comments")
+            except PlanError as error:
+                cause = error.failure.cause if error.failure is not None else None
+                if plan_error_status(error) not in {403, 404} and cause not in {"not_found", "permission_denied"}:
+                    raise
+                discussions[key] = []
+        return _release_evidence_comment(discussions[key], evidence_id)
+
+    return read
 
 
 def claim_current_status_record(issue: dict[str, Any], sections: dict[str, str], comments: list[dict[str, Any]],
@@ -2423,10 +2444,7 @@ def claim_current_status(issue: dict[str, Any], sections: dict[str, str], commen
 
 
 def comment_current_status(issue: dict[str, Any]) -> str:
-    _, comments = collect_paged_rest_items(
-        f"/repos/{issue['repo']}/issues/{issue['number']}/comments",
-        query={}, bucket="rest_core", step_prefix="status_comments",
-    )
+    _, comments = read_planning_connection(issue["repo"], issue["number"], "comments")
     status = claim_current_status(issue, issue_plan_sections(issue), comments, preserve_content=True)
     markers = {line.strip() for lines in section_machine_markers(status).values() for line in lines}
     return "\n".join(line for line in status.splitlines() if line.strip() not in markers).strip()
@@ -2439,7 +2457,7 @@ def claim_snapshot(ref: str, repo: str, *, allow_closed: bool = False,
         raise PlanError("Claim requires an open issue or pull request")
     sections, provenance = read_plan_sections(issue)
     _, comments = read_planning_connection(issue['repo'], issue['number'], "comments")
-    comments = github_plan_release.verified_comments(comments, _claim_release_evidence)
+    comments = github_plan_release.verified_comments(comments, _claim_release_evidence(issue["repo"], issue["number"], comments))
     seed_decision_discussion(issue["repo"], issue["number"],
         github_direction_next.discussion_snapshot(issue, comments, complete=True))
     can_update = "pull_request" not in issue and provenance["section_updates_allowed"]
@@ -2472,9 +2490,13 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
     if not evidence_match:
         raise PlanError("Evidence must be an exact GitHub issue or PR timeline-comment URL")
     evidence_repo, evidence_number, evidence_id = evidence_match.groups()
-    _, evidence = api_json("GET", f"/repos/{evidence_repo}/issues/comments/{evidence_id}", bucket="rest_core", failed_step="release_evidence")
-    if evidence.get("issue_url") != f"https://api.github.com/repos/{evidence_repo}/issues/{evidence_number}":
-        raise PlanError("Session-ended evidence is not on the cited issue")
+    def read_session_evidence() -> dict[str, Any]:
+        _, discussion = read_planning_connection(evidence_repo, int(evidence_number), "comments")
+        found = _release_evidence_comment(discussion, int(evidence_id))
+        if found is None or found.get("issue_url") != f"https://api.github.com/repos/{evidence_repo}/issues/{evidence_number}":
+            raise PlanError("Session-ended evidence is not on the cited issue")
+        return found
+    evidence = read_session_evidence()
     completed = []
     result = {}
     release_state = "not_started"
@@ -2504,8 +2526,7 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
         if source is None:
             raise PlanError("Source claim is missing from the canonical issue")
         source_inventory = claim_inventory(source_issue["repo"], source_issue["number"])
-        _, fresh_evidence = api_json("GET", f"/repos/{evidence_repo}/issues/comments/{evidence_id}", bucket="rest_core", failed_step="release_evidence_readback")
-        if fresh_evidence != evidence:
+        if read_session_evidence() != evidence:
             raise PlanError("Session-ended evidence changed during release")
         related_comments = []
         for related_id in args.related_claim_comment:
@@ -3591,7 +3612,8 @@ def claim_once(args: argparse.Namespace) -> None:
         sections, _ = read_plan_sections(target)
         if cached is None:
             _, target_comments = read_planning_connection(target_repo, pull['number'], "comments")
-            target_comments = github_plan_release.verified_comments(target_comments, _claim_release_evidence)
+            target_comments = github_plan_release.verified_comments(
+                target_comments, _claim_release_evidence(target_repo, pull["number"], target_comments))
             phase_records[key] = (target, sections.get("Current Status", ""), target_comments, False)
         phase_owners.add(key)
         return target, sections, target_comments
