@@ -17,6 +17,7 @@ import tarfile
 import tempfile
 import time
 import unittest
+from contextlib import AbstractContextManager
 from decimal import Decimal
 from multiprocessing.process import BaseProcess
 from pathlib import Path
@@ -208,7 +209,7 @@ class OverlayTests(unittest.TestCase):
         self.assertFalse(self.docker.volumes)
 
     def test_mutation_after_admission_retains_custody_even_after_reconstruction(self) -> None:
-        for mutation in ("bytes", "empty_directory", "mode", "inode"):
+        for mutation in ("bytes", "empty_directory", "mode"):
             with self.subTest(mutation=mutation):
                 self.docker.observe_overlay_lower(self.lower)
                 attachment = self.lower / "attachment"
@@ -217,13 +218,8 @@ class OverlayTests(unittest.TestCase):
                 elif mutation == "empty_directory":
                     (self.lower / "new-directory").mkdir()
                     (self.lower / "new-directory").chmod(0o777)
-                elif mutation == "mode":
-                    attachment.chmod(0o777)
                 else:
-                    replacement = self.root / "replacement"
-                    replacement.write_bytes(attachment.read_bytes())
-                    replacement.chmod(0o777)
-                    replacement.replace(attachment)
+                    attachment.chmod(0o777)
                 with patch.object(os, "uname", return_value=type("System", (), {"sysname": "Linux"})()):
                     self.docker.create_overlay(self.copy, mutation)
                 recovered = VolumeDocker(self.docker.root)
@@ -234,6 +230,154 @@ class OverlayTests(unittest.TestCase):
                         docker.cleanup_overlay_volumes()
                 self.assertTrue(recovered.volumes)
                 self.docker.volumes = {}
+
+    @staticmethod
+    def changed_stat(*, ino: int = 0, dev: int = 0, uid: int = 0) -> AbstractContextManager[object]:
+        original = Path.lstat
+
+        def lstat(path: Path) -> os.stat_result:
+            values = list(original(path)[:10])
+            values[1] += ino
+            values[2] += dev
+            values[4] += uid
+            return os.stat_result(values)
+
+        return patch.object(Path, "lstat", autospec=True, side_effect=lstat)
+
+    def create_labeled_overlay(self, lower: Path) -> None:
+        with patch.object(os, "uname", return_value=type("System", (), {"sysname": "Linux"})()):
+            self.docker.create_overlay({**self.copy, "source": str(lower)}, "owned")
+
+    def test_device_and_inode_change_with_unchanged_content_clears_custody(self) -> None:
+        self.create_labeled_overlay(self.lower)
+        with self.changed_stat(ino=1000, dev=1):
+            self.docker.cleanup_overlay_volumes()
+        self.assertFalse(self.docker.volumes)
+
+    def test_device_change_does_not_hide_changed_content(self) -> None:
+        self.create_labeled_overlay(self.lower)
+        (self.lower / "attachment").write_bytes(b"unexpected host change")
+        with self.changed_stat(ino=1000, dev=1), self.assertRaises(RuntimeError):
+            self.docker.cleanup_overlay_volumes()
+        self.assertEqual(len(self.docker.volumes), 2)
+
+    def retained_lower(self) -> tuple[Path, Path, dict[str, str]]:
+        job = self.root / "jobs" / "original"
+        lower = job / "inputs" / "3"
+        (lower / "nested").mkdir(parents=True)
+        (lower / "attachment").write_bytes(b"original attachment")
+        (lower / "nested" / "other").write_bytes(b"other")
+        heavy_run.Docker.stage_overlay_input(lower)
+        recorded = {
+            "inputs/3/attachment": heavy_run.hashlib.sha256(b"original attachment").hexdigest(),
+            "inputs/3/nested/other": heavy_run.hashlib.sha256(b"other").hexdigest(),
+            "images/image.tar": "0" * 64,
+        }
+        (job / "complete.json").write_text(json.dumps({"hashes": recorded, "images": []}))
+        return lower, job / "complete.json", recorded
+
+    def relabel_legacy(self, value: str = "a" * 64) -> None:
+        labels = self.docker.volumes["owned"]["Labels"]
+        labels[heavy_run.LOWER_DIGEST_LABEL] = value
+
+    def test_legacy_label_clears_only_with_exact_complete_file_evidence(self) -> None:
+        lower, _inventory, _recorded = self.retained_lower()
+        self.create_labeled_overlay(lower)
+        self.relabel_legacy()
+        with self.changed_stat(ino=1000, dev=1):
+            self.docker.cleanup_overlay_volumes()
+        self.assertFalse(self.docker.volumes)
+        self.assertEqual((lower / "attachment").read_bytes(), b"original attachment")
+
+    def test_legacy_label_without_complete_proof_keeps_custody(self) -> None:
+        def missing(_lower: Path, inventory: Path, _recorded: dict[str, str]) -> None:
+            inventory.unlink()
+
+        def malformed(_lower: Path, inventory: Path, _recorded: dict[str, str]) -> None:
+            inventory.write_text("{")
+
+        def hashes_not_a_map(_lower: Path, inventory: Path, _recorded: dict[str, str]) -> None:
+            inventory.write_text(json.dumps({"hashes": []}))
+
+        def no_entries_for_this_input(_lower: Path, inventory: Path, recorded: dict[str, str]) -> None:
+            inventory.write_text(json.dumps({"hashes": {key: value for key, value in recorded.items() if key.startswith("images/")}}))
+
+        def partial_inventory(_lower: Path, inventory: Path, recorded: dict[str, str]) -> None:
+            del recorded["inputs/3/attachment"]
+            inventory.write_text(json.dumps({"hashes": recorded}))
+
+        def recorded_file_removed(lower: Path, _inventory: Path, _recorded: dict[str, str]) -> None:
+            (lower / "nested" / "other").unlink()
+
+        def changed_bytes(lower: Path, _inventory: Path, _recorded: dict[str, str]) -> None:
+            (lower / "attachment").write_bytes(b"unexpected host change")
+
+        def made_executable(lower: Path, _inventory: Path, _recorded: dict[str, str]) -> None:
+            (lower / "attachment").chmod(0o777)
+
+        def added_empty_directory(lower: Path, _inventory: Path, _recorded: dict[str, str]) -> None:
+            (lower / "unrecorded").mkdir()
+            (lower / "unrecorded").chmod(0o777)
+
+        def aliased_inventory(_lower: Path, inventory: Path, _recorded: dict[str, str]) -> None:
+            target = inventory.with_name("elsewhere.json")
+            inventory.replace(target)
+            inventory.symlink_to(target)
+
+        for damage in (
+            missing,
+            malformed,
+            hashes_not_a_map,
+            no_entries_for_this_input,
+            partial_inventory,
+            recorded_file_removed,
+            changed_bytes,
+            made_executable,
+            added_empty_directory,
+            aliased_inventory,
+        ):
+            with self.subTest(damage=damage.__name__):
+                staged = self.retained_lower()
+                self.create_labeled_overlay(staged[0])
+                self.relabel_legacy()
+                damage(*staged)
+                with self.assertRaises(RuntimeError):
+                    self.docker.cleanup_overlay_volumes()
+                self.assertEqual(len(self.docker.volumes), 2)
+                self.docker.volumes = {}
+                shutil.rmtree(self.root / "jobs")
+                shutil.rmtree(self.docker.root / "volumes")
+
+    def test_legacy_label_refuses_a_lower_owned_by_someone_else(self) -> None:
+        lower, _inventory, _recorded = self.retained_lower()
+        self.create_labeled_overlay(lower)
+        self.relabel_legacy()
+        with self.changed_stat(uid=1), self.assertRaises(RuntimeError):
+            self.docker.cleanup_overlay_volumes()
+        self.assertEqual(len(self.docker.volumes), 2)
+
+    def test_legacy_proof_needs_the_job_input_layout(self) -> None:
+        self.create_labeled_overlay(self.lower)
+        self.relabel_legacy()
+        with self.assertRaises(RuntimeError):
+            self.docker.cleanup_overlay_volumes()
+        self.assertEqual(len(self.docker.volumes), 2)
+
+    def test_content_label_never_falls_back_to_legacy_evidence(self) -> None:
+        lower, _inventory, _recorded = self.retained_lower()
+        self.create_labeled_overlay(lower)
+        self.relabel_legacy(heavy_run.LOWER_DIGEST_PREFIX + "a" * 64)
+        with self.assertRaises(RuntimeError):
+            self.docker.cleanup_overlay_volumes()
+        self.assertEqual(len(self.docker.volumes), 2)
+
+    def test_unrecognized_label_format_keeps_custody(self) -> None:
+        lower, _inventory, _recorded = self.retained_lower()
+        self.create_labeled_overlay(lower)
+        self.relabel_legacy("not-a-recognized-digest")
+        with self.assertRaises(RuntimeError):
+            self.docker.cleanup_overlay_volumes()
+        self.assertEqual(len(self.docker.volumes), 2)
 
     def test_aliases_special_files_and_mount_option_injection_are_refused(self) -> None:
         alias = self.root / "alias"
