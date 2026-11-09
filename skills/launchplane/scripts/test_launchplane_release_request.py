@@ -311,4 +311,4 @@ def test_incomplete_requests_stop_before_any_network(args: list[str]) -> None:
 
 
 if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__, "-q"]))
+    raise SystemExit(pytest.main([__file__]))
