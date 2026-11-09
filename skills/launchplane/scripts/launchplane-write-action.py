@@ -86,6 +86,7 @@ READ_ONLY_OPERATIONS = {
     "product-status-read",
     "product-environment-read",
     "product-activity-read",
+    "odoo-host-source-grants-read",
     "protected-artifacts-read",
     "product-profile-read",
     "path-check",
@@ -6279,6 +6280,60 @@ def summarize_product_environment_read(
     )
 
 
+ODOO_HOST_GRANT_FIELDS = {
+    "source", "grants", "grant_names", "failure_stage", "container_cleanup", "rechecks",
+    "evidence_sha256", "applied", "values_redacted",
+}
+ODOO_HOST_GRANT_NAME_RE = re.compile(r"^[A-Z][A-Z ]{0,39}$")
+ODOO_HOST_GRANT_NAMES_MAX = 32
+
+
+def _project_odoo_host_grants(value: object) -> dict[str, object]:
+    source = _require_exact_fields(value, ODOO_HOST_GRANT_FIELDS)
+    names = source["grant_names"]
+    if (
+        source["source"] != "fishbowl"
+        or source["grants"] not in {"read_only", "unsafe", "unknown"}
+        or source["container_cleanup"] not in {"not_started", "removed", "unverified"}
+        or source["rechecks"] not in {"current", "changed", "not_run"}
+        or source["applied"] is not False
+        or source["values_redacted"] is not True
+        or not isinstance(names, list)
+        or len(names) > ODOO_HOST_GRANT_NAMES_MAX
+        or not all(isinstance(name, str) and ODOO_HOST_GRANT_NAME_RE.fullmatch(name) for name in names)
+    ):
+        raise LaunchplaneSafetyError("invalid_response")
+    evidence = source["evidence_sha256"]
+    if evidence != "" and not (isinstance(evidence, str) and re.fullmatch(r"[a-f0-9]{64}", evidence)):
+        raise LaunchplaneSafetyError("invalid_response")
+    failure = source["failure_stage"]
+    return {
+        "source": "fishbowl",
+        "grants": source["grants"],
+        "grant_names": names,
+        "failure_stage": None if failure is None else public_code(failure),
+        "container_cleanup": source["container_cleanup"],
+        "rechecks": source["rechecks"],
+        "evidence_sha256": evidence,
+    }
+
+
+def summarize_odoo_host_source_grants_read(
+    *, request: dict[str, object], provider_payload: dict[str, Any]
+) -> dict[str, object]:
+    return _summarize_product_read(
+        operation="odoo-host-source-grants-read",
+        request=request,
+        provider_payload=provider_payload,
+        result_key="result",
+        project=_project_odoo_host_grants,
+        recommendation=(
+            "Only grants read_only with container_cleanup removed and rechecks current proves "
+            "the account's privileges. It does not qualify an import copy or authorize an importer."
+        ),
+    )
+
+
 def summarize_product_profile_read(
     *, request: dict[str, object], provider_payload: dict[str, Any]
 ) -> dict[str, object]:
@@ -6725,6 +6780,7 @@ PRODUCT_READ_SUMMARIZERS = {
     "product-status-read": summarize_product_status_read,
     "product-environment-read": summarize_product_environment_read,
     "product-activity-read": summarize_product_activity_read,
+    "odoo-host-source-grants-read": summarize_odoo_host_source_grants_read,
     "protected-artifacts-read": summarize_protected_artifacts_read,
     "product-profile-read": summarize_product_profile_read,
     "preview-history-read": summarize_preview_history_read,
@@ -12063,6 +12119,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     product_activity_read.add_argument("--product", required=True)
 
+    odoo_host_grants_read = subparsers.add_parser(
+        "odoo-host-source-grants-read",
+        help="Run the fixed read-only Fishbowl grant probe on the testing lane's host.",
+    )
+    odoo_host_grants_read.add_argument("--product", required=True)
+
     protected_artifacts_read = subparsers.add_parser(
         "protected-artifacts-read",
         help="Read bounded protected-artifact entries and sanitized warnings.",
@@ -13058,7 +13120,7 @@ def main(argv: list[str]) -> int:
                 args=args, operation=args.command, request=request,
                 path=helper_command_path(args.command), query=query,
             )
-        if args.command == "product-activity-read":
+        if args.command in {"product-activity-read", "odoo-host-source-grants-read"}:
             path = _product_read_path(args.command, product=args.product)
             request = {
                 "product": _request_identifier(args.product),

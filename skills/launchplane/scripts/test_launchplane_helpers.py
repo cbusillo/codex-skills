@@ -3742,6 +3742,42 @@ def test_product_environment_read_accepts_and_drops_host_network_capacity(capaci
     assert "network_capacity" not in json.dumps(payload)
 
 
+def _odoo_host_grants_response(**changes: Any) -> dict[str, Any]:
+    result = {
+        "source": "fishbowl", "grants": "read_only", "grant_names": ["SELECT"], "failure_stage": None,
+        "container_cleanup": "removed", "rechecks": "current", "evidence_sha256": "a" * 64,
+        "applied": False, "values_redacted": True,
+    }
+    return {"status": "ok", "trace_id": "launchplane_req_grants", "result": {**result, **changes}}
+
+
+def test_odoo_host_grants_read_calls_fixed_testing_route_and_projects_result() -> None:
+    argv = ["odoo-host-source-grants-read", "--product", "example-product"]
+    status, payload, calls = _run_product_read(argv, _odoo_host_grants_response())
+    assert status == 0, payload
+    assert calls[0]["path"] == "/v1/products/example-product/environments/testing/odoo-source-grants/host"
+    assert calls[0]["query"] == {}
+    assert payload["result"]["grants"] == "read_only"
+    assert payload["result"]["grant_names"] == ["SELECT"]
+    assert payload["result"]["container_cleanup"] == "removed"
+
+
+@pytest.mark.parametrize("changes", [
+    {"grant_names": ["GRANT SELECT ON *.* TO 'reader'@'%'"]},
+    {"grants": "writer"},
+    {"source": "cm_data"},
+    {"values_redacted": False},
+    {"container_cleanup": "maybe"},
+    {"evidence_sha256": "not-a-digest"},
+    {"account": "reader"},
+])
+def test_odoo_host_grants_read_refuses_rows_or_unexpected_shapes(changes: dict[str, Any]) -> None:
+    argv = ["odoo-host-source-grants-read", "--product", "example-product"]
+    status, payload, _calls = _run_product_read(argv, _odoo_host_grants_response(**changes))
+    assert status != 0
+    assert "reader" not in json.dumps(payload)
+
+
 def test_product_environment_read_uses_path_route_and_projects_deploy_identity() -> None:
     argv = ["product-environment-read", "--product", "example-product", "--environment", "testing"]
     status, payload, calls = _run_product_read(argv, _product_environment_response())
