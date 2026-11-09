@@ -11,7 +11,7 @@ import os
 import subprocess
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from subprocess import SubprocessError
 
@@ -33,7 +33,6 @@ from check_operation import (
     release,
 )
 from codex_session_proxy import read_launch_receipt
-from skills.github.scripts.github_comment import RECONCILIATION_CLOCK_SKEW_SECONDS, canonical_comment_body
 from session_closeout import closeout_mutations_settled, explicit_session, require, validate_retired_closeout
 from session_record import (
     TranscriptChanged,
@@ -43,6 +42,8 @@ from session_record import (
     terminal_entry,
     text_content,
 )
+
+from skills.github.scripts.github_comment import RECONCILIATION_CLOCK_SKEW_SECONDS, canonical_comment_body
 
 
 def observe(entry: dict, landing: str, *, after_size: int = 0, final: bool = False) -> dict:
@@ -282,7 +283,7 @@ def verify_smoke(config: dict, operation: Operation, harness: str, provider: str
     observe(entry, landing, after_size=operation.state["steps"][harness + "_acknowledgement"]["size"], final=True)
     operation.gate = harness + "_handoff"
     reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 120)
-    since = comment_read_since(datetime.fromtimestamp(operation.state["steps"][harness + "_request_time"]["value"], timezone.utc))
+    since = comment_read_since(datetime.fromtimestamp(operation.state["steps"][harness + "_request_time"]["value"], UTC))
     comments = reader.paged_json(f"/repos/{repo}/issues/{config['issue']}/comments", step_prefix=harness + "_handoff",
                                  params={"since": since}, required_query_params={"since": since})
     matches = [
@@ -373,9 +374,10 @@ def post_result(config: dict, operation: Operation, result: dict) -> str:
     operation_id = fingerprint(result)
     phase = "report_" + operation_id
     prior = operation.state["steps"].get(phase)
+    retries = operation.state.get("report_retries", {}).get(phase, [])
     if prior and prior.get("complete") is True:
         return prior["result"]["url"]
-    if prior:
+    if prior or retries:
         require(body.is_file(), "report", "original report body is missing; no write replayed")
     else:
         outcome = "PASSED" if result["ok"] else "FAILED"
@@ -389,49 +391,107 @@ def post_result(config: dict, operation: Operation, result: dict) -> str:
             "Coverage is containment; per-session loaded SHA was not measured.\n"
             + ("Bootstrap: earlier history is unverified.\n" if result.get("bootstrap") else "")
             + (f"Supersedes failed verification: {result['superseded_url']}\n" if result.get("superseded_url") else "")
-            + (f"Superseded attempt: `{Path(result['superseded']).name}`; "
-               f"failed gate: `{previous.get('gate', 'verification')}`; commit: `{previous['landings'][-1]}`.\n"
-               if result.get("superseded") else "")
+            + (
+                f"Superseded attempt: `{Path(result['superseded']).name}`; "
+                f"failed gate: `{previous.get('gate', 'verification')}`; commit: `{previous['landings'][-1]}`.\n"
+                if result.get("superseded")
+                else ""
+            )
             + (f"Smoke skipped: {result['smoke_skipped']}.\n" if result.get("smoke_skipped") else "")
             + "\n".join(result.get("smoke_handoffs", []))
             + (
                 f"\nFailed gate: {result.get('gate', 'verification')}. Inspect the retained service evidence.\n"
                 if not result["ok"]
                 else "\nRuntime reconciliation completed. Live smoke and closeout: "
-                + ("skipped for documentation only.\n" if result.get("smoke_skipped") else "both sessions acknowledged the landing and closed normally.\n")
+                + (
+                    "skipped for documentation only.\n"
+                    if result.get("smoke_skipped")
+                    else "both sessions acknowledged the landing and closed normally.\n"
+                )
             )
         )
-    def reconcile_report() -> str:
-        saved = operation.state["steps"][phase]
+
+    def reconcile_report() -> str | None:
+        active = operation.state["steps"].get(phase)
+        saved = active or retries[-1]["step"]
         reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 120)
-        started = claim_release.stamp(saved["started_at"])
+        started = claim_release.stamp(retries[0]["step"]["started_at"] if retries else saved["started_at"])
         since = comment_read_since(started)
-        comments = reader.paged_json(f"/repos/{config['repo']}/issues/{config['issue']}/comments", step_prefix="report_reconciliation",
-                                     params={"since": since}, required_query_params={"since": since})
-        matches = [row for row in comments
-                   if (row.get("user") or {}).get("login") == github_identity.automation_login()
-                   and canonical_comment_body(row["body"]) == canonical_comment_body(body.read_text())
-                   and claim_release.stamp(row["created_at"]) >= started - timedelta(seconds=RECONCILIATION_CLOCK_SKEW_SECONDS)]
-        saved["delivery"] = "not_posted" if not matches and saved.get("process_exited") is True else "unknown"
-        save_state(operation.path, operation.state)
+        comments = reader.paged_json(
+            f"/repos/{config['repo']}/issues/{config['issue']}/comments",
+            step_prefix="report_reconciliation",
+            params={"since": since},
+            required_query_params={"since": since},
+        )
+        matches = [
+            row
+            for row in comments
+            if (row.get("user") or {}).get("login") == github_identity.automation_login()
+            and canonical_comment_body(row["body"]) == canonical_comment_body(body.read_text())
+            and claim_release.stamp(row["created_at"]) >= started - timedelta(seconds=RECONCILIATION_CLOCK_SKEW_SECONDS)
+        ]
+        if active:
+            saved["delivery"] = "not_posted" if not matches and saved.get("process_exited") is True else "unknown"
+            save_state(operation.path, operation.state)
+        if not matches and not active:
+            return None
+        if not matches and saved.get("process_exited") is True:
+            helper = json.loads((operation.evidence / (phase + ".json")).read_text())
+            payload = json.loads(helper["stdout"]) if helper.get("stdout") else {}
+            expected = github_identity.automation_login()
+            if (
+                isinstance(payload, dict)
+                and payload.get("ok") is False
+                and payload.get("retry_exhausted_reason") == "deadline_exceeded"
+                and (payload.get("failure") or {}).get("cause") == "deadline_exceeded"
+                and payload.get("write_outcome") in {"not_started", "rejected"}
+                and payload.get("outcome_certainty") in {"not_applicable", "confirmed_not_applied"}
+                and expected
+                and payload.get("expected_actor") == expected
+                and payload.get("actor") in {None, expected}
+                and not (payload.get("reconciliation") or {}).get("result")
+                and not {"create_comment", "reconcile_create_comment"}.intersection(payload.get("completed_steps", []))
+            ):
+                operation.state.setdefault("report_retries", {}).setdefault(phase, []).append({"step": saved, "helper": helper})
+                operation.state["steps"].pop(phase)
+                save_state(operation.path, operation.state)
+                raise RetryableGate("report", "report deadline expired with confirmed no write and complete absent readback")
         require(len(matches) == 1, "report", "original report is not posted or ambiguous; no write replayed")
         operation.state["steps"][phase] = {"complete": True, "result": {"url": matches[0]["html_url"]}}
         save_state(operation.path, operation.state)
         return matches[0]["html_url"]
 
-    if prior and prior.get("complete") is not True:
-        require(bool(prior.get("started_at")), "report", "legacy report has unknown delivery; no write replayed")
-        return reconcile_report()
+    if prior or retries:
+        require(
+            bool((prior or retries[0]["step"]).get("started_at")), "report", "legacy report has unknown delivery; no write replayed"
+        )
+        reconciled = reconcile_report()
+        if reconciled:
+            return reconciled
     try:
+        timeout = 360
+        deadline = min(time.time() + timeout - 30, float(os.environ.get("GITHUB_RETRY_DEADLINE_AT", "inf")))
         posted = operation.run(
             phase,
-            [str(Path(config["source_worktree"]) / "skills/github/scripts/gh-comment"),
-             "issue", str(config["issue"]), "--repo", config["repo"], "--body-file", str(body)],
-            once=True, timeout=360,
+            [
+                "env",
+                f"GITHUB_RETRY_DEADLINE_AT={deadline}",
+                str(Path(config["source_worktree"]) / "skills/github/scripts/gh-comment"),
+                "issue",
+                str(config["issue"]),
+                "--repo",
+                config["repo"],
+                "--body-file",
+                str(body),
+            ],
+            once=True,
+            timeout=timeout,
         )
     except GateFailed:
         if operation.state["steps"].get(phase, {}).get("complete") is False:
-            return reconcile_report()
+            reconciled = reconcile_report()
+            if reconciled:
+                return reconciled
         raise
     return posted["url"]
 
@@ -441,11 +501,13 @@ def superseded_closeout(operation: Operation, harness: str, source: dict) -> tup
     path = evidence / "operation.json"
     original = json.loads(path.read_text()) if path.exists() else {}
     if original:
-        require(original.get("identity") == [source["ledger"], source["session_id"]]
-                and original.get("generation") == source["generation"],
-                "supersede", "original closeout identity or generation changed")
-        require(closeout_mutations_settled(original),
-                "supersede", "original closeout has an uncertain mutation")
+        require(
+            original.get("identity") == [source["ledger"], source["session_id"]]
+            and original.get("generation") == source["generation"],
+            "supersede",
+            "original closeout identity or generation changed",
+        )
+        require(closeout_mutations_settled(original), "supersede", "original closeout has an uncertain mutation")
     else:
         require(harness + "_closeout" not in operation.state["steps"], "supersede", "recorded closeout journal is missing")
     if original.get("retired_generation"):
@@ -621,6 +683,11 @@ def main() -> int:
         if args.poll:
             try:
                 result = poll(config, args.evidence, supersede_failed=args.supersede_failed)
+            except GitHubReadError as error:
+                if not (error.result.failure and error.result.failure.cause == "deadline_exceeded"
+                        and error.result.retry_summary and error.result.retry_summary.exhausted_reason == "deadline_exceeded"):
+                    raise
+                result = retryable_poll(args.evidence, RetryableGate("identity", str(error)))
             except RetryableGate as error:
                 result = retryable_poll(args.evidence, error)
             print(json.dumps(result, separators=(",", ":")))
