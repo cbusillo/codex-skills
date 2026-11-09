@@ -1724,21 +1724,21 @@ def outbound_states_for_thread(
     return results
 
 
-def unchanged_threads(candidate_ids: dict[tuple[str, int], set[Any]], settings: dict[str, Any], identity: str) -> set[tuple[str, int]]:
-    read_scope = settings.get("read_scope")
+def unchanged_threads(candidate_ids: dict[tuple[str, int], set[Any]], read_scope: ReadScope | None,
+                      always_read: set[tuple[str, int]], identity: str) -> set[tuple[str, int]]:
     if read_scope is None or read_scope.identity != identity:
         return set()
     owners = {owner.casefold() for owner in read_scope.owners}
-    named = {(repo.casefold(), number) for repo, number in settings["threads"]}
+    forced = {(repo.casefold(), number) for repo, number in always_read} | read_scope.threads
     return {
         (repo, number) for repo, number in candidate_ids
         if repo.split("/")[0].casefold() in owners and (repo.casefold(), number) in read_scope.known
-        and (repo.casefold(), number) not in named | read_scope.threads
+        and (repo.casefold(), number) not in forced
     }
 
 
-def classification_identity(scan: str, people: dict[str, Any]) -> str:
-    basis = json.dumps([scan, people.get("address_names"), people.get("director_names")], sort_keys=True, default=str)
+def classification_identity(scan: str, people: dict[str, Any], window_label: str) -> str:
+    basis = json.dumps([scan, people.get("address_names"), people.get("director_names"), window_label], sort_keys=True, default=str)
     return hashlib.sha256(basis.encode()).hexdigest()
 
 
@@ -1862,9 +1862,9 @@ def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, .
         repositories = rollup.unique([*repositories, *(repo for repo, _ in found)])
 
     candidate_count = len(candidate_ids)
-    read_basis = classification_identity(identity, people)
+    read_basis = classification_identity(identity, people, str(settings.get("window_label")))
     candidate_pointers = sorted({(repo.casefold(), number) for repo, number in candidate_ids})
-    unchanged = unchanged_threads(candidate_ids, settings, read_basis)
+    unchanged = unchanged_threads(candidate_ids, settings.get("read_scope"), full_history_threads, read_basis)
     for thread_key in unchanged:
         candidate_ids.pop(thread_key)
     collected_threads: list[tuple[dict[str, Any], list[Comment], set[tuple[str, int]]]] = []

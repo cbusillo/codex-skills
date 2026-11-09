@@ -940,9 +940,9 @@ class RadarFeedTests(unittest.TestCase):
         self.assertEqual(changed.call_args.args[1:], (["director"], RADAR_START))
         candidates = {("director/app", 4): set(), ("director/app", 9): set(), ("director/app", 7): set(),
                       ("director/new", 2): set(), ("client/app", 3): set(), ("director/named", 1): set()}
-        settings = {"read_scope": scope, "threads": [("Director/Named", 1)]}
-        self.assertEqual(routine_check.radar.unchanged_threads(candidates, settings, "basis"), {("director/app", 7)})
-        self.assertEqual(routine_check.radar.unchanged_threads(candidates, settings, "changed people"), set())
+        always_read = {("Director/Named", 1)}
+        self.assertEqual(routine_check.radar.unchanged_threads(candidates, scope, always_read, "basis"), {("director/app", 7)})
+        self.assertEqual(routine_check.radar.unchanged_threads(candidates, scope, always_read, "changed people"), set())
 
     def test_an_incomplete_search_or_a_six_hour_gap_reads_every_thread(self) -> None:
         with radar_feed_showing(complete=False):

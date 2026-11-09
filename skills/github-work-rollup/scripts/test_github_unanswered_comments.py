@@ -2565,9 +2565,7 @@ if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
 
 
-def test_a_read_scope_skips_only_unchanged_threads_in_the_owners_repositories(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-) -> None:
+def test_full_history_threads_are_read_even_when_known_and_unchanged(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     outside = comment(comment_id=2, author="outside-user", body="Which format?", created_at="2026-07-25T10:30:00Z")
     patch_thread(monkeypatch, thread(), [outside], {outside.global_key: []})
     reads: list[tuple[str, int]] = []
@@ -2575,23 +2573,25 @@ def test_a_read_scope_skips_only_unchanged_threads_in_the_owners_repositories(
     patch_radar(monkeypatch, "collect_thread", lambda repo, number, *rest: reads.append((repo, number)) or read_thread(repo, number, *rest))
     settings = thread_settings(thread=["example/named#7"], self_login=["cbusillo"], bot_login=["fixture-automation"],
                                people_index=people_index(tmp_path))
-    first = github_unanswered_comments.collect_payload(settings, comment_hints=(outside,))
-    basis = first["coverage"]["read_basis"]
+    basis = github_unanswered_comments.collect_payload(settings, comment_hints=(outside,))["coverage"]["read_basis"]
     assert ["example/repo", 42] in [list(pointer) for pointer in basis["candidates"]]
-    known = frozenset({("example/repo", 42)})
+    known = frozenset({("example/repo", 42), ("example/named", 7)})
+    reads.clear()
+    settings["read_scope"] = github_unanswered_comments.ReadScope(frozenset({"example"}), frozenset(), known, basis["identity"])
+    payload = github_unanswered_comments.collect_payload(settings, comment_hints=(outside,))
+    assert sorted(reads) == [("example/named", 7), ("example/repo", 42)]
+    assert outside.url in {row["comment_url"] for row in payload["attention"]}
 
-    def read_with(read_scope: github_unanswered_comments.ReadScope) -> dict[str, Any]:
-        reads.clear()
-        settings["read_scope"] = read_scope
-        return github_unanswered_comments.collect_payload(settings, comment_hints=(outside,))
 
-    unchanged = read_with(github_unanswered_comments.ReadScope(frozenset({"example"}), frozenset(), known, basis["identity"]))
+def test_threads_selected_as_unchanged_are_not_read(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    outside = comment(comment_id=2, author="outside-user", body="Which format?", created_at="2026-07-25T10:30:00Z")
+    patch_thread(monkeypatch, thread(), [outside], {outside.global_key: []})
+    reads: list[tuple[str, int]] = []
+    read_thread = github_unanswered_comments.collect_thread
+    patch_radar(monkeypatch, "collect_thread", lambda repo, number, *rest: reads.append((repo, number)) or read_thread(repo, number, *rest))
+    patch_radar(monkeypatch, "unchanged_threads", lambda candidates, *_: {key for key in candidates if key == ("example/repo", 42)})
+    settings = thread_settings(thread=["example/named#7"], self_login=["cbusillo"], bot_login=["fixture-automation"],
+                               people_index=people_index(tmp_path))
+    payload = github_unanswered_comments.collect_payload(settings, comment_hints=(outside,))
     assert reads == [("example/named", 7)]
-    assert unchanged["coverage"]["unchanged_thread_count"] == 1
-    for scope in (
-        github_unanswered_comments.ReadScope(frozenset({"example"}), known, known, basis["identity"]),
-        github_unanswered_comments.ReadScope(frozenset({"example"}), frozenset(), frozenset(), basis["identity"]),
-        github_unanswered_comments.ReadScope(frozenset({"example"}), frozenset(), known, "another people index"),
-    ):
-        read_with(scope)
-        assert sorted(reads) == [("example/named", 7), ("example/repo", 42)]
+    assert payload["coverage"]["unchanged_thread_count"] == 1
