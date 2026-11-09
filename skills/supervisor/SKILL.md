@@ -398,8 +398,8 @@ hold. Read-only work answering a wait can proceed with its ownership check.
 Fix/diagnosis briefs ask which invariant should have prevented the failure,
 why it went unnoticed, which global paths it could stop, and whether the stuck
 condition persists. Check which visual thing a request means before briefing.
-New scope needs a Director decision and a fresh brief/session; do not widen a
-running brief. If no supported operational route exists, brief designing one.
+New scope needs a fresh brief/session; do not widen a running brief. If no
+supported operational route exists, brief designing one.
 Use the completing PR's tests and normal deploy health checks, not an extra
 Supervisor qualification step. Preserve real waits and remaining engineering.
 

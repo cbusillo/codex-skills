@@ -318,9 +318,10 @@ Once per weekly audit, also search the open `friction` issues the same way
 design session on a model other than the one that produced the runs being
 audited. It groups them by underlying cause and proposes one fix per cause under
 the shared [simplification and reporting guidance](../references/execution-scope.md).
-Put each fix to the Director as a question; nothing is built until the Director approves
-it. Link the question from each grouped issue, and close those issues with the
-PR that lands the approved fix.
+A fix goes to the Director only when the
+[question filter](../references/talking-with-the-director.md#decisions-holds-and-work-state)
+sends it there; otherwise it is ordinary work. Close the grouped issues with the
+PR that lands their fix.
 
 Each adopted repository's own `DIRECTION.md` and milestones are checked in
 that one weekly audit session. An audit does not count as the Director's daily
