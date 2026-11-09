@@ -197,7 +197,6 @@ def pointer(row: dict) -> str:
 
 
 def queue_rows(selection: dict) -> list[tuple[str, dict]]:
-    """Name each open row the digest prints from the planning queue, once."""
     rows: dict[str, tuple[str, dict]] = {}
     actors = supervisor_actors()
     for field in ("candidates", "excluded", "needs_status"):
@@ -240,7 +239,6 @@ def request_text(row: dict) -> str:
 def primary_reads(selection: dict, sessions: list[dict], *, owner_review: Callable[[str, int], dict | None],
                   client_release: Callable[[str], Any], production: Callable[[str], dict],
                   anchor_response: Callable[[str], str]) -> dict:
-    """Read the source each wait or request summarizes; a failed read is UNKNOWN."""
     errors: list[dict] = []
     client_waits = {pointer(row) for row in client_wait_rows(selection)}
     rows = [*(row for _, row in queue_rows(selection)), *client_wait_rows(selection), *milestone_waits(selection)]
@@ -248,7 +246,7 @@ def primary_reads(selection: dict, sessions: list[dict], *, owner_review: Callab
     def attempt(label: str, read: Callable[[], Any]) -> Any:
         try:
             return read()
-        except (Exception, SystemExit) as error:  # noqa: BLE001 - every failed primary read must stay UNKNOWN
+        except (Exception, SystemExit) as error:  # noqa: BLE001
             errors.append({"read": label, "error": str(error)[:200]})
             return None
 
@@ -516,7 +514,6 @@ def build_readers(args: argparse.Namespace, watch: dict) -> dict[str, Callable[[
 
 
 def primary_readers(args: argparse.Namespace) -> dict[str, Callable]:
-    """Bind the existing GitHub and Launchplane reads the digest cites as primary."""
     def reader() -> github_read.GitHubReader:
         return github_read.GitHubReader(operation="github.supervisor.routine_check",
                                         **github_access.reader_options(getattr(args, "github_cli_login", None)),
@@ -559,7 +556,6 @@ def primary_readers(args: argparse.Namespace) -> dict[str, Callable]:
 
 
 def anchor_note(discussion: dict) -> str:
-    """Count an edit to the anchor's Current Status as a response, like a comment."""
     edited = recorded_time((discussion.get("_graphql") or {}).get("lastEditedAt"))
     status = edited if edited and "## Current Status" in (discussion.get("body") or "") else None
     latest = max(filter(None, (recorded_time(comment.get("created_at")) for comment in discussion.get("comments", []))), default=None)

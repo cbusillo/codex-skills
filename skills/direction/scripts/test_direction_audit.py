@@ -3887,7 +3887,6 @@ def test_waiting_cross_repository_blocker_outside_milestones_is_a_named_finding(
         assert ("waiting_blocks_other_repository" in kinds(run(module, issues=found, repo="owner/repo"))) is not cleared
         reused = module.stale_wait_report(found, "owner/repo", fetch=current)
         assert reused["items"] == standalone["items"]
-        # A recorded wait reads its discussion once more to test whether it can still end.
         assert reads.count("repos/owner/repo/issues/2554/comments") == (1 if cleared else 2)
         assert not any(f"repos/owner/repo/issues/{number}/comments" in reads for number in range(100))
 

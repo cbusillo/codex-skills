@@ -69,7 +69,6 @@ def candidates(ledger: Path, session_id: str | None = None) -> list[dict]:
 
 
 def session_anchor(entry: dict) -> str | None:
-    """Name the session's issue as OWNER/REPO#NUMBER when the ledger records both."""
     issue, repository = entry.get("issue"), entry.get("repository")
     return f"{repository}#{issue}" if issue and repository else None
 

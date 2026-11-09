@@ -922,11 +922,10 @@ class PrimaryReadTests(unittest.TestCase):
         return routine_check.digest({"next": selection, "primary": primary, "sessions": {"sessions": sessions or []}}).splitlines()
 
     def test_supervisor_request_is_its_own_aged_row_that_repeats_until_the_record_changes(self) -> None:
-        # The executor's 10:42 AM request sat as one of 44 NEXT rows until 7:55 PM.
         request = queue_row(746, "agent:supervisor", "Restore the stopped runner\nwith details", recorded="2026-11-08T15:42:00+00:00")
         other = queue_row(1, "agent", "Build the page", recorded="2026-11-08T19:50:00+00:00")
         selection = {"candidates": [other, request], "needs_status": [request]}
-        for _ in range(2):  # Each check repeats it; nothing here records delivery.
+        for _ in range(2):
             lines = self.run_digest(selection)
             action = [line for line in lines if line.startswith("SUPERVISOR_ACTION")]
             self.assertEqual(len(action), 1)

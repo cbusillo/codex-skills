@@ -949,11 +949,6 @@ def record_drift(
     issue: dict[str, Any], repo: str, status: str, wait: dict[str, Any] | None, *,
     read: Callable[[str], Any], now: dt.datetime,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Find records that say something their own evidence has overtaken.
-
-    Each finding quotes the exact record it matched; a live wait stays a wait.
-    A read that fails is reported as unavailable, never as a finding.
-    """
     number = issue["number"]
     evidence: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
@@ -1042,7 +1037,6 @@ def record_drift(
 
 
 def status_last_verified(status: str) -> str | None:
-    """Return an ISO date from Current Status's Last verified field when it has one."""
     field = status_field(status, "Last verified") if status else ""
     match = re.search(r"\d{4}-\d{2}-\d{2}(?:T[0-9:.+-]+Z?)?", field)
     if match:
@@ -1059,7 +1053,6 @@ def status_last_verified(status: str) -> str | None:
 
 
 def child_count(issue: dict[str, Any]) -> int | None:
-    """Known native child count, or None when this listing does not say."""
     summary = issue.get("sub_issues_summary")
     if isinstance(summary, dict) and isinstance(summary.get("total"), int):
         return summary["total"]

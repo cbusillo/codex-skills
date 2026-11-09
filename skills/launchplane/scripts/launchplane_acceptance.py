@@ -144,7 +144,6 @@ def read_client_release(repository: str) -> ClientRelease:
 
 
 def read_production_commit(repository: str) -> ProductionCommit:
-    """Return production's deployed commit from Launchplane's promotion status."""
     target_key = repository_key(repository)
     try:
         settings = _settings()
