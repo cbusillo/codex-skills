@@ -54,7 +54,7 @@ ISSUE_FIELDS = """databaseId number title body state stateReason createdAt updat
  issueDependenciesSummary { blockedBy blocking totalBlockedBy totalBlocking }
  subIssuesSummary { total completed percentCompleted }"""
 RELATED_FIELDS = "number title state url repository { nameWithOwner }"
-CLOSURE_FIELDS = RELATED_FIELDS + " body stateReason closedAt subIssuesSummary { total completed percentCompleted }"
+CLOSURE_FIELDS = RELATED_FIELDS + " body stateReason closedAt updatedAt subIssuesSummary { total completed percentCompleted }"
 CONNECTIONS = {
     "labels": "name",
     "blockedBy": CLOSURE_FIELDS,
@@ -367,6 +367,7 @@ def rest_related_issue(node: dict[str, Any]) -> dict[str, Any]:
         **({"body": node["body"]} if "body" in node else {}),
         **({"state_reason": node["stateReason"].lower() if node["stateReason"] else None} if "stateReason" in node else {}),
         **({"closed_at": node["closedAt"]} if "closedAt" in node else {}),
+        **({"updated_at": node["updatedAt"]} if "updatedAt" in node else {}),
         **(
             {
                 "sub_issues_summary": {

@@ -387,6 +387,89 @@ def bare_reference_missing(exc: AuditError, explicit: bool) -> bool:
     return not explicit and isinstance(exc, ReferenceNotFound)
 
 
+github_plan_graph = github_work_graph.github_plan_graph
+GRAPH_READ_ERRORS = (github_plan_graph.github_read.GitHubReadError, github_plan_graph.github_read.GitHubReadShapeError,
+                     KeyError, TypeError, ValueError)
+REST_ISSUE_RECORD = re.compile(r"repos/([\w.-]+/[\w.-]+)/(issues|pulls)/([1-9]\d*)")
+REST_ISSUE_CONNECTION = re.compile(
+    r"repos/([\w.-]+/[\w.-]+)/issues/([1-9]\d*)/(comments|sub_issues|dependencies/blocked_by|dependencies/blocking)"
+    r"\?per_page=100&page=([1-9]\d*)"
+)
+GRAPH_CONNECTION_FIELDS = {"comments": "comments", "sub_issues": "subIssues",
+                           "dependencies/blocked_by": "blockedBy", "dependencies/blocking": "blocking"}
+REST_PAGE_SIZE = 100
+
+
+class GraphRoute(NamedTuple):
+    repo: str
+    read: Callable[[Any], Any]
+
+
+def graph_issue_record(reader: Any, repo: str, kind: str, number: int) -> dict[str, Any]:
+    row = github_plan_graph.planning_graph(reader, repo, number=number, connection_fields=("labels",))[0]
+    if kind == "pulls" and "pull_request" not in row:
+        raise ReferenceNotFound(f"{repo}#{number} is not a pull request")
+    return row
+
+
+def graph_connection_page(reader: Any, repo: str, number: int, field: str, page: int) -> list[dict[str, Any]]:
+    rows = github_plan_graph.issue_connection(reader, repo, number, field, limit=page * REST_PAGE_SIZE)
+    return rows[(page - 1) * REST_PAGE_SIZE:page * REST_PAGE_SIZE]
+
+
+def graph_route(args: list[str]) -> GraphRoute | None:
+    if len(args) != 4 or args[0] != "api" or args[2:] != ["--method", "GET"]:
+        return None
+    if record := REST_ISSUE_RECORD.fullmatch(args[1]):
+        repo, kind, number = record[1], record[2], int(record[3])
+        return GraphRoute(repo, lambda reader: graph_issue_record(reader, repo, kind, number))
+    if connection := REST_ISSUE_CONNECTION.fullmatch(args[1]):
+        repo, number, field, page = connection[1], int(connection[2]), GRAPH_CONNECTION_FIELDS[connection[3]], int(connection[4])
+        return GraphRoute(repo, lambda reader: graph_connection_page(reader, repo, number, field, page))
+    return None
+
+
+def rest_may_answer(error: Exception) -> bool:
+    if isinstance(error, github_plan_graph.github_read.GitHubReadShapeError):
+        return error.rest_recovery_allowed or error.retryable
+    return isinstance(error, github_plan_graph.github_read.GitHubReadError) and error.rest_recovery_allowed
+
+
+def graph_read_failure(path: str, error: Exception) -> AuditError:
+    failure = error.result.failure if isinstance(error, github_plan_graph.github_read.GitHubReadError) else None
+    missing = failure is not None and failure.cause == "not_found"
+    return (ReferenceNotFound if missing else AuditError)(f"GraphQL read of {path} failed: {error}")
+
+
+def graph_first_reads(
+    rest: Callable[[list[str]], Any], *, graph_reader: Callable[[str], Any],
+) -> Callable[[list[str]], Any]:
+    def read(args: list[str]) -> Any:
+        route = graph_route(args)
+        reader = graph_reader(route.repo) if route is not None else None
+        if route is None or reader is None:
+            return rest(args)
+        try:
+            return route.read(reader)
+        except GRAPH_READ_ERRORS as error:
+            if rest_may_answer(error):
+                return rest(args)
+            raise graph_read_failure(args[1], error) from error
+
+    return read
+
+
+def bot_graph_readers() -> Callable[[str], Any]:
+    return runpy.run_path(str(GITHUB_SCRIPTS / "gh-plan.py"))["next_graph_reader"]
+
+
+def weekly_reads(gh: str) -> Callable[[list[str]], Any]:
+    def rest(args: list[str]) -> Any:
+        return gh_json(args, gh=gh)
+
+    return graph_first_reads(rest, graph_reader=bot_graph_readers()) if gh == str(WRAPPER) else rest
+
+
 # GitHub Free refuses rulesets on private repositories with this 403; other 403s stay errors.
 RULESET_PLAN_LIMIT_RE = re.compile(r"\bHTTP 403\b.*Upgrade to GitHub (?:Pro|Team)|Upgrade to GitHub (?:Pro|Team).*\bHTTP 403\b", re.S)
 
@@ -2114,7 +2197,7 @@ def collect_weekly_audit(
     emit: Callable[[dict[str, Any]], None], reads: github_next_reads.NextReads,
 ) -> tuple[int, dict[str, Any]]:
     started = dt.datetime.now(dt.timezone.utc)
-    observed = github_work_graph.cached_reads(lambda args: gh_json(args, gh=gh), reads=reads)
+    observed = github_work_graph.cached_reads(weekly_reads(gh), reads=reads)
 
     def fetch(args: list[str]) -> Any:
         try:
