@@ -72,158 +72,24 @@ def clone_input(source: Path, destination: Path) -> None:
             except OSError:
                 destination.unlink()
                 raise
-        shutil.copystat(source, destination)
         return
-    raise OSError(errno.ENOTSUP, "This host has no clone operation")
+    raise OSError(errno.ENOTSUP, "Use the original manifest source for read-only streaming on this host")
 
 
-def input_inventory(root: Path) -> dict[str, str]:
-    hashes = {}
+def input_entries(root: Path) -> Generator[Path, None, None]:
     for path in [root, *sorted(root.rglob("*"))] if root.is_dir() else [root]:
-        info = path.lstat()
-        if stat.S_ISDIR(info.st_mode):
-            hashes[str(path.relative_to(root))] = "directory"
-        elif stat.S_ISREG(info.st_mode):
+        if not stat.S_ISDIR(path.lstat().st_mode) and not stat.S_ISREG(path.lstat().st_mode):
+            raise ValueError("Staged inputs cannot contain links or special files; stream them from the original manifest instead")
+        yield path
+
+
+def input_hashes(root: Path) -> dict[str, str]:
+    hashes = {}
+    for path in input_entries(root):
+        if path.is_file():
             with path.open("rb") as stream:
                 hashes[str(path.relative_to(root))] = hashlib.file_digest(stream, "sha256").hexdigest()
-        else:
-            raise ValueError("Staging accepts only ordinary files and directories, without symlinks")
     return hashes
-
-
-class InputStaging:
-    def __init__(self, evidence: Path) -> None:
-        self.evidence = evidence.resolve(strict=True)
-        self.root = self.evidence / ".staged-inputs"
-        if any((self.evidence / name).exists() for name in ("staging.json", "manifest.json")):
-            raise FileExistsError("Staging metadata already exists; preserve the original evidence")
-        self.root.mkdir(mode=0o700)
-        self.identity = self.root.stat()
-        self.free_before = shutil.disk_usage(self.root).free
-        self.hashes: dict[str, dict[str, str]] = {}
-        self.routes: dict[str, str] = {}
-        self.sources: dict[str, Path] = {}
-        self.storage: dict[str, int] = {}
-        self.collected = False
-
-    def record(self) -> None:
-        key = "observed_bytes_after_collection" if self.collected else "observed_bytes_added"
-        self.storage[key] = self.free_before - shutil.disk_usage(self.evidence).free
-        (self.evidence / "staging.json").write_text(
-            json.dumps(
-                {
-                    "hashes": self.hashes,
-                    "sources": {key: str(source) for key, source in self.sources.items()},
-                    "routes": self.routes,
-                    **self.storage,
-                },
-                indent=2,
-            )
-            + "\n"
-        )
-
-    def add(self, source: Path, group: str = "inputs") -> Path:
-        if group not in {"inputs", "images"}:
-            raise ValueError("Stage only inputs or images")
-        if source.is_symlink():
-            raise ValueError("Staging sources cannot be symlinks")
-        source = source.resolve(strict=True)
-        if source == self.evidence or source in self.evidence.parents or source.is_relative_to(self.evidence):
-            raise ValueError("Staging sources must be original paths outside this evidence directory")
-        key = f"{group}-{len(self.sources)}"
-        destination = self.root / key
-        expected = input_inventory(source)
-        self.sources[key] = source
-        self.hashes[key] = expected
-        self.routes[key] = "pending"
-        self.record()
-        try:
-            self.copy(source, destination)
-        except OSError as error:
-            if error.errno not in {errno.ENOTSUP, errno.EOPNOTSUPP, errno.ENOTTY, errno.EINVAL}:
-                raise
-            self.remove(key)
-            self.routes[key] = "reference"
-            self.hashes[key] = expected
-            self.record()
-            return source
-        if input_inventory(destination) != expected or input_inventory(source) != expected:
-            raise ValueError("Frozen input changed during staging; preserve both copies")
-        self.hashes[key] = expected
-        self.routes[key] = "clone" if source.stat().st_dev == self.root.stat().st_dev else "copy"
-        self.record()
-        return destination
-
-    def copy(self, source: Path, destination: Path) -> None:
-        if source.is_dir():
-            destination.mkdir(mode=0o700)
-            for child in source.iterdir():
-                self.copy(child, destination / child.name)
-            return
-        if not source.is_file() or source.is_symlink():
-            raise ValueError("Stage only ordinary input files")
-        if source.stat().st_dev != self.root.stat().st_dev:
-            shutil.copy2(source, destination)
-        else:
-            clone_input(source, destination)
-
-    def manifest(self, manifest: dict) -> dict:
-        (self.evidence / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-        staged = json.loads(json.dumps(manifest))
-        bindings: dict[str, Path] = {}
-        for container in staged["containers"]:
-            for entry in container.get("copies", []):
-                if entry.get("overlay") or "retained_from" in entry:
-                    continue
-                source = entry["source"]
-                if source not in bindings:
-                    bindings[source] = self.add(Path(source))
-                entry["source"] = str(bindings[source])
-        self.record()
-        return staged
-
-    def open_root(self) -> int:
-        descriptor = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        current = os.fstat(descriptor)
-        if (current.st_dev, current.st_ino) != (self.identity.st_dev, self.identity.st_ino):
-            os.close(descriptor)
-            raise ValueError("Staging directory identity changed; preserve custody")
-        return descriptor
-
-    def remove(self, key: str) -> None:
-        descriptor = self.open_root()
-        try:
-            try:
-                current = os.stat(key, dir_fd=descriptor, follow_symlinks=False)
-            except FileNotFoundError:
-                return
-            if stat.S_ISDIR(current.st_mode):
-                if not shutil.rmtree.avoids_symlink_attacks:
-                    raise RuntimeError("Symlink-resistant collection is unavailable; preserve staging")
-                shutil.rmtree(key, dir_fd=descriptor)
-            else:
-                os.unlink(key, dir_fd=descriptor)
-        finally:
-            os.close(descriptor)
-
-    def collect(self) -> None:
-        current = self.root.lstat()
-        if (current.st_dev, current.st_ino) != (self.identity.st_dev, self.identity.st_ino) or not stat.S_ISDIR(current.st_mode):
-            raise ValueError("Staging directory identity changed; preserve custody")
-        for key, route in self.routes.items():
-            if route == "reference" and input_inventory(self.sources[key]) != self.hashes[key]:
-                raise ValueError("Referenced input changed during execution; preserve custody")
-        expected_names = {key for key, route in self.routes.items() if route != "reference"}
-        if {path.name for path in self.root.iterdir()} != expected_names:
-            raise ValueError("Unrecorded staging files; preserve custody")
-        for key in expected_names:
-            if input_inventory(self.root / key) != self.hashes[key]:
-                raise ValueError("Staged input changed before collection; preserve custody")
-        for key in expected_names:
-            self.remove(key)
-        self.root.rmdir()
-        self.collected = True
-        self.record()
 
 
 def locked_file(path: Path) -> BinaryIO:
@@ -462,10 +328,8 @@ def overlay_lower_digest(root: Path, hashes: dict[str, str] | None = None) -> st
     if not re.fullmatch(r"/[A-Za-z0-9_./-]+", str(root)) or root.resolve(strict=True) != root or not root.is_dir():
         raise ValueError("Overlay lower must be an unaliased local directory without mount option delimiters")
     digest = hashlib.sha256()
-    for path in [root, *sorted(root.rglob("*"))]:
+    for path in input_entries(root):
         metadata = path.lstat()
-        if not stat.S_ISDIR(metadata.st_mode) and not stat.S_ISREG(metadata.st_mode):
-            raise ValueError("Overlay inputs cannot contain links or special files")
         required_mode = 0o007 if path.is_dir() else 0o006
         if metadata.st_mode & required_mode != required_mode:
             raise ValueError("Overlay lower must already have container-copy permissions; prepare a compatible frozen input")
@@ -547,7 +411,7 @@ def legacy_lower_proven(lower: Path) -> bool:
 
 
 class Docker:
-    def __init__(self, slot: Slot, log: TextIO, endpoint: str) -> None:
+    def __init__(self, slot: Slot, log: TextIO, endpoint: str, evidence: Path | None = None) -> None:
         if not endpoint.startswith("unix://"):
             raise ValueError("Heavy runs require a local Unix Docker socket")
         self.slot = slot
@@ -558,6 +422,90 @@ class Docker:
         self.prefix = ["docker", "--host", endpoint]
         self.lower_digests: dict[Path, str] = {}
         self.overlay_volumes: dict[tuple[Path, str], str] = {}
+        self.evidence = evidence.resolve() if evidence is not None else None
+        self.staging: dict | None = None
+
+    def save_staging(self) -> None:
+        assert self.evidence is not None and self.staging is not None
+        pending = self.evidence / ".heavy-inputs.next"
+        pending.write_text(json.dumps(self.staging, indent=2) + "\n")
+        pending.replace(self.evidence / "heavy-inputs.json")
+
+    def stage_input(self, source: Path, group: str = "inputs") -> Path:
+        if self.evidence is None or group not in {"inputs", "images"}:
+            raise ValueError("Stage inputs or images only inside a queued prepare callback")
+        source = source.absolute()
+        if source.is_symlink():
+            raise ValueError("Use a manifest reference to stream a symlinked original")
+        source = source.resolve(strict=True)
+        if source.is_relative_to(self.evidence) or source in self.evidence.parents:
+            raise ValueError("Stage an original outside this run's evidence directory")
+        expected = input_hashes(source)
+        root = self.evidence / ".staged-inputs"
+        if self.staging is None:
+            if (self.evidence / "heavy-inputs.json").exists():
+                raise FileExistsError("Preserve existing staging metadata")
+            root.mkdir(mode=0o700)
+            identity = root.stat()
+            self.staging = {
+                "device": identity.st_dev,
+                "inode": identity.st_ino,
+                "free_before": shutil.disk_usage(root).free,
+                "inputs": {},
+                "state": "staging",
+            }
+        key = f"{group}-{len(self.staging['inputs'])}"
+        destination = root / key
+        self.staging["inputs"][key] = {"source": str(source), "hashes": expected, "routes": {}}
+        self.save_staging()
+        for path in input_entries(source):
+            target = destination / path.relative_to(source)
+            if path.is_dir():
+                target.mkdir(mode=0o700)
+                continue
+            same_device = path.stat().st_dev == root.stat().st_dev
+            self.staging["inputs"][key]["routes"][str(path.relative_to(source))] = "clone" if same_device else "copy"
+            if same_device:
+                clone_input(path, target)
+                if hasattr(target, "chflags"):
+                    target.chflags(0)
+            else:
+                with path.open("rb") as original, target.open("xb") as output:
+                    shutil.copyfileobj(original, output)
+            target.chmod(stat.S_IMODE(path.stat().st_mode))
+        if input_hashes(destination) != expected:
+            raise ValueError("Input bytes changed during staging; original remains untouched")
+        self.staging["observed_bytes_added"] = self.staging["free_before"] - shutil.disk_usage(root).free
+        self.save_staging()
+        return destination
+
+    def collect_staged_inputs(self) -> None:
+        if self.evidence is None:
+            return
+        root = self.evidence / ".staged-inputs"
+        record = self.evidence / "heavy-inputs.json"
+        if not record.exists():
+            return
+        self.staging = json.loads(record.read_text())
+        if self.staging["state"] == "collected":
+            if root.exists() or root.is_symlink():
+                raise RuntimeError("Staging reappeared after collection; preserve custody")
+            return
+        if root.exists() or root.is_symlink():
+            descriptor = os.open(self.evidence, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                identity = os.stat(root.name, dir_fd=descriptor, follow_symlinks=False)
+                if (identity.st_dev, identity.st_ino) != (self.staging["device"], self.staging["inode"]):
+                    raise RuntimeError("Staging directory identity changed; preserve custody")
+                if not shutil.rmtree.avoids_symlink_attacks:
+                    raise RuntimeError("Symlink-resistant collection is unavailable; preserve custody")
+                shutil.rmtree(root.name, dir_fd=descriptor)
+            finally:
+                os.close(descriptor)
+        self.staging.update(
+            state="collected", observed_bytes_after_collection=self.staging["free_before"] - shutil.disk_usage(self.evidence).free
+        )
+        self.save_staging()
 
     def call(self, *args: str, timeout: int | None = 60) -> str:
         result = subprocess.run(
@@ -589,6 +537,7 @@ class Docker:
             self.call("network", "rm", network)
         if self.call("network", "ls", "-q", "--filter", f"label={self.label}").split():
             raise RuntimeError("Owned networks remain; slot cannot admit work")
+        self.collect_staged_inputs()
 
     def owned_volume(self, name: str) -> dict:
         volume = json.loads(self.call("volume", "inspect", name))[0]
@@ -840,9 +789,9 @@ def recover(slot: Slot, custody: Path, log: TextIO, endpoint: str) -> None:
     recovered = previous.evidence / "recovered.log"
     if recovered.is_absolute() and recovered.parent.is_dir():
         with recovered.open("a") as previous_log:
-            Docker(slot, previous_log, previous.endpoint).cleanup(previous_log)
+            Docker(slot, previous_log, previous.endpoint, previous.evidence).cleanup(previous_log)
     else:
-        Docker(slot, log, previous.endpoint).cleanup(None)
+        Docker(slot, log, previous.endpoint, previous.evidence).cleanup(None)
     if previous.evidence.is_absolute() and previous.evidence.is_dir():
         for env_file in previous.evidence.glob("*.env"):
             env_file.unlink()
@@ -863,32 +812,26 @@ def run_in_slot(
     try:
         endpoint = local_endpoint(home, log)
         recover(slot, custody, log, endpoint)
-        docker = Docker(slot, log, endpoint)
+        docker = Docker(slot, log, endpoint, evidence)
         Custody(endpoint, evidence).save(custody)
         receipt["cleanup_complete"] = False
-        staging = None
-        collected = False
         try:
             if prepare is not None:
                 manifest = prepare(docker)
                 validate_manifest(manifest)
                 settings.limits(len(manifest["containers"]))
-            staging = InputStaging(evidence)
-            staged = staging.manifest(manifest)
-            receipt["exit_code"], identifiers = docker.run(staged, settings, evidence)
+            receipt["exit_code"], identifiers = docker.run(manifest, settings, evidence)
             docker.copy_outputs(manifest, identifiers, evidence)
-            collected = True
         finally:
             for signum in CANCEL_SIGNALS:
                 signal.signal(signum, signal.SIG_IGN)
             try:
                 docker.cleanup(log)
-                if staging is not None and collected:
-                    staging.collect()
-                    receipt["storage"] = staging.storage
+                if docker.staging is not None:
+                    receipt["storage"] = {key: value for key, value in docker.staging.items() if key.startswith("observed_")}
                 receipt["cleanup_complete"] = True
                 custody.unlink()
-            except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+            except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
                 receipt["cleanup_error"] = str(error)
                 receipt["exit_code"] = receipt["exit_code"] or 1
     except Canceled as error:

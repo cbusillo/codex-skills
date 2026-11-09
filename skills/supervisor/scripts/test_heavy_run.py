@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import errno
+import hashlib
 import io
 import json
 import multiprocessing
@@ -28,43 +29,110 @@ import heavy_run
 
 
 class InputStagingTests(unittest.TestCase):
-    @unittest.skipUnless(sys.platform == "darwin", "Native APFS fixture requires macOS")
-    def test_fixture_clone_is_independent_and_collection_keeps_hashes_manifest_and_outputs(self) -> None:
+    @unittest.skipUnless(sys.platform == "darwin", "Native clone fixture requires macOS")
+    def test_clone_workspace_is_independent_and_cleanup_keeps_hashes_and_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
-            original = root / "original"
-            original.mkdir()
-            payload = original / "payload"
+            source = root / "original"
+            source.mkdir()
+            payload = source / "payload"
             payload.write_bytes(os.urandom(1024 * 1024))
+            payload.chmod(0o400)
             expected = payload.read_bytes()
             evidence = root / "evidence"
             evidence.mkdir()
-            manifest = {
-                "containers": [
-                    {"name": "job", "image": "fixture", "copies": [{"source": str(original), "destination": "/workspace"}]}
-                ],
-                "job": "job",
-            }
-            stage = heavy_run.InputStaging(evidence)
-            staged = stage.manifest(manifest)
-            copied = Path(staged["containers"][0]["copies"][0]["source"]) / "payload"
-            self.assertNotEqual(copied.stat().st_ino, payload.stat().st_ino)
-            copied.write_bytes(b"Independent workload write")
+            (evidence / "manifest.json").write_text("preserved caller manifest")
+            (evidence / "output").write_bytes(b"collected output")
+            docker = heavy_run.Docker(heavy_run.Slot(0, io.BytesIO(), "fixture"), io.StringIO(), "unix:///fixture", evidence)
+            staged = docker.stage_input(source)
+            image = docker.stage_input(payload, "images")
+            self.assertNotEqual((staged / "payload").stat().st_ino, payload.stat().st_ino)
+            heavy_run.Docker.stage_overlay_input(staged)
+            (staged / "payload").write_bytes(b"independent writable workspace")
             self.assertEqual(payload.read_bytes(), expected)
-            copied.write_bytes(expected)
-            (evidence / "output").write_text("collected evidence")
-            image = stage.add(payload, "images")
-            stage.collect()
-            self.assertFalse(copied.exists())
+            self.assertEqual(payload.stat().st_mode & 0o777, 0o400)
+            with patch.object(docker, "call", return_value=""):
+                docker.cleanup(None)
+            self.assertFalse(staged.exists())
             self.assertFalse(image.exists())
+            proof = json.loads((evidence / "heavy-inputs.json").read_text())
+            self.assertEqual(proof["inputs"]["inputs-0"]["hashes"]["payload"], hashlib.sha256(expected).hexdigest())
+            self.assertEqual((evidence / "manifest.json").read_text(), "preserved caller manifest")
+            self.assertEqual((evidence / "output").read_bytes(), b"collected output")
             self.assertEqual(payload.read_bytes(), expected)
-            self.assertEqual(json.loads((evidence / "manifest.json").read_text()), manifest)
-            self.assertTrue(json.loads((evidence / "staging.json").read_text())["hashes"])
-            self.assertEqual((evidence / "output").read_text(), "collected evidence")
-            self.assertIsInstance(stage.storage["observed_bytes_added"], int)
+
+    def test_prepare_failures_and_crash_recovery_collect_only_owned_staging(self) -> None:
+        for failure in ("unsupported", "canceled", "output", "crash"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                source = root / "original"
+                source.write_bytes(b"preserve original")
+                evidence = root / "evidence"
+                manifest = {"containers": [{"name": "job", "image": "fixture"}], "job": "job"}
+
+                def prepare(
+                    docker: heavy_run.Docker, original: Path = source, action: str = failure, run_manifest: dict = manifest
+                ) -> dict:
+                    docker.stage_input(original)
+                    if action == "canceled":
+                        raise heavy_run.Canceled(signal.SIGTERM)
+                    return run_manifest
+
+                clone = OSError(errno.ENOTSUP, "fixture lacks clones") if failure == "unsupported" else shutil.copyfile
+                with (
+                    patch.object(heavy_run, "clone_input", side_effect=clone),
+                    patch.object(heavy_run, "local_endpoint", return_value="unix:///fixture"),
+                ):
+                    with (
+                        patch.object(heavy_run.Docker, "call", return_value=""),
+                        patch.object(heavy_run.Docker, "run", return_value=(23, {})),
+                    ):
+                        if failure == "crash":
+                            evidence.mkdir()
+                            docker = heavy_run.Docker(
+                                heavy_run.Slot(0, io.BytesIO(), "fixture"), io.StringIO(), "unix:///fixture", evidence
+                            )
+                            docker.stage_input(source)
+                            custody = root / "custody"
+                            heavy_run.Custody(docker.endpoint, evidence).save(custody)
+                            heavy_run.recover(docker.slot, custody, io.StringIO(), docker.endpoint)
+                            self.assertFalse(custody.exists())
+                        else:
+                            with patch.object(heavy_run.Docker, "copy_outputs", side_effect=OSError("fixture missing output")):
+                                self.assertNotEqual(heavy_run.run({}, evidence, heavy_run.Settings(), root, prepare=prepare), 0)
+                            self.assertTrue(json.loads((evidence / "result.json").read_text())["cleanup_complete"])
+                self.assertFalse((evidence / ".staged-inputs").exists())
+                self.assertEqual(source.read_bytes(), b"preserve original")
+
+    def test_replaced_or_preexisting_staging_is_never_collected_as_owned(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            evidence = root / "evidence"
+            evidence.mkdir()
+            source = root / "original"
+            source.write_bytes(b"keep")
+            docker = heavy_run.Docker(heavy_run.Slot(0, io.BytesIO(), "fixture"), io.StringIO(), "unix:///fixture", evidence)
+            with patch.object(heavy_run, "clone_input", side_effect=shutil.copyfile):
+                staged = docker.stage_input(source)
+            staged.parent.rename(evidence / "held-staging")
+            (evidence / ".staged-inputs").symlink_to(root, target_is_directory=True)
+            with self.assertRaises((OSError, RuntimeError)):
+                docker.collect_staged_inputs()
+            self.assertEqual(source.read_bytes(), b"keep")
+            self.assertTrue((evidence / "held-staging" / staged.name).exists())
+            other_evidence = root / "other-evidence"
+            other_evidence.mkdir()
+            held = other_evidence / ".staged-inputs"
+            held.mkdir()
+            (held / "unowned").write_bytes(b"do not adopt")
+            other = heavy_run.Docker(docker.slot, io.StringIO(), docker.endpoint, other_evidence)
+            with self.assertRaises(FileExistsError):
+                other.stage_input(source)
+            other.collect_staged_inputs()
+            self.assertEqual((held / "unowned").read_bytes(), b"do not adopt")
 
     @unittest.skipUnless(os.environ.get("HEAVY_STAGING_FIXTURE_VOLUME"), "Requires an isolated fixture volume")
-    def test_fixture_volume_shares_allocation_and_copies_only_across_devices(self) -> None:
+    def test_fixture_volume_clones_without_full_allocation_and_copies_across_devices(self) -> None:
         volume = Path(os.environ["HEAVY_STAGING_FIXTURE_VOLUME"])
         with tempfile.TemporaryDirectory(dir=volume) as temporary, tempfile.TemporaryDirectory() as outside:
             root = Path(temporary).resolve()
@@ -74,86 +142,22 @@ class InputStagingTests(unittest.TestCase):
             evidence = root / "evidence"
             evidence.mkdir()
             subprocess.run(["sync"], check=True)
-            stage = heavy_run.InputStaging(evidence)
-            staged = stage.add(source)
+            docker = heavy_run.Docker(heavy_run.Slot(0, io.BytesIO(), "fixture"), io.StringIO(), "unix:///fixture", evidence)
+            staged = docker.stage_input(source)
             subprocess.run(["sync"], check=True)
-            observed = stage.free_before - shutil.disk_usage(volume).free
+            observed = docker.staging["free_before"] - shutil.disk_usage(volume).free
             self.assertLess(observed, source.stat().st_size // 2)
             self.assertEqual(staged.read_bytes(), expected)
             self.assertNotEqual(staged.stat().st_ino, source.stat().st_ino)
-            stage.collect()
+            docker.collect_staged_inputs()
             external = Path(outside).resolve()
             self.assertNotEqual(source.stat().st_dev, external.stat().st_dev)
-            other = heavy_run.InputStaging(external)
-            copied = other.add(source)
+            other = heavy_run.Docker(docker.slot, io.StringIO(), docker.endpoint, external)
+            copied = other.stage_input(source)
             self.assertEqual(copied.read_bytes(), expected)
-            copied.write_bytes(b"changed cross-volume copy")
+            copied.write_bytes(b"independent cross-volume copy")
             self.assertEqual(source.read_bytes(), expected)
-            copied.write_bytes(expected)
-            other.collect()
-            self.assertEqual(source.read_bytes(), expected)
-
-    def test_unsupported_same_volume_uses_read_only_reference_instead_of_a_link_or_copy(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary).resolve()
-            source = root / "source"
-            source.write_bytes(b"original")
-            source.chmod(0o400)
-            identity = source.stat()
-            evidence = root / "evidence"
-            evidence.mkdir()
-            stage = heavy_run.InputStaging(evidence)
-            with patch.object(heavy_run, "clone_input", side_effect=OSError(errno.ENOTSUP, "fixture lacks clones")):
-                self.assertEqual(stage.add(source), source)
-            stage.collect()
-            self.assertEqual(source.read_bytes(), b"original")
-            self.assertEqual(
-                (source.stat().st_ino, source.stat().st_mode, source.stat().st_nlink),
-                (identity.st_ino, identity.st_mode, identity.st_nlink),
-            )
-
-    def test_collection_refuses_changed_inputs_unknown_files_and_replaced_staging_directory(self) -> None:
-        for change in ("bytes", "unknown", "symlink"):
-            with self.subTest(change=change), tempfile.TemporaryDirectory() as temporary:
-                root = Path(temporary).resolve()
-                source = root / "original"
-                source.write_bytes(b"preserve original")
-                evidence = root / "evidence"
-                evidence.mkdir()
-                stage = heavy_run.InputStaging(evidence)
-                with patch.object(heavy_run, "clone_input", side_effect=shutil.copyfile):
-                    staged = stage.add(source)
-                if change == "bytes":
-                    staged.write_bytes(b"uncollected changed data")
-                elif change == "unknown":
-                    (stage.root / "uncollected-output").write_bytes(b"keep")
-                else:
-                    stage.root.rename(evidence / "held-staging")
-                    stage.root.symlink_to(root, target_is_directory=True)
-                    staged = evidence / "held-staging" / staged.name
-                with self.assertRaises(ValueError):
-                    stage.collect()
-                self.assertEqual(source.read_bytes(), b"preserve original")
-                self.assertTrue(staged.exists())
-
-    def test_source_aliases_special_files_and_preexisting_staging_are_never_adopted(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary).resolve()
-            evidence = root / "evidence"
-            evidence.mkdir()
-            source = root / "source"
-            source.write_bytes(b"keep")
-            alias = root / "alias"
-            alias.symlink_to(source)
-            fifo = root / "fifo"
-            os.mkfifo(fifo)
-            stage = heavy_run.InputStaging(evidence)
-            for original in (alias, fifo, root, evidence):
-                with self.subTest(original=original), self.assertRaises(ValueError):
-                    stage.add(original)
-            with self.assertRaises(FileExistsError):
-                heavy_run.InputStaging(evidence)
-            self.assertEqual(source.read_bytes(), b"keep")
+            other.collect_staged_inputs()
 
 
 class WorkloadExitTests(unittest.TestCase):
@@ -263,7 +267,8 @@ class VolumeDocker(heavy_run.Docker):
                     (labels if value == "--label" else options)[key] = setting
             backing = self.root / "volumes" / name / "_data"
             backing.mkdir(parents=True)
-            self.volumes[name] = {"Name": name, "Driver": "local", "Options": options, "Labels": labels, "Mountpoint": str(backing)}
+            self.volumes[name] = {"Name": name, "Driver": "local", "Options": options,
+                                  "Labels": labels, "Mountpoint": str(backing)}
             return name
         if args[:2] == ("volume", "rm"):
             name = args[-1]
@@ -429,9 +434,7 @@ class OverlayTests(unittest.TestCase):
             inventory.write_text(json.dumps({"hashes": []}))
 
         def no_entries_for_this_input(_lower: Path, inventory: Path, recorded: dict[str, str]) -> None:
-            inventory.write_text(
-                json.dumps({"hashes": {key: value for key, value in recorded.items() if key.startswith("images/")}})
-            )
+            inventory.write_text(json.dumps({"hashes": {key: value for key, value in recorded.items() if key.startswith("images/")}}))
 
         def partial_inventory(_lower: Path, inventory: Path, recorded: dict[str, str]) -> None:
             del recorded["inputs/3/attachment"]
@@ -763,6 +766,8 @@ class HeavyRunTests(unittest.TestCase):
         (source / "private.txt").chmod(0o600)
         (source / "run.sh").write_text("exit 0\n")
         (source / "run.sh").chmod(0o700)
+        if not (source / "private-link").exists():
+            (source / "private-link").symlink_to("private.txt")
         manifest = self.root / f"{name}.json"
         containers = [
             {
@@ -844,6 +849,8 @@ class HeavyRunTests(unittest.TestCase):
         self.assertNotIn("--workdir", create)
         self.assertNotIn("private-env-value", json.dumps(calls))
         self.assertFalse((self.root / "normal/job.env").exists())
+        self.assertFalse((self.root / "normal/manifest.json").exists())
+        self.assertFalse((self.root / "normal/.staged-inputs").exists())
         self.assertEqual(int((self.root / "docker/env-mode-normal").read_text()), 0o600)
         copied = [entry for path in (self.root / "docker").glob("copy-*") for entry in json.loads(path.read_text())]
         private = next(entry for entry in copied if entry["name"].endswith("private.txt"))
