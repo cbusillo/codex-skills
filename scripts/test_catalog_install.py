@@ -27,6 +27,7 @@ import time
 import tomllib
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -36,6 +37,10 @@ spec = importlib.util.spec_from_file_location("installer", Path(__file__).with_n
 assert spec and spec.loader
 installer = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(installer)
+
+
+def patch_attr(target: Any, name: str, *args: Any, **kwargs: Any) -> Any:
+    return mock.patch.object(target, name, *args, **kwargs)
 
 
 def command(*args, cwd=None):
@@ -314,6 +319,61 @@ class InstallTests(unittest.TestCase):
         self.assertNotIn(first, text)
         self.assertEqual(path.readlink(), target)
 
+    def install_with_linked_target(self) -> tuple[Path, Path]:
+        private = self.catalog / ".local/global-instructions.md"
+        private.parent.mkdir()
+        private.write_text("Personal fixture rule.\n")
+        target = self.root / "shared-CLAUDE.md"
+        account = self.claude / "CLAUDE.md"
+        with self.merged_direction("First merged direction."):
+            self.install()
+            target.write_bytes(account.read_bytes())
+            account.unlink()
+            account.symlink_to(target)
+            self.install()
+        return account, target
+
+    def merged_direction(self, text: str) -> Any:
+        return patch_attr(self.sync, "direction_content", return_value=self.sync.DIRECTION_START + "\n" + text)
+
+    def write_with_catalog_sync(self, destination: Path) -> None:
+        arguments = ["sync-global-instructions.py", "--source", str(self.catalog / "instructions/global.md"),
+                     "--local-source", str(self.catalog / ".local/global-instructions.md"), "--destination", str(destination), "--write"]
+        with (mock.patch.object(sys, "argv", arguments), contextlib.redirect_stdout(io.StringIO()),
+              self.merged_direction("Older merged direction.")):
+            self.assertEqual(self.sync.main(), 0)
+
+    def refresh_with_updated_direction(self) -> str:
+        with self.merged_direction("Updated merged direction.") as direction:
+            installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
+        return direction.return_value
+
+    def test_catalog_sync_writes_stay_refreshable_after_direction_changes(self) -> None:
+        account, target = self.install_with_linked_target()
+        for path in (target, self.codex / "AGENTS.md"):
+            with self.subTest(path=path):
+                self.write_with_catalog_sync(path)
+                written = path.read_bytes()
+                updated = self.refresh_with_updated_direction()
+                self.assertIn(updated, path.read_text())
+                self.assertIn(written, [backup.read_bytes() for backup in path.parent.glob(f"{path.name}.backup-*")])
+        self.assertEqual(account.readlink(), target)
+
+    def test_hand_edits_after_catalog_sync_writes_are_preserved(self) -> None:
+        account, target = self.install_with_linked_target()
+        for path in (target, self.codex / "AGENTS.md"):
+            with self.subTest(path=path):
+                self.write_with_catalog_sync(path)
+                path.write_text(path.read_text().replace("Older merged direction.", "Older merged direction, edited by hand."))
+                edited = path.read_bytes()
+                if path == target:
+                    self.refresh_with_updated_direction()
+                else:
+                    with self.assertRaisesRegex(ValueError, "Installed instructions changed"):
+                        self.refresh_with_updated_direction()
+                self.assertEqual(path.read_bytes(), edited)
+        self.assertEqual(account.readlink(), target)
+
     def test_unavailable_merged_direction_preserves_installed_files_and_receipt(self) -> None:
         self.install()
         paths = (self.codex / "AGENTS.md", self.claude / "CLAUDE.md", self.catalog / ".local/catalog-install.json")
@@ -473,9 +533,10 @@ class InstallTests(unittest.TestCase):
             for name in ("sync-global-instructions.py", "install-catalog.py", "chrome_mcp.py"):
                 shutil.copyfile(Path(__file__).with_name(name), scripts / name)
             shutil.copyfile(Path(hook.__file__), self.catalog / "hooks/direction_check_hook.py")
-            worktree_helper = self.catalog / "skills/github/scripts/dev_worktree.py"
-            worktree_helper.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(Path(__file__).resolve().parents[1] / "skills/github/scripts/dev_worktree.py", worktree_helper)
+            helpers = self.catalog / "skills/github/scripts"
+            helpers.mkdir(parents=True, exist_ok=True)
+            for name in ("dev_worktree.py", "github_catalog_health.py"):
+                shutil.copyfile(Path(__file__).resolve().parents[1] / "skills/github/scripts" / name, helpers / name)
             warning = startup()
             self.assertIn(str(destination), warning)
             repair = shlex.split(re.search(r"uv run [^\n]+?;", warning).group()[:-1])
