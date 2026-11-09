@@ -4582,9 +4582,9 @@ def merge_wait_holders(issue: dict[str, Any], urls: set[str]) -> tuple[list[dict
     def pages(path: str, **query: str) -> list[dict[str, Any]] | None:
         try:
             return collect_paged_rest_items(path, query=query, bucket="rest_core", step_prefix="merge_wait_inventory")[1]
-        except PlanError as exc:
-            raise_if_cancelled(exc)
-            unread.append(f"{path}: {exc}")
+        except PlanError as error:
+            raise_if_cancelled(error)
+            unread.append(f"{path}: {error}")
             return None
 
     pulls = [match for url in sorted(urls) if (match := github_plan_events.TARGET.fullmatch(url))]
