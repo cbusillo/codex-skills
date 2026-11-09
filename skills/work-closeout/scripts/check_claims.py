@@ -39,9 +39,11 @@ from github_read import (
 
 if TYPE_CHECKING:
     from skills.github.scripts import github_next_pr as next_pr
+    from skills.github.scripts import github_plan_lease
     from skills.github.scripts import github_plan_wait as wait
 else:
     next_pr = importlib.import_module("github_next_pr")
+    github_plan_lease = importlib.import_module("github_plan_lease")
     wait = importlib.import_module("github_plan_wait")
 
 CHECK_OPERATION = "work-closeout.claims"
@@ -503,6 +505,8 @@ def check(
     signoffs, release_proofs = {}, []
 
     def check_target(native: str, repo: str, number: int) -> None:
+        if github_plan_lease.uses_live_claims(repo):
+            return
         try:
             if repo not in readers:
                 readers[repo] = (reader_for_repo or repository_reader)(repo, deadline)

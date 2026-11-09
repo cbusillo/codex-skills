@@ -2273,12 +2273,17 @@ def cmd_show(args: argparse.Namespace) -> None:
                         and not source_facts["conflicts"]))
         claim_error = None
         milestone_admission = None
+        live_claims = github_plan_lease.uses_live_claims(issue["repo"])
+        launch_status = derived["status"]
+        if live_claims and launch_status == "review" and wait["state"] == "review" and derived["relationships_complete"]:
+            launch_status = "blocked" if derived["blocked_by"] else "active"
         if not args.read_only:
             try:
                 validate_wait_resolution(args.wait_resolved, issue["repo"])
-                check_claim_wait({**issue, "claim_wait": wait}, claim_current_status(issue, read_plan_sections(issue)[0], comments), config,
-                                 wait_resolved=args.wait_resolved if wait["state"] != "review" else None)
-                if args.wait_resolved and not facts.get("retained_handoff") and not facts.get("error"):
+                if not (live_claims and wait["state"] == "review"):
+                    check_claim_wait({**issue, "claim_wait": wait}, claim_current_status(issue, read_plan_sections(issue)[0], comments), config,
+                                     wait_resolved=args.wait_resolved if wait["state"] != "review" else None)
+                if args.wait_resolved and not live_claims and not facts.get("retained_handoff") and not facts.get("error"):
                     raise ClassifiedPlanError("claim_handoff_pr_required", "Launch wait evidence needs a verified retained-source handoff")
                 admission, admission_links, _ = claim_admission_options(args)
                 if admission == "milestone":
@@ -2294,8 +2299,8 @@ def cmd_show(args: argparse.Namespace) -> None:
         result["launch_check"] = {
             "allowed": (claim_error is None and derived["relationships_complete"] and facts["complete"] and not facts.get("error")
                         and (args.read_only or not facts["conflicts"]) and (args.read_only or not facts["artifacts"])
-                        and source_clear and (args.read_only or derived["status"] == "active"
-                                              or (bool(args.wait_resolved) and derived["status"] == "waiting"))),
+                        and source_clear and (args.read_only or launch_status == "active"
+                                              or (bool(args.wait_resolved) and launch_status == "waiting"))),
             "status": derived["status"], "ownership": facts,
             **({"milestone_admission": milestone_admission} if milestone_admission else {}),
             **({"error": claim_error} if claim_error else {}),
@@ -4101,7 +4106,87 @@ def claim_once(args: argparse.Namespace) -> None:
                     refuse(conflicts)
                 refuse(conflicts, owner_comments=[], owner_repo=checked_repo, owner_number=checked_number)
 
+    def other_live_holders(current_comments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [holder for holder in github_plan_claim.live_claims(current_comments) if holder["session"] != claim["session"]]
+
+    def refuse_live_holders(holders: list[dict[str, Any]]) -> None:
+        raise ClassifiedPlanError(
+            "claim_conflict", "A live session is working this record; it frees itself when that session ends or goes quiet",
+            payload={"competing_evidence": holders, "claim_recovery": claim_recovery()})
+
+    def refuse_issue_in_progress() -> None:
+        _, open_pulls = read_planning_inventory(issue_repo, kind="pullRequest")
+        implementing = github_plan_claim.implementing_pulls(open_pulls, number, repo=issue_repo)
+        if implementing:
+            raise ClassifiedPlanError(
+                "claim_conflict", "An open pull request implements this issue; claim that pull request to continue it",
+                payload={"competing_evidence": implementing})
+        _, blockers = read_planning_connection(issue_repo, number, "blockedBy")
+        if any(blocker.get("state") != "closed" for blocker in blockers):
+            raise ClassifiedPlanError("claim_native_blockers_unresolved",
+                                      "Claim requires resolved native blockers; preserve blocked planning state")
+
+    def live_claim_text(kind: str) -> str:
+        return (
+            f"Claimed by {claim['worker']}\n\n"
+            f"Session: {claim['session']}\nBranch: {claim['branch']}\n"
+            f"Claimed at: {claim['claimed_at']}\nNext action: {args.next_action}\n\n"
+            + (f"Agent override (Director-authorized): {override}\n\n" if override else "")
+            + admission_line()
+            + github_plan_claim.marker(claim)
+            + ("\n" + github_plan_wait.marker(github_plan_wait.reviewed(evidence=args.wait_resolved))
+               + f"\n\nWait resolution: {args.wait_resolved}" if args.wait_resolved else "")
+            + f"\n\n[Work record](https://github.com/{issue_repo}/{'pull' if kind == 'pr' else 'issues'}/{number})"
+        )
+
+    def refuse_unassigned_or_waiting(checked_issue: dict[str, Any], checked_status: str) -> None:
+        check_agent(checked_issue)
+        if github_plan_wait.project_dates(checked_issue["claim_wait"])["state"] == "waiting":
+            check_claim_wait(checked_issue, checked_status, config, wait_resolved=args.wait_resolved)
+
+    def claim_while_live() -> None:
+        nonlocal claim_comment
+        live_issue, live_status, live_comments, _ = claim_snapshot(args.issue, repo, preserve_content=True)
+        kind = "pr" if "pull_request" in live_issue else "issue"
+        refuse_unassigned_or_waiting(live_issue, live_status)
+        if holders := other_live_holders(live_comments):
+            refuse_live_holders(holders)
+        if kind == "issue":
+            refuse_issue_in_progress()
+        if admission == "milestone":
+            milestone_claim_track(live_issue, admission_links)
+        completed.append("ownership_preflight")
+        writer, writer_command, writer_login = comment_route()
+
+        def post(comment_text: str, step: str) -> dict[str, Any]:
+            return github_comment_core.comment(
+                kind, number, comment_text, repo=issue_repo, gh_cmd=writer_command, expected_actor=writer_login,
+                operation=CURRENT_OPERATION, completed_steps=completed, failed_step=step, dedupe_body=True)
+
+        claim_comment = post(live_claim_text(kind), "post_claim")
+        completed.append("post_claim")
+        posted_id = claim_comment["comment"]["id"]
+        seen_issue, seen_status, seen_comments, _ = claim_snapshot(args.issue, repo, preserve_content=True)
+        if not any(holder["claim_id"] == posted_id for holder in github_plan_claim.live_claims(seen_comments)):
+            raise PlanError("Claim was not visible on readback; do not create a worktree")
+        refuse_unassigned_or_waiting(seen_issue, seen_status)
+        if earlier := [holder for holder in other_live_holders(seen_comments) if holder["claim_id"] < posted_id]:
+            post(f"Released claim {posted_id}\n\nAn earlier live claim holds this record.", "withdraw_claim")
+            refuse_live_holders(earlier)
+        completed.append("claim_readback")
+        emit({
+            "ok": True, "actor": writer, "record_kind": kind, "claim": claim, "claim_comment": claim_comment,
+            "release_command": github_plan_claim_log.release_command(
+                pathlib.Path(__file__).resolve(), issue_repo, number, posted_id, claim["session"]),
+            "issue": compact_issue(live_issue), "current_status_location": "claim_comment",
+            "previous_current_status": live_status, "retained_artifacts": [],
+            "lease_minutes": github_plan_lease.lease_minutes(), "exclusive_lock": False, "completed_steps": completed,
+        })
+
     try:
+        if github_plan_lease.uses_live_claims(issue_repo):
+            claim_while_live()
+            return
         issue, status, comments, can_update = claim_snapshot(args.issue, repo, allow_closed=True, preserve_content=True)
         record_kind = "pr" if "pull_request" in issue else "issue"
         if reconcile_observed_admissions(comments):

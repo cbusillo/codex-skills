@@ -36,7 +36,7 @@ import github_plan_closure as closure
 from github_comment import CommentError, comment
 
 if TYPE_CHECKING:
-    from skills.github.scripts import github_api
+    from skills.github.scripts import github_api, github_plan_lease
     from skills.github.scripts.github_read import (
         GitHubReader, GitHubReadError, GitHubReadShapeError, automation_only_gh_prefix_args,
         read_repository_connections,
@@ -44,6 +44,7 @@ if TYPE_CHECKING:
     from skills.github.scripts import github_plan_native as native_closure
 else:
     import github_api
+    import github_plan_lease
     from github_read import (
         GitHubReader, GitHubReadError, GitHubReadShapeError, automation_only_gh_prefix_args,
         read_repository_connections,
@@ -666,6 +667,8 @@ def finished_claims(reader, entry, actor, issues, apply):
     ended = release.stamp(entry["ended_at"])
     posted = None
     for repo, number in issues:
+        if github_plan_lease.uses_live_claims(repo):
+            continue
         reader.deadline_at = time.time() + entry.get("_read_deadline_seconds", 600)
         identity = {"repository": repo, "issue": number}
         try:

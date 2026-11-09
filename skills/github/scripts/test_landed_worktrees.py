@@ -1009,6 +1009,16 @@ class MainTests(Fixture):
         self.assertEqual({r["path"]: r["decision"] for r in result["worktrees"]}[str(refresh)], "kept")
         self.assertNotIn(mock.call(str(refresh), dry_run=False), run.call_args_list)
 
+    def test_live_claim_repository_keeps_the_tree_only_while_the_claiming_session_is_live(self):
+        refresh, pull, commits = self.merged_refresh()
+        discussions = self.claimed_source(released=False, branch="work/refresh")["discussions"]
+        for live, decision in ((True, "kept"), (False, "retired")):
+            with self.subTest(live=live), \
+                    mock.patch.object(github_plan_lease, "uses_live_claims", return_value=True), \
+                    mock.patch.object(github_plan_lease, "session_is_live", return_value=live):
+                code, result, _ = self.run_main(pull, commits=commits, discussions=discussions)
+                self.assertEqual((code, {r["path"]: r["decision"] for r in result["worktrees"]}[str(refresh)]), (0, decision))
+
     @staticmethod
     def claimed_source(*, released, branch="work/source") -> dict[str, Any]:
         record = {"worker": "author", "session": "s1", "branch": branch, "claimed_at": "2026-10-22T00:00:00Z"}

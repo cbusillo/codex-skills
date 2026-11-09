@@ -692,6 +692,34 @@ def ended_ownership(comments: list[dict[str, Any]], inventory: dict[str, Any],
     return ended
 
 
+def released_by_a_later_comment(comments: list[dict[str, Any]]) -> set[int]:
+    released = set()
+    for position, source in enumerate(comments):
+        author = (source.get("user") or {}).get("login")
+        if author and any((later.get("user") or {}).get("login") == author
+                          and released_claim_id(later.get("body") or "") == source.get("id")
+                          for later in comments[position + 1:]):
+            released.add(source["id"])
+    return released
+
+
+def live_claims(comments: list[dict[str, Any]], *, now: float | None = None) -> list[dict[str, Any]]:
+    import github_plan_lease
+    from github_plan_status.discussion import stamp
+    released = released_by_a_later_comment(comments)
+    return [{**record, "claim_id": comment["id"]}
+            for comment in comments if comment.get("id") not in released
+            for record in records(comment.get("body") or "")
+            if github_plan_lease.session_is_live(record["session"], first_seen=stamp(comment["created_at"]).timestamp(), now=now)]
+
+
+def implementing_pulls(pulls: list[dict[str, Any]], number: int, *, repo: str) -> list[dict[str, Any]]:
+    return [{"source": "open_pr", "number": pull["number"], "branch": (pull.get("head") or {}).get("ref", "")}
+            for pull in pulls
+            if pull.get("state") != "closed" and not is_train_batch(pull)
+            and pr_issue_reference(pull, number, repo=repo, include_refs=False)]
+
+
 def lease_takeovers(ended: list[dict[str, Any]]) -> str:
     return "".join(f"{LEASE_TAKEOVER_PREFIX}{entry['claim_id']} (session {entry['session']}) had no recorded activity "
                    f"for {recorded_lease_minutes(entry['session']):g} minutes.\n\n"
