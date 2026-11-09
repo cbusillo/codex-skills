@@ -260,7 +260,7 @@ class CloseConfigTests(unittest.TestCase):
                 load_config=Mock(side_effect=lambda repo, **_: configs[repo]),
                 api_json=Mock(side_effect=AssertionError("Unexpected API call in read-only show")),
                 next_graph_reader=Mock(return_value=None),
-                get_issue=Mock(side_effect=lambda ref, repo:("fixture-bot", track if repo == "fixture/direction" else issue)),
+                get_issue=Mock(side_effect=lambda ref, repo, **_: ("fixture-bot", track if repo == "fixture/direction" else issue)),
                 milestone_direction_repo=Mock(return_value="fixture/direction"),
                 load_direction=Mock(side_effect=lambda repo: "## Milestones\n- `" + ("Launch product" if repo == "fixture/direction" else "Catalog adoption") + "` proves delivery.\n"),
                 milestone_claim_ancestry=Mock(return_value=Mock(nodes=ancestry or set(), complete=True)),
