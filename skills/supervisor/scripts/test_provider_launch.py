@@ -49,6 +49,21 @@ def patch_attr(target: object, name: str, **kwargs: Any) -> Any:
 
 
 class LaunchIssueTests(unittest.TestCase):
+    def test_seat_addressed_briefs_use_the_existing_supervisor_launch_path(self) -> None:
+        from github_plan_status.next_actor import SUPERVISOR_ROLES
+
+        issue = "https://github.com/fixture/repo/issues/7"
+        header = f"Anchor and claim: {issue}\n"
+        task = "Launch this bounded work.\n"
+        for role in SUPERVISOR_ROLES:
+            status = f"Next actor: agent:supervisor-{role}\nBrief:\n```text\n{task}```"
+            payload = {"ok": True, "issue": {"recorded_current_status": status, "provenance": {"current_status_managed": True}}}
+            with self.subTest(role=role), patch.object(iterm_tab.subprocess, "run", return_value=
+                    subprocess.CompletedProcess([], 0, json.dumps(payload))):
+                self.assertEqual(iterm_tab.read_issue_brief(issue, header), header.rstrip("\n") + "\n\n" + task)
+                with self.assertRaisesRegex(ValueError, "Next actor"):
+                    iterm_tab.read_issue_brief(issue, header, "some-lead")
+
     def test_reporter_status_dispatch_uses_current_bot_source_and_preserves_holds(self) -> None:
         spec = importlib.util.spec_from_file_location(
             "dispatch_plan", Path(__file__).resolve().parents[2] / "github/scripts/gh-plan.py")

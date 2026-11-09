@@ -5,6 +5,8 @@ import re
 from .discussion import unquoted_lines
 from .waits import agent_step
 
+SUPERVISOR_ROLES = ("milestone", "tooling", "cleanup")
+
 
 def validate(actor: str) -> str:
     if not re.fullmatch(r"agent(?::[^\s<>]+)?|person:[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?|event:[^\r\n<>]+", actor):
