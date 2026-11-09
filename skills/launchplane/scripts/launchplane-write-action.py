@@ -13120,7 +13120,16 @@ def main(argv: list[str]) -> int:
                 args=args, operation=args.command, request=request,
                 path=helper_command_path(args.command), query=query,
             )
-        if args.command in {"product-activity-read", "odoo-host-source-grants-read"}:
+        if args.command == "odoo-host-source-grants-read":
+            path = _product_read_path(args.command, product=args.product, environment="testing")
+            request = {
+                "product": _request_identifier(args.product),
+                "payload_source": "operator_argument",
+            }
+            return execute_product_read(
+                args=args, operation=args.command, request=request, path=path
+            )
+        if args.command == "product-activity-read":
             path = _product_read_path(args.command, product=args.product)
             request = {
                 "product": _request_identifier(args.product),
