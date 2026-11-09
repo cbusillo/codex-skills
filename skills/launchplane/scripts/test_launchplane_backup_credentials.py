@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["pytest==9.1.1"]
+# dependencies = ["pytest==9.2.0"]
 # ///
 from __future__ import annotations
 

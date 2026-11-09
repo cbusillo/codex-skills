@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["aiohttp==3.14.5", "websockets==17.3"]
+# dependencies = ["aiohttp==3.14.5", "websockets==17.4"]
 # ///
 import argparse
 import asyncio

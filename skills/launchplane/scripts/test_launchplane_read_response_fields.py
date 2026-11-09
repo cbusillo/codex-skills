@@ -2,7 +2,7 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#     "pytest==9.1.1",
+#     "pytest==9.2.0",
 # ]
 # ///
 """Launchplane's declared read response fields fit the caller's allowlists."""

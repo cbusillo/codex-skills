@@ -3,7 +3,7 @@
 # requires-python = ">=3.12"
 # dependencies = [
 #     "iterm2==2.30",
-#     "websockets==17.3",
+#     "websockets==17.4",
 # ]
 # ///
 """Target iTerm or tmux sessions by exact identity; separate text and Return sends."""
