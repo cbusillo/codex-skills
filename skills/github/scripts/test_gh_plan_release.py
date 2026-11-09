@@ -198,6 +198,26 @@ class ReleaseTests(ReleaseHarness):
             self.run_release()
         self.f.assert_no_writes()
 
+    def test_release_readback_compares_evidence_across_transports_and_detects_edits(self):
+        for edited in (False, True):
+            with self.subTest(edited=edited):
+                self.setUp()
+                graph = {key: self.evidence[key] for key in ("id", "body", "created_at", "updated_at")} | {
+                    "user": {"login": BOT}, "html_url": "https://github.com/owner/control/issues/884#issuecomment-88"}
+                rest = {**self.evidence, "node_id": "IC_1", "user": {"login": BOT, "id": 7, "type": "Bot"}}
+                if edited:
+                    rest["updated_at"] = "2026-10-02T02:00:00Z"
+                rows, read_pages = iter([graph]), self.f.read_pages
+                self.f.read_pages = lambda path, **kwargs: (("bot", [copy.deepcopy(next(rows, rest))])
+                    if path == "/repos/owner/control/issues/884/comments" else read_pages(path, **kwargs))
+                if edited:
+                    with self.assertRaisesRegex(PLAN.PlanError, "changed during release"):
+                        self.run_release()
+                    self.f.assert_no_writes()
+                else:
+                    self.run_release()
+                    self.assertTrue(self.f.emitted.call_args.args[0]["ok"])
+
     def produced_related_release(self, *, earlier_hand=False, ordinary_source_release=False):
         hand = self.comment(3, "Claimed by trial-b\nSession: session-b",
             "2026-09-30T23:59:00Z" if earlier_hand else "2026-10-01T01:00:00Z")

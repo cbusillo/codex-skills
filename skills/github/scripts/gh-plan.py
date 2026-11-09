@@ -2491,7 +2491,9 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
         found = _release_evidence_comment(discussion, int(evidence_id))
         if found is None or found.get("issue_url") != f"https://api.github.com/repos/{evidence_repo}/issues/{evidence_number}":
             raise PlanError("Session-ended evidence is not on the cited issue")
-        return found
+        # REST recovery returns more comment and user fields; only these decide the release.
+        return {**{key: found.get(key) for key in ("id", "body", "created_at", "updated_at", "issue_url")},
+                "user": {"login": (found.get("user") or {}).get("login")}}
     evidence = read_session_evidence()
     completed = []
     result = {}
