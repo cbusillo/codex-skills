@@ -492,6 +492,20 @@ testing lane, the hold keeps event-driven deploys off it. These routes have inst
   effects; selecting a purpose grants no authority and never relabels an
   existing hold. Continue through the same authenticated helper path.
 
+## Host-bound Fishbowl grant read
+
+`odoo-host-source-grants-read --product` calls
+`GET /v1/products/{product}/environments/testing/odoo-source-grants/host`. It
+runs Launchplane's fixed SHOW GRANTS probe in one disposable container on the
+testing lane's host, with no running Odoo runtime or Odoo identity. It takes
+no host, image, SQL or credential input.
+
+The output holds `grants`, privilege names, a value-free `failure_stage`,
+`container_cleanup`, `rechecks` and an evidence digest. Only `read_only` with
+`removed` cleanup and `current` rechecks proves the account's privileges. It
+does not qualify an import copy or authorize an importer. Failures cool down
+for a minute on the service.
+
 ## Product environment, activity and preview reads
 
 `product-environment-read` and `product-activity-read` call

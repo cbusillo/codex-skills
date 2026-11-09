@@ -36,6 +36,11 @@
     "targets",
     "trace_id"
   ],
+  "odoo-host-source-grants-read": [
+    "result",
+    "status",
+    "trace_id"
+  ],
   "path-check": [
     "check",
     "status",
