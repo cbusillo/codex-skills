@@ -282,7 +282,7 @@ class DeliveryTests(unittest.TestCase):
         self.assertTrue(report["complete"])
         self.assertEqual({row["url"] for row in report["questions"]}, {question["url"] for question in self.questions})
 
-    def test_answered_questions_are_not_reread_until_the_daily_refresh(self) -> None:
+    def test_answered_questions_are_skipped_until_refresh_reopening_or_new_trust(self) -> None:
         self.run_queue(register=True)
         target = self.questions[0]
         item = delivery.source_item(target["url"])
@@ -306,8 +306,17 @@ class DeliveryTests(unittest.TestCase):
         later = queue_at(0)
         self.assertNotIn(item, reads)
         self.assertEqual(later["questions"], first["questions"])
+
+        reads.clear()
+        self.run_queue(counted, items=[], decision_author=[*self.authors, "another-bot"])
+        self.assertIn(item, reads)
         queue_at(1)
         self.assertIn(item, reads)
+
+        answer = self.sources[item].pop()
+        self.run_queue(counted, 1, items=[target["url"]])
+        self.assertIn(target["url"], {row["url"] for row in queue_at(1)["questions"]})
+        self.sources[item].append(answer)
 
     def test_no_ack_from_quoted_forged_or_incomplete_records(self):
         target = self.questions[0]["url"]
