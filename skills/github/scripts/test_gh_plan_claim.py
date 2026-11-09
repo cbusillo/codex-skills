@@ -6417,7 +6417,7 @@ class ClaimTests(unittest.TestCase):
 
         with patch.multiple(PLAN, next_graph_reader=lambda _repo: Mock(actor=TEST_BOT), NEXT_READS=None,
                             collect_paged_rest_items=rest, api_json=rest), \
-                patch.object(PLAN.github_plan_graph, "issue_connection", connection):
+                patch.multiple(PLAN.github_plan_graph, issue_connection=connection):
             PLAN.read_issue_relationships("owner/repo", 42, include_blocking=True)
         self.assertEqual(fields, ["blockedBy", "blocking", "subIssues"])
 
