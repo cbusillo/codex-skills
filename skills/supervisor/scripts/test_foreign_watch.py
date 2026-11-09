@@ -77,6 +77,90 @@ class WatchClock:
         self.now += seconds
 
 
+def feed_showing(*changed: str, complete: bool = True) -> Any:
+    threads = tuple(foreign_watch.github_change_feed.Thread(repo, 1, "issue", STARTED) for repo in changed)
+    return patch_attr(foreign_watch.github_change_feed, "changed",
+                      return_value=foreign_watch.github_change_feed.Feed(threads, complete))
+
+
+QUIET = "director/quiet"
+HOURS_AGO = "2026-10-09T10:00:00Z"
+DAY_AGO = "2026-10-08T12:00:00Z"
+
+
+class ChangeFeedTests(unittest.TestCase):
+    @staticmethod
+    def watch_pass(watermarks: dict[str, str], *changed: str, complete: bool = True, repos: list[str] | None = None,
+                   failing: str | None = None, retry: tuple[str, ...] = ()) -> tuple[dict[str, str], dict[str, Any], Mock]:
+        reads: dict[str, str] = {}
+
+        def read(path: str, **kwargs: Any) -> list[dict[str, Any]]:
+            if path == "/installation/repositories":
+                return [{"full_name": name, "archived": False} for name in (REPO, QUIET)]
+            repo = "/".join(path.split("/")[1:3])
+            if repo == failing:
+                raise foreign_watch.GitHubReadShapeError("read failed")
+            reads.setdefault(repo, kwargs["params"]["since"])
+            return []
+
+        reader = Mock()
+        reader.paged_json.side_effect = read
+        with tempfile.TemporaryDirectory() as directory:
+            args = persistent_watch_args(directory)
+            args.once = True
+            args.state.write_text(json.dumps({"watermarks": {foreign_watch.MENTIONS: SINCE, **watermarks}, "feed_retry": list(retry)}))
+            with feed_showing(*changed, complete=complete) as feed, patch_attr(foreign_watch, "GitHubReader", return_value=reader), \
+                    patch_attr(foreign_watch, "utc_now", return_value=STARTED), \
+                    patch_attr(foreign_watch, "scan_mentions", side_effect=lambda _a, _r, w, s, *_: ([], [], [], w, s)), \
+                    redirect_stdout(io.StringIO()):
+                foreign_watch.watch(args, repos, SINCE, float("inf"))
+            saved = json.loads(args.state.read_text())
+        return reads, {**saved["watermarks"], "feed_retry": saved.get("feed_retry")}, feed
+
+    @staticmethod
+    def recent(**watermarks: str) -> dict[str, str]:
+        return {foreign_watch.FULL_SCAN_WATERMARK: HOURS_AGO, foreign_watch.CHANGE_FEED_WATERMARK: SINCE, **watermarks}
+
+    def test_only_changed_repositories_are_read_and_quiet_watermarks_stay_at_their_last_read(self) -> None:
+        reads, saved, feed = self.watch_pass(self.recent(**{REPO: SINCE, QUIET: DAY_AGO}), REPO)
+        self.assertEqual(set(reads), {REPO})
+        self.assertEqual(feed.call_args.args[1:], (["director"], foreign_watch.timestamp(SINCE)))
+        self.assertEqual(saved[QUIET], DAY_AGO)
+        self.assertEqual(saved[foreign_watch.CHANGE_FEED_WATERMARK], STARTED)
+
+    def test_the_six_hour_full_read_starts_from_each_repositorys_last_real_read(self) -> None:
+        watermarks = self.recent(**{REPO: SINCE, QUIET: DAY_AGO, foreign_watch.FULL_SCAN_WATERMARK: DAY_AGO})
+        reads, saved, feed = self.watch_pass(watermarks, REPO)
+        self.assertEqual(set(reads), {REPO, QUIET})
+        self.assertEqual(foreign_watch.timestamp(reads[QUIET]), foreign_watch.timestamp(DAY_AGO) - foreign_watch.timedelta(seconds=1))
+        self.assertFalse(feed.called)
+        self.assertEqual(saved[foreign_watch.FULL_SCAN_WATERMARK], STARTED)
+
+    def test_the_first_pass_reads_every_repository(self) -> None:
+        reads, saved, _ = self.watch_pass({REPO: SINCE, QUIET: SINCE}, REPO)
+        self.assertEqual(set(reads), {REPO, QUIET})
+        self.assertEqual(saved[foreign_watch.CHANGE_FEED_WATERMARK], STARTED)
+
+    def test_an_incomplete_change_search_reads_every_repository(self) -> None:
+        reads, _, _ = self.watch_pass(self.recent(**{REPO: SINCE, QUIET: SINCE}), complete=False)
+        self.assertEqual(set(reads), {REPO, QUIET})
+
+    def test_a_failed_repository_is_retried_without_holding_the_change_window(self) -> None:
+        _, saved, _ = self.watch_pass(self.recent(**{REPO: SINCE, QUIET: SINCE}), REPO, failing=REPO)
+        self.assertEqual(saved[foreign_watch.CHANGE_FEED_WATERMARK], STARTED)
+        self.assertEqual(saved[REPO], SINCE)
+        self.assertEqual(saved["feed_retry"], [REPO])
+        reads, saved, _ = self.watch_pass(self.recent(**{REPO: SINCE, QUIET: SINCE}), retry=(REPO,))
+        self.assertEqual(set(reads), {REPO})
+        self.assertEqual(saved["feed_retry"], [])
+
+    def test_explicitly_named_repositories_are_always_read_in_full(self) -> None:
+        reads, saved, feed = self.watch_pass(self.recent(**{REPO: SINCE, QUIET: SINCE}), REPO, repos=[REPO, QUIET])
+        self.assertEqual(set(reads), {REPO, QUIET})
+        self.assertFalse(feed.called)
+        self.assertEqual(saved[foreign_watch.CHANGE_FEED_WATERMARK], SINCE)
+
+
 class WatchTests(unittest.TestCase):
     @staticmethod
     def run_persistent_watch(args: argparse.Namespace, reader: Any) -> tuple[float, list[dict]]:
