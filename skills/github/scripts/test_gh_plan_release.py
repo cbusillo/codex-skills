@@ -37,6 +37,16 @@ class ReleaseHarness(unittest.TestCase):
     def setUp(self):
         self.f = fixtures.ClaimTests()
         self.f.setUp()
+        read_pages = self.f.read_pages
+
+        def read_evidence_discussion(path, **kwargs):
+            if path != "/repos/owner/control/issues/884/comments":
+                return read_pages(path, **kwargs)
+            if self.evidence_failure:
+                raise PLAN.PlanError("Evidence unavailable", api_result={"status": self.evidence_failure})
+            return "bot", [copy.deepcopy(self.evidence)]
+
+        self.f.read_pages = read_evidence_discussion
         self.f.comments = [self.comment(1, CLAIM.marker(fixtures.OTHER), "2026-10-01T00:00:00Z")]
         self.evidence = self.comment(88,
             "Closed session session-b\nEnded at: 2026-10-02T00:00:00Z\n"
@@ -63,10 +73,6 @@ class ReleaseHarness(unittest.TestCase):
 
     def api(self, method, path, **_kwargs):
         self.assertEqual(method, "GET")
-        if path.endswith(f"issues/comments/{self.evidence['id']}"):
-            if self.evidence_failure:
-                raise PLAN.PlanError("Evidence unavailable", api_result={"status": self.evidence_failure})
-            return "bot", copy.deepcopy(self.evidence)
         if "/git/ref/heads/" in path:
             if self.source_branch_date is None:
                 raise PLAN.PlanError("No published source branch", api_result={"status": 404})
@@ -153,6 +159,44 @@ class ReleaseTests(ReleaseHarness):
         canonical = release.verified_comments(self.f.comments, lambda *_args: invalid)
         self.assertFalse(any(release.receipt_for(c) for c in canonical))
         self.assertTrue(CLAIM.discussion_evidence("", canonical, fixtures.OWNER)[0])
+
+    def test_evidence_reads_each_cited_discussion_once_and_binds_its_canonical_issue(self):
+        def graph_row(comment_id, repo, number):
+            return {"id": comment_id, "body": "evidence", "user": {"login": BOT}, "created_at": "2026-10-02T01:00:00Z",
+                    "updated_at": "2026-10-02T01:00:00Z", "html_url": f"https://github.com/{repo}/issues/{number}#issuecomment-{comment_id}"}
+
+        def connection(_repo, number, _field):
+            reads.append(number)
+            if number == 404:
+                raise PLAN.PlanError("GraphQL source not found", failure=PLAN.github_api_core.classify_error(404, {}, {"message": "gone"}))
+            if number == 500:
+                raise PLAN.PlanError("GraphQL connection incomplete")
+            return "bot", [graph_row(88, "Owner/Control", 884), graph_row(89, "Owner/Control", 884)]
+
+        reads = []
+        with patch.multiple(PLAN, read_planning_connection=connection):
+            read = PLAN._claim_release_evidence("owner/repo", 42, [graph_row(7, "owner/repo", 42)])
+            self.assertEqual(read("OWNER/repo", 42, 7)["issue_url"], "https://api.github.com/repos/owner/repo/issues/42")
+            self.assertEqual(reads, [])
+            first, second = read("owner/control", 884, 88), read("owner/control", 884, 89)
+            self.assertEqual(reads, [884])
+            self.assertEqual({first["issue_url"], second["issue_url"]}, {"https://api.github.com/repos/Owner/Control/issues/884"})
+            self.assertIsNone(read("owner/control", 884, 90))
+            self.assertIsNone(read("owner/control", 404, 1))
+            with self.assertRaisesRegex(PLAN.PlanError, "incomplete"):
+                read("owner/control", 500, 1)
+
+    def test_release_accepts_graph_evidence_bound_through_its_canonical_url(self):
+        del self.evidence["issue_url"]
+        self.evidence["html_url"] = "https://github.com/owner/control/issues/884#issuecomment-88"
+        self.run_release()
+        self.assertTrue(self.f.emitted.call_args.args[0]["ok"])
+        self.setUp()
+        del self.evidence["issue_url"]
+        self.evidence["html_url"] = "https://github.com/owner/control/issues/885#issuecomment-88"
+        with self.assertRaisesRegex(PLAN.PlanError, "not on the cited issue"):
+            self.run_release()
+        self.f.assert_no_writes()
 
     def produced_related_release(self, *, earlier_hand=False, ordinary_source_release=False):
         hand = self.comment(3, "Claimed by trial-b\nSession: session-b",
@@ -390,11 +434,9 @@ class ReleaseTests(ReleaseHarness):
                 self.setUp()
                 self.f.issue["pull_request"] = {}
                 self.evidence["body"] = "Closed session session-b\n" + ended + "Safe to exit: yes"
-                def evidence_only(method, path, **kwargs):
-                    if not path.endswith(f"/issues/comments/{self.evidence['id']}"):
-                        self.fail("malformed closure must refuse before reading retained PRs or source commits")
-                    return ReleaseHarness.api(self, method, path, **kwargs)
-                with patch.multiple(self, api=evidence_only), self.assertRaises(PLAN.PlanError):
+                def no_retained_reads(*_args, **_kwargs):
+                    self.fail("malformed closure must refuse before reading retained PRs or source commits")
+                with patch.multiple(self, api=no_retained_reads), self.assertRaises(PLAN.PlanError):
                     self.run_release()
                 self.f.assert_no_writes()
 
