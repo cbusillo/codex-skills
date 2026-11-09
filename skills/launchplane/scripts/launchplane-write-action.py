@@ -11813,6 +11813,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     add_backup_credentials_parser(subparsers)
     from launchplane_review_withdrawal import add_parser as add_review_withdrawal_parser
     add_review_withdrawal_parser(subparsers)
+    from launchplane_release_request import add_parser as add_release_request_parser
+    add_release_request_parser(subparsers)
 
     subparsers.add_parser(
         "operator-config-diagnostic",
@@ -12514,7 +12516,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         else testing_resources_timeout if args.command.startswith("testing-replacement-resources-")
         else OPERATION_PATH_CHECK_TIMEOUT_SECONDS if args.command == "path-check" and args.intent is not None
         else 180.0 if args.command == "merge-train-controller-run-once"
-        else 30.0 if args.command in {"product-promotion-status-read", "dokploy-inventory-read"} else 10.0,
+        else 30.0 if args.command in {"product-promotion-status-read", "dokploy-inventory-read", "release-request"} else 10.0,
     )
     return args
 
@@ -12762,6 +12764,9 @@ def main(argv: list[str]) -> int:
         from launchplane_review_withdrawal import COMMANDS as review_withdrawal_commands, execute as execute_review_withdrawal
         if args.command in review_withdrawal_commands:
             return execute_review_withdrawal(sys.modules[__name__], args)
+        from launchplane_release_request import COMMANDS as RELEASE_REQUEST_COMMANDS, execute as execute_release_request
+        if args.command in RELEASE_REQUEST_COMMANDS:
+            return execute_release_request(sys.modules[__name__], args)
         if args.command in NAMES_ONLY_READS:
             context = _request_identifier(args.context)
             instance = _request_identifier(args.instance) if args.command.startswith("instance-") else ""

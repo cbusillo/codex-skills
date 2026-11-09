@@ -115,6 +115,22 @@
     "status",
     "trace_id"
   ],
+  "release-review-read": [
+    "business_hours",
+    "can_override",
+    "can_start_temporary_hotfix",
+    "display_name",
+    "live_site_url",
+    "owner_github_login",
+    "product",
+    "release_on_acceptance",
+    "release_request",
+    "release_run",
+    "review",
+    "reviewing_temporary_hotfix",
+    "trace_id",
+    "viewer_is_owner"
+  ],
   "repository-inventory-read": [
     "config_authority_delivery",
     "read_model",
