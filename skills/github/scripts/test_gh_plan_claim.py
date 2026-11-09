@@ -7211,7 +7211,6 @@ class ClaimTests(unittest.TestCase):
             self.assertEqual(PLAN.milestone_direction_repo("client/product"), "director/direction")
 
     def test_loading_the_hook_keeps_the_request_log_caller(self) -> None:
-        # The request log names its caller from sys.argv[0]; next's reader threads log while this loads.
         catalog = Path(os.environ["HOME"]) / "catalog"
         (catalog / "hooks").mkdir(parents=True)
         (catalog / "hooks/direction_check_hook.py").write_text(

@@ -2968,12 +2968,7 @@ def cmd_claim(args: argparse.Namespace) -> None:
 
 
 @functools.cache
-def load_hook(path: pathlib.Path) -> types.ModuleType:
-    """A session hook's functions, loaded once per path.
-
-    runpy.run_path would set the process-wide sys.argv[0] while it runs, so the request
-    log would name the hook as the caller of reads that other threads make meanwhile.
-    """
+def load_hook_keeping_request_caller(path: pathlib.Path) -> types.ModuleType:
     hook = types.ModuleType(path.stem)
     hook.__file__ = str(path)
     exec(compile(path.read_text(), str(path), "exec"), hook.__dict__)
@@ -2981,7 +2976,7 @@ def load_hook(path: pathlib.Path) -> types.ModuleType:
 
 
 def milestone_direction_repo(issue_repo: str) -> str:
-    hook = load_hook(SKILL_DIR.parents[1] / "hooks/direction_check_hook.py")
+    hook = load_hook_keeping_request_caller(SKILL_DIR.parents[1] / "hooks/direction_check_hook.py")
     owner = hook.marker_account(hook.read_marker(hook.marker_path()))
     return f"{owner or issue_repo.split('/')[0]}/direction".casefold()
 
