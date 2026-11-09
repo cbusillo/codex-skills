@@ -58,9 +58,10 @@ For chat and durable reports, read [talking with the Director](talking-with-the-
   claim, or files that handoff on a child issue if other work remains.
   The lead or Supervisor then sends that permitted read to a session whose
   guard allows it; the refused session never reroutes it itself. When only the
-  Director can do the refused step by hand, post it as a `Director question:`
-  on the item with the exact command and what happens after it runs, then
-  record the wait; never leave it only in a comment. A command-policy
+  Director can do the refused step by hand, create a
+  [Director question](talking-with-the-director.md#director-questions) on the
+  item with the exact command and what happens after it runs, then record the
+  wait. A command-policy
   message that names the helper to run instead is the supported route, not a
   refusal. When the refusal is wrong for in-scope work, fix its cause as the
   [overall direction](https://github.com/cbusillo/direction/blob/HEAD/DIRECTION.md#stop-boundaries)

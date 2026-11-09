@@ -84,7 +84,8 @@ diagnosing or changing that runner. It uses the independently Director-activated
 worker in place, with its shared exclusive lock and private system/cache/log
 paths. Never copy, export or move its config, activation, accounts, licence or
 credentials, or read activation-bearing files. On a licence prompt, lapsed
-activation or trial offer, stop the licensed run and post an `Owner question:`
+activation or trial offer, stop the licensed run and create a
+[Director question](../references/talking-with-the-director.md#director-questions)
 on the item. The Director restores activation through the normal product UI
 using existing entitlements.
 
