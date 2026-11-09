@@ -524,10 +524,9 @@ class ClaimCloseoutTests(unittest.TestCase):
         handoffs: Any = importlib.import_module("ready_handoff")
         head = "c" * 40
         own = pull(title="Own change", head={"ref": SOURCE["branch"], "sha": head, "repo": {"full_name": REPO}})
-        # Same bot author, same repository, not this session's claim: never gated here.
-        other = pull(5, "work/other", body="Fixes #9", title="Another session's change",
-                     head={"ref": "work/other", "sha": head, "repo": {"full_name": REPO}})
-        self.pulls = [own, other]
+        same_bot_other_session = pull(5, "work/other", body="Fixes #9", title="Another session's change",
+                                      head={"ref": "work/other", "sha": head, "repo": {"full_name": REPO}})
+        self.pulls = [own, same_bot_other_session]
         self.comments.append({**self.release, "body": self.release["body"] + "\n" + own["html_url"]})
         on_pr: list[dict] = []
         issue_comments = self.paged
@@ -539,7 +538,7 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.assertEqual(len(gap), 1, report["blocked"])
         for remedy in (f"ready {own['number']}", "--waiting-for-client", "Engineering ready; waiting for <reason>", "draft"):
             self.assertIn(remedy, gap[0])
-        self.assertFalse([row for row in report["blocked"] if other["html_url"] in row])
+        self.assertFalse([row for row in report["blocked"] if same_bot_other_session["html_url"] in row])
         later = "2026-01-01T00:05:00Z"
         for body in (handoffs.handoff_body(head), handoffs.handoff_body(head, waiting_for_client=True),
                      "Engineering ready; waiting for the Director's landing decision"):

@@ -90,7 +90,6 @@ def project(repo: str, pull: dict[str, Any], comments: list[dict[str, Any]], *, 
         if conflicts:
             return {**row, "state": "underway", "reason": "existing_claim", "ownership_evidence": conflicts}
         return {**row, "state": "unknown", "reason": "unreadable_pr_evidence", "detail": str(exc)}
-    # A claim is ownership, not a handoff: a claimed PR can still lack one.
     missing = {"handoff": "none"} if wait["state"] != "waiting" and not (ready or client_wait or hold) else {}
     if conflicts:
         return {**row, "state": "underway", "reason": "existing_claim", "ownership_evidence": conflicts, **missing}
@@ -118,5 +117,4 @@ def project(repo: str, pull: dict[str, Any], comments: list[dict[str, Any]], *, 
 
 
 def lacks_handoff(row: dict[str, Any]) -> bool:
-    """An open non-draft PR with no current-head Ready, Client handoff, stated hold or recorded wait."""
     return row.get("handoff") == "none"

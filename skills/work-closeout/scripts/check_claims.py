@@ -186,8 +186,11 @@ def check_record(
     return result
 
 
+def claimed_by_successor(row: dict) -> bool:
+    return row["reason"] == "existing_claim"
+
+
 def handoff_gaps(readers: dict[str, GitHubReader], released: list[dict]) -> list[str]:
-    """Each retained open non-draft PR needs a current-head Ready, Client handoff, stated hold or recorded wait."""
     gaps = []
     for url, repo in dict.fromkeys((url, row["repository"]) for row in released for url in row["retained_prs"]):
         number, reader = url.rsplit("/pull/", 1)[1], readers[repo]
@@ -199,8 +202,7 @@ def handoff_gaps(readers: dict[str, GitHubReader], released: list[dict]) -> list
         except (ValueError, KeyError, TypeError, GitHubReadError, GitHubReadShapeError) as error:
             gaps.append(f"{url}: handoff is UNKNOWN ({error})")
             continue
-        # This session's own claims are already released; a live claim here is a successor's work.
-        if pull.get("state") == "open" and row["reason"] != "existing_claim" and (next_pr.lacks_handoff(row) or row["state"] == "unknown"):
+        if pull.get("state") == "open" and not claimed_by_successor(row) and (next_pr.lacks_handoff(row) or row["state"] == "unknown"):
             gaps.append(f"{url}: open non-draft PR has no current-head Ready, Client handoff or stated hold ({row['reason']}); "
                         f"run gh-pr.py --repo {repo} ready {number} (with --waiting-for-client when the Client must accept), "
                         "post a PR comment whose first line is \"Engineering ready; waiting for <reason>\", or mark it draft")

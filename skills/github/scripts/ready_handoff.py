@@ -296,7 +296,6 @@ def timestamp(value):
 
 
 def latest_handoff(comments, trusted):
-    """Return the trusted Ready or renewed wait comment that decides the handoff, and its first line."""
     handoffs = []
     for comment in comments:
         if (comment.get("user") or {}).get("login", "").casefold() not in trusted:
@@ -324,13 +323,11 @@ def latest_ready(pr, comments, trusted, *, include_client_wait: bool = False) ->
 
 
 def stated_hold(comments, trusted) -> bool:
-    """A named "Engineering ready; waiting for <reason>" hold stands until a later handoff."""
     _, first = latest_handoff(comments, trusted)
     return first.startswith(WAITING) and first != CLIENT_WAIT and bool(first.removeprefix(WAITING).strip())
 
 
 def checks_unsettled(summary, pending_client: int) -> bool:
-    """Ready's check rule: a failing check, an unfinished run, or pending checks beyond Client review."""
     return bool(summary["failingCount"] or summary["pendingCount"] > pending_client or summary["unfinishedWorkflowRunCount"])
 
 

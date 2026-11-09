@@ -96,10 +96,12 @@ def test_a_stated_hold_waits_and_only_a_missing_current_head_handoff_lacks_one()
     for missing in ([], [clear], [ready], [comment(5, "Engineering ready; waiting for")],
                     [{**hold, "user": {"login": "stranger"}}], [hold, {**clear, "id": 8, "created_at": "2026-10-28T18:08:00Z"}]):
         assert github_next_pr.lacks_handoff(project(missing, head={"sha": "b" * 40} if missing == [ready] else {"sha": HEAD})), missing
-    # A claim is ownership, not a handoff.
+
+
+def test_a_claimed_pr_without_a_handoff_still_lacks_one() -> None:
     claimed = comment(9, claim.marker({"worker": "w", "session": "s", "branch": "work/source", "claimed_at": "2026-10-28T18:00:00Z"}))
     assert project([claimed])["reason"] == "existing_claim" and github_next_pr.lacks_handoff(project([claimed]))
-    assert not github_next_pr.lacks_handoff(project([claimed, ready]))
+    assert not github_next_pr.lacks_handoff(project([claimed, comment(10, ready_handoff.handoff_body(HEAD))]))
 
 
 def pr_evidence(row: dict) -> dict:
@@ -253,6 +255,7 @@ def test_existing_inventory_supplies_pr_followthrough_without_dependency_age_rul
 if __name__ == "__main__":
     test_non_dependency_followthrough_preserves_conditions_and_current_head_handoffs()
     test_a_stated_hold_waits_and_only_a_missing_current_head_handoff_lacks_one()
+    test_a_claimed_pr_without_a_handoff_still_lacks_one()
     test_existing_inventory_supplies_pr_followthrough_without_dependency_age_rule()
     test_saved_current_head_acceptance_ends_only_the_client_handoff_wait()
     test_acceptance_reads_preserve_deadline_coverage_and_bound_the_child()
