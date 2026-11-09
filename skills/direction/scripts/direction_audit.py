@@ -35,7 +35,7 @@ if str(GITHUB_SCRIPTS) not in sys.path:
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from skills.github.scripts import director_question_gate, github_identity, github_rulesets, github_direction_next, github_plan_claim, github_plan_wait, github_read, github_work_graph, github_next_reads
+from skills.github.scripts import director_question_gate, github_identity, github_rulesets, github_direction_next, github_plan_claim, github_plan_wait, github_read, github_work_graph, github_next_reads, github_next_inventory
 from skills.github.scripts import github_repository_scope as repository_scope
 from skills.github.scripts.github_plan_status import questions as github_plan_questions
 from skills.github.scripts.github_plan_status.discussion import status_field
@@ -385,6 +385,140 @@ UNRESOLVED = object()
 def bare_reference_missing(exc: AuditError, explicit: bool) -> bool:
     """Only an unqualified reference may be left unresolved; named repositories stay errors."""
     return not explicit and isinstance(exc, ReferenceNotFound)
+
+
+github_plan_graph = github_work_graph.github_plan_graph
+GRAPH_READ_ERRORS = (github_plan_graph.github_read.GitHubReadError, github_plan_graph.github_read.GitHubReadShapeError,
+                     KeyError, TypeError, ValueError)
+REST_ISSUE_RECORD = re.compile(r"repos/([\w.-]+/[\w.-]+)/(issues|pulls)/([1-9]\d*)")
+REST_ISSUE_CONNECTION = re.compile(
+    r"repos/([\w.-]+/[\w.-]+)/issues/([1-9]\d*)/(comments|sub_issues|dependencies/blocked_by|dependencies/blocking)"
+    r"\?per_page=100&page=([1-9]\d*)"
+)
+GRAPH_CONNECTION_FIELDS = {"comments": "comments", "sub_issues": "subIssues",
+                           "dependencies/blocked_by": "blockedBy", "dependencies/blocking": "blocking"}
+INVENTORY_RELATIONSHIPS = {"sub_issues": "sub_issues", "dependencies/blocked_by": "blocked_by", "dependencies/blocking": "blocking"}
+REST_PAGE_SIZE = 100
+GRAPH_READ_OPERATION = "github.direction.audit_issues"
+
+
+class GraphRoute(NamedTuple):
+    repo: str
+    number: int
+    from_inventory: Callable[[dict[str, Any]], Any]
+    read: Callable[[Any], Any]
+
+
+def rest_page(rows: list[dict[str, Any]], page: int) -> list[dict[str, Any]]:
+    return rows[(page - 1) * REST_PAGE_SIZE:page * REST_PAGE_SIZE]
+
+
+def checked_record(row: dict[str, Any], repo: str, kind: str, number: int) -> dict[str, Any]:
+    if kind == "pulls" and "pull_request" not in row:
+        raise ReferenceNotFound(f"{repo}#{number} is not a pull request")
+    return row
+
+
+def graph_issue_record(reader: Any, repo: str, kind: str, number: int) -> dict[str, Any]:
+    return checked_record(github_plan_graph.planning_graph(reader, repo, number=number, connection_fields=("labels",))[0], repo, kind, number)
+
+
+def graph_connection_page(reader: Any, repo: str, number: int, endpoint: str, page: int) -> list[dict[str, Any]]:
+    return rest_page(github_plan_graph.issue_connection(reader, repo, number, GRAPH_CONNECTION_FIELDS[endpoint], limit=page * REST_PAGE_SIZE), page)
+
+
+def inventory_connection_page(row: dict[str, Any], endpoint: str, page: int) -> list[dict[str, Any]] | None:
+    if endpoint == "comments":
+        rows = row.get("_graph_comments") if row.get("_graph_comments_complete") else None
+    else:
+        rows = (row.get("_graph_relationships") or {}).get(INVENTORY_RELATIONSHIPS[endpoint])
+    return None if rows is None else rest_page(rows, page)
+
+
+def graph_route(args: list[str]) -> GraphRoute | None:
+    if len(args) != 4 or args[0] != "api" or args[2:] != ["--method", "GET"]:
+        return None
+    if record := REST_ISSUE_RECORD.fullmatch(args[1]):
+        repo, kind, number = record[1], record[2], int(record[3])
+        return GraphRoute(repo, number, lambda row: checked_record(row, repo, kind, number),
+                          lambda reader: graph_issue_record(reader, repo, kind, number))
+    if connection := REST_ISSUE_CONNECTION.fullmatch(args[1]):
+        repo, number, endpoint, page = connection[1], int(connection[2]), connection[3], int(connection[4])
+        return GraphRoute(repo, number, lambda row: inventory_connection_page(row, endpoint, page),
+                          lambda reader: graph_connection_page(reader, repo, number, endpoint, page))
+    return None
+
+
+def milestone_node_needs_full_record(node: dict[str, Any]) -> bool:
+    state = node.get("state")
+    wait_needs_author = state == "open" and "user" not in node and "structured_wait" not in node
+    return "updated_at" not in node or (state == "closed" and "closed_at" not in node) or wait_needs_author
+
+
+def rest_may_answer(error: Exception) -> bool:
+    if isinstance(error, github_plan_graph.github_read.GitHubReadShapeError):
+        return error.rest_recovery_allowed or error.retryable
+    if not isinstance(error, github_plan_graph.github_read.GitHubReadError):
+        return False
+    failure = error.result.failure
+    return error.rest_recovery_allowed or (failure is not None and failure.cause == "not_found")
+
+
+def repository_inventory(reader: Any, repo: str) -> dict[int, dict[str, Any]]:
+    try:
+        return {row["number"]: row for row in github_next_inventory.read_repository(reader, repo)}
+    except GRAPH_READ_ERRORS:
+        return {}
+
+
+def owner_inventory(owner: str, reads: github_next_reads.NextReads) -> Callable[[str, Any], dict[int, dict[str, Any]]]:
+    def inventory(repo: str, reader: Any) -> dict[int, dict[str, Any]]:
+        if repo.split("/")[0].casefold() != owner.casefold():
+            return {}
+        return reads.observe(f"inventory:{repo.casefold()}", lambda: repository_inventory(reader, repo), count_request=False)
+
+    return inventory
+
+
+def graph_first_reads(
+    rest: Callable[[list[str]], Any], *, graph_reader: Callable[[str], Any],
+    inventory: Callable[[str, Any], dict[int, dict[str, Any]]],
+) -> Callable[[list[str]], Any]:
+    def read(args: list[str]) -> Any:
+        route = graph_route(args)
+        reader = graph_reader(route.repo) if route is not None else None
+        if route is None or reader is None:
+            return rest(args)
+        try:
+            row = inventory(route.repo, reader).get(route.number)
+            answer = route.from_inventory(row) if row is not None else None
+            return answer if answer is not None else route.read(reader)
+        except GRAPH_READ_ERRORS as error:
+            if rest_may_answer(error):
+                return rest(args)
+            raise AuditError(f"GraphQL read of {args[1]} failed: {error}") from error
+
+    return read
+
+
+def bot_graph_reader(repo: str, *, reads: github_next_reads.NextReads) -> Any:
+    if (not github_identity.automation_login() or not WRAPPER.exists()
+            or "1" in (os.environ.get("GH_PLAN_SKIP_BOT"), os.environ.get("GH_PLAN_ALLOW_ACTIVE_FIRST"))
+            or github_identity.active_auth_fallback_allowed() or github_identity.own_user_opted_in()):
+        return None
+    return github_plan_graph.github_read.GitHubReader(
+        gh_cmd=str(WRAPPER), operation=GRAPH_READ_OPERATION, strict_actor=True, repository=repo,
+        deadline_at=time.time() + github_api.remaining_retry_timeout_seconds(), retry_runtime=reads.retry_runtime,
+    )
+
+
+def weekly_reads(gh: str, *, owner: str, reads: github_next_reads.NextReads) -> Callable[[list[str]], Any]:
+    def rest(args: list[str]) -> Any:
+        return gh_json(args, gh=gh)
+
+    if gh != str(WRAPPER):
+        return rest
+    return graph_first_reads(rest, graph_reader=lambda repo: bot_graph_reader(repo, reads=reads), inventory=owner_inventory(owner, reads))
 
 
 # GitHub Free refuses rulesets on private repositories with this 403; other 403s stay errors.
@@ -1585,7 +1719,7 @@ def milestone_outcomes(
         def read_outcome(item: tuple[tuple[str, int], dict[str, Any]]) -> dict[str, Any]:
             (repo, number), node = item
             outcome: dict[str, Any] = {"issues_closed": [], "issues_open": 0, "issues_waiting": 0, "unavailable": []}
-            if "updated_at" not in node or (node.get("state") == "closed" and "closed_at" not in node):
+            if milestone_node_needs_full_record(node):
                 try:
                     node = fetch(["api", f"repos/{repo}/issues/{number}", "--method", "GET"])
                     if (not isinstance(node, dict) or "updated_at" not in node
@@ -2114,7 +2248,7 @@ def collect_weekly_audit(
     emit: Callable[[dict[str, Any]], None], reads: github_next_reads.NextReads,
 ) -> tuple[int, dict[str, Any]]:
     started = dt.datetime.now(dt.timezone.utc)
-    observed = github_work_graph.cached_reads(lambda args: gh_json(args, gh=gh), reads=reads)
+    observed = github_work_graph.cached_reads(weekly_reads(gh, owner=owner, reads=reads), reads=reads)
 
     def fetch(args: list[str]) -> Any:
         try:

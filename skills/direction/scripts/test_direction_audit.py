@@ -21,7 +21,7 @@ import types
 from contextlib import nullcontext, redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, Callable, Self
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
@@ -4000,6 +4000,282 @@ def test_waiting_inbound_fetch_coverage_includes_caps_errors_and_ambiguous_targe
     assert "coverage_incomplete" in kinds(run(module, issues=found, truncated=incomplete))
     zero = {**gates[0], "issue_dependencies_summary": {"blocking": 0}}
     assert not module.enrich_waiting_inbound_blockers([zero], "o/r", fetch=denied)
+
+
+class GraphReaderFixture:
+    actor = "bot"
+
+    def __init__(self, module: Any, *, comments: int = 0, kind: str = "Issue", failure: str | None = None,
+                 missing: bool = False) -> None:
+        self.api = module.github_plan_graph.github_read.github_api_core
+        self.comments = comments
+        self.kind = kind
+        self.failure = failure
+        self.missing = missing
+
+    @staticmethod
+    def diagnostics() -> dict[str, Any]:
+        return {}
+
+    def graphql_json(self, query: str, _variables: dict[str, Any], **_kwargs: Any) -> Any:
+        if self.failure is not None:
+            detail = self.api.FailureDetail(cause=self.failure, message=self.failure, retryable=False,
+                                            fallback_eligible=False, disposition="stop")
+            return self.api.ApiResult(ok=False, status=502, body=None, failure=detail, bucket="graphql")
+        return self.api.ApiResult(ok=True, status=200, body=self.answer(query), bucket="graphql")
+
+    def answer(self, query: str) -> dict[str, Any]:
+        selector = "issue" if "issue:issueOrPullRequest" in query else "issueOrPullRequest"
+        if self.missing:
+            return {"data": {"repository": {selector: None}}, "errors": [{"type": "NOT_FOUND", "path": ["repository", selector]}]}
+        if selector == "issue":
+            return {"data": {"repository": {"nameWithOwner": "o/r", "isArchived": False, "defaultBranchRef": {"name": "main"},
+                                            "issue": self.record()}}}
+        paged = re.search(r'after:"(\d+)"', query)
+        if paged:
+            return {"data": {"repository": {"issue": {"updatedAt": "T", "comments": self.comment_page(int(paged[1]))}}}}
+        field = next(name for name in ("blockedBy", "blocking", "subIssues", "comments") if f"{name}(first" in query)
+        connection = self.comment_page(0) if field == "comments" else self.related(query)
+        return {"data": {"repository": {"issueOrPullRequest": {"__typename": self.kind, "number": 7, "updatedAt": "T",
+                                                               "repository": {"nameWithOwner": "o/r"}, field: connection}}}}
+
+    def record(self) -> dict[str, Any]:
+        node = {"__typename": self.kind, "databaseId": 70, "number": 7, "title": "seven", "body": "text", "state": "OPEN",
+                "createdAt": "C", "updatedAt": "T", "closedAt": None, "url": "https://github.com/o/r/issues/7",
+                "author": {"__typename": "User", "login": "owner"}, "authorAssociation": "OWNER", "milestone": None,
+                "repository": {"nameWithOwner": "o/r"}, "comments": {"totalCount": 3},
+                "labels": {"totalCount": 1, "nodes": [{"name": "plan"}], "pageInfo": {"hasNextPage": False, "endCursor": None}}}
+        if self.kind == "Issue":
+            return node
+        return {**node, "isDraft": False, "merged": True, "mergedAt": "M", "headRefOid": "abc", "headRefName": "work", "baseRefName": "main",
+                "headRepository": {"nameWithOwner": "o/r"}, "baseRepository": {"nameWithOwner": "o/r"}}
+
+    def comment_page(self, start: int) -> dict[str, Any]:
+        rows = [{"id": f"n{index}", "databaseId": index + 1, "body": f"c{index}", "createdAt": "C", "updatedAt": "T",
+                 "url": f"https://github.com/o/r/issues/7#issuecomment-{index + 1}", "author": {"__typename": "User", "login": "owner"}}
+                for index in range(start, min(start + 100, self.comments))]
+        more = start + 100 < self.comments
+        return {"totalCount": self.comments, "nodes": rows, "pageInfo": {"hasNextPage": more, "endCursor": str(start + 100) if more else None}}
+
+    @staticmethod
+    def related(query: str) -> dict[str, Any]:
+        node = {"number": 9, "title": "nine", "state": "CLOSED", "url": "https://github.com/o/r/issues/9",
+                "repository": {"nameWithOwner": "o/r"}, "body": "done", "stateReason": "COMPLETED", "closedAt": "D",
+                "subIssuesSummary": {"total": 0, "completed": 0, "percentCompleted": 0}}
+        selection = query.split("nodes {", 1)[1].split("pageInfo", 1)[0]
+        if "updatedAt" in selection:
+            node["updatedAt"] = "U"
+        if "issueDependenciesSummary" in selection:
+            node["issueDependenciesSummary"] = {"blockedBy": 0, "blocking": 0, "totalBlockedBy": 0, "totalBlocking": 0}
+        return {"totalCount": 1, "nodes": [node], "pageInfo": {"hasNextPage": False, "endCursor": None}}
+
+
+def rest_must_not_run(args: list[str]) -> Any:
+    raise AssertionError(f"REST read of {args}")
+
+
+def graph_reads(module: Any, reader: Any, rest: Callable[[list[str]], Any] = rest_must_not_run,
+                inventory: Callable[[str, Any], dict[int, dict[str, Any]]] = lambda _repo, _reader: {}) -> Callable[[list[str]], Any]:
+    return module.graph_first_reads(rest, graph_reader=lambda _repo: reader, inventory=inventory)
+
+
+def get(path: str) -> list[str]:
+    return ["api", path, "--method", "GET"]
+
+
+def test_high_volume_issue_reads_answer_from_graphql_without_rest() -> None:
+    module = load()
+    fetch = graph_reads(module, GraphReaderFixture(module, comments=2))
+    record = fetch(get("repos/o/r/issues/7"))
+    assert (record["number"], record["state"], record["comments"], "pull_request" in record) == (7, "open", 3, False)
+    comments, cut = module.fetch_paginated("repos/o/r/issues/7/comments", fetch=fetch, max_pages=2)
+    assert not cut and [row["body"] for row in comments] == ["c0", "c1"]
+    assert comments[0]["user"]["login"] == "owner"
+    for endpoint in ("dependencies/blocked_by", "dependencies/blocking", "sub_issues"):
+        rows, cut = module.fetch_paginated(f"repos/o/r/issues/7/{endpoint}", fetch=fetch, max_pages=2)
+        assert not cut and rows[0]["state"] == "closed" and rows[0]["updated_at"] == "U"
+        assert rows[0]["html_url"] == "https://github.com/o/r/issues/9"
+        assert rows[0]["issue_dependencies_summary"]["total_blocked_by"] == 0
+
+
+def test_pull_record_reads_through_graphql_and_a_plain_issue_is_not_a_pull() -> None:
+    module = load()
+    pull = graph_reads(module, GraphReaderFixture(module, kind="PullRequest"))(get("repos/o/r/pulls/7"))
+    assert (pull["merged_at"], pull["base"]["ref"], "pull_request" in pull) == ("M", "main", True)
+    try:
+        graph_reads(module, GraphReaderFixture(module))(get("repos/o/r/pulls/7"))
+    except module.ReferenceNotFound:
+        return
+    raise AssertionError("a plain issue answered a pull read")
+
+
+def test_graphql_comment_pages_keep_the_page_cap_and_terminate() -> None:
+    module = load()
+    capped, cut = module.fetch_paginated("repos/o/r/issues/7/comments", fetch=graph_reads(module, GraphReaderFixture(module, comments=205)), max_pages=2)
+    assert cut and [row["body"] for row in capped] == [f"c{index}" for index in range(200)]
+    whole, cut = module.fetch_paginated("repos/o/r/issues/7/comments", fetch=graph_reads(module, GraphReaderFixture(module, comments=100)), max_pages=2)
+    assert not cut and len(whole) == 100
+
+
+def test_graphql_not_found_lets_rest_follow_a_transferred_issue_or_report_it_missing() -> None:
+    module = load()
+    transferred = {"number": 7, "state": "open"}
+
+    def missing(args: list[str]) -> Any:
+        raise module.ReferenceNotFound(f"gh api {args[1]} failed: gh: Not Found (HTTP 404)")
+
+    for path in ("repos/o/r/issues/7", "repos/o/r/issues/7/comments?per_page=100&page=1", "repos/o/r/pulls/7"):
+        assert graph_reads(module, GraphReaderFixture(module, missing=True), rest=lambda _args: transferred)(get(path)) == transferred
+        try:
+            graph_reads(module, GraphReaderFixture(module, missing=True), rest=missing)(get(path))
+        except module.ReferenceNotFound:
+            continue
+        raise AssertionError(f"{path} did not report a missing issue")
+
+
+def test_open_milestone_node_without_an_author_reads_its_full_record_for_body_waits() -> None:
+    module = load()
+    open_row = {"updated_at": "2026-11-01T00:00:00Z", "state": "open"}
+    assert module.milestone_node_needs_full_record(open_row)
+    assert not module.milestone_node_needs_full_record({**open_row, "user": {"login": "owner"}})
+    assert not module.milestone_node_needs_full_record({**open_row, "structured_wait": None})
+    assert not module.milestone_node_needs_full_record({**open_row, "state": "closed", "closed_at": "2026-11-02T00:00:00Z"})
+
+
+def test_unrecoverable_graphql_failure_is_an_audit_error_not_an_empty_read() -> None:
+    module = load()
+    for path in ("repos/o/r/issues/7", "repos/o/r/issues/7/sub_issues?per_page=100&page=1"):
+        try:
+            graph_reads(module, GraphReaderFixture(module, failure="server_error"))(get(path))
+        except module.ReferenceNotFound as exc:
+            raise AssertionError("a failure read as missing") from exc
+        except module.AuditError:
+            continue
+        raise AssertionError(f"{path} hid a GraphQL failure")
+
+
+def test_recoverable_graphql_failure_and_missing_bot_route_use_rest() -> None:
+    module = load()
+    calls: list[list[str]] = []
+
+    def rest(args: list[str]) -> Any:
+        calls.append(args)
+        return []
+
+    assert graph_reads(module, GraphReaderFixture(module, failure="network_provider_failure"), rest)(get("repos/o/r/issues/7/comments?per_page=100&page=1")) == []
+    assert graph_reads(module, None, rest)(get("repos/o/r/issues/7")) == []
+    assert len(calls) == 2
+
+
+def test_paths_without_a_graphql_route_stay_on_rest() -> None:
+    module = load()
+    calls: list[str] = []
+
+    def rest(args: list[str]) -> Any:
+        calls.append(args[1])
+        return []
+
+    paths = ["repos/o/r/issues/7/events?per_page=100&page=1", "repos/o/r/pulls/7/files?per_page=100", "repos/o/r/commits/main",
+             "repos/o/r/issues?state=open&per_page=100&page=1", "repos/o/r/issues/7/comments"]
+    fetch = graph_reads(module, GraphReaderFixture(module), rest)
+    for path in paths:
+        assert fetch(get(path)) == []
+    assert calls == paths
+
+
+def test_weekly_reads_take_the_graphql_route_only_through_the_bot_wrapper() -> None:
+    module = load()
+
+    def graph_reader(_repo: str, **_kwargs: Any) -> GraphReaderFixture:
+        return GraphReaderFixture(module)
+
+    with module.github_next_reads.NextReads(workers=1, seconds=0, label="test") as reads, patch.dict(vars(module), {
+            "bot_graph_reader": graph_reader, "gh_json": lambda args, gh: rest_must_not_run(args),
+            "repository_inventory": lambda _reader, _repo: {}}):
+        assert module.weekly_reads(str(module.WRAPPER), owner="o", reads=reads)(get("repos/o/r/issues/7"))["number"] == 7
+        try:
+            module.weekly_reads("fixture-gh", owner="o", reads=reads)(get("repos/o/r/issues/7"))
+        except AssertionError:
+            return
+    raise AssertionError("an explicit reader took the bot route")
+
+
+def inventory_row(number: int, *, complete: bool = True) -> dict[str, Any]:
+    return {"number": number, "state": "open", "comments": 1, "_graph_comments": [{"id": number, "body": f"b{number}"}],
+            "_graph_comments_complete": complete, "_graph_relationships": {"blocked_by": [], "blocking": [], "sub_issues": []}}
+
+
+def counted_inventory(rows: list[dict[str, Any]]) -> tuple[list[str], Any]:
+    calls: list[str] = []
+
+    def read_repository(_reader: Any, repo: str) -> list[dict[str, Any]]:
+        calls.append(repo)
+        return rows
+
+    return calls, read_repository
+
+
+def must_not_query(*_args: Any, **_kwargs: Any) -> Any:
+    raise AssertionError("single-query GraphQL read")
+
+
+def test_many_issues_in_one_repository_cost_one_inventory_read() -> None:
+    module = load()
+    calls, read_repository = counted_inventory([inventory_row(number) for number in range(1, 41)])
+    with module.github_next_reads.NextReads(workers=1, seconds=0, label="test") as reads, patch.dict(vars(module.github_next_inventory), {"read_repository": read_repository}):
+        fetch = graph_reads(module, types.SimpleNamespace(graphql_json=must_not_query), inventory=module.owner_inventory("O", reads))
+        for number in range(1, 41):
+            assert fetch(get(f"repos/o/r/issues/{number}"))["state"] == "open"
+            comments, cut = module.fetch_paginated(f"repos/o/r/issues/{number}/comments", fetch=fetch, max_pages=2)
+            assert not cut and comments[0]["body"] == f"b{number}"
+            assert module.fetch_paginated(f"repos/o/r/issues/{number}/dependencies/blocked_by", fetch=fetch, max_pages=2) == ([], False)
+    assert calls == ["o/r"]
+
+
+def test_items_the_inventory_does_not_cover_keep_the_single_query_route() -> None:
+    module = load()
+    calls, read_repository = counted_inventory([inventory_row(1), inventory_row(7, complete=False)])
+    with module.github_next_reads.NextReads(workers=1, seconds=0, label="test") as reads, patch.dict(vars(module.github_next_inventory), {"read_repository": read_repository}):
+        reader = GraphReaderFixture(module, comments=2)
+        fetch = graph_reads(module, reader, inventory=module.owner_inventory("o", reads))
+        assert fetch(get("repos/o/r/issues/8"))["title"] == "seven"
+        comments, cut = module.fetch_paginated("repos/o/r/issues/7/comments", fetch=fetch, max_pages=2)
+        assert not cut and [row["body"] for row in comments] == ["c0", "c1"]
+        foreign = graph_reads(module, reader, inventory=module.owner_inventory("o", reads))(get("repos/other/r/issues/7"))
+        assert foreign["number"] == 7
+    assert calls == ["o/r"]
+
+
+def test_failed_inventory_falls_through_and_does_not_read_as_empty() -> None:
+    module = load()
+    calls: list[str] = []
+
+    def failing(_reader: Any, repo: str) -> list[dict[str, Any]]:
+        calls.append(repo)
+        raise module.github_plan_graph.github_read.GitHubReadShapeError("Inventory incomplete")
+
+    with module.github_next_reads.NextReads(workers=1, seconds=0, label="test") as reads, patch.dict(vars(module.github_next_inventory), {"read_repository": failing}):
+        fetch = graph_reads(module, GraphReaderFixture(module, comments=2), inventory=module.owner_inventory("o", reads))
+        assert fetch(get("repos/o/r/issues/7"))["number"] == 7
+        comments, _cut = module.fetch_paginated("repos/o/r/issues/7/comments", fetch=fetch, max_pages=2)
+        assert len(comments) == 2
+    assert calls == ["o/r"]
+
+
+def test_graph_walk_skips_edges_a_zero_summary_proves_empty() -> None:
+    module = load()
+    paths: list[str] = []
+
+    def read(path: str, _bound: int) -> tuple[list[dict[str, Any]], bool]:
+        paths.append(path)
+        if path == "/repos/o/r/issues/1/sub_issues":
+            return [{"html_url": "https://github.com/o/r/issues/2", "state": "closed",
+                     "issue_dependencies_summary": {"total_blocked_by": 0}, "sub_issues_summary": {"total": 0}}], False
+        return [], False
+
+    graph = module.github_work_graph.read_native_graph([{"repo": "o/r", "number": 1}], read)
+    assert sorted(graph.nodes) == [("o/r", 1), ("o/r", 2)]
+    assert not [path for path in paths if "/issues/2/" in path]
 
 
 def main() -> int:
