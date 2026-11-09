@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
+import errno
 import fcntl
 import hashlib
 import json
@@ -13,9 +15,11 @@ import math
 import os
 import pwd
 import re
+import shutil
 import signal
 import stat
 import subprocess
+import sys
 import tarfile
 import time
 import uuid
@@ -50,6 +54,176 @@ except (OSError, ValueError):
     sys.exit(255)
 sys.exit(128 + canceled if canceled else 128 - status if status < 0 else status if status < 128 else 127)
 """
+
+
+def clone_input(source: Path, destination: Path) -> None:
+    if sys.platform == "darwin":
+        clone = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True).clonefile
+        clone.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int]
+        clone.restype = ctypes.c_int
+        if clone(os.fsencode(source), os.fsencode(destination), 1 | 8):
+            code = ctypes.get_errno()
+            raise OSError(code, os.strerror(code), str(destination))
+        return
+    if sys.platform == "linux":
+        with source.open("rb") as original, destination.open("xb") as target:
+            try:
+                fcntl.ioctl(target.fileno(), 0x40049409, original.fileno())
+            except OSError:
+                destination.unlink()
+                raise
+        shutil.copystat(source, destination)
+        return
+    raise OSError(errno.ENOTSUP, "This host has no clone operation")
+
+
+def input_inventory(root: Path) -> dict[str, str]:
+    hashes = {}
+    for path in [root, *sorted(root.rglob("*"))] if root.is_dir() else [root]:
+        info = path.lstat()
+        if stat.S_ISDIR(info.st_mode):
+            hashes[str(path.relative_to(root))] = "directory"
+        elif stat.S_ISREG(info.st_mode):
+            with path.open("rb") as stream:
+                hashes[str(path.relative_to(root))] = hashlib.file_digest(stream, "sha256").hexdigest()
+        else:
+            raise ValueError("Staging accepts only ordinary files and directories, without symlinks")
+    return hashes
+
+
+class InputStaging:
+    def __init__(self, evidence: Path) -> None:
+        self.evidence = evidence.resolve(strict=True)
+        self.root = self.evidence / ".staged-inputs"
+        if any((self.evidence / name).exists() for name in ("staging.json", "manifest.json")):
+            raise FileExistsError("Staging metadata already exists; preserve the original evidence")
+        self.root.mkdir(mode=0o700)
+        self.identity = self.root.stat()
+        self.free_before = shutil.disk_usage(self.root).free
+        self.hashes: dict[str, dict[str, str]] = {}
+        self.routes: dict[str, str] = {}
+        self.sources: dict[str, Path] = {}
+        self.storage: dict[str, int] = {}
+        self.collected = False
+
+    def record(self) -> None:
+        key = "observed_bytes_after_collection" if self.collected else "observed_bytes_added"
+        self.storage[key] = self.free_before - shutil.disk_usage(self.evidence).free
+        (self.evidence / "staging.json").write_text(
+            json.dumps(
+                {
+                    "hashes": self.hashes,
+                    "sources": {key: str(source) for key, source in self.sources.items()},
+                    "routes": self.routes,
+                    **self.storage,
+                },
+                indent=2,
+            )
+            + "\n"
+        )
+
+    def add(self, source: Path, group: str = "inputs") -> Path:
+        if group not in {"inputs", "images"}:
+            raise ValueError("Stage only inputs or images")
+        if source.is_symlink():
+            raise ValueError("Staging sources cannot be symlinks")
+        source = source.resolve(strict=True)
+        if source == self.evidence or source in self.evidence.parents or source.is_relative_to(self.evidence):
+            raise ValueError("Staging sources must be original paths outside this evidence directory")
+        key = f"{group}-{len(self.sources)}"
+        destination = self.root / key
+        expected = input_inventory(source)
+        self.sources[key] = source
+        self.hashes[key] = expected
+        self.routes[key] = "pending"
+        self.record()
+        try:
+            self.copy(source, destination)
+        except OSError as error:
+            if error.errno not in {errno.ENOTSUP, errno.EOPNOTSUPP, errno.ENOTTY, errno.EINVAL}:
+                raise
+            self.remove(key)
+            self.routes[key] = "reference"
+            self.hashes[key] = expected
+            self.record()
+            return source
+        if input_inventory(destination) != expected or input_inventory(source) != expected:
+            raise ValueError("Frozen input changed during staging; preserve both copies")
+        self.hashes[key] = expected
+        self.routes[key] = "clone" if source.stat().st_dev == self.root.stat().st_dev else "copy"
+        self.record()
+        return destination
+
+    def copy(self, source: Path, destination: Path) -> None:
+        if source.is_dir():
+            destination.mkdir(mode=0o700)
+            for child in source.iterdir():
+                self.copy(child, destination / child.name)
+            return
+        if not source.is_file() or source.is_symlink():
+            raise ValueError("Stage only ordinary input files")
+        if source.stat().st_dev != self.root.stat().st_dev:
+            shutil.copy2(source, destination)
+        else:
+            clone_input(source, destination)
+
+    def manifest(self, manifest: dict) -> dict:
+        (self.evidence / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+        staged = json.loads(json.dumps(manifest))
+        bindings: dict[str, Path] = {}
+        for container in staged["containers"]:
+            for entry in container.get("copies", []):
+                if entry.get("overlay") or "retained_from" in entry:
+                    continue
+                source = entry["source"]
+                if source not in bindings:
+                    bindings[source] = self.add(Path(source))
+                entry["source"] = str(bindings[source])
+        self.record()
+        return staged
+
+    def open_root(self) -> int:
+        descriptor = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        current = os.fstat(descriptor)
+        if (current.st_dev, current.st_ino) != (self.identity.st_dev, self.identity.st_ino):
+            os.close(descriptor)
+            raise ValueError("Staging directory identity changed; preserve custody")
+        return descriptor
+
+    def remove(self, key: str) -> None:
+        descriptor = self.open_root()
+        try:
+            try:
+                current = os.stat(key, dir_fd=descriptor, follow_symlinks=False)
+            except FileNotFoundError:
+                return
+            if stat.S_ISDIR(current.st_mode):
+                if not shutil.rmtree.avoids_symlink_attacks:
+                    raise RuntimeError("Symlink-resistant collection is unavailable; preserve staging")
+                shutil.rmtree(key, dir_fd=descriptor)
+            else:
+                os.unlink(key, dir_fd=descriptor)
+        finally:
+            os.close(descriptor)
+
+    def collect(self) -> None:
+        current = self.root.lstat()
+        if (current.st_dev, current.st_ino) != (self.identity.st_dev, self.identity.st_ino) or not stat.S_ISDIR(current.st_mode):
+            raise ValueError("Staging directory identity changed; preserve custody")
+        for key, route in self.routes.items():
+            if route == "reference" and input_inventory(self.sources[key]) != self.hashes[key]:
+                raise ValueError("Referenced input changed during execution; preserve custody")
+        expected_names = {key for key, route in self.routes.items() if route != "reference"}
+        if {path.name for path in self.root.iterdir()} != expected_names:
+            raise ValueError("Unrecorded staging files; preserve custody")
+        for key in expected_names:
+            if input_inventory(self.root / key) != self.hashes[key]:
+                raise ValueError("Staged input changed before collection; preserve custody")
+        for key in expected_names:
+            self.remove(key)
+        self.root.rmdir()
+        self.collected = True
+        self.record()
 
 
 def locked_file(path: Path) -> BinaryIO:
@@ -692,18 +866,26 @@ def run_in_slot(
         docker = Docker(slot, log, endpoint)
         Custody(endpoint, evidence).save(custody)
         receipt["cleanup_complete"] = False
+        staging = None
+        collected = False
         try:
             if prepare is not None:
                 manifest = prepare(docker)
                 validate_manifest(manifest)
                 settings.limits(len(manifest["containers"]))
-            receipt["exit_code"], identifiers = docker.run(manifest, settings, evidence)
+            staging = InputStaging(evidence)
+            staged = staging.manifest(manifest)
+            receipt["exit_code"], identifiers = docker.run(staged, settings, evidence)
             docker.copy_outputs(manifest, identifiers, evidence)
+            collected = True
         finally:
             for signum in CANCEL_SIGNALS:
                 signal.signal(signum, signal.SIG_IGN)
             try:
                 docker.cleanup(log)
+                if staging is not None and collected:
+                    staging.collect()
+                    receipt["storage"] = staging.storage
                 receipt["cleanup_complete"] = True
                 custody.unlink()
             except (OSError, RuntimeError, subprocess.SubprocessError) as error:
