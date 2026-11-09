@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["PyYAML==6.0.3"]
 # ///
 """Offline replay of NEXTSHADOW-D1's selection and reference disagreements."""
 from __future__ import annotations

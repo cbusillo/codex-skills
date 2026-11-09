@@ -7,11 +7,11 @@ from __future__ import annotations
 
 try:
     import github_identity
-    from github_plan_status.waits import (PREFIX, current, current_record, live_lines, marker,
+    from github_plan_status.waits import (PREFIX, COMMENT_LINK, current, current_record, first_step, live_lines, marker,
                                           records, resolve, reviewed, validate, without_records, trusted_authors, author_is_trusted, release_event_hint, current_source, names_recipient, recipient_queries, machine_checked, recheck_due, project_dates as project_dates)
 except ModuleNotFoundError:
     from skills.github.scripts import github_identity
-    from skills.github.scripts.github_plan_status.waits import (PREFIX, current, current_record,
+    from skills.github.scripts.github_plan_status.waits import (PREFIX, COMMENT_LINK, current, current_record, first_step,
         live_lines, marker, records, resolve, reviewed, validate, without_records, trusted_authors, author_is_trusted, release_event_hint, current_source, names_recipient, recipient_queries, machine_checked, recheck_due, project_dates as project_dates)
 
 

@@ -322,9 +322,11 @@ active issue labels and continuing background jobs do not lift a hold.
    hand-written release comment.
    Claim waits come only from native blockers and the structured wait
    record. Before a legacy record's first claim, run `gh-plan.py wait <issue>`,
-   read its full evidence once and record every real wait/executing-session hold or verified
+   read its full evidence once and record every real wait or verified
    absence with `wait --waiting-for ... --ends-when ... --evidence ...` or
-   `wait --clear --evidence ...`. `wait --all` reports unreviewed open issues
+   `wait --clear --evidence ...`. A wait on a person also takes `--ask-url`, the
+   comment that asks them; a wait on another issue becomes a native blocker; an
+   agent or session is a Next actor. `wait --all` reports unreviewed open issues
    without clearing them. For new plans, `create --wait-clear --wait-evidence ...`
    or `create --waiting-for ... --ends-when ... --wait-evidence ...` records the
    reviewed request directly. A wait nothing checks also takes `--recheck`,

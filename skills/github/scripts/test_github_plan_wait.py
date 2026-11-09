@@ -24,6 +24,19 @@ class WaitRecordTests(unittest.TestCase):
             with self.subTest(actor=actor), self.assertRaises(ValueError):
                 waits.reviewed(evidence="Source delivery", waiting_for=actor, ends_when="Completes the step")
 
+    def test_named_agents_and_sessions_are_next_actors(self) -> None:
+        for actor in ("TOKENDEL-1026 delivers the no-print helper", "agent:01a1ad22 finishes the proof",
+                      "session 0bb30382 reports back", "01a1a78b-2c93-7c91-af85-11d5396a26d1 owns the runner update",
+                      "Supervisor disposition of the provider refusal"):
+            with self.subTest(actor=actor), self.assertRaises(ValueError):
+                waits.reviewed(evidence="Reviewed", waiting_for=actor, ends_when="It finishes")
+
+    def test_genuine_waits_are_not_mistaken_for_agents(self) -> None:
+        for actor in ("A free Anthropic fleet worker slot", "CVE-2026-1234 patch release",
+                      "ISO-8601 parser update", "Fresh Client acceptance bound to d39371d2", "CI capacity, then agent:cleanup"):
+            with self.subTest(actor=actor):
+                waits.reviewed(evidence="Reviewed", waiting_for=actor, ends_when="It finishes")
+
     def test_catalog_namespace_consumer_can_validate_waits(self):
         result = subprocess.run([
             sys.executable, "-I", "-c",

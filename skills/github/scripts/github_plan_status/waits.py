@@ -11,6 +11,11 @@ from typing import Any
 from .body import contributor_plan_body
 
 PREFIX = "<!-- github-plan:wait "
+COMMENT_LINK = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/(?:issues|pull)/([1-9][0-9]*)#issuecomment-([1-9][0-9]*)")
+LATER_STEP = re.compile(r"(?:[,;]\s*|\s+)(?:then|thereafter|followed by|after which)\b", re.IGNORECASE)
+MONTH_DAY = r"(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])"
+NAMED_AGENT = re.compile(rf"(?i:\bagent:\S|\bsession\s+[0-9a-f]{{6,}}\b|\b[0-9a-f]{{8}}(?:-[0-9a-f]{{4}}){{3}}-[0-9a-f]{{12}}\b)"
+                         rf"|\b[A-Z][A-Z0-9]{{2,}}-{MONTH_DAY}\b(?!-)")
 
 
 def trusted_authors(owner: str, *, configured_bots: Iterable[str] = (),
@@ -31,8 +36,14 @@ def marker(record: dict[str, Any]) -> str:
     return PREFIX + json.dumps(record, sort_keys=True).replace(">", "\\u003e") + " -->"
 
 
+def first_step(text: str) -> str:
+    return LATER_STEP.split(text, maxsplit=1)[0]
+
+
 def agent_step(actor: str) -> bool:
-    return re.match(r"(?i)^(?:the\s+|next\s+)?(?:agents?|supervisor)(?:\b|:)", actor.strip()) is not None
+    step = first_step(actor).strip()
+    return (re.match(r"(?i)^(?:the\s+|next\s+)?(?:agents?|supervisor)(?:\b|:)", step) is not None
+            or NAMED_AGENT.search(step) is not None)
 
 
 def reviewed(*, evidence: str, waiting_for: str | list[str] | None = None,
@@ -46,7 +57,8 @@ def reviewed(*, evidence: str, waiting_for: str | list[str] | None = None,
     if len(actors) != len(endings):
         raise ValueError("Each --waiting-for requires a corresponding --ends-when")
     if any(agent_step(actor) for actor in actors):
-        raise ValueError("Agent and Supervisor steps belong in Next actor and Next action, not --waiting-for")
+        raise ValueError("Agent, session and Supervisor steps belong in Next actor and Next action, not --waiting-for; "
+                         "record what they are waiting on, if anything, as a person ask, native blocker or event")
     record: dict[str, Any] = {"version": 1, "state": "waiting" if waiting_for else "clear", "evidence": evidence,
               "waits": [{"waiting_for": actor, "ends_when": end} for actor, end in zip(actors, endings)]}
     if not_before is not None or event is not None:
@@ -92,9 +104,11 @@ def validate(record: Any) -> None:
     if bool(record["waits"]) != (record["state"] == "waiting"):
         raise ValueError("Structured wait state and entries disagree")
     for wait in record["waits"]:
-        if (not isinstance(wait, dict) or (set(wait) - {"event", "recheck"}) not in ({"waiting_for", "ends_when"}, {"waiting_for", "ends_when", "release"})
+        if (not isinstance(wait, dict) or (set(wait) - {"event", "recheck", "ask_url"}) not in ({"waiting_for", "ends_when"}, {"waiting_for", "ends_when", "release"})
                 or any(not isinstance(value, str) or not value.strip() for value in (wait["waiting_for"], wait["ends_when"]))):
             raise ValueError("A structured wait needs its actor/event and ending condition")
+        if "ask_url" in wait and not (isinstance(wait["ask_url"], str) and COMMENT_LINK.fullmatch(wait["ask_url"])):
+            raise ValueError("--ask-url needs the exact GitHub comment URL that asks the person")
 
         if "event" in wait:
             from . import events

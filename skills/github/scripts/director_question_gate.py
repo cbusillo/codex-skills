@@ -5,17 +5,27 @@
 from __future__ import annotations
 
 import functools
-import json
 import re
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
+import github_comment
 import github_plan_wait
 
 SKILLS = Path(__file__).resolve().parents[2]
-COMMENT_LINK = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/(?:issues|pull)/[1-9][0-9]*#issuecomment-([1-9][0-9]*)")
+COMMENT_LINK = github_plan_wait.COMMENT_LINK
+CLIENT_ROLE = re.compile(r"\bClients?\b")
+LOWERCASE_CLIENT = re.compile(r"\bclients?\b")
+CODE_SPAN = re.compile(r"```.*?```|`[^`\n]*`", re.DOTALL)
+WRITTEN_LOGIN = re.compile(r"(?<![\w/])@([a-z\d](?:[a-z\d-]*[a-z\d])?)(?![\w/-])", re.IGNORECASE)
+
+
+class AskedPerson(NamedTuple):
+    logins: frozenset[str]
+    director: bool
+    client: bool
 
 
 for scripts in ("github-work-rollup/scripts", "supervisor/scripts"):
@@ -23,19 +33,73 @@ for scripts in ("github-work-rollup/scripts", "supervisor/scripts"):
         sys.path.append(str(SKILLS / scripts))
 
 
-def director_terms(owner: str) -> list[str]:
-    import github_unanswered_comments as radar
+def radar_module() -> Any:
+    # noinspection PyUnresolvedReferences
+    import github_unanswered_comments
 
-    names = radar.people_identities({radar.normalize_login(owner)}, None)["director_names"]
-    return [owner, *names, *radar.DIRECTOR_ROLE_WORDS]
+    return github_unanswered_comments
+
+
+@functools.cache
+def people_source(owner: str) -> dict[str, Any]:
+    radar = radar_module()
+    identities = radar.people_identities({radar.normalize_login(owner)}, None)
+    if identities["status"] == "error":
+        raise ValueError(f"The people index could not be read, so a wait cannot be checked: {identities['error']}")
+    return identities
+
+
+def director_terms(owner: str) -> list[str]:
+    return [owner, *people_source(owner)["director_names"], *radar_module().DIRECTOR_ROLE_WORDS]
 
 
 def waits_on_director(owner: str, wait: dict[str, Any]) -> list[str]:
-    import github_unanswered_comments as radar
-
     terms = director_terms(owner)
     return [entry["waiting_for"] for entry in wait["waits"]
-            if radar.current_director_wait(entry["waiting_for"], terms, {owner.casefold()})]
+            if radar_module().current_director_wait(entry["waiting_for"], terms, {owner.casefold()})]
+
+
+@functools.cache
+def address_book(owner: str) -> dict[str, frozenset[str]]:
+    identities = people_source(owner)
+    robots = {*identities["automation"], *identities["own_automation"]}
+    book: dict[str, set[str]] = {}
+    for login, names in identities["address_names"].items():
+        if login in robots:
+            continue
+        for name in (login, *names):
+            book.setdefault(name.casefold(), set()).add(login.casefold())
+    return {name: frozenset(logins) for name, logins in book.items()}
+
+
+def asked_person(owner: str, waiting_for: str) -> AskedPerson | None:
+    radar = radar_module()
+    director = radar.current_director_wait(waiting_for, director_terms(owner), {owner.casefold()}) is not None
+    asserted = radar.asserted_step(LOWERCASE_CLIENT.sub("", waiting_for))
+    book = address_book(owner)
+    known_logins = {login for logins in book.values() for login in logins}
+    named = {login for name, logins in book.items()
+             if github_plan_wait.names_recipient(asserted, [name], known_logins) for login in logins}
+    named |= {login.casefold() for login in WRITTEN_LOGIN.findall(asserted)}
+    client = CLIENT_ROLE.search(asserted) is not None
+    if not (director or named or client):
+        return None
+    return AskedPerson(frozenset(named), director, client)
+
+
+def person_waits(owner: str, wait: dict[str, Any]) -> list[tuple[dict[str, Any], AskedPerson]]:
+    found = [(entry, asked_person(owner, entry["waiting_for"])) for entry in wait["waits"]] if wait["state"] == "waiting" else []
+    return [(entry, person) for entry, person in found if person is not None]
+
+
+def attach_asks(owner: str, wait: dict[str, Any], ask_urls: list[str]) -> None:
+    people = person_waits(owner, wait)
+    if len(ask_urls) > len(people):
+        raise ValueError(f"Each --ask-url belongs to one person wait, in order; {', '.join(ask_urls[len(people):])} has none. "
+                         "Use --event, --not-before or --recheck for an event wait.")
+    for (entry, _), url in zip(people, ask_urls):
+        entry["ask_url"] = url
+    github_plan_wait.validate(wait)
 
 
 def configured_queue() -> str | None:
@@ -44,9 +108,9 @@ def configured_queue() -> str | None:
     return question_id.configured_queue()
 
 
-def comment_links(wait: dict[str, Any]) -> list[tuple[str, str, str]]:
-    found = {match[0]: (match[0], match[1], match[2]) for match in COMMENT_LINK.finditer(json.dumps(wait))}
-    return list(found.values())
+def comment_mentions(comment: dict[str, Any]) -> set[str]:
+    visible = CODE_SPAN.sub("", str(comment.get("body") or ""))
+    return {mention.removeprefix("@").casefold() for mention in github_comment.live_mentions(visible)}
 
 
 def comment_author(comment: dict[str, Any]) -> str:
@@ -84,39 +148,95 @@ def registered_question_ids(queue: str, read_pages: Callable[[str], list[dict[st
             for record in records if record["event"] == "registered"}
 
 
-def unasked_message(owner: str, director_waits: list[str], queue: str | None, unreadable: list[str]) -> str:
-    waits = "; ".join(f'"{text}"' for text in director_waits)
+def unasked_director_message(owner: str, waiting_for: str, queue: str | None) -> str:
     register = (f"register it with `uv run {SKILLS}/supervisor/scripts/oq.py QUESTION_URL --owner {owner} "
                 f"--queue {queue} --register`, " if queue else "")
-    unread = f" These linked comments could not be read; fix the link or retry: {', '.join(unreadable)}." if unreadable else ""
-    return (f"The wait {waits} is on the Director, and it links no numbered Director question"
+    return (f'The wait "{waiting_for}" is on the Director, and --ask-url links no numbered Director question'
             f"{f' registered in {queue}' if queue else ''}. Ask first: post a comment starting `Director question:` "
             "on the issue that states the step, your recommendation and what happens after it (the comment helpers "
-            f"number it), {register}then record the wait again with QUESTION_URL in --evidence. If the Director "
+            f"number it), {register}then record the wait with --ask-url QUESTION_URL. If the Director "
             "already set or agreed to this hold, link the Director's own comment or its `Director decision:` record "
-            'instead. If the current step is a timer or someone else\'s, name that first and the Director after "then".'
-            + unread)
+            'instead. If the current step is a timer or someone else\'s, name that first and the Director after "then".')
 
 
-def director_question_gap(repo: str, wait: dict[str, Any], *, read_comment: Callable[[str], Any],
-                          read_pages: Callable[[str], list[dict[str, Any]]]) -> str | None:
+def unasked_person_message(waiting_for: str, ask_url: str | None) -> str:
+    finding = (f"{ask_url} does not @mention them and is not the Director's own words" if ask_url
+               else "nothing links the comment that asks them")
+    return (f'The wait "{waiting_for}" names a person, and {finding}. If they should be asked now, post a comment that '
+            "@mentions them and record the wait with --ask-url COMMENT_URL. If nobody should be asked yet, record what is "
+            'really in the way and name the person after "then": a native blocker, --event, --not-before, --recheck, or a '
+            "Next actor for agent work.")
+
+
+def ask_is_real(comment: dict[str, Any], person: AskedPerson, owner: str, trusted: set[str]) -> bool:
+    if is_director_record(comment, owner, trusted):
+        return True
+    mentioned = comment_mentions(comment) - trusted
+    return person.logins <= mentioned if person.logins else bool(mentioned)
+
+
+def resolve_client(person: AskedPerson, repo: str) -> AskedPerson:
+    if not person.client or person.logins:
+        return person
+    import github_client
+
+    recorded = github_client.recorded_client(repo)
+    return person._replace(logins=frozenset({recorded["login"]})) if recorded.get("status") == "recorded" else person
+
+
+def read_ask_comment(url: str, read_comment: Callable[[str], Any]) -> dict[str, Any] | None:
+    link = COMMENT_LINK.fullmatch(url)
+    comment = read_comment(f"/repos/{link[1]}/issues/comments/{link[3]}")
+    return comment if isinstance(comment, dict) and str(comment.get("html_url") or "").casefold() == url.casefold() else None
+
+
+def ask_gap(repo: str, wait: dict[str, Any], *, read_comment: Callable[[str], Any],
+            read_pages: Callable[[str], list[dict[str, Any]]]) -> str | None:
     owner = repo.split("/")[0]
-    director_waits = waits_on_director(owner, wait) if wait["state"] == "waiting" else []
-    if not director_waits:
-        return None
     queue = configured_queue()
     trusted = github_plan_wait.authors(repo)
     registered = functools.cache(lambda: registered_question_ids(queue, read_pages))
-    unreadable = []
-    for url, comment_repo, comment_id in comment_links(wait):
-        comment = read_comment(f"/repos/{comment_repo}/issues/comments/{comment_id}")
-        if not isinstance(comment, dict):
-            unreadable.append(url)
+
+    def director_asked(asked: dict[str, Any], asked_url: str) -> bool:
+        return is_director_record(asked, owner, trusted) or (is_numbered_question(asked, trusted) and (
+            queue is None or COMMENT_LINK.fullmatch(asked_url)[3] in registered()))
+
+    for entry, person in person_waits(owner, wait):
+        url = entry.get("ask_url")
+        if url is None:
+            return (unasked_director_message(owner, entry["waiting_for"], queue) if person.director
+                    else unasked_person_message(entry["waiting_for"], None))
+        comment = read_ask_comment(url, read_comment)
+        if comment is None:
+            return f"The ask comment {url} could not be read. Fix the link or retry; a wait on a person needs a readable ask."
+        if person.director:
+            if not director_asked(comment, url):
+                return unasked_director_message(owner, entry["waiting_for"], queue)
             continue
-        if is_director_record(comment, owner, trusted):
-            return None
-        if not is_numbered_question(comment, trusted):
-            continue
-        if queue is None or comment_id in registered():
-            return None
-    return unasked_message(owner, director_waits, queue, unreadable)
+        if not ask_is_real(comment, resolve_client(person, repo), owner, trusted):
+            return unasked_person_message(entry["waiting_for"], url)
+    return None
+
+
+def ask_status(owner: str, evidence: str, entry: dict[str, Any], *, trusted: set[str],
+               read_thread: Callable[[str, int], list[dict[str, Any]] | None]) -> dict[str, Any] | None:
+    person = asked_person(owner, entry["waiting_for"])
+    if person is None:
+        return None
+    ask_url = entry.get("ask_url")
+    if ask_url is None and person.director and (cited := COMMENT_LINK.search(f"{entry['waiting_for']} {entry['ends_when']} {evidence}")):
+        ask_url = cited[0]
+    status: dict[str, Any] = {"waiting_for": entry["waiting_for"], "ask_url": ask_url, "author": None, "replied_since": None, "found": None}
+    if ask_url is None:
+        return status
+    link = COMMENT_LINK.fullmatch(ask_url)
+    thread = read_thread(link[1], int(link[2]))
+    if thread is None:
+        return status
+    position = next((index for index, row in enumerate(thread) if row["url"].casefold() == ask_url.casefold()), None)
+    if position is None:
+        return {**status, "found": False}
+    ask = thread[position]
+    asked = person.logins | ({owner.casefold()} if person.director else set()) or (comment_mentions(ask) - trusted)
+    return {**status, "found": True, "author": ask["author"],
+            "replied_since": any(row["author"].casefold() in asked for row in thread[position + 1:])}
