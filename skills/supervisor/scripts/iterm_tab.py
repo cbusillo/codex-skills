@@ -45,6 +45,7 @@ CLAUDE_UNATTENDED_SETTINGS = (CLAUDE_SUGGESTION_SETTING, CLAUDE_AUTO_MEMORY_SETT
 CLAUDE_SUGGESTION_ENV = "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION"
 CLAUDE_AUTOCOMPACT_OPTION = "--autocompact"
 CLAUDE_QUESTION_TOOL = "AskUserQuestion"
+PRODUCTION_READ_NOTICE_LIMIT = 400
 # Codex draws its first screen seconds after exec (3.3s from an isolated home
 # on Chris-Studio; account and MCP startup add more), so watch for its
 # hook-review prompt until the brief's turn runs, within this bound.
@@ -469,11 +470,26 @@ def codex_daemon_without_ingress(command_text):
         word == "--remote" or word.startswith("--remote=") for word in words[1:])
 
 
+def production_read_notice(brief):
+    """First-screen notice for a declared production read; informative, never a launch gate."""
+    reads = re.findall(r"(?mi)^[^\S\n]*(?:[-*] )?(?:\*\*)?Production read:(?:\*\*)?[^\S\n]*(\S[^\n]*)$", brief)
+    if not reads:
+        return ""
+    return ("NOTICE: Claude auto mode may refuse this brief's production read.\n"
+            f"Declared read: {' | '.join(read.strip() for read in reads)[:PRODUCTION_READ_NOTICE_LIMIT]}\n"
+            "If it is refused: stop that read, report the exact refusal on your item, and never retry it through another "
+            "tool, route, account or provider.\n"
+            "To continue: with gh-plan.py update-section set Next actor: to your lead or agent:supervisor, Next action: to "
+            "Production read refused: <the exact read, no values>, and add a fenced Brief: for a session that may run it. "
+            "The routine check routes it. Keep working on anything independent.\n\n")
+
+
 def append_brief(command_text, brief):
     """Append a literal prompt only to a direct invocation, optionally after cd."""
     words = launch_words(command_text)
     agent = Path(words[0]).name
     if agent == "claude":
+        brief = production_read_notice(brief) + brief
         if "--" in words[1:]:
             raise ValueError("Claude launches need --permission-mode auto before the prompt; put the prompt in --brief-file")
         for index, word in enumerate(words[1:], 1):

@@ -42,6 +42,9 @@ NOTHING_REVIEWABLE = re.compile(r"preview failed|nothing\b[^.]*\b(?:reviewable|t
 RELEASE_REQUEST = re.compile(r"\b(?:releas(?:e|es|ing)|promot(?:e|es|ing|ion))\b(?!\s+(?:(?:this|the|its|our|my)\s+)?claims?\b)", re.I)
 SETTING_CHANGE = re.compile(r"\b(?:set|sets|setting|change|changes|flip|flips|toggle|toggles)\b[^.;\n]*?(?<![-\w])[a-z][a-z0-9_]*=[a-z0-9]+\b", re.I)
 SHA = re.compile(r"[0-9a-f]{40}")
+REFUSED_READ = re.compile(r"production read refused:\s*(\S.*)", re.I)
+REFUSED_READ_ROUTE = ("start it with iterm_tab.py --brief-issue on a session that may run this read (Codex, or Claude once allowed), "
+                      "within claim, cap and account rules; the refused session never retries it")
 
 
 def clock() -> datetime:
@@ -196,10 +199,15 @@ def pointer(row: dict) -> str:
     return str(row.get("comment_url") or row.get("url") or row.get("session_id") or json.dumps(row, sort_keys=True))
 
 
+def refused_read(row: dict) -> str:
+    match = REFUSED_READ.match((row.get("queue") or {}).get("next_action") or "")
+    return " ".join(match[1].split()) if match else ""
+
+
 def queue_rows(selection: dict) -> list[tuple[str, dict]]:
     rows: dict[str, tuple[str, dict]] = {}
     actors = supervisor_actors()
-    for field in ("candidates", "excluded", "needs_status"):
+    for field in ("candidates", "excluded", "needs_status", "underway"):
         for row in selection.get(field, []):
             queue = row.get("queue", {})
             if str(row.get("state", "")).casefold() != "open":
@@ -207,7 +215,12 @@ def queue_rows(selection: dict) -> list[tuple[str, dict]]:
             if field == "excluded" and row.get("exclusion") not in {"assigned_elsewhere", "agent_assignment_unresolved"}:
                 continue
             actor = queue.get("next_actor") or ""
-            if actor.casefold() in actors and queue.get("state") in {"available", "review", "needs_status"}:
+            # The refused worker usually still holds its claim, so this one row also reads underway work.
+            if refused_read(row) and actor.startswith("agent") and queue.get("state") in {"available", "review", "needs_status", "underway"}:
+                rows[pointer(row)] = ("PRODUCTION_READ_REFUSED", row)
+            elif field == "underway":
+                continue
+            elif actor.casefold() in actors and queue.get("state") in {"available", "review", "needs_status"}:
                 rows[pointer(row)] = ("SUPERVISOR_ACTION", row)
             elif row.get("record_type") == "pull_request":
                 continue
@@ -350,14 +363,19 @@ def digest(sources: dict[str, dict], *, full: bool = False) -> str:
             lines.append(noted(f"WAIT {pointer(wait)}: {wait.get('waiting_for')}{ask_note(wait)}", wait))
     needs_status = []
     rows = queue_rows(selection)
-    actions = sorted((candidate for kind, candidate in rows if kind == "SUPERVISOR_ACTION"),
-                     key=lambda action: recorded_time(action["queue"].get("status_recorded_at")) or datetime.min.replace(tzinfo=UTC))
-    for row in actions:
+    actions = sorted((pair for pair in rows if pair[0] in {"SUPERVISOR_ACTION", "PRODUCTION_READ_REFUSED"}),
+                     key=lambda pair: recorded_time(pair[1]["queue"].get("status_recorded_at")) or datetime.min.replace(tzinfo=UTC))
+    supervisors = supervisor_actors()
+    for kind, row in actions:
         recorded = recorded_time(row["queue"].get("status_recorded_at"))
         age = now - recorded if recorded else None
         request = (row["queue"].get("next_action") or row["queue"].get("reason") or "").splitlines()[0:1]
-        lines.append(noted(f"SUPERVISOR_ACTION {pointer(row)} age={age_text(age) if age else 'UNKNOWN'}: {''.join(request)[:180]}", row))
-        if age is None or age > ROUTINE_INTERVAL:
+        detail = ''.join(request)[:180]
+        if kind == "PRODUCTION_READ_REFUSED":
+            held = " claim=held" if row["queue"].get("state") == "underway" else ""
+            detail = f"read=\"{refused_read(row)[:400]}\" next_actor={row['queue']['next_actor']}{held} route={REFUSED_READ_ROUTE}"
+        lines.append(noted(f"{kind} {pointer(row)} age={age_text(age) if age else 'UNKNOWN'}: {detail}", row))
+        if (age is None or age > ROUTINE_INTERVAL) and (kind == "SUPERVISOR_ACTION" or row["queue"]["next_actor"].casefold() in supervisors):
             lines.append(f"ERROR supervisor_action {pointer(row)}: open {age_text(age) if age else 'for an UNKNOWN time'} with no disposition; "
                          "set another actor, record a wait or claim it on the issue")
     for row in client_wait_rows(selection):
