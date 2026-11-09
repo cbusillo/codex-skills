@@ -78,6 +78,7 @@ def report(ledger: Path, capacity_state: Path | None = None) -> dict:
             "harness": entry["harness"],
             "transcript": entry["transcript"],
             "handoff_url": entry.get("handoff_url"),
+            "issue": entry.get("issue"),
         }
         if "error" in result:
             row.update(error=result["error"], action="inspect_coverage_gap")

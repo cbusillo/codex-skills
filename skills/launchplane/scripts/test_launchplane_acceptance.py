@@ -114,6 +114,36 @@ class AcceptanceTests(unittest.TestCase):
             self.assertEqual(state(), acceptance.UNKNOWN)
         self.transport.assert_not_called()
 
+    def test_production_commit_comes_from_the_promotion_status_destination(self):
+        path = acceptance.operator.helper_command_path("product-promotion-status-read").format(product=PRODUCT, environment="prod")
+
+        def read(**kwargs):
+            if kwargs["path"] == path:
+                return {"promotion_status": {"source": {"source_git_ref": "testing"}, "destination": {"source_git_ref": "deployed"}}}
+            return self.read(**kwargs)
+
+        self.transport.side_effect = read
+        self.assertEqual(acceptance.read_production_commit(REPO).commit, "deployed")
+
+    def test_unmapped_missing_or_failed_production_reads_give_a_reason_and_no_commit(self):
+        path = acceptance.operator.helper_command_path("product-promotion-status-read").format(product=PRODUCT, environment="prod")
+        self.mapping["mapping"]["repositories"] = []
+        self.assertTrue(acceptance.read_production_commit(REPO).reason)
+        self.setUp()
+        for response in ({"promotion_status": {"destination": {}}}, {"promotion_status": None}, TimeoutError()):
+            with self.subTest(response=type(response).__name__):
+                def read(response=response, **kwargs):
+                    if kwargs["path"] == path:
+                        if isinstance(response, Exception):
+                            raise response
+                        return response
+                    return self.read(**kwargs)
+
+                self.transport.side_effect = read
+                result = acceptance.read_production_commit(REPO)
+                self.assertEqual(result.commit, "")
+                self.assertTrue(result.reason)
+
 
 if __name__ == "__main__":
     unittest.main()

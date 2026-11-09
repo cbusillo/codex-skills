@@ -37,6 +37,8 @@ if str(REPO_ROOT) not in sys.path:
 
 from skills.github.scripts import github_identity, github_rulesets, github_direction_next, github_plan_claim, github_plan_wait, github_read, github_work_graph, github_next_reads
 from skills.github.scripts import github_repository_scope as repository_scope
+from skills.github.scripts.github_plan_status import questions as github_plan_questions
+from skills.github.scripts.github_plan_status.discussion import status_field
 from skills.direction.scripts import direction_mark, direction_reporting
 from skills.github.scripts import github_api, github_plan_closure, github_plan_release
 from skills.supervisor.scripts import session_outcomes
@@ -68,6 +70,11 @@ WAIT_REFERENCE = re.compile(
 )
 
 STATUS_FIELD = r"(?:State|Next action|Blocked by|Waiting for|Parked until|Waiting since|Last verified|Validation|Evidence|Retention|Recovery|Worker|Session|Branch)"
+STALE_STATUS_DAYS = 7
+DRIFT_LINKED_LIMIT = 5
+CITED_QUESTION = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/(?:issues|pull)/\d+#issuecomment-\d+|\bQ[1-9]\d*\b")
+IMPOSSIBLE_CONDITION = re.compile(r"\b(?:was|were) not (?:kept|retained|preserved|saved)\b|\bno longer exists?\b|\bcan(?:not|'t) (?:occur|happen|be (?:produced|recovered))\b|\bcould never\b", re.I)
+DRIFT_COMMON_TERMS = {"that", "this", "with", "from", "when", "then", "will", "have", "been", "agent", "lead", "issue", "event", "only", "after", "wait"}
 
 # The overall direction owns classification; repositories can contain mixed work.
 RANKS = ("milestone", "tooling", "own")
@@ -938,11 +945,129 @@ def active_merged_status(issue: dict[str, Any], repo: str, status: str, *,
             "evidence_complete": True}
 
 
+def record_drift(
+    issue: dict[str, Any], repo: str, status: str, wait: dict[str, Any] | None, *,
+    read: Callable[[str], Any], now: dt.datetime,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Find records that say something their own evidence has overtaken.
+
+    Each finding quotes the exact record it matched; a live wait stays a wait.
+    A read that fails is reported as unavailable, never as a finding.
+    """
+    number = issue["number"]
+    evidence: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    waits = wait["waits"] if wait and wait["state"] == "waiting" else []
+
+    def discussion(target_repo: str, target: int) -> list[dict[str, Any]] | None:
+        try:
+            rows, cut = fetch_paginated(f"repos/{target_repo}/issues/{target}/comments", fetch=lambda args: read(args[1]), max_pages=2)
+        except AuditError:
+            rows, cut = [], True
+        if cut:
+            errors.append({"number": number, "source": "drift_discussion", "reason": "unavailable", "url": f"https://github.com/{target_repo}/issues/{target}"})
+            return None
+        return [{**row, "body": row.get("body") or "", "author": (row.get("user") or {}).get("login") or "", "url": row.get("html_url") or ""} for row in rows]
+
+    for entry in waits:
+        if github_plan_wait.recheck_due(entry, now):
+            evidence.append({"kind": "overdue_recheck", "recheck": entry["recheck"], "recorded_at": f"{entry['recheck']}T00:00:00Z", "matched": entry["waiting_for"]})
+    claimed = " ".join(f"{entry['waiting_for']} {entry['ends_when']}" for entry in waits)
+    named = re.findall(r"(?im)^\s*(?:[-*]\s+)?(?:Next actor:\s*person:|Waiting for:).*$", status)
+    cited = set(CITED_QUESTION.findall(f"{claimed} {' '.join(named)}"))
+    trusted = {name.casefold() for name in github_plan_wait.authors(repo)} | {repo.split("/")[0].casefold()}
+    own_comments = discussion(repo, number) if waits or cited else []
+    if cited and own_comments is not None:
+        linked = {(ref[1] or ref[4] or repo, int(ref[3] or ref[5])) for ref in WAIT_REFERENCE.finditer(f"{claimed} {' '.join(named)}")}
+        linked.discard((repo, number))
+        related = [row for target, target_number in sorted(linked)[:DRIFT_LINKED_LIMIT] for row in (discussion(target, target_number) or [])]
+        for question in github_plan_questions.questions(own_comments, repo.split("/")[0], trusted, related, recorded_decisions_only=True):
+            if question["status"] == "answered" and (question["url"] in cited or github_plan_questions.heading_id(question["question"]) in cited):
+                answer = next((row for row in [*own_comments, *related] if row["url"] == question["answers"][0]), {})
+                evidence.append({"kind": "recorded_decision", "url": question["answers"][0], "question": question["url"], "recorded_at": answer.get("created_at")})
+    for entry in waits:
+        terms = set(re.findall(r"[a-z]{4,}", f"{entry['waiting_for']} {entry['ends_when']}".casefold())) - DRIFT_COMMON_TERMS
+        for row in own_comments or []:
+            if row["author"].casefold() not in trusted or (row["url"] and row["url"] in str((wait or {}).get("evidence"))):
+                continue
+            sentences = [part for part in re.split(r"(?<=[.!?])\s+|\n", row["body"]) if IMPOSSIBLE_CONDITION.search(part)]
+            match = next((part for part in sentences if len(terms & set(re.findall(r"[a-z]{4,}", part.casefold()))) >= 2), None)
+            if match:
+                evidence.append({"kind": "impossible_ends_when", "url": row["url"], "matched": match.strip()[:240], "recorded_at": row.get("created_at"), "ends_when": entry["ends_when"]})
+                break
+        for ref in WAIT_REFERENCE.finditer(entry["ends_when"]):
+            target_repo, target_number = ref[1] or ref[4] or repo, int(ref[3] or ref[5])
+            if (target_repo, target_number) == (repo, number):
+                continue
+            try:
+                target = read(f"repos/{target_repo}/issues/{target_number}")
+            except AuditError:
+                errors.append({"number": number, "source": "drift_reference", "reason": "unavailable", "url": f"https://github.com/{target_repo}/issues/{target_number}"})
+                continue
+            if isinstance(target, dict) and target.get("state") == "closed" and target.get("state_reason") in {"not_planned", "duplicate"}:
+                evidence.append({"kind": "impossible_ends_when", "url": target.get("html_url") or f"https://github.com/{target_repo}/issues/{target_number}",
+                                 "recorded_at": target.get("closed_at"), "ends_when": entry["ends_when"], "state_reason": target.get("state_reason")})
+    status_time = next(filter(None, (_parse_time(value) for value in (
+        status_last_verified(status), issue.get("last_edited_at"), (issue.get("discussion") or {}).get("body_recorded_at")))), None)
+    refs = {(ref[1] or ref[4] or repo, int(ref[3] or ref[5])) for ref in WAIT_REFERENCE.finditer(status)}
+    if status_time is not None and status_time.tzinfo is None:
+        status_time = status_time.replace(tzinfo=dt.timezone.utc)
+    known_children = child_count(issue)
+    aged = status_time is not None and now - status_time > dt.timedelta(days=STALE_STATUS_DAYS)
+    if refs and known_children != 0 and (aged or (status_time is None and known_children)):
+        try:
+            children, cut = fetch_paginated(f"repos/{repo}/issues/{number}/sub_issues", fetch=lambda args: read(args[1]), max_pages=2)
+        except AuditError:
+            children, cut = [], True
+        if cut:
+            errors.append({"number": number, "source": "drift_children", "reason": "unavailable"})
+        named_children = [child for child in children if (repo, child.get("number")) in refs]
+        if named_children and all(child.get("state") == "closed" for child in named_children):
+            if status_time is None:
+                errors.append({"number": number, "source": "drift_status_age", "reason": "status_age_unknown"})
+            else:
+                evidence.append({"kind": "closed_children_status", "recorded_at": status_time.isoformat(), "children": sorted(child["number"] for child in named_children),
+                                 "matched": f"{len(named_children)} named children closed"})
+    for item in evidence:
+        recorded = _parse_time(item.get("recorded_at"))
+        item["age_days"] = max(0, (now - (recorded if recorded.tzinfo else recorded.replace(tzinfo=dt.timezone.utc))).days) if recorded else None
+    return evidence, errors
+
+
+def status_last_verified(status: str) -> str | None:
+    """Return an ISO date from Current Status's Last verified field when it has one."""
+    field = status_field(status, "Last verified") if status else ""
+    match = re.search(r"\d{4}-\d{2}-\d{2}(?:T[0-9:.+-]+Z?)?", field)
+    if match:
+        return match[0]
+    named = re.search(r"([A-Z][a-z]+)\.? (\d{1,2}),? (\d{4})", field)
+    if not named:
+        return None
+    for form in ("%B %d %Y", "%b %d %Y"):
+        try:
+            return dt.datetime.strptime(f"{named[1]} {named[2]} {named[3]}", form).date().isoformat()
+        except ValueError:
+            continue
+    return None
+
+
+def child_count(issue: dict[str, Any]) -> int | None:
+    """Known native child count, or None when this listing does not say."""
+    summary = issue.get("sub_issues_summary")
+    if isinstance(summary, dict) and isinstance(summary.get("total"), int):
+        return summary["total"]
+    counts = issue.get("sub_issues")
+    if isinstance(counts, dict) and all(isinstance(counts.get(key), int) for key in ("open", "closed")):
+        return counts["open"] + counts["closed"]
+    return None
+
+
 def stale_wait_report(
     issues: list[dict[str, Any]], repo: str, *, fetch: Callable[[list[str]], Any],
-    inventory_complete: bool = True, max_issues: int = MAX_PAGES * 100,
+    inventory_complete: bool = True, max_issues: int = MAX_PAGES * 100, now: dt.datetime | None = None,
+    read_waits: bool = False,
 ) -> dict[str, Any]:
-    """Report verifiably obsolete waits, never release or select their work.
+    """Report verifiably obsolete waits and drifted records, never release or select their work.
 
     All recorded holds and native blockers must be satisfied or agent-only.
     Unknown prose, history, and elapsed time cannot prove acceptance.
@@ -951,6 +1076,7 @@ def stale_wait_report(
     errors: list[dict[str, Any]] = []
     unresolved: list[dict[str, Any]] = []
     cache: dict[str, Any] = {}
+    now = now or dt.datetime.now(dt.timezone.utc)
 
     def read(path: str) -> Any:
         if path not in cache:
@@ -980,11 +1106,24 @@ def stale_wait_report(
                 "inventory_complete": inventory_complete}
     for issue in issues:
         active = "pull_request" not in issue and issue.get("state", "open") == "open"
-        if not parked_issue(issue, repo) and not active:
-            continue
         number = issue["number"]
         sections = github_direction_next.section_map(str(issue.get("body") or ""))
         status = next((text for title, text in sections.items() if title.casefold() == "current status"), "")
+        if str(issue.get("state", "open")).casefold() == "open" and (
+                "structured_wait" in issue or (read_waits and (issue.get("comments") or "github-plan:wait" in str(issue.get("body") or "")))):
+            try:
+                drift, drift_errors = record_drift(issue, repo, status, current_audit_wait(issue, repo, fetch=lambda args: read(args[1])), read=read, now=now)
+                errors.extend(error for error in drift_errors if error not in errors)
+                if drift:
+                    rows.append({"number": number, "title": issue.get("title"),
+                                 "url": issue.get("html_url") or f"https://github.com/{repo}/issues/{number}",
+                                 "evidence": drift, "review_required": True, "keeps_wait": True})
+            except (AuditError, ValueError) as error:
+                failure = {"number": number, "source": "structured_wait", "reason": str(error)}
+                if failure not in errors:
+                    errors.append(failure)
+        if not parked_issue(issue, repo) and not active:
+            continue
         normalized_status = re.sub(r"\*\*(Waiting for)(:?)\*\*(:?)", r"\1\2\3", status, flags=re.I)
         if checked >= max_issues:
             errors.append({"number": number, "source": "issue", "reason": "issue_limit"})
@@ -2530,7 +2669,7 @@ def main(argv: list[str] | None = None) -> int:
         fetch = lambda a: gh_json(a, gh=args.gh)  # noqa: E731
         try:
             issues, cut = fetch_paginated(f"repos/{repo}/issues?state=open", fetch=fetch)
-            report = stale_wait_report(issues, repo, fetch=fetch, inventory_complete=not cut)
+            report = stale_wait_report(issues, repo, fetch=fetch, inventory_complete=not cut, read_waits=True)
         except AuditError:
             report = {"read_only": True, "complete": False, "inventory_complete": False,
                       "repository": github_read.repository_disposition(None), "frozen_issues": [],
