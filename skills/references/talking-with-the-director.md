@@ -99,6 +99,10 @@ explicit Director instructions and message-specific holds remain.
 
 ## Director Questions
 
+When a reply will ask the Director to decide anything, create the structured
+record first and build the reply from its printed text; never ask in prose and
+add the record afterwards.
+
 Create a structured question with
 `uv run <supervisor-skill-dir>/scripts/oq.py create --record-file FILE --owner OWNER`.
 The JSON record has `version: 1`, `issue` (exact owning issue URL), `decision`,
@@ -238,6 +242,10 @@ When asking, follow [Director Questions](#director-questions).
   when the answer arrived under another heading or a link. Omit only private
   commentary that does not change the answer; retain it only in an authorized
   private destination when needed. When acting, quote the answer with its link.
+- Recording a Director decision and clearing the wait it ends are one step,
+  using `gh-plan.py wait ISSUE --clear --evidence DECISION_LINK` before any
+  worker is launched on that issue. When the decision ends only part of a wait,
+  split a child issue rather than clearing it.
 - The configured trusted identity that posted a question withdraws it
   with `Q123 withdrawn by the Supervisor. REASON` as the first line, using its
   original Q ID. For an existing replacement, name its bare Q ID in the reason.
