@@ -130,12 +130,12 @@ class TranscriptTests(unittest.TestCase):
                     self.assertEqual(result["last_text"], closeout)
                     self.assertEqual(result["state"], "turn_ended")
 
-            snapshot ={"type": "file-history-snapshot", "messageId": "m", "isSnapshotUpdate": False, "snapshot": {}}
+            snapshot = {"type": "file-history-snapshot", "messageId": "m", "isSnapshotUpdate": False, "snapshot": {}}
             prompt = {"type": "last-prompt", "lastPrompt": "Close out.", "leafUuid": "u"}
             cost = {"type": "cost-state", "totalCostUSD": 0}
             for bookkeeping in ([snapshot], [snapshot, cost, prompt, cost]):
                 with self.subTest(bookkeeping=bookkeeping):
-                    result = read(prefix + tail + bookkeeping)
+                    result = read([*prefix, *tail, *bookkeeping])
                     self.assertTrue(result["safe_verdict"])
                     self.assertEqual(result["last_text"], closeout)
 
