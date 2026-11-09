@@ -528,7 +528,7 @@ BOUNDED_READ_RESPONSE_FIELDS: dict[str, frozenset[str]] = {
             "host_network_capacity_available", "host_network_capacity",
         },
         "product-status-read": {"status", "trace_id", "products"},
-        "product-profile-read": {"status", "trace_id", "profile"},
+        "product-profile-read": {"status", "trace_id", "profile", "client_is_director"},
         "product-promotion-status-read": {"status", "trace_id", "promotion_status"},
         "product-secret-bindings-read": {
             "status", "trace_id", "product", "bindings", "coverage", "lane_binding_resolution",

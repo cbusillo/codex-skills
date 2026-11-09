@@ -734,8 +734,9 @@ PR carries an explicit hold: an `owner-review` label, or a
 `launchplane/owner-review` check other than a completed neutral check or an
 unfinished advisory for current engineering notes. `ready` excludes that
 unfinished advisory from pending checks. A product that
-releases on `director_standing` is the Director's, so it keeps standing
-acceptance unless explicitly held. A repository with no Client gets a plain
+releases on `director_standing`, or that Launchplane reports as
+`client_is_director` even while held for production, is the Director's, so it
+keeps standing acceptance unless explicitly held. A repository with no Client gets a plain
 Ready with no notes, `Client change:` statement or no-test declaration.
 Launchplane answers Client, Director standing, no Client, or unknown. Missing
 credentials and a failed, ambiguous or malformed read are unknown:

@@ -87,7 +87,9 @@ def _client_profile(settings: dict[str, Any], entry: dict[str, Any]) -> dict[str
         or result.get("lifecycle_state") != "active"
     ):
         raise UnsettledRead("Launchplane's product record does not match its repository mapping")
-    return result if result["owner_github_login"] else None
+    if not result["owner_github_login"]:
+        return None
+    return {**result, "client_is_director": payload.get("client_is_director") is True}
 
 
 def _omits_required_profile_fields(raw_profile: object) -> bool:
@@ -97,19 +99,21 @@ def _omits_required_profile_fields(raw_profile: object) -> bool:
     return client is not None and not (isinstance(client, dict) and "github_login" in client)
 
 
+def _director_accepts(profile: dict[str, Any]) -> bool:
+    return profile["client_is_director"] or profile["release_on_acceptance"] == DIRECTOR_STANDING
+
+
 def _settled_release(settings: dict[str, Any], target_key: str) -> str:
     entries = _repository_entries(settings)
     matches = [entry for entry in entries if repository_key(entry["repository"]) == target_key]
     if len(matches) > 1:
         raise UnsettledRead("Launchplane maps the repository more than once")
-    modes = [
-        profile["release_on_acceptance"]
-        for entry in matches
-        if (profile := _client_profile(settings, entry)) is not None
+    profiles = [
+        profile for entry in matches if (profile := _client_profile(settings, entry)) is not None
     ]
-    if any(mode != DIRECTOR_STANDING for mode in modes):
+    if not all(_director_accepts(profile) for profile in profiles):
         return CLIENT
-    return DIRECTOR_STANDING if modes else NO_CLIENT
+    return DIRECTOR_STANDING if profiles else NO_CLIENT
 
 
 def read_client_release(repository: str) -> ClientRelease:

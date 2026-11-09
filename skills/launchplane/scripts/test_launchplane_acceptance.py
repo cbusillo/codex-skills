@@ -29,7 +29,7 @@ class AcceptanceTests(unittest.TestCase):
         self.entry = {"repository": REPO, "classification": "managed_runtime", "product": PRODUCT,
                       "source": "product_profile"}
         self.mapping: dict[str, Any] = {"mapping": {"repositories": [self.entry]}}
-        self.profile: dict[str, Any] = {"status": "ok", "trace_id": "test-trace", "profile": {
+        self.profile: dict[str, Any] = {"status": "ok", "trace_id": "test-trace", "client_is_director": True, "profile": {
             "product": PRODUCT, "repository": REPO, "production_use": "live", "lifecycle_state": "active",
             "release_on_acceptance": "director_standing", "owner": {"github_login": "director"},
             "updated_at": "2026-01-01T00:00:00Z",
@@ -50,12 +50,21 @@ class AcceptanceTests(unittest.TestCase):
             return copy.deepcopy(self.profile)
         raise AssertionError(kwargs["path"])
 
-    def test_direct_product_reads_client_unless_it_releases_on_director_standing(self):
-        self.assertEqual(state(), acceptance.DIRECTOR_STANDING)
-        for mode in acceptance.operator.PRODUCT_RELEASE_ON_ACCEPTANCE_MODES - {"director_standing"}:
+    def test_launchplanes_director_answer_applies_in_any_release_mode(self):
+        for mode in acceptance.operator.PRODUCT_RELEASE_ON_ACCEPTANCE_MODES:
             with self.subTest(mode=mode):
                 self.profile["profile"]["release_on_acceptance"] = mode
-                self.assertEqual(state(), acceptance.CLIENT)
+                self.assertEqual(state(), acceptance.DIRECTOR_STANDING)
+
+    def test_without_launchplanes_answer_only_the_standing_mode_counts(self):
+        self.profile.pop("client_is_director")
+        self.assertEqual(state(), acceptance.DIRECTOR_STANDING)
+        for mode in acceptance.operator.PRODUCT_RELEASE_ON_ACCEPTANCE_MODES - {"director_standing"}:
+            for answer in (None, False, "true"):
+                with self.subTest(mode=mode, answer=answer):
+                    self.profile["profile"]["release_on_acceptance"] = mode
+                    self.profile["client_is_director"] = answer
+                    self.assertEqual(state(), acceptance.CLIENT)
 
     def test_no_client_needs_a_settled_mapping(self):
         self.assertEqual(state("example/unmapped"), acceptance.NO_CLIENT)

@@ -27,11 +27,13 @@ class FakeLaunchplane:
         self.repositories: list[Any] = []
         self.ambiguous: Any = []
         self.profiles: dict[str, dict[str, Any]] = {}
+        self.directors: dict[str, bool] = {}
         self.failure: Optional[Exception] = None
 
-    def product(self, repository, product, *, client="client", release="held", driver="generic-web", lanes=()):
+    def product(self, repository, product, *, client="client", release="held", driver="generic-web", lanes=(), director=None):
         self.repositories.append({"repository": repository, "classification": "managed_runtime",
                                   "product": product, "driver_id": driver, "source": "product_profile"})
+        self.directors[product] = release == "director_standing" if director is None else director
         self.profiles[product] = {
             "product": product, "repository": repository, "production_use": "live",
             "lifecycle_state": "active", "release_on_acceptance": release, "driver_id": driver,
@@ -51,7 +53,8 @@ class FakeLaunchplane:
             return {"mapping": mapping}
         for product, profile in self.profiles.items():
             if path == lp.helper_command_path("product-profile-read").format(product=product):
-                return {"status": "ok", "trace_id": "fixture", "profile": copy.deepcopy(profile)}
+                return {"status": "ok", "trace_id": "fixture", "client_is_director": self.directors[product],
+                        "profile": copy.deepcopy(profile)}
             for lane in ("prod", "testing"):
                 if path == lp.helper_command_path("product-environment-read").format(product=product, environment=lane):
                     return {"status": "ok", "trace_id": "fixture", "environment": {
@@ -117,6 +120,12 @@ class ClientRuleTests(unittest.TestCase):
         self.reader.checks.append({"id": 2, "name": "launchplane/owner-review", "status": "in_progress", "conclusion": None})
         self.assertTrue(self.verdict(CLIENT_NOTES))
         self.reader.checks.pop()
+        self.assertIn("Client test notes are missing", self.verdict("No notes section."))
+
+    def test_directors_product_held_for_production_skips_acceptance_unless_held_for_review(self):
+        self.launchplane.product(REPO, "tool", client="director", driver="odoo", director=True)
+        self.assertEqual(self.verdict(CLIENT_NOTES), "")
+        self.assertTrue(self.verdict(CLIENT_NOTES, labels=("owner-review",)))
         self.assertIn("Client test notes are missing", self.verdict("No notes section."))
 
     def test_unsettled_reads_hold_on_the_client_path(self):
