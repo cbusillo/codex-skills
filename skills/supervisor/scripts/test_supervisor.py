@@ -1781,6 +1781,16 @@ class ProcessArgumentsTests(unittest.TestCase):
     def setUp(self) -> None:
         self.enterContext(patch.object(session_liveness.os, "kill", return_value=None))
 
+    def test_claude_browser_helper_cannot_clear_a_replaced_agent(self) -> None:
+        helper = ["/tools/claude", "--claude-in-chrome-mcp"]
+        agent = [helper[0], "--session-id", self.source]
+        for native, command, expected in (
+            (helper, " ".join(agent), (agent, False)),
+            (agent, " ".join(helper), (agent, True)),
+        ):
+            with self.subTest(native=native, command=command), patch.object(session_liveness, "native_arguments", return_value=native):
+                self.assertEqual(session_liveness.process_arguments(123, command), expected)
+
     def test_generation_exit_distinguishes_pid_reuse_from_the_recorded_process(self) -> None:
         original = datetime.now(UTC) - timedelta(hours=1)
         entry = {"pid": 123, "launch_started_at": original.isoformat()}

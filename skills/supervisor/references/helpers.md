@@ -1409,7 +1409,8 @@ First-screen verification and all shutdown checks still apply.
 A registration failure after submission names the terminal and retains its
 receipt. Inspect the terminal and save the reported `launch` object to a private
 file, then use `iterm_tab.py register --receipt-file <file> --ledger <ledger>`
-to finish registration without relaunching. Duplicate registration refuses.
+to finish registration without relaunching. Keep that original receipt unchanged
+when repeating registration. Duplicate registration refuses.
 `codex-session.py status --launch-receipt <native_receipt>` reads the same
 identity, including after the client exits; no transcript globbing is needed.
 Keep retained receipts while their workers need recovery, then remove them

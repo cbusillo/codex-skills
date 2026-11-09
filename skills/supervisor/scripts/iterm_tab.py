@@ -2200,7 +2200,7 @@ def register_file_launch(launch: dict, native: dict, ledger: Path) -> dict:
     if len(paths) != 1:
         raise ValueError(f"exact fresh {harness} transcript is unavailable; preserve its terminal")
     processes = [row for row in session_liveness.inventory() if row[1] == launch["tty"].removeprefix("/dev/")
-                 and session_liveness.harness_family((session_liveness.harness_arguments(row[2]) or [""])[0]) == harness]
+                 and session_liveness.harness_family((session_liveness.process_arguments(row[0], row[2])[0] or [""])[0]) == harness]
     if launch.get("pid"):
         exact = [row for row in processes if row[0] == launch["pid"]]
         if not exact:
