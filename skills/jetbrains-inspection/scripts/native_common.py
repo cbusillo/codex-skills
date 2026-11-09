@@ -401,10 +401,17 @@ def scope_selection(args: Any, host: Any, receipt: dict[str, Any] | None = None)
     host.parse_repository_preparation(config)
     scope = args.scope or host.first_scope(config.get("scopePreference")) or host.first_scope(repository_config.get("jetbrains", {}).get("scopePreference")) or "changed_files"
     selected = set()
+    skipped: dict[str, str] = {}
     for raw in host.inspection_scope_paths(args, repo, scope):
         path = host.normalize_inspection_lane_path(raw, repo)
-        if path.is_file():
-            selected.add(path.relative_to(repo).as_posix())
+        relative = path.relative_to(repo).as_posix()
+        skip_reason = host.inspection_path_skip_reason(path)
+        if skip_reason is None:
+            selected.add(relative)
+        else:
+            skipped[relative] = skip_reason
+    if scope == "files" and skipped:
+        raise host.explicit_input_unavailable_error([{"file": file, "reason": reason} for file, reason in skipped.items()])
     lanes = host.parse_inspection_lanes(config)
     if lanes:
         selection = host.resolve_inspection_lane_selection(args, {

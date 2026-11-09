@@ -689,6 +689,23 @@ class UnavailableExplanationTests(unittest.TestCase):
                 self.assertNotIn(str(self.repo), output.getvalue())
                 worker.assert_not_called()
 
+    def test_auto_route_names_an_unavailable_explicit_input_without_starting_a_worker(self) -> None:
+        (self.repo / "source.py").write_text("print('fixture')\n")
+        with patch.object(sys, "platform", "darwin"), \
+                patch_attr(host, "native_backend_module", return_value=native), \
+                patch_attr(host, "read_global_config", return_value={}), \
+                patch_attr(host, "log_assessment_records"), \
+                patch_attr(host, "command_native", side_effect=AssertionError("worker started")) as worker, \
+                patch.object(sys, "argv", ["jb-inspect", "agent-inspect", "--repo", str(self.repo),
+                                           "--scope", "files", "--file", "source.py", "--file", "absent.py"]), \
+                redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(host.main(), 0)
+        result = json.loads(output.getvalue())
+        self.assertIn("absent.py", result["agent_result"]["next_action"])
+        self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+        self.assertEqual([entry["file"] for entry in result["diagnostic"]["skipped_files"]], ["absent.py"])
+        worker.assert_not_called()
+
     def test_files_no_worker_inspects_are_named(self):
         for name in ("src/app/globals.css", "src/App.svelte"):
             with self.subTest(name=name):
@@ -1268,6 +1285,16 @@ print('Done.')
         self.args.native_worker = str(directory)
         self.assess()
         self.assertEqual(list(directory.iterdir()), [])
+
+    def test_unavailable_explicit_input_stops_a_forced_native_run_before_admission(self) -> None:
+        self.args.files = ["source.py", "absent.py"]
+        result = self.assess(direct=True)
+        receipt = result["diagnostic"]["native"]
+        self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+        self.assertIn("absent.py", result["agent_result"]["next_action"])
+        self.assertEqual([entry["file"] for entry in receipt["skipped_files"]], ["absent.py"])
+        self.assertNotIn("admission_wait_ms", receipt)
+        self.assertNotIn("worker_pid", receipt)
 
     def test_lane_scope_limit_keeps_its_specific_reason(self):
         error = host.InspectError("fixture scope exceeds limit", payload={"error_reason": "inspection_lane_scope_too_large"})

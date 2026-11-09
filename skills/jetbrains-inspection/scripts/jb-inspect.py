@@ -1040,7 +1040,10 @@ def inspection_lane_config_error(message: str) -> InspectError:
     )
 
 
+EXPLICIT_INPUT_UNAVAILABLE = "inspection_lane_scope_input_unavailable"
 INSPECTION_SCOPE_ERRORS = {
+    EXPLICIT_INPUT_UNAVAILABLE: ("An explicit --file entry is missing or is not a file.",
+                                 "Correct or remove each entry named here, then run one fresh assessment:"),
     "inspection_lane_scope_empty": ("The files scope needs --file; the directory scope needs --dir.",
                                     "Supply --file for files scope or --dir for directory scope, then run one fresh assessment."),
     "inspection_lane_scope_unsupported": ("The requested inspection scope is unsupported.",
@@ -1060,8 +1063,17 @@ def inspection_scope_error(reason: str) -> InspectError:
     return InspectError(message, exit_code, {"error_reason": reason, "failure_phase": "scope_resolution", "next_action": action})
 
 
+def explicit_input_unavailable_error(skipped_files: list[dict[str, str]]) -> InspectError:
+    error = inspection_scope_error(EXPLICIT_INPUT_UNAVAILABLE)
+    named = ", ".join(f"{entry['file']} ({entry['reason']})" for entry in skipped_files)
+    error.payload.update(skipped_files=skipped_files, next_action=f"{error.payload['next_action']} {named}.")
+    return error
+
+
 def safe_inspection_error(error: InspectError) -> InspectError | None:
     reason = error.payload.get("error_reason")
+    if reason == EXPLICIT_INPUT_UNAVAILABLE:
+        return error
     if reason == "inspection_lane_config_invalid":
         return inspection_lane_config_error("The inspection lane configuration is invalid.")
     if reason == "repository_preparation_config_invalid":
@@ -1100,11 +1112,9 @@ def resolve_inspection_lane_selection(
         if relative_path in seen:
             continue
         seen.add(relative_path)
-        if not normalized.exists():
-            skipped_files.append({"file": relative_path, "reason": "missing_or_deleted"})
-            continue
-        if not normalized.is_file():
-            skipped_files.append({"file": relative_path, "reason": "not_a_file"})
+        skip_reason = inspection_path_skip_reason(normalized)
+        if skip_reason is not None:
+            skipped_files.append({"file": relative_path, "reason": skip_reason})
             continue
         selected_files.append({"file": relative_path, "absolute_path": str(normalized)})
 
@@ -1251,6 +1261,12 @@ def normalize_inspection_lane_path(value: Any, worktree_root: Path) -> Path:
     if normalized != worktree_root and not normalized.is_relative_to(worktree_root):
         raise inspection_scope_error("inspection_lane_path_outside_worktree")
     return normalized
+
+
+def inspection_path_skip_reason(path: Path) -> str | None:
+    if not path.exists():
+        return "missing_or_deleted"
+    return None if path.is_file() else "not_a_file"
 
 
 def inspection_lane_pattern_matches(relative_path: str, pattern: str) -> bool:
