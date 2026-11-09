@@ -294,6 +294,29 @@ class ReadyTests(unittest.TestCase):
                     self.reader.jobs = jobs
                     self.refuse()
 
+    def test_stale_check_run_settles_only_under_its_finished_job(self) -> None:
+        completed = "2026-10-22T19:00:00Z"
+        run = {
+            "id": 3, "workflow_id": 2, "run_number": 1, "run_attempt": 1, "check_suite_id": 4,
+            "head_repository": {"id": 5}, "head_branch": "feature", "head_sha": SHA, "event": "pull_request",
+            "status": "completed", "conclusion": "success",
+        }
+        check = {
+            "id": 6, "name": "lint", "status": "in_progress", "conclusion": "success", "completed_at": completed,
+            "head_sha": SHA, "check_suite": {"id": 4}, "app": {"slug": "github-actions", "id": 7},
+            "details_url": f"https://github.com/{REPO}/actions/runs/3/job/6",
+        }
+        job = {"id": 6, "run_id": 3, "run_attempt": 1, "head_sha": SHA, "status": "in_progress", "conclusion": "success", "completed_at": completed}
+        self.reader.runs, self.reader.checks, self.reader.jobs = [run], [check], [job]
+        with patch("time.time", return_value=datetime.fromisoformat(completed).timestamp() + 86400):
+            result, _ = self.post()
+            self.assertEqual(result["summary"]["pendingCount"], 0)
+            self.assertEqual(result["summary"]["jobLevelSettlements"][0]["runId"], 3)
+            self.writer.reset_mock()
+            self.reader.pr_reads = 0
+            self.reader.jobs = [{**job, "conclusion": None}]
+            self.refuse()
+
     def test_incomplete_reads_refuse(self):
         self.reader.unavailable = True
         self.refuse()

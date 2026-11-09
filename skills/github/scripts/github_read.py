@@ -40,6 +40,7 @@ WORKFLOW_SETTLEMENT_GRACE_SECONDS = 300
 GRAPHQL_REPOSITORY_BATCH_SIZE = 100
 GRAPHQL_INVENTORY_PAGE_LIMIT = 100
 FAILED_CHECK_CONCLUSIONS = {"failure", "timed_out", "cancelled", "action_required", "startup_failure"}
+PASSED_CHECK_CONCLUSIONS = {"success", "neutral", "skipped"}
 MERGE_STATE_STATUS = {
     "behind": "BEHIND",
     "blocked": "BLOCKED",
@@ -1313,6 +1314,50 @@ def current_check_runs(
     return current, superseded, complete
 
 
+def _aware_timestamp(value: Any) -> Optional[float]:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed.timestamp() if parsed.tzinfo else None
+
+
+def settle_stale_check_runs(
+    reader: GitHubReader, repo: str, pending: list[dict[str, Any]], runs: list[dict[str, Any]], *, now: float,
+) -> list[dict[str, Any]]:
+    """Settle a passed check GitHub left in_progress, only when its own job record agrees."""
+    runs_by_id = {run.get("id"): run for run in runs}
+    jobs_by_run: dict[int, dict[Any, dict[str, Any]]] = {}
+    settlements = []
+    for check in pending:
+        run = runs_by_id.get(check.get("runId"))
+        completed = _aware_timestamp(check.get("completedAt"))
+        if (check.get("status") != "in_progress" or check.get("appSlug") != "github-actions"
+                or check.get("id") != check.get("jobId")
+                or check.get("conclusion") not in PASSED_CHECK_CONCLUSIONS
+                or completed is None or now - completed < WORKFLOW_SETTLEMENT_GRACE_SECONDS
+                or run is None or run.get("status") != "completed" or workflow_execution_identity(run) is None
+                or check.get("headSha") != run["head_sha"] or check.get("checkSuiteId") != run["check_suite_id"]):
+            continue
+        run_id = run["id"]
+        if run_id not in jobs_by_run:
+            jobs = reader.paged_json(
+                f"/repos/{repo}/actions/runs/{run_id}/jobs",
+                step_prefix=f"settle_check_run_{run_id}_jobs", params={"filter": "latest"}, collection_key="jobs",
+            )
+            jobs_by_run[run_id] = {job.get("id"): job for job in jobs}
+        job = jobs_by_run[run_id].get(check["id"])
+        if (job is None or job.get("run_id") != run_id or job.get("head_sha") != run["head_sha"]
+                or job.get("run_attempt") != run["run_attempt"] or job.get("status") not in {"in_progress", "completed"}
+                or job.get("conclusion") != check["conclusion"] or job.get("completed_at") != check["completedAt"]):
+            continue
+        settlements.append({
+            "runId": run_id, "checkRunId": check["id"], "conclusion": check["conclusion"],
+            "message": f"Check run {check['id']} in workflow run {run_id} settled from its job record after the grace period; GitHub still reports in_progress.",
+        })
+    return settlements
+
+
 def settle_workflow_from_jobs(
     reader: GitHubReader, repo: str, run: dict[str, Any], *, now: float,
 ) -> dict[str, Any]:
@@ -1331,15 +1376,12 @@ def settle_workflow_from_jobs(
         if (job.get("run_id") != run_id or job.get("head_sha") != run["head_sha"]
                 or not isinstance(attempt, int) or isinstance(attempt, bool) or not 0 < attempt <= run["run_attempt"]
                 or job.get("status") != "completed"
-                or job.get("conclusion") not in FAILED_CHECK_CONCLUSIONS | {"success", "neutral", "skipped"}):
+                or job.get("conclusion") not in FAILED_CHECK_CONCLUSIONS | PASSED_CHECK_CONCLUSIONS):
             return run
-        try:
-            completed = datetime.fromisoformat(job["completed_at"])
-        except (KeyError, TypeError, ValueError):
+        completed = _aware_timestamp(job.get("completed_at"))
+        if completed is None:
             return run
-        if completed.tzinfo is None:
-            return run
-        completions.append(completed.timestamp())
+        completions.append(completed)
     if now - max(completions) < WORKFLOW_SETTLEMENT_GRACE_SECONDS:
         return run
     conclusion = next((job["conclusion"] for job in jobs if job["conclusion"] in FAILED_CHECK_CONCLUSIONS), "success")
@@ -1414,7 +1456,7 @@ def unexecuted_fork_approvals(
             linked = [check for check in checks if check.get("runId") == owner["id"]]
             if linked and any(check.get("conclusion") == "success" for check in linked) and all(
                               check.get("headSha") == sha and check.get("checkSuiteId") == owner["check_suite_id"]
-                              and check.get("status") == "completed" and check.get("conclusion") in {"success", "neutral", "skipped"}
+                              and check.get("status") == "completed" and check.get("conclusion") in PASSED_CHECK_CONCLUSIONS
                               for check in linked):
                 passed = True
                 break
@@ -1487,8 +1529,12 @@ def pull_request_checks(
     failing = [item for item in normalized_checks if item.get("conclusion") in FAILED_CHECK_CONCLUSIONS]
     pending = [item for item in normalized_checks if item.get("status") != "completed"]
     current_runs = current_workflow_runs(workflow_runs or [], sha)["current"]
+    check_settlements: list[dict[str, Any]] = []
     try:
         now = time.time()
+        check_settlements = settle_stale_check_runs(reader, repo, pending, current_runs, now=now)
+        settled_check_ids = {item["checkRunId"] for item in check_settlements}
+        pending = [check for check in pending if check.get("id") not in settled_check_ids]
         pending_run_ids = {check.get("runId") for check in pending}
         current_runs = [run if run.get("id") in pending_run_ids else settle_workflow_from_jobs(reader, repo, run, now=now)
                         for run in current_runs]
@@ -1521,7 +1567,7 @@ def pull_request_checks(
             "pendingCount": len(pending) + len(pending_statuses) + pending_workflows_without_checks,
             "pendingWorkflowRunCount": pending_workflows_without_checks,
             "unfinishedWorkflowRunCount": len(unfinished_runs),
-            "jobLevelSettlements": [run["jobLevelSettlement"] for run in current_runs if "jobLevelSettlement" in run],
+            "jobLevelSettlements": [*(run["jobLevelSettlement"] for run in current_runs if "jobLevelSettlement" in run), *check_settlements],
             "countsComplete": counts_complete,
             "countsAreLowerBounds": not counts_complete,
             "combinedState": combined_state if normalized_statuses and availability["combinedStatus"] else None,

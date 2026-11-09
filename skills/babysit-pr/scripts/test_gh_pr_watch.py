@@ -3556,6 +3556,69 @@ def test_stuck_workflow_jobs_drive_shared_readiness(monkeypatch: pytest.MonkeyPa
     assert bool(snapshot["checks"]["job_level_settlements"]) is settled
 
 
+STALE_CHECK_COMPLETED = "2026-10-22T19:00:00Z"
+STALE_CHECK_CASES: dict[str, dict[str, dict[str, Any]]] = {
+    "passed": {},
+    "neutral": {"check": {"conclusion": "neutral"}, "job": {"conclusion": "neutral"}},
+    "job_reads_completed": {"job": {"status": "completed"}},
+    "failed": {"check": {"conclusion": "failure"}, "job": {"conclusion": "failure"}},
+    "cancelled": {"check": {"conclusion": "cancelled"}, "job": {"conclusion": "cancelled"}},
+    "no_conclusion": {"check": {"conclusion": None}, "job": {"conclusion": None}},
+    "unknown_conclusion": {"check": {"conclusion": "stale"}, "job": {"conclusion": "stale"}},
+    "queued": {"check": {"status": "queued"}},
+    "job_queued": {"job": {"status": "queued"}},
+    "no_completed_at": {"check": {"completed_at": None}, "job": {"completed_at": None}},
+    "naive_completed_at": {"check": {"completed_at": "2026-10-22T19:00:00"}, "job": {"completed_at": "2026-10-22T19:00:00"}},
+    "within_grace": {},
+    "run_in_progress": {"run": {"status": "in_progress", "conclusion": None}},
+    "job_missing": {"jobs": {"ids": [12]}},
+    "job_conclusion_differs": {"job": {"conclusion": "failure"}},
+    "job_completed_at_differs": {"job": {"completed_at": "2026-10-22T18:00:00Z"}},
+    "job_other_run": {"job": {"run_id": 2}},
+    "job_other_head": {"job": {"head_sha": "def456"}},
+    "job_prior_attempt": {"run": {"run_attempt": 2}},
+    "check_other_suite": {"check": {"check_suite": {"id": 5}}},
+    "check_other_head": {"check": {"head_sha": "def456"}},
+    "check_links_other_job": {"check": {"details_url": "https://github.com/openai/codex/actions/runs/1/job/12"}},
+    "run_without_identity": {"run": {"run_number": None}},
+    "other_app": {"check": {"app": {"slug": "external-ci", "id": 98}}},
+    "jobs_unavailable": {"jobs": {"unavailable": True}},
+}
+
+
+@pytest.mark.parametrize("case", STALE_CHECK_CASES)
+def test_stale_check_settles_only_from_its_own_finished_job(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, case: str) -> None:
+    change = STALE_CHECK_CASES[case]
+    run = {**execution(1), **change.get("run", {})}
+    check = {**execution_check(run, 11), "status": "in_progress", "completed_at": STALE_CHECK_COMPLETED, **change.get("check", {})}
+    job = {
+        "id": 11, "run_id": 1, "run_attempt": 1, "head_sha": run["head_sha"], "status": "in_progress",
+        "conclusion": "success", "completed_at": STALE_CHECK_COMPLETED, **change.get("job", {}),
+    }
+    jobs_change = change.get("jobs", {})
+    jobs = [{**job, "id": identifier} for identifier in jobs_change.get("ids", [11])]
+    now = datetime.fromisoformat(STALE_CHECK_COMPLETED).timestamp() + (1 if case == "within_grace" else 86400)
+    monkeypatch.setattr("time.time", lambda: now)
+    unavailable = f'/repos/{sample_pr()["repo"]}/actions/runs/1/jobs' if jobs_change.get("unavailable") else None
+    snapshot, _ = execution_snapshot(monkeypatch, tmp_path, [run], [check], jobs={1: jobs}, unavailable=unavailable)
+    settled = case in {"passed", "neutral", "job_reads_completed"}
+    summary = snapshot["checks"]
+    assert summary["all_terminal"] is settled
+    assert summary["pending_count"] == int(not settled)
+    assert summary["failed_count"] == int(check["conclusion"] in {"failure", "cancelled"})
+    assert ("ready_to_merge" in snapshot["actions"]) is settled
+    settlements = summary["job_level_settlements"]
+    assert [(item["runId"], item["checkRunId"]) for item in settlements] == ([(1, 11)] if settled else [])
+    assert not settled or settlements[0]["conclusion"] == check["conclusion"]
+    assert not jobs_change.get("unavailable") or summary["evidence_complete"] is False
+
+
+def test_finished_checks_never_read_jobs_for_settlement(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    run = execution(1)
+    _, reader = execution_snapshot(monkeypatch, tmp_path, [run], [execution_check(run, 11)])
+    assert not [path for path, _kwargs in reader.calls if path.endswith("/jobs")]
+
+
 @pytest.mark.parametrize("allow_no_checks", [False, True])
 @pytest.mark.parametrize("inventory", ["empty", "unavailable", "queued", "failed", "passed"])
 def test_wait_ci_transport_inventory(monkeypatch, tmp_path, allow_no_checks, inventory):
