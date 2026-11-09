@@ -27,16 +27,17 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
 import director_mentions
-import github_change_feed
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github-work-rollup/scripts"))
 import review_notifications
 import services
 import github_access
 
 if TYPE_CHECKING:
+    from skills.github.scripts import github_change_feed
     from skills.github.scripts.github_api import redact_string
     from skills.github.scripts.github_read import GitHubReader, GitHubReadError, GitHubReadShapeError
 else:
+    import github_change_feed
     from github_api import redact_string
     from github_read import GitHubReader, GitHubReadError, GitHubReadShapeError
 from github_review_markers import PRODUCT_REVIEW_MARKER

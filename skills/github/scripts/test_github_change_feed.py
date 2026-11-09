@@ -11,7 +11,7 @@ from typing import Any
 import github_change_feed as feed
 import github_read
 
-SINCE = datetime(2026, 11, 9, 12, 0, tzinfo=UTC)
+SINCE = datetime(2026, 11, 9, 12, tzinfo=UTC)
 UNTIL = SINCE + timedelta(hours=1)
 
 
@@ -34,13 +34,18 @@ class Reader:
             "issueCount": total, "nodes": page,
             "pageInfo": {"hasNextPage": more, "endCursor": str(start + 100) if more else None}}}})
 
-    def diagnostics(self) -> dict:
+    @staticmethod
+    def diagnostics() -> dict:
         return {}
+
+
+def answering(answer: Callable[[str], tuple[int, list[dict[str, Any]]]]) -> Any:
+    return Reader(answer)
 
 
 def test_lists_every_changed_thread_across_pages_as_pointers() -> None:
     nodes = [node("director/a", number) for number in range(1, 151)] + [node("director/b", 7, "PullRequest")]
-    result = feed.changed(Reader(lambda _q: (len(nodes), nodes)), ["director"], SINCE, until=UNTIL)
+    result = feed.changed(answering(lambda _q: (len(nodes), nodes)), ["director"], SINCE, until=UNTIL)
     assert result.complete
     assert len(result.threads) == 151
     assert result.repositories() == {"director/a", "director/b"}
@@ -48,7 +53,7 @@ def test_lists_every_changed_thread_across_pages_as_pointers() -> None:
 
 
 def test_window_starts_before_the_last_look_and_names_every_owner() -> None:
-    reader = Reader(lambda _q: (0, []))
+    reader = answering(lambda _q: (0, []))
     feed.changed(reader, ["director", "client"], SINCE, until=UNTIL)
     assert reader.queries == ["user:director user:client archived:false "
                               "updated:2026-11-09T11:50:00Z..2026-11-09T13:00:00Z sort:updated-asc"]
@@ -60,24 +65,24 @@ def test_a_window_over_the_search_cap_is_split_until_each_half_fits() -> None:
             return feed.SEARCH_RESULT_CAP + 1, []
         return (1, [node("director/a", 1)]) if "..2026-11-09T12:25:00Z" in query else (1, [node("director/a", 2)])
 
-    result = feed.changed(Reader(answer), ["director"], SINCE, until=UNTIL)
+    result = feed.changed(answering(answer), ["director"], SINCE, until=UNTIL)
     assert result.complete
     assert {thread.number for thread in result.threads} == {1, 2}
 
 
 def test_unlisted_or_unreadable_threads_make_the_feed_incomplete() -> None:
-    short = feed.changed(Reader(lambda _q: (3, [node("director/a", 1)])), ["director"], SINCE, until=UNTIL)
+    short = feed.changed(answering(lambda _q: (3, [node("director/a", 1)])), ["director"], SINCE, until=UNTIL)
     assert not short.complete and "1 of 3" in (short.reason or "")
 
     def fail(_query: str) -> tuple[int, list[dict]]:
         raise github_read.GitHubReadShapeError("search unavailable")
 
-    failed = feed.changed(Reader(fail), ["director"], SINCE, until=UNTIL)
+    failed = feed.changed(answering(fail), ["director"], SINCE, until=UNTIL)
     assert not failed.complete and "search unavailable" in (failed.reason or "")
 
 
 def test_a_burst_too_dense_to_split_is_incomplete() -> None:
-    dense = feed.changed(Reader(lambda _q: (feed.SEARCH_RESULT_CAP + 1, [])), ["director"], SINCE, until=UNTIL)
+    dense = feed.changed(answering(lambda _q: (feed.SEARCH_RESULT_CAP + 1, [])), ["director"], SINCE, until=UNTIL)
     assert not dense.complete and "more than" in (dense.reason or "")
 
 

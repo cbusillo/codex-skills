@@ -75,7 +75,6 @@ def changed(reader: github_read.GitHubReader, owners: list[str], since: datetime
 def search(reader: github_read.GitHubReader, query: str) -> tuple[int, list[Thread]]:
     threads: list[Thread] = []
     after: str | None = None
-    total = 0
     while True:
         result = reader.graphql_json(QUERY, {"q": query, "after": after}, step="change_feed_search")
         if not result.ok:

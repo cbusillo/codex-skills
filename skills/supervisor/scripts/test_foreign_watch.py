@@ -77,16 +77,18 @@ class WatchClock:
         self.now += seconds
 
 
+def feed_showing(*changed: str, complete: bool = True) -> Any:
+    threads = tuple(foreign_watch.github_change_feed.Thread(repo, 1, "issue", STARTED) for repo in changed)
+    return patch_attr(foreign_watch.github_change_feed, "changed",
+                      return_value=foreign_watch.github_change_feed.Feed(threads, complete))
+
+
 class ChangeFeedTests(unittest.TestCase):
-    def feed(self, *changed: str, complete: bool = True) -> Any:
-        threads = tuple(foreign_watch.github_change_feed.Thread(repo, 1, "issue", STARTED) for repo in changed)
-        return patch.object(foreign_watch.github_change_feed, "changed",
-                            return_value=foreign_watch.github_change_feed.Feed(threads, complete))
 
     def test_only_changed_repositories_are_read_and_quiet_ones_move_up(self) -> None:
         hours_ago = "2026-10-09T10:00:00Z"
         watermarks = {REPO: hours_ago, "director/quiet": hours_ago, "director/fresh": STARTED}
-        with self.feed(REPO) as changed:
+        with feed_showing(REPO) as changed:
             scanned = foreign_watch.changed_repositories(Mock(), [REPO, "director/quiet", "director/fresh"], watermarks, STARTED)
         self.assertEqual(scanned, [REPO])
         self.assertEqual(changed.call_args.args[1:], (["director"], foreign_watch.timestamp(hours_ago)))
@@ -97,7 +99,7 @@ class ChangeFeedTests(unittest.TestCase):
 
     def test_an_incomplete_change_search_reads_every_repository(self) -> None:
         watermarks = {REPO: SINCE, "director/quiet": SINCE}
-        with self.feed(complete=False):
+        with feed_showing(complete=False):
             scanned = foreign_watch.changed_repositories(Mock(), [REPO, "director/quiet"], watermarks, STARTED)
         self.assertEqual(scanned, [REPO, "director/quiet"])
         self.assertEqual(watermarks, {REPO: SINCE, "director/quiet": SINCE})
@@ -117,9 +119,9 @@ class ChangeFeedTests(unittest.TestCase):
             reads: list[str] = []
             reader = Mock()
             reader.paged_json.side_effect = lambda path, **_: reads.append(path) or []
-            with self.feed(REPO), patch.object(foreign_watch, "GitHubReader", return_value=reader), \
-                    patch.object(foreign_watch, "utc_now", return_value=STARTED), \
-                    patch.object(foreign_watch, "scan_mentions", side_effect=lambda _a, _r, w, s, *_: ([], [], [], w, s)), \
+            with feed_showing(REPO), patch_attr(foreign_watch, "GitHubReader", return_value=reader), \
+                    patch_attr(foreign_watch, "utc_now", return_value=STARTED), \
+                    patch_attr(foreign_watch, "scan_mentions", side_effect=lambda _a, _r, w, s, *_: ([], [], [], w, s)), \
                     redirect_stdout(io.StringIO()):
                 foreign_watch.watch(args, [REPO, "director/quiet"], SINCE, float("inf"))
         self.assertTrue(reads)
