@@ -2282,10 +2282,9 @@ def cmd_show(args: argparse.Namespace) -> None:
                 resume_id = target[2]
         facts = github_next_queue.ownership_facts(candidate, observed,
             trusted=wait_authors(issue["repo"]), resume_from=resume_id, resume_source=source_item,
-            dispatch_recipient=getattr(args, "dispatch_recipient", None) or "",
             expired_sessions=github_plan_claim.expired_lease_sessions(comments), worker=getattr(args, "worker", None) or "", wait_resolved=args.wait_resolved)
         source_clear = (source_facts is None or (source_facts["complete"] and not source_facts.get("error")
-                        and not source_facts["conflicts"] and (args.read_only or not source_facts["recipients"])))
+                        and not source_facts["conflicts"]))
         claim_error = None
         milestone_admission = None
         if not args.read_only:
@@ -2309,7 +2308,6 @@ def cmd_show(args: argparse.Namespace) -> None:
         result["launch_check"] = {
             "allowed": (claim_error is None and derived["relationships_complete"] and facts["complete"] and not facts.get("error")
                         and (args.read_only or not facts["conflicts"]) and (args.read_only or not facts["artifacts"])
-                        and (args.read_only or not facts["recipients"])
                         and source_clear and (args.read_only or derived["status"] == "active"
                                               or (bool(args.wait_resolved) and derived["status"] == "waiting"))),
             "status": derived["status"], "ownership": facts,
@@ -3272,11 +3270,6 @@ def claim_once(args: argparse.Namespace) -> None:
         conflicts, owned = github_plan_claim.discussion_evidence(
             current_status, current_comments, claim, resume_from=args.resume_from,
             ended_claims={entry["claim_id"] for entry in ended_owners})
-        if recipient := github_plan_claim.recipient_evidence(current_status, current_comments,
-                repo=issue_repo, number=number, trusted=wait_authors(issue_repo), worker=claim["worker"], session=claim["session"],
-                dispatch_recipient=getattr(args, "dispatch_recipient", None) or "",
-                ended_claims={entry["claim_id"] for entry in ended_owners}):
-            conflicts.append(recipient)
         current_branch_reused = any(entry["branch"] == claim["branch"] and entry["branch"] in branches
                                     and entry["claim_id"] != args.resume_from for entry in ended_owners)
         phase["branch_error"] = (ClassifiedPlanError("claim_ended_branch_reused",
@@ -3340,10 +3333,6 @@ def claim_once(args: argparse.Namespace) -> None:
         ended = ended_ownership(peer_comments, source_inventory, takeover=False)
         peer_conflicts, peer_owned = github_plan_claim.discussion_evidence(
             peer_status, peer_comments, claim, ended_claims={entry["claim_id"] for entry in ended})
-        if recipient := github_plan_claim.recipient_evidence(peer_status, peer_comments,
-                repo=peer_repo, number=peer_number, trusted=wait_authors(peer_repo), worker=claim["worker"], session=claim["session"],
-                ended_claims={entry["claim_id"] for entry in ended}):
-            peer_conflicts.append(recipient)
         competing = list(peer_conflicts)
         competing.extend({"source": "native_child_claim", "record": record} for record in peer_owned)
         if competing:
@@ -3961,10 +3950,6 @@ def claim_once(args: argparse.Namespace) -> None:
             target_ended = ended_ownership(target_comments, inventory, takeover=False)
             competing, _ = github_plan_claim.discussion_evidence(target_status, target_comments, claim,
                 ended_claims={entry["claim_id"] for entry in target_ended})
-            if recipient := github_plan_claim.recipient_evidence(target_status, target_comments,
-                    repo=target_repo, number=pull["number"], trusted=wait_authors(target_repo),
-                    worker=claim["worker"], session=claim["session"], ended_claims={entry["claim_id"] for entry in target_ended}):
-                competing.append(recipient)
             if competing:
                 refuse(competing, owner_comments=target_comments, owner_repo=target_repo, owner_number=pull["number"])
             released_target_sessions.update(record["session"] for _, record, _ in
@@ -3987,10 +3972,6 @@ def claim_once(args: argparse.Namespace) -> None:
             competing, _ = github_plan_claim.discussion_evidence(
                 source_status, source_comments, claim, resume_from=args.resume_from,
                 ended_claims={entry["claim_id"] for entry in source_ended})
-            if recipient := github_plan_claim.recipient_evidence(source_status, source_comments,
-                    repo=issue_repo, number=source_number, trusted=wait_authors(issue_repo),
-                    worker=claim["worker"], session=claim["session"], ended_claims={entry["claim_id"] for entry in source_ended}):
-                competing.append(recipient)
             if competing:
                 refuse(competing, owner_comments=source_comments, owner_number=source_number)
         released_target_sessions.update(record["session"] for _, record, _ in
@@ -8219,7 +8200,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--full", action="store_true", help="Include the entire body instead of selected sections")
     p.add_argument("--launch-check", action="store_true", help="Read current ownership and delivery holds for a new execution worker; never claim")
     p.add_argument("--worker", help="Intended execution worker for named-recipient routing; does not claim or waive custody checks")
-    p.add_argument("--dispatch-recipient", help="Exact recorded coordinator for an authorized dispatch; no custody or wait waiver")
     p.add_argument("--admission", help="Admission the execution worker will claim")
     p.add_argument("--admission-link", action="append", default=[], metavar="URL", help="Exact claim admission evidence; repeat for each occurrence")
     p.add_argument("--read-only", action="store_true", help="Allow a launch check to answer waits without claiming or changing held work")
@@ -8259,7 +8239,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--agent-override", metavar="REASON", help="Record an explicit Director override for this session")
     p.add_argument("--worker", required=True)
     p.add_argument("--session", required=True)
-    p.add_argument("--dispatch-recipient", help="Exact recorded coordinator for an authorized dispatch; no custody or wait waiver")
     p.add_argument("--branch", required=True, help="Exact branch for this claim; create or continue its verified worktree only after claim succeeds")
     p.add_argument("--next-action", required=True)
     p.add_argument("--resume-from", help="Original released claim comment ID, or its exact source issue claim URL for retained PR or canonical-parent work")

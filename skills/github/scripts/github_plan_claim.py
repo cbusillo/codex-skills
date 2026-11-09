@@ -631,7 +631,6 @@ def discussion_evidence(
 
 def recipient_evidence(status: str, comments: list[dict[str, Any]], *,
                        repo: str, number: int, trusted: set[str], worker: str = "", session: str = "",
-                       dispatch_recipient: str = "",
                        ended_claims: set[int] | None = None) -> dict[str, Any] | None:
     try:
         actor = next_actor.read(status)
@@ -639,8 +638,6 @@ def recipient_evidence(status: str, comments: list[dict[str, Any]], *,
         return None
     recipient = actor.removeprefix("agent:") if actor and actor.startswith("agent:") else None
     if not recipient or recipient.casefold() in {worker.casefold(), session.casefold()}:
-        return None
-    if recipient == dispatch_recipient:
         return None
     texts = [status, *(comment.get("body") or "" for comment in comments
                       if str((comment.get("user") or {}).get("login") or "").casefold() in trusted)]
@@ -659,9 +656,8 @@ def recipient_evidence(status: str, comments: list[dict[str, Any]], *,
         return None
     return {"source": "recorded_recipient", "worker": recipient,
             "url": f"https://github.com/{repo}/issues/{number}",
-            "next_action": (f"Keep the request's Next actor; route to that recipient, or pass --dispatch-recipient {recipient} "
-                            "on this issue's gh-plan.py claim or show --launch-check for an authorized dispatch through "
-                            "that coordinator; custody and waits still apply")}
+            "next_action": (f"Routed to {recipient}, which has not claimed it. Leave it for that recipient unless the work is "
+                            "assigned to you; a claim is not refused for this")}
 
 
 def expired_lease_sessions(comments: list[dict[str, Any]]) -> set[str]:

@@ -1375,17 +1375,12 @@ def read_issue_brief(issue: str, header: str, lead_session_id: str | None = None
     brief = next_actor.launch_brief(status)
     if brief is None or next_actor.read(status) != actor:
         raise ValueError(f"{issue} needs Next actor: {actor} and a fenced Brief: in Current Status; use ###, not ##, inside briefs")
-    claim_arguments = ["--dispatch-recipient", lead_session_id] if lead_session_id else []
     if wait_resolved:
         source = launch_resume_source(header)
         if not source:
             raise ValueError("Wait resolution needs its exact Resume from source claim")
-        claim_arguments.extend(["--resume-from", source, "--wait-resolved", wait_resolved])
-    if claim_arguments:
-        instruction = ("Verify the current source, every hold and the scoped evidence before your own-identity "
-                       "gh-plan.py claim. Pass these arguments together:" if wait_resolved
-                       else "For this issue's gh-plan.py claim, pass:")
-        header = header.rstrip("\n") + f"\n{instruction}\n" + shlex.join(claim_arguments) + "\n"
+        instruction = "Verify the current source, every hold and the scoped evidence before your own-identity gh-plan.py claim. Pass these arguments together:"
+        header = header.rstrip("\n") + f"\n{instruction}\n" + shlex.join(["--resume-from", source, "--wait-resolved", wait_resolved]) + "\n"
     return header.rstrip("\n") + "\n\n" + brief
 
 
@@ -1402,8 +1397,7 @@ def launch_resume_source(brief: str) -> str | None:
     return resume[1] if resume else None
 
 
-def check_launch_issue(brief: str, *, dispatch_recipient: str | None = None, dispatch_issue: str | None = None,
-                       wait_resolved: str | None = None, command_text: str | None = None, agent_override: str | None = None) -> bool:
+def check_launch_issue(brief: str, *, wait_resolved: str | None = None, command_text: str | None = None, agent_override: str | None = None) -> bool:
     labels = re.findall(r"(?mi)^\s*(?:[-*] )?(?:\*\*)?(Read-only anchor|Anchor(?: and claim)?):(?:\*\*)?[^\S\n]*([^\n]*)", brief)
     anchors = []
     for mode, value in labels:
@@ -1442,8 +1436,6 @@ def check_launch_issue(brief: str, *, dispatch_recipient: str | None = None, dis
         argv = ["uv", "run", str(helper), "--repo", repo, "show", anchor, "--full", "--launch-check"]
         if worker:
             argv.extend(["--worker", worker[1].rstrip(".;")])
-        if dispatch_recipient and anchor == dispatch_issue and mode.casefold() != "read-only anchor":
-            argv.extend(["--dispatch-recipient", dispatch_recipient])
         if mode.casefold() == "read-only anchor":
             argv.append("--read-only")
         if admission and mode.casefold() != "read-only anchor":
@@ -1467,7 +1459,7 @@ def check_launch_issue(brief: str, *, dispatch_recipient: str | None = None, dis
                                  f"{error.get('message', error)}")
             facts = check.get("ownership") or {}
             evidence = (facts.get("detail") or facts.get("error") or ((payload.get("issue") or {}).get("derived") or {}).get("error")
-                        or facts.get("conflicts") or facts.get("artifacts") or facts.get("recipients")
+                        or facts.get("conflicts") or facts.get("artifacts")
                         or check.get("resume_source") or check.get("status"))
             if mode.casefold() == "read-only anchor":
                 raise ValueError(f"Read-only launch state unavailable for {anchor}: {evidence}; read its full status before dispatch")
@@ -1601,9 +1593,7 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
         validate_text(brief, allow_tabs=True)
     for index, brief in enumerate(headers):
         validate_brief_rules(brief)
-        override_used = check_launch_issue(brief, dispatch_recipient=getattr(args, "lead_session_id", None) if brief_issues else None,
-                           dispatch_issue=brief_issues[index] if brief_issues else None, wait_resolved=resolutions[index],
-                           command_text=command_texts[index], agent_override=override)
+        override_used = check_launch_issue(brief, wait_resolved=resolutions[index], command_text=command_texts[index], agent_override=override)
         if override and override_used:
             instruction = "\n\nFor this issue's own-identity gh-plan.py claim, pass the explicit Director override:\n"
             briefs[index] += instruction + shlex.join(["--agent-override", override]) + "\n"

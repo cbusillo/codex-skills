@@ -2237,10 +2237,9 @@ retrying until planning stalls.
 ### Planning: Next Work
 
 Native session IDs and recipients identified by existing trusted claim, session or
-trial-token records enter `needs_status` without a claim for custody reconciliation,
-not a fresh execution launch. Claim and launch preflight use that same recorded
-recipient check. Read-only diagnostics remain available; an assignment alone is
-not active execution. Exact releases and existing local leases are shared across
+trial-token records enter `needs_status` without a claim, so `next` keeps routing
+that work to its recipient. An assignment alone is not active execution: claim and
+launch preflight do not refuse for it. Exact releases and existing local leases are shared across
 readers, and quoted diagnosis is not ownership. Keep the existing claim on each
 slice executed; other `agent:<role>` values remain staffable without a status rewrite.
 When assigning an unclaimed trial token that has no identity record on the issue,
@@ -2248,13 +2247,6 @@ include its brief's plain `Trial token: TOKEN` line in the same Current Status
 through `gh-comment issue N --repo OWNER/REPO --body-file FILE`,
 or name the worker's native session ID instead. Private briefs and ledgers are
 not read by this check. It reuses issue evidence and creates no registry.
-
-For an authorized dispatch through the recorded coordinator, pass its exact
-identity as `--dispatch-recipient` to `show --launch-check` and the worker's
-own-identity `claim`. This distinguishes coordinator routing from execution
-custody even when Current Status has no fenced `Brief:`. It neither proves the
-coordinator ended nor releases any claim, lease, artifact or wait. Missing or
-mismatched recipients still require routing review; unread evidence stays UNKNOWN.
 
 `next` returns one JSON envelope with compact discussion summaries by default.
 Rows retain identity, counts, actor/action, blockers, sources and coverage;
