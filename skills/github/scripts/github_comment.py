@@ -358,6 +358,7 @@ def _call_api(
     retry_context: Optional[github_api_core.ReconciliationContext] = None,
     retry_policy: Optional[github_api_core.RetryPolicy] = None,
     retry_summaries: Optional[list[github_api_core.RetrySummary]] = None,
+    extra_headers: dict[str, str] | None = None,
 ) -> github_api_core.ApiResult:
     result = github_api_core.call_gh_with_retry(
         method,
@@ -365,6 +366,7 @@ def _call_api(
         payload,
         gh_cmd=gh_cmd,
         gh_prefix_args=gh_prefix_args,
+        extra_headers=extra_headers,
         operation=operation,
         actor=actor,
         expected_actor=expected_actor,
@@ -475,6 +477,7 @@ def list_comments(
     retry_summaries: Optional[list[github_api_core.RetrySummary]] = None,
     since: Optional[str] = None,
     endpoint: str | None = None,
+    extra_headers: dict[str, str] | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     comments: list[dict[str, Any]] = []
     steps = list(completed_steps)
@@ -495,6 +498,7 @@ def list_comments(
             is_write=False,
             retry_context=retry_context,
             retry_summaries=retry_summaries,
+            extra_headers=extra_headers,
         )
         if not isinstance(result.body, list):
             raise _local_error(
@@ -563,6 +567,7 @@ def validate_client_reply(
     context = dict(
         gh_cmd=gh_cmd, operation=operation, actor=actor, expected_actor=actor,
         completed_steps=[], retry_summaries=retry_summaries,
+        extra_headers={"Accept": "application/vnd.github.full+json"},
     )
     opening = _call_api(
         "GET", f"/repos/{repo}/issues/{number}", None,
@@ -584,7 +589,11 @@ def validate_client_reply(
             raise ValueError(f"Client reply refused: outside or unknown participant {author or '(no login)'}; "
                              "add --client-login for it only if verified as the Client's, otherwise obtain "
                              "exact-text approval")
-    for text in [body, *(str(record.get("body") or "") + " " + str(record.get("title") or "") for record in records)]:
+    texts = [body]
+    for record in records:
+        rendered = record.get("body_html")
+        texts.extend((rendered if isinstance(rendered, str) else str(record.get("body") or ""), str(record.get("title") or "")))
+    for text in texts:
         for match in MENTION_RE.finditer(html.unescape(text)):
             if match["login"].casefold() not in mention_logins:
                 raise ValueError(f"Client reply refused: outside mention @{match['login']}; obtain exact-text approval")
