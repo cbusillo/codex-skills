@@ -463,6 +463,18 @@ also include the shared `api_result` diagnostics envelope.
   evaluation.
 - `scripts/gh-pr.py ready <pr> [--waiting-for-client] [--allow-no-checks]`: Read current-head
   checks and post the [ready handoff](#ready-handoffs) through automation auth.
+
+  Create and Ready report `baseFeedback` when an open non-draft PR's GitHub base
+  differs from its repository's actual default branch. It names both branches and
+  the supported continuations: retarget an accidental base with the task's
+  destination authority, or keep a held stack child draft under the existing
+  [stacked-PR rule](../../launchplane/references/merge-train.md#merge-train-execution).
+  An approved non-default destination or ready stack child keeps its existing
+  landing route. This is advisory and changes no base, label, acceptance or merge
+  rule; git-host-only and fork routes remain supported. Ready refusals include the
+  same feedback. Create dry-runs skip the read; an unavailable post-create read
+  reports `baseFeedbackUnavailable` while preserving confirmed creation and its
+  URL. Read the created PR rather than repeating create.
 - `scripts/gh-pr.py update-branch <pr> [--wait-seconds 0..60] [--required-by REQUIREMENT]`:
   Merge the base into the PR branch only when needed under the freshness,
   ownership and authorization rules in

@@ -1081,6 +1081,7 @@ def normalize_pull_request(item: dict[str, Any]) -> dict[str, Any]:
         "labels": item.get("labels") or [],
         "url": item.get("html_url"),
         "baseRefName": base.get("ref"),
+        "baseDefaultBranch": (base.get("repo") or {}).get("default_branch"),
         "headRefName": head.get("ref"),
         "headRefOid": head.get("sha"),
         "headRepository": (head.get("repo") or {}).get("full_name"),
