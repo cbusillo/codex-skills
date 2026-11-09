@@ -9,9 +9,11 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import fcntl
+import hashlib
 import json
+import tempfile
 from pathlib import Path
 import re
 import subprocess
@@ -163,6 +165,8 @@ def inventory(source_comments, queue_comments, owner, decision_authors, now=None
     source_authors = {c["url"]: (c.get("author") or "") for c in source_comments}
     source_updates = {c["url"]: c.get("updated_at") for c in source_comments}
     withdrawn = oq.question_records.supervisor_settled_questions([*source_comments, *answers], trusted, asker_only=True)
+    answered_urls = [question["url"] for question in found
+                     if question["status"] == "answered" and question["url"] in registrations]
     for question in found:
         if question["status"] == "answered" or question["url"] in withdrawn:
             continue
@@ -207,6 +211,7 @@ def inventory(source_comments, queue_comments, owner, decision_authors, now=None
     untrusted = [q["url"] for q in rows if q.get("author_trusted") is False]
     unnumbered = [q["url"] for q in rows if q.get("needs_repair")]
     return {"complete": not (missing or untrusted or unnumbered), "queue_length": len(rows), "questions": rows,
+            "answered_urls": answered_urls,
             "unnumbered_sources": unnumbered,
             "missing_sources": missing, "untrusted_sources": untrusted,
             "untrusted_records": untrusted_records,
@@ -225,6 +230,31 @@ def run_queue(args, fetch):
     return reconcile(args, fetch)
 
 
+ANSWERED_REFRESH = timedelta(hours=6)
+
+
+def answered_path(queue: str, owner: str, decision_authors: list[str]) -> Path:
+    scope = json.dumps([queue.casefold(), owner.casefold(), sorted(author.casefold() for author in decision_authors)])
+    return counter_path().with_name(f"director-questions-answered-{hashlib.sha256(scope.encode()).hexdigest()[:16]}.json")
+
+
+def known_answered(path: Path, now: datetime) -> tuple[set[str], datetime]:
+    try:
+        data = json.loads(path.read_text())
+        checked = datetime.fromisoformat(data["checked_at"])
+        answered = {url for url in data["answered"] if isinstance(url, str)}
+    except (OSError, ValueError, KeyError, TypeError):
+        return set(), now
+    return (answered, checked) if now - checked < ANSWERED_REFRESH else (set(), now)
+
+
+def save_answered(path: Path, answered: set[str], checked_at: datetime) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", dir=path.parent, prefix=f"{path.name}.", delete=False) as stream:
+        stream.write(json.dumps({"checked_at": checked_at.isoformat(), "answered": sorted(answered)}) + "\n")
+    Path(stream.name).replace(path)
+
+
 def reconcile(args, fetch):
     trusted = {author.casefold() for author in [args.owner, *args.decision_author]}
     queue_comments = fetch(args.queue)
@@ -232,7 +262,10 @@ def reconcile(args, fetch):
     targets = {value for value in args.items if COMMENT_URL.fullmatch(value)}
     if args.register and not targets:
         raise ValueError("registration requires exact original question URLs, not whole discussions")
-    registered = set() if targets else {r["question_url"] for r in existing}
+    now = datetime.now(timezone.utc)
+    answered_list = answered_path(args.queue, args.owner, args.decision_author)
+    answered, checked_at = known_answered(answered_list, now)
+    registered = set() if targets else {r["question_url"] for r in existing} - answered
     active = {url for url in registered if not settled(url, queue_comments, args.owner, args.decision_author)}
     items = list(dict.fromkeys([*(source_item(value) if value in targets else value for value in args.items),
                                *(source_item(url) for url in sorted(active))]))
@@ -294,5 +327,9 @@ def reconcile(args, fetch):
             raise ValueError("question delivery record confirmation failed")
         queue_comments = [*queue_comments, saved]
     report = inventory(comments, queue_comments, args.owner, args.decision_author, question_urls=selected)
+    newly_answered = set(report.pop("answered_urls"))
+    if report["complete"] and not errors:
+        still_open = {row["url"] for row in report["questions"]}
+        save_answered(answered_list, (answered - still_open) | newly_answered, checked_at)
     return {"queue": args.queue, "scope": items, **report,
             "source_errors": errors, "complete": report["complete"] and not errors}
