@@ -89,7 +89,8 @@ DAY_AGO = "2026-10-08T12:00:00Z"
 
 
 class ChangeFeedTests(unittest.TestCase):
-    def watch_pass(self, watermarks: dict[str, str], *changed: str, complete: bool = True,
+    @staticmethod
+    def watch_pass(watermarks: dict[str, str], *changed: str, complete: bool = True,
                    repos: list[str] | None = None, failing: str | None = None) -> tuple[dict[str, str], dict[str, str], Mock]:
         reads: dict[str, str] = {}
 
@@ -99,7 +100,7 @@ class ChangeFeedTests(unittest.TestCase):
             repo = "/".join(path.split("/")[1:3])
             if repo == failing:
                 raise foreign_watch.GitHubReadShapeError("read failed")
-            reads.setdefault(repo, (kwargs.get("params") or {}).get("since"))
+            reads.setdefault(repo, kwargs["params"]["since"])
             return []
 
         reader = Mock()
