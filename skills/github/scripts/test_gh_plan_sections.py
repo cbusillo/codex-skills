@@ -134,6 +134,55 @@ class SectionTests(unittest.TestCase):
                 code = exc.code
         return code, json.loads(output.getvalue()), edit, errors.getvalue()
 
+    def run_with_confirmed_transport_receipt(self, *body_args: str, returned: Any) -> tuple[int, dict, Mock]:
+        def respond(_args: list[str], **kwargs: Any) -> tuple[str, str, str]:
+            PLAN.record_retry_summary(PLAN.github_api_core.RetrySummary(
+                attempts=1, elapsed_wait=0.0, retry_eligible=False, last_actor="fixture-bot[bot]", last_bucket="rest_core",
+                outcome_certainty="confirmed", reconciliation=None, recommended_next_action="none", effective_deadline=0.0))
+            issue = {**self.issue, "body": returned(json.loads(kwargs["input_text"])["body"]), "updated_at": "2026-11-09T04:00:00Z"}
+            return "fixture-bot[bot]", "HTTP/2.0 200 OK\r\nContent-Type: application/json\r\n\r\n" + json.dumps(issue), ""
+
+        transport = Mock(side_effect=respond)
+        code, result, _edit, _errors = self.run_update(*body_args, rest_edit_issue=PLAN.rest_edit_issue, run_raw=transport)
+        return code, result, transport
+
+    def test_response_without_the_requested_text_is_never_reported_as_success(self) -> None:
+        requested = "Requested paragraph that stays private."
+        cases = {"old body and timestamp": lambda _sent: self.issue["body"],
+                 "some other body": lambda sent: sent.replace(requested, "Someone else's text."),
+                 "no body": lambda _sent: None}
+        for name, returned in cases.items():
+            with self.subTest(name):
+                code, result, transport = self.run_with_confirmed_transport_receipt("--body", requested, returned=returned)
+                self.assertNotEqual(code, 0)
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["write_outcome"], "unknown")
+                self.assertEqual(result["outcome_certainty"], "unknown")
+                self.assertEqual(result["recommended_next_action"], "follow_operation_reconciliation_strategy")
+                self.assertFalse(result["retryable"])
+                self.assertFalse(result["retry_eligible"])
+                self.assertEqual(result["issue"]["updated_at"], "2026-11-09T04:00:00Z")
+                self.assertNotIn(requested, json.dumps(result))
+                transport.assert_called_once()
+
+    def test_returned_requested_text_and_genuine_no_op_stay_confirmed(self) -> None:
+        for text in ("New section content.", "Old text."):
+            with self.subTest(text):
+                code, result, transport = self.run_with_confirmed_transport_receipt("--body", text, returned=lambda sent: sent)
+                self.assertEqual(code, 0)
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["outcome_certainty"], "confirmed")
+                self.assertEqual(result["recommended_next_action"], "none")
+                transport.assert_called_once()
+
+    def test_provider_failure_keeps_its_own_outcome(self) -> None:
+        failure = PLAN.github_api_core.FailureDetail(cause="forbidden", message="Denied", retryable=False, fallback_eligible=False,
+                                                     disposition="stop", write_outcome="rejected")
+        code, result, _edit, _errors = self.run_update("--body", "New.", rest_edit_issue=PLAN.rest_edit_issue,
+                                                       run_raw=Mock(side_effect=PLAN.PlanError("Denied", failure=failure)))
+        self.assertNotEqual(code, 0)
+        self.assertEqual((result["error_code"], result["write_outcome"]), ("forbidden", "rejected"))
+
     def test_new_section_references_require_explicit_repositories_before_edit(self) -> None:
         legacy_wait = PLAN.github_plan_wait.marker(PLAN.github_plan_wait.reviewed(evidence="Legacy parent #6"))
         self.issue["body"] += "\n" + legacy_wait + "\n"
