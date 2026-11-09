@@ -15,19 +15,20 @@ from __future__ import annotations
 
 import argparse
 import copy
+import functools
 from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
 import json
 import os
 import pathlib
 import re
-import runpy
 import shlex
 import shutil
 import subprocess
 import sys
 import time
 import threading
+import types
 import urllib.parse
 from dataclasses import replace
 from typing import Any, NoReturn, Optional
@@ -2966,9 +2967,23 @@ def cmd_claim(args: argparse.Namespace) -> None:
     claim_once(claim_reference(args))
 
 
+@functools.cache
+def direction_hook() -> types.ModuleType:
+    """The session hook's marker readers, loaded once.
+
+    runpy.run_path would set the process-wide sys.argv[0] while it runs, so the request
+    log would name the hook as the caller of reads that other threads make meanwhile.
+    """
+    path = SKILL_DIR.parents[1] / "hooks/direction_check_hook.py"
+    hook = types.ModuleType("direction_check_hook")
+    hook.__file__ = str(path)
+    exec(compile(path.read_text(), str(path), "exec"), hook.__dict__)
+    return hook
+
+
 def milestone_direction_repo(issue_repo: str) -> str:
-    hook = runpy.run_path(str(SKILL_DIR.parents[1] / "hooks/direction_check_hook.py"))
-    owner = hook["marker_account"](hook["read_marker"](hook["marker_path"]()))
+    hook = direction_hook()
+    owner = hook.marker_account(hook.read_marker(hook.marker_path()))
     return f"{owner or issue_repo.split('/')[0]}/direction".casefold()
 
 

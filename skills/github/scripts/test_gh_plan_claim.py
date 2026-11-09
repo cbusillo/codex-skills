@@ -7210,6 +7210,19 @@ class ClaimTests(unittest.TestCase):
         with patch.dict(os.environ, {"DIRECTION_MARKER": str(path)}):
             self.assertEqual(PLAN.milestone_direction_repo("client/product"), "director/direction")
 
+    def test_loading_the_hook_keeps_the_request_log_caller(self) -> None:
+        # The request log names its caller from sys.argv[0]; next's reader threads log while this loads.
+        catalog = Path(os.environ["HOME"]) / "catalog"
+        (catalog / "hooks").mkdir(parents=True)
+        (catalog / "hooks/direction_check_hook.py").write_text(
+            "import sys\nLOADED_AS = sys.argv[0]\n"
+            "def marker_path(): return None\ndef read_marker(_path): return {}\ndef marker_account(_marker): return None\n")
+        PLAN.direction_hook.cache_clear()
+        self.addCleanup(PLAN.direction_hook.cache_clear)
+        with patch.multiple(PLAN, SKILL_DIR=catalog / "skills/github"):
+            self.assertEqual(PLAN.milestone_direction_repo("client/product"), "client/direction")
+            self.assertEqual(PLAN.direction_hook().LOADED_AS, sys.argv[0])
+
     def test_existing_claim_cannot_silently_change_admission_kind(self) -> None:
         for kind in (None, "own-project"):
             with self.subTest(kind=kind):
