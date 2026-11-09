@@ -1108,8 +1108,12 @@ untouched. Resumed generations still require their exact retired recovery journa
 
 After recovery succeeds, clear the runner's `catalog` marker and restart that
 job through the existing service route. Never remove a journal or replay an
-uncertain mutation to clear a failure. After shared transport retries are exhausted, prelaunch read failures stop
-visibly but keep no saved failed verification, so the existing clear/restart route retries those reads.
+uncertain mutation to clear a failure. A shared GitHub retry deadline on a read
+retries on the next poll only when every prior mutation is settled. Report helpers
+receive a deadline inside their process timeout. A normally exited report helper
+that proves no write, followed by a complete absent readback, keeps its receipt
+in the original journal and retries next poll after another exact readback.
+Timeouts, incomplete reads and ambiguous writes keep their original fence.
 
 For one bounded manual verification or recovery:
 

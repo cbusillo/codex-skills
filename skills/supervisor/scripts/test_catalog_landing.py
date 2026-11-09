@@ -460,6 +460,172 @@ class CatalogLandingTests(unittest.TestCase):
         self.assertEqual(write.call_count, 1)
         self.assertEqual(read.call_count, 1)
 
+    def deadline_result(self, *, is_write: bool) -> github_api.ApiResult:
+        return github_api.run_with_retry(
+            lambda: self.fail("expired deadline must not start a request"),
+            operation="github.comment.issue" if is_write else "github.read.repository",
+            is_write=is_write,
+            actor="agent[bot]",
+            expected_actor="agent[bot]",
+            retry_runtime=github_api.RetryRuntime(now=lambda: 10.0),
+            deadline_at=9.0,
+        )
+
+    def test_conclusive_github_deadlines_retry_on_next_service_poll(self) -> None:
+        for stage in ("identity", "report"):
+            with self.subTest(stage=stage), tempfile.TemporaryDirectory() as directory:
+                evidence = Path(directory)
+                config = evidence / "catalog.json"
+                config.write_text(json.dumps(self.config))
+                service = evidence / "services.json"
+                service.write_text(
+                    json.dumps(
+                        {
+                            "uv": "/fixture/uv",
+                            "services": {"catalog": {"argv": ["/fixture/catalog"], "cwd": str(evidence), "restart_seconds": 0.001}},
+                        }
+                    )
+                )
+                cursor = {"repo": self.config["repo"], "last_sha": "previous"}
+                landing.save_state(evidence / "cursor.json", cursor)
+                stopped = threading.Event()
+                log = io.StringIO()
+                posts: list[list[str]] = []
+                polls = 0
+                failure = self.deadline_result(is_write=stage == "report")
+                read_error = landing.GitHubReadError("deadline", result=failure, diagnostics={})
+
+                def command(
+                    argv: list[str],
+                    *,
+                    posts: list[list[str]] = posts,
+                    failure: github_api.ApiResult = failure,
+                    stage: str = stage,
+                    **kwargs: Any,
+                ) -> subprocess.CompletedProcess:
+                    if "--body-file" not in argv:
+                        return subprocess.CompletedProcess(
+                            argv, 0, json.dumps({"status": "already_current", "after_sha": "tip"}), ""
+                        )
+                    posts.append(argv)
+                    deadline = float(next(value.split("=", 1)[1] for value in argv if value.startswith("GITHUB_RETRY_DEADLINE_AT=")))
+                    self.assertLess(deadline - landing.time.time(), kwargs["timeout"])
+                    payload = failure.as_dict() if stage == "report" and len(posts) == 1 else {"url": "posted"}
+                    return subprocess.CompletedProcess(argv, int(payload.get("ok") is False), json.dumps(payload), "")
+
+                def child(
+                    *_args: Any, config: Path = config, evidence: Path = evidence, stopped: threading.Event = stopped, **_kwargs: Any
+                ) -> SimpleNamespace:
+                    nonlocal polls
+                    polls += 1
+                    with patch.object(sys, "argv", ["catalog", "--poll", "--config", str(config), "--evidence", str(evidence)]):
+                        code = landing.main()
+                    self.assertEqual(code, 0)
+                    current = json.loads((evidence / "cursor.json").read_text())
+                    self.assertEqual(current["last_sha"], "previous" if polls == 1 else "landing")
+                    if polls == 2:
+                        stopped.set()
+                    return SimpleNamespace(pid=123, returncode=code, poll=lambda: code)
+
+                with (
+                    patch.object(Operation, "run", operation_run),
+                    patch.object(subprocess, "run", side_effect=command),
+                    patch.object(
+                        landing, "pending_landings", side_effect=[read_error, ["landing"]] if stage == "identity" else [["landing"]]
+                    ),
+                    patch.object(landing, "git", return_value="script.py"),
+                    patch.object(landing, "verify", return_value={"ok": True}) as verify,
+                    patch.object(landing.GitHubReader, "paged_json", return_value=[]) as read,
+                    patch.object(landing.github_identity, "automation_login", return_value="agent[bot]"),
+                    patch.object(services.threading, "Event", return_value=stopped),
+                    patch.object(services.subprocess, "Popen", side_effect=child),
+                    patch.object(services, "stop_child"),
+                    redirect_stdout(log),
+                ):
+                    self.assertEqual(services.main(["run", "--config", str(service), "--service", "catalog"]), 0, log.getvalue())
+                    self.assertFalse(services.reconciliation_marker(service, "catalog").exists())
+                    verify.assert_called_once()
+                    if stage == "report":
+                        self.assertEqual(len(posts), 2)
+                        self.assertEqual(read.call_count, 2)
+                        self.assertEqual(read.call_args_list[0].kwargs["params"], read.call_args_list[1].kwargs["params"])
+                        journal = json.loads((evidence / "landing/operation.json").read_text())
+                        retained = next(iter(journal["report_retries"].values()))
+                        self.assertEqual(json.loads(retained[0]["helper"]["stdout"]), failure.as_dict())
+                    else:
+                        self.assertEqual(len(posts), 1)
+
+    def test_report_deadline_cannot_retry_after_unknown_or_incomplete_readback(self) -> None:
+        for uncertain, readback in ((True, []), (False, landing.GitHubReadShapeError("partial"))):
+            with self.subTest(uncertain=uncertain, readback=readback), tempfile.TemporaryDirectory() as directory:
+                operation = Operation(Path(directory), ["report"])
+                result = {"ok": True, "landings": ["landing"]}
+                failed = self.deadline_result(is_write=True).as_dict()
+                if uncertain:
+                    failed["write_outcome"] = "unknown"
+                with (
+                    patch.object(Operation, "run", operation_run),
+                    patch.object(
+                        subprocess, "run", return_value=subprocess.CompletedProcess([], 1, json.dumps(failed), "")
+                    ) as write,
+                    patch.object(
+                        landing.GitHubReader,
+                        "paged_json",
+                        side_effect=readback if isinstance(readback, Exception) else lambda *_a, rows=readback, **_k: rows,
+                    ),
+                ):
+                    for _ in range(2):
+                        with self.assertRaises((GateFailed, landing.GitHubReadShapeError)) as error:
+                            landing.post_result(self.config, operation, result)
+                        self.assertNotIsInstance(error.exception, landing.RetryableGate)
+                    self.assertEqual(write.call_count, 1)
+
+    def test_report_retry_adopts_a_late_match_and_refuses_duplicates(self) -> None:
+        for count in (1, 2):
+            with self.subTest(count=count), tempfile.TemporaryDirectory() as directory:
+                operation = Operation(Path(directory), ["report"])
+                result = {"ok": True, "landings": ["landing"]}
+                failed = self.deadline_result(is_write=True).as_dict()
+                with (
+                    patch.object(Operation, "run", operation_run),
+                    patch.object(
+                        subprocess, "run", return_value=subprocess.CompletedProcess([], 1, json.dumps(failed), "")
+                    ) as write,
+                    patch.object(landing.github_identity, "automation_login", return_value="agent[bot]"),
+                    patch.object(landing.GitHubReader, "paged_json", return_value=[]) as read,
+                ):
+                    with self.assertRaises(landing.RetryableGate):
+                        landing.post_result(self.config, operation, result)
+                    retained = next(iter(operation.state["report_retries"].values()))[0]
+                    posted = {
+                        "user": {"login": failed["expected_actor"]},
+                        "body": (operation.evidence / "result.md").read_text(),
+                        "created_at": retained["step"]["started_at"],
+                        "html_url": "late-comment",
+                    }
+                    read.return_value = [posted] * count
+                    if count == 1:
+                        self.assertEqual(landing.post_result(self.config, operation, result), posted["html_url"])
+                    else:
+                        with self.assertRaises(GateFailed) as error:
+                            landing.post_result(self.config, operation, result)
+                        self.assertNotIsInstance(error.exception, landing.RetryableGate)
+                    self.assertEqual(write.call_count, 1)
+
+    def test_permanent_github_failures_stop_instead_of_polling(self) -> None:
+        config = self.root / "catalog.json"
+        config.write_text(json.dumps(self.config))
+        failed = self.deadline_result(is_write=False)
+        failed.failure.cause = "invalid_credentials"
+        error = landing.GitHubReadError("identity", result=failed, diagnostics={})
+        with (
+            patch.object(sys, "argv", ["catalog", "--poll", "--config", str(config), "--evidence", str(self.root)]),
+            patch.object(landing, "poll", side_effect=error),
+            redirect_stdout(io.StringIO()) as output,
+        ):
+            self.assertEqual(landing.main(), 1)
+            self.assertFalse(json.loads(output.getvalue()).get("retryable"))
+
     def test_supersede_names_unknown_failed_attempt_without_replaying_or_rewriting_it(self) -> None:
         operation = Operation(self.root / "attempt-original", [self.config["repo"], "B"])
         reported = {"ok": False, "gate": "smoke_response", "landings": ["B"], "runtime_sha": "old"}
@@ -471,10 +637,14 @@ class CatalogLandingTests(unittest.TestCase):
         landing.save_state(operation.path, operation.state)
         landing.save_state(operation.evidence / "result.json", pending)
         (operation.evidence / "result.md").write_text("Retained unconfirmed report body\n")
-        landing.save_state(self.root / "cursor.json", {"repo": self.config["repo"], "last_sha": "A", "pending": ["B"], "attempt": operation.evidence.name})
+        landing.save_state(
+            self.root / "cursor.json",
+            {"repo": self.config["repo"], "last_sha": "A", "pending": ["B"], "attempt": operation.evidence.name},
+        )
         retained = {path: path.read_bytes() for path in operation.evidence.iterdir()}
         self.runner.side_effect = lambda gate, *_, **__: (
-            {"url": "new-report"} if gate.startswith("report_") else {"status": "already_current", "after_sha": "tip"})
+            {"url": "new-report"} if gate.startswith("report_") else {"status": "already_current", "after_sha": "tip"}
+        )
         with (patch.object(landing, "pending_landings", return_value=["C"]),
               patch.object(landing, "git", return_value="script.py"),
               patch.object(landing, "verify", return_value={"ok": True}), patch.object(subprocess, "run") as write):
