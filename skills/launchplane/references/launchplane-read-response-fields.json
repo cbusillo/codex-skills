@@ -75,6 +75,7 @@
     "trace_id"
   ],
   "product-profile-read": [
+    "client_is_director",
     "profile",
     "status",
     "trace_id"
