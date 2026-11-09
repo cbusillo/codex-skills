@@ -107,7 +107,8 @@ class DeliveryTests(unittest.TestCase):
         target = self.questions[0]
         number = delivery.question_id(target["body"])
         others = {q["url"] for q in self.questions[1:]}
-        source = "https://github.com/example/direction/issues/1#issuecomment-9000"
+        source = target["url"].split("#", 1)[0] + "#issuecomment-9000"
+        elsewhere = "https://github.com/example/direction/issues/1#issuecomment-9000"
         cited = self.record('Director decision (Chris, Supervisor chat): "Retire."', url=source, created_at=target["created_at"])
         answer = self.record(f"Supervisor answer to {number} from the record, no new Director turn: yes, remove them. "
                              f"Chris said so at {source}.", author=target["author"])
@@ -116,7 +117,9 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(answers[0]["answers"], [])
         for records in ((answer,),
                         ({**cited, "body": "Worth considering: retire it."}, answer),
+                        ({**cited, "body": "Director decision Q999: pending"}, answer),
                         ({**cited, "author": "outsider"}, answer),
+                        ({**cited, "url": elsewhere}, {**answer, "body": answer["body"].replace(source, elsewhere)}),
                         (cited, {**answer, "body": f"Supervisor answer to {number}: yes, remove them. {source}"})):
             with self.subTest(records=records):
                 self.assertIn(target["url"], self.remaining(*records))

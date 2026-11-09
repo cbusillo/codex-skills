@@ -126,7 +126,7 @@ def is_director_record(comment: dict[str, Any], owner: str, trusted: set[str]) -
 
     author = comment_author(comment)
     return author == owner.casefold() or (
-        author in trusted and question_delivery.oq.DECISION_HEADING.match(comment_text(comment)) is not None)
+        author in trusted and question_delivery.oq.question_records.substantive_decision(comment_text(comment)))
 
 
 def is_numbered_question(comment: dict[str, Any], trusted: set[str]) -> bool:
