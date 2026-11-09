@@ -402,8 +402,9 @@ Real remaining engineering work stays actionable: a source change has its own
 completing PR, and an operational step within the task's authority is carried
 through its supported path. Neither is recorded as an event wait. A step only
 the Director can take or approve, such as a live install, keeps the issue open
-with `Refs`: post and register its `Director question:`, then record the wait
-linking it, before `ready`.
+with `Refs`: create its
+[Director question](../../references/talking-with-the-director.md#director-questions),
+then record the wait linking it, before `ready`.
 Split old oversized issues into PR-sized deliverables when working them;
 preserve their original requests under the
 [issue ownership rules](issue-templates.md), rather than rewriting them.
