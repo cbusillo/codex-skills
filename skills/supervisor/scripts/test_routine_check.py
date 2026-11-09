@@ -988,6 +988,7 @@ class PrimaryReadTests(unittest.TestCase):
                 self.assertTrue([line for line in self.run_digest({"candidates": [row]}) if line.startswith("SUPERVISOR_ACTION")])
 
     def test_seat_rows_reach_only_their_roles_until_two_checks_have_passed(self) -> None:
+        fallback_age: timedelta = routine_check.ROUTINE_INTERVAL * 2
         for role in routine_check.SUPERVISOR_ROLES:
             row = queue_row(4031, f"agent:supervisor-{role}", "Take this row", recorded=self.now.isoformat())
             for held in ((), (role,), ("milestone", "tooling"), ("cleanup",)):
@@ -996,12 +997,12 @@ class PrimaryReadTests(unittest.TestCase):
                     self.assertEqual(row["url"] in output, not held or role in held)
                     if not held or role in held:
                         self.assertIn("SUPERVISOR_ACTION " + row["url"], output)
-            for age in (routine_check.ROUTINE_INTERVAL * 2, routine_check.ROUTINE_INTERVAL * 2 + timedelta(seconds=1)):
+            for age in (fallback_age, fallback_age + timedelta(seconds=1)):
                 row["queue"]["status_recorded_at"] = (self.now - age).isoformat()
                 for held in routine_check.SUPERVISOR_ROLES:
                     with self.subTest(role=role, held=held, age=age):
                         output = routine_check.digest({"next": {"needs_status": [row]}}, roles=(held,))
-                        self.assertEqual(row["url"] in output, held == role or age > routine_check.ROUTINE_INTERVAL * 2)
+                        self.assertEqual(row["url"] in output, held == role or age > fallback_age)
             row["queue"]["status_recorded_at"] = self.now.isoformat()
             output = routine_check.digest({"next": {"candidates": [row]}}, roles=(role,))
             self.assertNotIn("FALLBACK", output)
