@@ -1646,16 +1646,25 @@ def test_attachment_passthrough_and_failures_never_replay() -> None:
 
 
 def test_client_reply_refuses_outside_participants_and_mentions_before_writing() -> None:
-    for source in ("opening", "timeline", "review", "inline", "outgoing", "second_page", "missing_author", "malformed", "personal", "bot_slug_author", "unreadable", "allowed"):
+    hidden = '<!-- github-plan:wait {"evidence": "The ask @mentions the Client"} -->'
+    allowed = {"allowed", "hidden_opening", "hidden_timeline", "hidden_review", "hidden_inline"}
+
+    def exercise(source: str) -> None:
         def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
             if path == "/user":
                 return success({"login": "fixture-automation"})
             if method == "POST":
                 return success(comment_body(1001))
+            history = comment_body(5, actor="client", body=hidden)
+            accept = (_kwargs.get("extra_headers") or {}).get("Accept", "")
+            if accept.endswith((".full+json", ".html+json")) and source != "raw_fallback":
+                history["body_html"] = "<p>Recorded.</p>" if source != "rendered_mention" else "<code>&lt;!-- &#64;mentions --&gt;</code>"
             if path.endswith("/issues/42"):
                 return success({"user": {"login": "client"}, "body": "@client", "pull_request": {}} | (
                     {"user": {"login": "outsider"}} if source == "opening" else
-                    {"user": {"login": "own-app"}} if source == "bot_slug_author" else {}))
+                    {"user": {"login": "own-app"}} if source == "bot_slug_author" else
+                    history if source == "hidden_opening" else
+                    {"title": "@mentions"} if source == "title" else {}))
             if "/issues/42/comments?" in path:
                 if source == "unreadable":
                     return failure(403, {}, is_write=False)
@@ -1665,11 +1674,14 @@ def test_client_reply_refuses_outside_participants_and_mentions_before_writing()
                     return success([], headers={"link": '<https://api.github.com/next>; rel="next"'})
                 return success([None] if source == "malformed" else
                                [comment_body(2, actor="outsider")] if source == "timeline" else
-                               [{"body": "missing identity"}] if source == "missing_author" else [])
+                               [{"body": "missing identity"}] if source == "missing_author" else
+                               [history] if source in ("hidden_timeline", "rendered_mention", "raw_fallback") else [])
             if "/pulls/42/reviews?" in path:
-                return success([comment_body(3, actor="client", body="<code>@outsider</code>")] if source == "review" else [])
+                return success([comment_body(3, actor="client", body="<code>@outsider</code>")] if source == "review" else
+                               [history] if source == "hidden_review" else [])
             if "/pulls/42/comments?" in path:
-                return success([comment_body(4, actor="client", body="&#64;outsider")] if source == "inline" else [])
+                return success([comment_body(4, actor="client", body="&#64;outsider")] if source == "inline" else
+                               [history] if source == "hidden_inline" else [])
             raise AssertionError(path)
 
         def run(calls: list[dict[str, Any]]) -> None:
@@ -1679,13 +1691,13 @@ def test_client_reply_refuses_outside_participants_and_mentions_before_writing()
                     repo="owner/repo", gh_cmd="fake-gh", client_logins=["client"],
                 )
             except github_comment.CommentError as error:
-                assert source != "allowed", error
+                assert source not in allowed, error
                 assert error.failure.write_outcome == "not_started"
                 if source != "unreadable":
                     assert error.failure.cause == "client_reply_refused", error
                 assert all(call["method"] == "GET" for call in calls), calls
             else:
-                assert source == "allowed", source
+                assert source in allowed, source
                 assert result["comment_action"] == "created"
                 assert sum(call["method"] == "POST" for call in calls) == 1
 
@@ -1693,6 +1705,10 @@ def test_client_reply_refuses_outside_participants_and_mentions_before_writing()
               patch.object(github_comment.github_identity, "configured_bot_logins", return_value=("own-app[bot]",)),
               patch.object(github_comment, "people_team", return_value=[])):
             with_call_stub(callback, run)
+
+    for case in ("opening", "timeline", "review", "inline", "outgoing", "second_page", "missing_author", "malformed", "personal",
+                 "bot_slug_author", "unreadable", *sorted(allowed), "rendered_mention", "title", "raw_fallback"):
+        exercise(case)
 
 
 def test_client_reply_reads_the_client_team_and_names_who_it_refuses() -> None:
@@ -1724,68 +1740,6 @@ def test_client_reply_reads_the_client_team_and_names_who_it_refuses() -> None:
               patch.object(github_comment.github_identity, "configured_bot_logins", return_value=("own-app[bot]",)),
               patch.object(github_comment, "people_team", side_effect=lambda login: teams.get(login, []))):
             with_call_stub(callback, run)
-
-
-def test_client_reply_uses_rendered_history_without_losing_mention_protection() -> None:
-    hidden = '<!-- github-plan:wait {"evidence": "The ask @mentions the Client"} -->'
-
-    def exercise(source: str) -> None:
-        allowed = source in ("opening", "timeline", "review", "inline")
-        historical = {**comment_body(2, actor="client", body=hidden), "body_html": "<p>Recorded.</p>"}
-        if source in ("visible", "code", "escaped"):
-            historical["body_html"] = {
-                "visible": "<p>@mentions</p>",
-                "code": "<code>&lt;!-- @mentions --&gt;</code>",
-                "escaped": "<p>&lt;!-- &#64;mentions --&gt;</p>",
-            }[source]
-        if source == "raw_fallback":
-            historical.pop("body_html")
-        if source == "title":
-            historical["title"] = "@mentions"
-
-        def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
-            if path == "/user":
-                return success({"login": "fixture-automation"})
-            if method == "POST":
-                return success(comment_body(1001))
-            media = "github-commitcomment" if "/pulls/" in path else "github"
-            record = (
-                historical
-                if (_kwargs.get("extra_headers") or {}).get("Accept") == f"application/vnd.{media}.full+json"
-                else {key: value for key, value in historical.items() if key != "body_html"}
-            )
-            if path.endswith("/issues/42"):
-                return success({**(record if source == "opening" else comment_body(1, actor="client")), "pull_request": {}})
-            endpoint = "reviews" if source == "review" else "pulls/42/comments" if source == "inline" else "issues/42/comments"
-            return success([record] if endpoint + "?" in path else [])
-
-        def run(calls: list[dict[str, Any]]) -> None:
-            try:
-                github_comment.comment(
-                    "issue",
-                    42,
-                    hidden if source == "outgoing" else "Thank you. Received.",
-                    repo="owner/repo",
-                    gh_cmd="fake-gh",
-                    client_logins=["client"],
-                )
-            except github_comment.CommentError as error:
-                assert not allowed, (source, error)
-                assert error.failure.write_outcome == "not_started"
-                assert all(call["method"] == "GET" for call in calls), calls
-            else:
-                assert allowed, source
-                assert sum(call["method"] == "POST" for call in calls) == 1
-
-        with (
-            patch.object(github_comment.github_identity, "acts_as_own_user", return_value=False),
-            patch.object(github_comment.github_identity, "configured_bot_logins", return_value=("own-app[bot]",)),
-            patch.object(github_comment, "people_team", return_value=[]),
-        ):
-            with_call_stub(callback, run)
-
-    for case in ("opening", "timeline", "review", "inline", "visible", "code", "escaped", "title", "outgoing", "raw_fallback"):
-        exercise(case)
 
 
 def main() -> None:

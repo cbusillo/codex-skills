@@ -87,11 +87,9 @@ agents and their company's people. Repeat `--client-login` only for someone it
 does not record, verified through `people` or the product's recorded identity
 context. This mode checks the opening, all timeline comments, PR reviews and
 inline comments, and the outgoing text for outside participants and mentions;
-unreadable coverage refuses the reply. Historical bodies use GitHub's rendered
-HTML so hidden metadata is not a mention; a missing rendered body falls back to
-the raw text conservatively. Titles and the outgoing reply are always scanned
-as supplied. It requires the configured automation identity. A refusal names
-the participant; it is not permission to omit the
+unreadable coverage refuses the reply. Hidden historical metadata is not a
+mention. It requires the configured automation identity. A refusal names the
+participant; it is not permission to omit the
 flag. The Director's agents not configured as own identities, such as the
 product's Launchplane bot, also go in `--client-login`. Unknown and third-party
 bots are outside participants. Link screenshot evidence in the

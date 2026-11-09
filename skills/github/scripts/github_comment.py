@@ -567,10 +567,10 @@ def validate_client_reply(
     context = dict(
         gh_cmd=gh_cmd, operation=operation, actor=actor, expected_actor=actor,
         completed_steps=[], retry_summaries=retry_summaries,
+        extra_headers={"Accept": "application/vnd.github.full+json"},
     )
     opening = _call_api(
         "GET", f"/repos/{repo}/issues/{number}", None,
-        extra_headers={"Accept": "application/vnd.github.full+json"},
         failed_step="read_client_thread", is_write=False, **context,
     ).body
     if not isinstance(opening, dict):
@@ -580,10 +580,7 @@ def validate_client_reply(
     if "pull_request" in opening:
         endpoints.extend((f"/repos/{repo}/pulls/{number}/reviews", f"/repos/{repo}/pulls/{number}/comments"))
     for endpoint in endpoints:
-        media = "github-commitcomment" if "/pulls/" in endpoint else "github"
-        comments, _ = list_comments(
-            repo, number, endpoint=endpoint, extra_headers={"Accept": f"application/vnd.{media}.full+json"}, **context,
-        )
+        comments, _ = list_comments(repo, number, endpoint=endpoint, **context)
         records.extend(comments)
     for record in records:
         user = record.get("user")
