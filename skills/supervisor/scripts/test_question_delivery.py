@@ -6,7 +6,7 @@
 """Exercise missed-question delivery, retries and acknowledgements offline."""
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import os
 from pathlib import Path
@@ -162,15 +162,15 @@ class DeliveryTests(unittest.TestCase):
                               "created_at": "2026-10-15T17:35:24Z"})
         return {"comment": self.comments[-1]}
 
-    def run_queue(self, **overrides):
+    def run_queue(self, fetch=None, days=0, **overrides):
         args = SimpleNamespace(queue=self.queue, owner=self.owner, decision_author=self.authors,
                                items=[q["url"] for q in self.questions], register=False, ack=None, delivery_url=None)
         vars(args).update(overrides)
-        now = datetime.fromisoformat(self.fixture["observed_at"].replace("Z", "+00:00"))
+        now = datetime.fromisoformat(self.fixture["observed_at"].replace("Z", "+00:00")) + timedelta(days=days)
         with patch.object(delivery, "post", side_effect=self.post), patch.object(delivery, "datetime") as clock:
             clock.now.return_value = now
             clock.fromisoformat.side_effect = datetime.fromisoformat
-            return delivery.run_queue(args, self.fetch)
+            return delivery.run_queue(args, fetch or self.fetch)
 
     def test_week_missed_questions_register_once_and_reappear_until_acknowledged(self):
         first = self.run_queue(register=True)
@@ -281,6 +281,42 @@ class DeliveryTests(unittest.TestCase):
         report = self.run_queue(items=[])
         self.assertTrue(report["complete"])
         self.assertEqual({row["url"] for row in report["questions"]}, {question["url"] for question in self.questions})
+
+    def test_answered_questions_are_skipped_until_refresh_reopening_or_new_trust(self) -> None:
+        self.run_queue(register=True)
+        target = self.questions[0]
+        item = delivery.source_item(target["url"])
+        self.sources[item] = [{**target, "body": "Owner question: Q906. Continue?"},
+                              {"author": self.authors[0], "body": "Director decision: Q906. Chris: Q906 I agree",
+                               "url": target["url"].split("#")[0] + "#issuecomment-102", "created_at": target["created_at"]}]
+        reads: list[str] = []
+        read = self.fetch
+
+        def counted(source: str) -> list[dict]:
+            reads.append(source)
+            return read(source)
+
+        def queue_at(days: int) -> dict:
+            reads.clear()
+            return self.run_queue(counted, days, items=[])
+
+        first = queue_at(0)
+        self.assertIn(item, reads)
+        self.assertNotIn(target["url"], {row["url"] for row in first["questions"]})
+        later = queue_at(0)
+        self.assertNotIn(item, reads)
+        self.assertEqual(later["questions"], first["questions"])
+
+        reads.clear()
+        self.run_queue(counted, items=[], decision_author=[*self.authors, "another-bot"])
+        self.assertIn(item, reads)
+        queue_at(1)
+        self.assertIn(item, reads)
+
+        answer = self.sources[item].pop()
+        self.run_queue(counted, 1, items=[target["url"]])
+        self.assertIn(target["url"], {row["url"] for row in queue_at(1)["questions"]})
+        self.sources[item].append(answer)
 
     def test_no_ack_from_quoted_forged_or_incomplete_records(self):
         target = self.questions[0]["url"]
