@@ -19,7 +19,7 @@ import tempfile
 import time
 import unittest
 from argparse import Namespace
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime
@@ -229,6 +229,7 @@ class ClaimTests(unittest.TestCase):
         self.children = {}
         self.milestone_edges = {}
         self.milestone_blocking = {}
+        self.open_issues = {}
         self.projections = []
         self.projection_result = None
         self.direction_repo = "owner/direction"
@@ -313,6 +314,10 @@ class ClaimTests(unittest.TestCase):
             items = self.milestone_edges[path]
         if path.endswith("/dependencies/blocking"):
             items = self.milestone_blocking.get(path, [])
+        if path.endswith("/issues"):
+            items = self.open_issues.get(path, [])
+        if isinstance(items, Exception):
+            raise items
         if path.endswith("comments") and self.wait is not None:
             items = [{"id": -1, "user": {"login": TEST_BOT}, "body": wait_record.marker(self.wait)}, *items]
         if path == "/repos/other/plans/pulls": items = []
@@ -6677,6 +6682,123 @@ class ClaimTests(unittest.TestCase):
         self.record_dependency_wait("Completing owner/repo#323 merge")
         self.assertNotIn("milestone_link", self.events)
         self.assertEqual(self.emitted.call_args.args[0]["structured_wait"]["waits"][0]["event"]["kind"], "pr_merged")
+
+    PR_URL = "https://github.com/owner/repo/pull/323"
+
+    @staticmethod
+    def merge_wait_record(url: str = PR_URL) -> dict[str, Any]:
+        return wait_record.reviewed(evidence="Reviewed the landing", waiting_for=["Canonical landing", "Vendor quote"],
+                                    ends_when=["It merges", "It arrives"], recheck="2026-12-01",
+                                    event={"version": 1, "kind": "pr_merged", "url": url, "evidence": "Named"})
+
+    def holder_of(self, number: int, *, url: str = PR_URL, repo: str = "owner/repo", **fields: Any) -> dict[str, Any]:
+        self.target_comments[f"/repos/{repo}/issues/{number}/comments"] = [
+            {"id": 900 + number, "user": {"login": TEST_BOT}, "body": wait_record.marker(self.merge_wait_record(url))}]
+        return {**self.issue, "number": number, "title": "Child", "html_url": f"https://github.com/{repo}/issues/{number}", **fields}
+
+    def record_merge_wait(self, url: str = PR_URL) -> None:
+        self.args.event = json.dumps({"version": 1, "kind": "pr_merged", "url": url, "evidence": "Named"})
+        self.record_dependency_wait("Completing owner/repo#323 merge")
+
+    def assert_merge_wait_posted(self) -> dict[str, Any]:
+        self.assertIn("post", self.events)
+        return self.emitted.call_args.args[0]["merge_wait_coverage"]
+
+    def test_second_wait_on_a_merge_is_refused_with_a_pointer_to_the_first_holder(self) -> None:
+        self.open_issues["/repos/owner/repo/issues"] = [self.holder_of(361), self.holder_of(369)]
+        with self.assertRaises(PLAN.PlanError) as caught:
+            self.record_merge_wait()
+        self.assertIn("https://github.com/owner/repo/issues/361", str(caught.exception))
+        self.assertIn(" link 42 blocked-by ", str(caught.exception))
+        self.assert_no_writes()
+
+    def test_first_wait_on_a_merge_is_recorded_and_says_what_it_could_not_read(self) -> None:
+        self.open_issues["/repos/owner/repo/issues"] = [{**self.issue, "number": 50, "html_url": "https://github.com/owner/repo/issues/50"}]
+        self.record_merge_wait()
+        coverage = self.assert_merge_wait_posted()
+        self.assertEqual((coverage["unread"], coverage["read_repositories"], coverage["issues_read"]), ([], ["owner/repo"], 1))
+        self.assertIn("UNKNOWN", coverage["other_repositories"])
+
+    def test_a_holder_elsewhere_is_found_through_the_pull_requests_references(self) -> None:
+        holder = self.holder_of(7, repo="other/plans", repository={"full_name": "other/plans"})
+        self.timelines["/repos/owner/repo/issues/323/timeline"] = [{"event": "cross-referenced", "source": {"issue": holder}}]
+        with self.assertRaises(PLAN.PlanError) as caught:
+            self.record_merge_wait()
+        self.assertIn("https://github.com/other/plans/issues/7", str(caught.exception))
+        self.assert_no_writes()
+
+    def test_a_holder_in_the_pull_requests_own_repository_counts(self) -> None:
+        url = "https://github.com/other/product/pull/9"
+        self.open_issues["/repos/other/product/issues"] = [self.holder_of(3, url=url, repo="other/product")]
+        with self.assertRaises(PLAN.PlanError):
+            self.record_merge_wait(url)
+        self.assert_no_writes()
+
+    def test_waits_that_are_not_a_second_hold_on_this_merge_do_not_refuse(self) -> None:
+        cases: dict[str, Callable[[], dict[str, Any]]] = {
+            "same number in another repository": lambda: self.holder_of(61, url="https://github.com/other/repo/pull/323"),
+            "a Track carries it": lambda: self.holder_of(62, title="Track: Launch"),
+            "a pull request record": lambda: self.holder_of(63, pull_request={"url": "x"}),
+            "no wait at all": lambda: {**self.issue, "number": 64, "html_url": "https://github.com/owner/repo/issues/64"},
+        }
+        for name, case in cases.items():
+            with self.subTest(name):
+                self.events.clear()
+                self.comments.clear()
+                self.open_issues["/repos/owner/repo/issues"] = [case()]
+                self.record_merge_wait()
+                self.assert_merge_wait_posted()
+
+    def test_an_issue_already_holding_the_merge_can_keep_maintaining_its_own_wait(self) -> None:
+        self.wait = self.merge_wait_record()
+        self.open_issues["/repos/owner/repo/issues"] = [self.holder_of(361)]
+        self.record_merge_wait()
+        self.assertIn("post", self.events)
+
+    def test_unread_inventory_is_reported_and_is_not_read_as_unique(self) -> None:
+        self.open_issues["/repos/owner/repo/issues"] = PLAN.PlanError("Unavailable")
+        self.record_merge_wait()
+        coverage = self.assert_merge_wait_posted()
+        self.assertTrue(coverage["unread"])
+        self.assertEqual((coverage["read_repositories"], coverage["issues_read"]), ([], 0))
+
+    def test_an_issue_whose_discussion_cannot_be_read_is_not_counted_as_read(self) -> None:
+        self.target_comments["/repos/owner/repo/issues/60/comments"] = PLAN.PlanError("Unavailable")
+        self.open_issues["/repos/owner/repo/issues"] = [{**self.issue, "number": 60, "html_url": "https://github.com/owner/repo/issues/60"}]
+        self.record_merge_wait()
+        coverage = self.assert_merge_wait_posted()
+        self.assertTrue(coverage["unread"])
+        self.assertEqual(coverage["issues_read"], 0)
+
+    def test_one_unreadable_issue_does_not_hide_a_holder_that_was_read(self) -> None:
+        unread = {**self.issue, "number": 60, "html_url": "https://github.com/owner/repo/issues/60"}
+        self.target_comments["/repos/owner/repo/issues/60/comments"] = PLAN.PlanError("Unavailable")
+        self.open_issues["/repos/owner/repo/issues"] = [unread, self.holder_of(361)]
+        with self.assertRaises(PLAN.PlanError) as caught:
+            self.record_merge_wait()
+        self.assertIn("issues/361", str(caught.exception))
+        self.assert_no_writes()
+
+    def test_tracks_and_pull_request_records_may_wait_on_a_merge_without_an_inventory(self) -> None:
+        wait = self.merge_wait_record()
+        for record in ({"title": "Track: Launch"}, {"title": "Stacked", "pull_request": {}}):
+            with self.subTest(record), patch.multiple(PLAN, collect_paged_rest_items=Mock(side_effect=AssertionError("inventory read"))):
+                self.assertIsNone(PLAN.require_first_merge_wait({"repo": "owner/repo", "number": 42, **record}, wait))
+
+    def test_create_refuses_a_second_wait_on_a_merge_before_opening_the_issue(self) -> None:
+        self.open_issues["/repos/owner/repo/issues"] = [self.holder_of(361)]
+        args = PLAN.build_parser().parse_args(["--repo", "owner/repo", "create", "Repair", "--waiting-for", "Landing",
+            "--ends-when", "It merges", "--wait-evidence", "Reviewed",
+            "--event", json.dumps({"version": 1, "kind": "pr_merged", "url": self.PR_URL, "evidence": "Named"})])
+        create = Mock()
+        with patch.multiple(PLAN, default_repo=lambda repo: repo, load_config=lambda repo: PLAN.DEFAULT_CONFIG,
+                            collect_paged_rest_items=self.read_pages, EXPECTED_ACTOR=TEST_BOT), \
+                patch.object(github_identity, "configured_bot_logins", return_value=[]), \
+                patch.object(github_issue, "create_issue", create), \
+                self.assertRaises(PLAN.PlanError) as caught:
+            PLAN.cmd_create(args)
+        self.assertIn("https://github.com/owner/repo/issues/361", str(caught.exception))
+        create.assert_not_called()
 
     def test_person_wait_is_refused_until_a_real_ask_is_linked(self) -> None:
         book = {"mike": frozenset({"mike-login"})}
