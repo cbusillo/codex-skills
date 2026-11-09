@@ -364,12 +364,12 @@ def read_error(repo: str, error: Exception) -> dict:
     }
 
 
-def changed_repositories(reader: GitHubReader, watched: list[str], last_look: str) -> list[str]:
+def changed_repositories(reader: GitHubReader, watched: list[str], last_look: str, retry: set[str]) -> list[str]:
     owners = sorted({repo.split("/")[0] for repo in watched}, key=str.casefold)
     feed = github_change_feed.changed(reader, owners, timestamp(last_look))
     if not feed.complete:
         return watched
-    changed = feed.repositories()
+    changed = feed.repositories() | {repo.casefold() for repo in retry}
     return [repo for repo in watched if repo.casefold() in changed]
 
 
@@ -541,6 +541,21 @@ def cover(watermarks, repos, initial: str, rewind: bool) -> None:
         watermarks.setdefault(repo, initial)
         if rewind and timestamp(initial) < timestamp(watermarks[repo]):
             watermarks[repo] = initial
+
+
+def load_feed_retry(path: Path) -> set[str]:
+    data = json.loads(path.read_text()) if path.exists() else {}
+    retry = data.get("feed_retry", []) if isinstance(data, dict) else None
+    if not isinstance(retry, list) or not all(isinstance(repo, str) and REPOSITORY.fullmatch(repo) for repo in retry):
+        raise ValueError("feed_retry must list repositories")
+    return set(retry)
+
+
+def save_feed_retry(path: Path, retry: set[str]) -> None:
+    with watch_lock(path, wait=True):
+        state = json.loads(path.read_text()) if path.exists() else {}
+        state["feed_retry"] = sorted(retry)
+        atomic_text(path, json.dumps(state) + "\n")
 
 
 def save_deliveries(path: Path, deliveries: dict) -> None:
@@ -1120,6 +1135,7 @@ def watch(args, repos, initial, deadline):
             watermarks = load_state(args.state, [*(repos or []), MENTIONS], initial, rewind=rewind)
             seen = load_mention_seen(args.state)
             dispatched = load_dispatched(args.state)
+            feed_retry = load_feed_retry(args.state)
         started = utc_now()
         reader = GitHubReader(
             operation="github.supervisor.foreign_watch",
@@ -1127,6 +1143,7 @@ def watch(args, repos, initial, deadline):
             deadline_at=time.time() + max(0, deadline - time.monotonic()),
         )
         feed_pass: bool | None = None
+        feed_watched: set[str] = set()
         try:
             watched = repos or installed_repositories(reader, args.owner, getattr(args, "github_cli_login", None))
         except READ_ERRORS as error:
@@ -1136,9 +1153,11 @@ def watch(args, repos, initial, deadline):
             covered.update(watched)
             installation_wide = not repos
             full = not installation_wide or rewind or full_scan_due(watermarks, started)
-            scanned = watched if full else changed_repositories(reader, watched, watermarks[CHANGE_FEED_WATERMARK])
+            scanned = watched if full else changed_repositories(reader, watched, watermarks[CHANGE_FEED_WATERMARK], feed_retry)
             notices, errors, watermarks = scan(scanned, watermarks, args.own_login, args.launchplane_login, started, reader, getattr(args, "client_agent_logins", ()))
-            feed_pass = full if installation_wide and not errors else None
+            if installation_wide:
+                feed_pass, feed_watched = full, set(watched)
+                feed_retry = {error["repository"] for error in errors}
             mentions, gaps, mention_errors, watermarks, seen = scan_mentions(
                 args, watched, watermarks, seen, args.own_login, started, reader
             )
@@ -1161,9 +1180,11 @@ def watch(args, repos, initial, deadline):
             print(json.dumps({"notices": notices, "errors": errors, "coverage_gaps": gaps, "untrusted": True}), flush=True)
             for repo in retry_repos:
                 watermarks[repo] = checkpoint.get("watermarks", {}).get(repo, initial)
-            if feed_pass is not None and not retry_repos:
+            if feed_pass is not None:
                 record_feed_pass(watermarks, started, full=feed_pass)
             save_state(args.state, watermarks, seen, dispatched, deliveries)
+            if feed_pass is not None:
+                save_feed_retry(args.state, feed_retry | (retry_repos & feed_watched))
         rewind = False
         if errors and getattr(args, "events", False) and any(not error["retryable"] for error in errors):
             raise ValueError("Scheduled message source read is nonretryable; reconcile the service before restarting.")
