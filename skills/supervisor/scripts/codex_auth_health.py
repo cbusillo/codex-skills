@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["websockets==17.3"]
+# dependencies = ["websockets==17.4"]
 # ///
 
 from __future__ import annotations

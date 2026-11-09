@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["pytest==9.1.1"]
+# dependencies = ["pytest==9.2.0"]
 # ///
 """Private ingress callers bind review, recovery and independent observations."""
 
