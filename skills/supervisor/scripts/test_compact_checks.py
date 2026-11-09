@@ -656,6 +656,37 @@ class OperationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             iterm_tab.register_file_launch({**launch, "session_id": "another-terminal"}, native, ledger)
 
+    def test_claude_registration_excludes_only_verified_browser_helper(self) -> None:
+        native = {"session_id": "native-claude", "home": str(self.root)}
+        transcript = self.root / "projects" / "fixture" / "native-claude.jsonl"
+        transcript.parent.mkdir(parents=True)
+        transcript.write_text(json.dumps({"sessionId": native["session_id"], "type": "assistant"}) + "\n")
+        launch = {"session_id": "owned-terminal", "tty": "/dev/ttys001", "backend": "tmux"}
+        agent = ["/tools/claude", "--session-id", native["session_id"]]
+        helper = ["/tools/claude", "--claude-in-chrome-mcp"]
+        for label, child, command, available, success in (
+            ("helper", helper, " ".join(helper), True, True),
+            ("two-agents", agent, " ".join(agent), True, False),
+            ("unavailable", helper, " ".join(helper), False, False),
+            ("mismatch", helper, "/other/claude --claude-in-chrome-mcp", True, False),
+            ("extra-arguments", [*helper, "--session-id", "other"], " ".join(helper), True, False),
+        ):
+            ledger = self.root / (label + ".json")
+            def arguments(pid: int) -> list[str]:
+                if pid == 8:
+                    return agent
+                if not available:
+                    raise OSError("unavailable")
+                return child
+            with (self.subTest(label=label),
+                  patch.object(session_liveness, "inventory", return_value=[(8, "ttys001", " ".join(agent)), (9, "ttys001", command)]),
+                  patch.object(session_liveness, "native_arguments", side_effect=arguments)):
+                if success:
+                    self.assertEqual(iterm_tab.register_file_launch(launch, native, ledger)["pid"], 8)
+                else:
+                    with self.assertRaisesRegex(ValueError, "process identity is ambiguous"):
+                        iterm_tab.register_file_launch(launch, native, ledger)
+
 
 if __name__ == "__main__":
     unittest.main()

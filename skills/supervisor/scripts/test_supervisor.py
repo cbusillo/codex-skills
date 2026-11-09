@@ -1781,6 +1781,19 @@ class ProcessArgumentsTests(unittest.TestCase):
     def setUp(self) -> None:
         self.enterContext(patch.object(session_liveness.os, "kill", return_value=None))
 
+    def test_claude_browser_helper_requires_exact_native_role_and_matching_executable(self) -> None:
+        helper = ["/tools/claude", "--claude-in-chrome-mcp"]
+        for native, command, expected in (
+            (helper, " ".join(helper), ([], True)),
+            (helper, "/other/claude --claude-in-chrome-mcp", (["/other/claude", helper[1]], False)),
+            ([*helper, "--session-id", self.source], " ".join(helper), ([*helper, "--session-id", self.source], True)),
+            ([helper[0], "--session-id", self.source], " ".join(helper), ([helper[0], "--session-id", self.source], True)),
+        ):
+            with self.subTest(native=native, command=command), patch.object(session_liveness, "native_arguments", return_value=native):
+                self.assertEqual(session_liveness.process_arguments(123, command), expected)
+        with patch.object(session_liveness, "native_arguments", side_effect=OSError("unavailable")):
+            self.assertEqual(session_liveness.process_arguments(123, " ".join(helper)), (helper, False))
+
     def test_generation_exit_distinguishes_pid_reuse_from_the_recorded_process(self) -> None:
         original = datetime.now(UTC) - timedelta(hours=1)
         entry = {"pid": 123, "launch_started_at": original.isoformat()}
