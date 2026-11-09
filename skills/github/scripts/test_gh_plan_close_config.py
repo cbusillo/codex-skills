@@ -231,7 +231,7 @@ class CloseConfigTests(unittest.TestCase):
                      source_comments: list[dict] | None = None, admission: str | None = None,
                      admission_links: list[str] | None = None, milestone: dict | None = None,
                      track: dict | None = None, actor: str | None = None, worker: str | None = None, body_time: str | None = None,
-                     source_number: int = 6, ownership_complete: bool = True,
+                     source_number: int = 6, ownership_complete: bool = True, wait_recorded: bool = True,
                      ancestry: set[tuple[str, int]] | None = None) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
         target = "fixture/target"
         configs = {repo: copy.deepcopy(PLAN.DEFAULT_CONFIG) for repo in ("fixture/local", target)}
@@ -247,7 +247,7 @@ class CloseConfigTests(unittest.TestCase):
         if actor:
             issue["body"] += f"\nNext actor: {actor}"
         comments: list[dict[str, Any]] = [{"id": 1, "html_url": issue["html_url"] + "#issuecomment-1", "user": {"login": "fixture"}, "body": PLAN.github_plan_wait.marker(
-            PLAN.github_plan_wait.reviewed(evidence="Target discussion reviewed; no person wait"))}]
+            PLAN.github_plan_wait.reviewed(evidence="Target discussion reviewed; no person wait"))}] if wait_recorded else []
         comments.extend(comments_extra or [])
         relationships = Mock(return_value=("fixture-bot", {"blocked_by": [], "sub_issues": []}))
         if isinstance(enrichment, Exception):
@@ -332,6 +332,8 @@ class CloseConfigTests(unittest.TestCase):
             self.assertTrue(self.show_fixture(launch=True, comments_extra=[claim])[0]["issue"]["launch_check"]["allowed"])
             with patch.object(github_plan_lease, "session_is_live", return_value=True):
                 self.assertFalse(self.show_fixture(launch=True, comments_extra=[claim])[0]["issue"]["launch_check"]["allowed"])
+            self.assertTrue(self.show_fixture(launch=True, wait_recorded=False)[0]["issue"]["launch_check"]["allowed"])
+        self.assertFalse(self.show_fixture(launch=True, wait_recorded=False)[0]["issue"]["launch_check"]["allowed"])
 
     def test_launch_allows_operational_work_and_only_authored_retained_handoffs(self) -> None:
         for action in ("Audit the helper.", "Run the testing migration.", "Qualify the release."):

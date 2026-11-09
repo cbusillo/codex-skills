@@ -445,8 +445,24 @@ class ClaimTests(unittest.TestCase):
         with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
             self.run_claim()
         self.assertEqual(caught.exception.code, "claim_conflict")
-        own_claim = next(comment["id"] for comment in self.comments if OWNER["session"] in comment["body"])
-        self.assertTrue(self.comments[-1]["body"].startswith(f"Released claim {own_claim}"))
+        for comment in self.comments:
+            comment["created_at"] = "2026-10-01T00:00:00+00:00"
+        LEASE.renew(OWNER["session"])
+        self.assertNotIn(OWNER["session"], {holder["session"] for holder in CLAIM.live_claims(self.comments)})
+
+    def test_live_repository_refuses_a_wait_recorded_while_its_claim_was_being_posted(self) -> None:
+        self.use_live_claims()
+        self.wait = None
+
+        def a_person_wait_appears() -> None:
+            self.wait = wait_record.reviewed(evidence="Reviewed", waiting_for="Director's device test",
+                                             ends_when="Director records acceptance on this issue")
+
+        self.after_post = a_person_wait_appears
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_claim()
+        self.assertEqual(caught.exception.code, "claim_wait_unresolved")
+        self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
 
     def test_live_repository_still_refuses_a_recorded_person_wait_and_an_open_blocker(self) -> None:
         self.use_live_claims()

@@ -2273,10 +2273,14 @@ def cmd_show(args: argparse.Namespace) -> None:
                         and not source_facts["conflicts"]))
         claim_error = None
         milestone_admission = None
+        live_claims = github_plan_lease.uses_live_claims(issue["repo"])
+        launch_status = derived["status"]
+        if live_claims and wait["state"] == "review" and derived["relationships_complete"]:
+            launch_status = github_plan_status.derive(
+                issue, relationships, github_plan_wait.reviewed(evidence="No wait is recorded"))["status"]
         if not args.read_only:
             try:
                 validate_wait_resolution(args.wait_resolved, issue["repo"])
-                live_claims = github_plan_lease.uses_live_claims(issue["repo"])
                 if not (live_claims and wait["state"] == "review"):
                     check_claim_wait({**issue, "claim_wait": wait}, claim_current_status(issue, read_plan_sections(issue)[0], comments), config,
                                      wait_resolved=args.wait_resolved if wait["state"] != "review" else None)
@@ -2296,8 +2300,8 @@ def cmd_show(args: argparse.Namespace) -> None:
         result["launch_check"] = {
             "allowed": (claim_error is None and derived["relationships_complete"] and facts["complete"] and not facts.get("error")
                         and (args.read_only or not facts["conflicts"]) and (args.read_only or not facts["artifacts"])
-                        and source_clear and (args.read_only or derived["status"] == "active"
-                                              or (bool(args.wait_resolved) and derived["status"] == "waiting"))),
+                        and source_clear and (args.read_only or launch_status == "active"
+                                              or (bool(args.wait_resolved) and launch_status == "waiting"))),
             "status": derived["status"], "ownership": facts,
             **({"milestone_admission": milestone_admission} if milestone_admission else {}),
             **({"error": claim_error} if claim_error else {}),
@@ -4136,17 +4140,20 @@ def claim_once(args: argparse.Namespace) -> None:
             + f"\n\n[Work record](https://github.com/{issue_repo}/{'pull' if kind == 'pr' else 'issues'}/{number})"
         )
 
+    def refuse_unassigned_or_waiting(checked_issue: dict[str, Any], checked_status: str) -> None:
+        check_agent(checked_issue)
+        if github_plan_wait.project_dates(checked_issue["claim_wait"])["state"] == "waiting":
+            check_claim_wait(checked_issue, checked_status, config, wait_resolved=args.wait_resolved)
+
     def claim_while_live() -> None:
         nonlocal claim_comment
         live_issue, live_status, live_comments, _ = claim_snapshot(args.issue, repo, preserve_content=True)
         kind = "pr" if "pull_request" in live_issue else "issue"
-        check_agent(live_issue)
+        refuse_unassigned_or_waiting(live_issue, live_status)
         if holders := other_live_holders(live_comments):
             refuse_live_holders(holders)
         if kind == "issue":
             refuse_issue_in_progress()
-        if github_plan_wait.project_dates(live_issue["claim_wait"])["state"] == "waiting":
-            check_claim_wait(live_issue, live_status, config, wait_resolved=args.wait_resolved)
         if admission == "milestone":
             milestone_claim_track(live_issue, admission_links)
         completed.append("ownership_preflight")
@@ -4160,7 +4167,10 @@ def claim_once(args: argparse.Namespace) -> None:
         claim_comment = post(live_claim_text(kind), "post_claim")
         completed.append("post_claim")
         posted_id = claim_comment["comment"]["id"]
-        _, _, seen_comments, _ = claim_snapshot(args.issue, repo, preserve_content=True)
+        seen_issue, seen_status, seen_comments, _ = claim_snapshot(args.issue, repo, preserve_content=True)
+        if not any(holder["claim_id"] == posted_id for holder in github_plan_claim.live_claims(seen_comments)):
+            raise PlanError("Claim was not visible on readback; do not create a worktree")
+        refuse_unassigned_or_waiting(seen_issue, seen_status)
         if earlier := [holder for holder in other_live_holders(seen_comments) if holder["claim_id"] < posted_id]:
             post(f"Released claim {posted_id}\n\nAn earlier live claim holds this record.", "withdraw_claim")
             refuse_live_holders(earlier)
