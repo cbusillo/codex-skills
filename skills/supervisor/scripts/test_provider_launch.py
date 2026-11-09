@@ -122,7 +122,6 @@ class LaunchIssueTests(unittest.TestCase):
                         prompt = next(word.removeprefix("--prompt-interactive=") for word in shlex.split(commands[0])
                                       if word.startswith("--prompt-interactive="))
                         self.assertTrue(prompt.endswith("\n\n" + task))
-                        self.assertIn(shlex.join(["--dispatch-recipient", lead]), prompt)
                     else:
                         with self.assertRaises(ValueError) as refused:
                             iterm_tab.prepare_launches(args)
@@ -153,14 +152,10 @@ class LaunchIssueTests(unittest.TestCase):
                     self.assertEqual(prompt, header.rstrip("\n") + "\n\n" + task)
             args.lead_session_id = "milestone-lead"
             payload["issue"]["recorded_current_status"] = status.replace("agent:supervisor", "agent:" + args.lead_session_id)
-            with patch.object(iterm_tab.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps(payload))) as reader:
+            with patch.object(iterm_tab.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps(payload))):
                 words = shlex.split(iterm_tab.prepare_launches(args)[0][0])
                 prompt = next(word.removeprefix("--prompt-interactive=") for word in words if word.startswith("--prompt-interactive="))
-                self.assertTrue(prompt.startswith(header.rstrip("\n") + "\n"))
-                self.assertEqual(prompt.count(f"--dispatch-recipient {args.lead_session_id}"), 1)
-                self.assertTrue(prompt.endswith("\n\n" + task))
-                argv = reader.call_args.args[0]
-                self.assertEqual(argv[argv.index("--dispatch-recipient") + 1], args.lead_session_id)
+                self.assertEqual(prompt, header.rstrip("\n") + "\n\n" + task)
             payload["issue"]["recorded_current_status"] = status
             with patch.object(iterm_tab.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps(payload))):
                 with self.assertRaisesRegex(ValueError, "Next actor"):
@@ -342,11 +337,6 @@ class LaunchIssueTests(unittest.TestCase):
             return subprocess.CompletedProcess(argv, 0, json.dumps(cleared))
         with patch.object(iterm_tab.subprocess, "run", side_effect=read):
             token = "successor-worker"
-            own_issue = "https://github.com/fixture/repo/issues/7"
-            iterm_tab.check_launch_issue(brief + "\nAnchor and claim: https://github.com/fixture/repo/issues/8",
-                                         dispatch_recipient="lead", dispatch_issue=own_issue)
-            self.assertEqual(calls[-2].dispatch_recipient, "lead")
-            self.assertIsNone(calls[-1].dispatch_recipient)
             iterm_tab.check_launch_issue(f"Brief from the Supervisor. Trial token: {token}.\n" + brief)
             self.assertEqual(calls[-1].worker, token)
             iterm_tab.check_launch_issue(f"GUI task: com.example.fixture\nBrief from the Supervisor. Trial token: {token}.\n" + brief)
@@ -431,16 +421,6 @@ class LaunchIssueTests(unittest.TestCase):
                     iterm_tab.check_launch_issue(anchor)
                 self.assertIn(code, str(caught.exception))
                 self.assertIn(detail, str(caught.exception))
-
-    def test_named_recipient_and_its_recovery_reach_the_launcher(self) -> None:
-        recipient = {"worker": "existing-worker", "next_action": "Fixture supported recovery"}
-        payload = {"ok": True, "issue": {"launch_check": {
-            "allowed": False, "status": "active", "ownership": {"recipients": [recipient]}}}}
-        with patch.object(iterm_tab.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps(payload))):
-            with self.assertRaises(ValueError) as caught:
-                iterm_tab.check_launch_issue("Anchor: https://github.com/fixture/repo/issues/7")
-            self.assertIn(recipient["worker"], str(caught.exception))
-            self.assertIn(recipient["next_action"], str(caught.exception))
 
     def test_missing_or_failed_state_read_never_launches(self) -> None:
         for code, output in ((1, "{}"), (0, "{}"), (0, "invalid"), (0, '{"ok": true, "issue": {}}')):

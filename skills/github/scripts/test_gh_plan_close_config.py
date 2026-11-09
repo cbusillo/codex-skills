@@ -229,7 +229,6 @@ class CloseConfigTests(unittest.TestCase):
                      source_comments: list[dict] | None = None, admission: str | None = None,
                      admission_links: list[str] | None = None, milestone: dict | None = None,
                      track: dict | None = None, actor: str | None = None, worker: str | None = None, body_time: str | None = None,
-                     dispatch_recipient: str | None = None,
                      source_number: int = 6, ownership_complete: bool = True,
                      ancestry: set[tuple[str, int]] | None = None) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
         target = "fixture/target"
@@ -273,7 +272,6 @@ class CloseConfigTests(unittest.TestCase):
             PLAN.cmd_show(PLAN.build_parser().parse_args(["--repo", "fixture/local", "show", "fixture/target#7", "--full",
                                                         *(["--launch-check"] if launch else []),
                                                         *(["--worker", worker] if worker else []),
-                                                        *(["--dispatch-recipient", dispatch_recipient] if dispatch_recipient else []),
                                                         *(["--resume-from", str(resume)] if resume else []),
                                                         *(["--read-only"] if read_only else []),
                                                         *(["--admission", admission] if admission else []),
@@ -390,7 +388,7 @@ class CloseConfigTests(unittest.TestCase):
         with self.assertRaises(PLAN.PlanError):
             self.show_fixture(launch=True, read_only=True, resume=2)
 
-    def test_retained_launch_resolves_same_record_urls_without_inheriting_other_source_recipients(self) -> None:
+    def test_retained_launch_resolves_same_record_urls_and_ignores_named_recipients(self) -> None:
         lead = "01970242-7941-7f0c-b461-16aa5723fb52"
         source = {"worker": "codex", "session": "source", "branch": "work/export", "claimed_at": "2026-10-01T00:00:00Z"}
         comments = [{"id": 2, "user": {"login": "fixture"}, "created_at": source["claimed_at"],
@@ -406,10 +404,8 @@ class CloseConfigTests(unittest.TestCase):
             with self.subTest(repo=repo, number=number):
                 result, _, _ = self.show_fixture(launch=True, worker="fresh-worker", source_number=number,
                     body_time="2026-10-01T00:00:00Z", comments_extra=comments, source_comments=comments, pulls=[retained],
-                    dispatch_recipient=lead, resume=f"https://github.com/{repo}/issues/{number}#issuecomment-2")
-                check = result["issue"]["launch_check"]
-                self.assertEqual(check["allowed"], number == 7)
-                if number != 7: self.assertEqual(check["resume_source"]["recipients"][0]["worker"], lead)
+                    resume=f"https://github.com/{repo}/issues/{number}#issuecomment-2")
+                self.assertTrue(result["issue"]["launch_check"]["allowed"])
 
     def test_launch_checks_the_claims_milestone_admission_without_writes(self) -> None:
         claim_options = ["--worker", "worker", "--session", "session", "--branch", "work/native",
@@ -452,16 +448,14 @@ class CloseConfigTests(unittest.TestCase):
         self.assertTrue(result["issue"]["launch_check"]["allowed"])
         self.assertNotIn("milestone_admission", result["issue"]["launch_check"])
 
-    def test_named_recipient_is_routing_work_before_an_execution_launch(self) -> None:
+    def test_named_recipient_is_reported_without_refusing_a_launch(self) -> None:
         for actor in ("agent:ODOO20LEAD2-1027", "agent:01970242-7941-7f0c-b461-16aa5723fb52"):
             token = [{"id": 2, "user": {"login": "fixture"}, "body": "Brief from the Supervisor. Trial token: ODOO20LEAD2-1027."}]
             for read_only in (False, True):
                 result, _, _ = self.show_fixture(launch=True, actor=actor, read_only=read_only, comments_extra=token)
                 check = result["issue"]["launch_check"]
-                self.assertEqual(check["allowed"], read_only)
+                self.assertTrue(check["allowed"])
                 self.assertTrue(any(row["source"] == "recorded_recipient" for row in check["ownership"]["recipients"]))
-            result, _, _ = self.show_fixture(launch=True, actor=actor, worker=actor.removeprefix("agent:"), comments_extra=token)
-            self.assertTrue(result["issue"]["launch_check"]["allowed"])
 
     def test_role_actor_can_be_staffed_without_rewriting_status(self) -> None:
         for role in ("launchplane-engineer", "launchplane", "launchplane-native-qualification", "operator", "investigator"):
@@ -470,7 +464,7 @@ class CloseConfigTests(unittest.TestCase):
                 self.assertTrue(result["issue"]["launch_check"]["allowed"])
                 self.assertEqual(result["issue"]["launch_check"]["ownership"]["recipients"], [])
 
-    def test_dispatch_names_the_coordinator_and_keeps_claim_and_wait_checks(self) -> None:
+    def test_named_coordinator_still_leaves_claim_and_wait_checks_in_force(self) -> None:
         actor = "agent:01970242-7941-7f0c-b461-16aa5723fb52"
         request: dict[str, Any] = {"id": 2, "user": {"login": "fixture"}, "created_at": "2026-10-25T00:00:00Z", "body": (
             f"## Current Status\nNext actor: {actor}\nNext action: Launch the worker.\n"
@@ -485,30 +479,21 @@ class CloseConfigTests(unittest.TestCase):
             with self.subTest(blocker=blocker, brief=brief):
                 routed = request if brief else {**request, "body": request["body"].split("Brief:")[0]}
                 result, _, _ = self.show_fixture(launch=True, worker="fresh-worker", admission="spare-capacity",
-                                                dispatch_recipient=actor.removeprefix("agent:"),
                                                 body_time="2026-10-01T00:00:00Z",
                                                 comments_extra=[routed, *([blocker] if blocker else [])])
                 check = result["issue"]["launch_check"]
                 self.assertEqual(check["allowed"], blocker is None)
-                self.assertEqual(check["ownership"]["recipients"], [])
                 if blocker is owner:
                     self.assertTrue(check["ownership"]["conflicts"])
                 if blocker is held:
                     self.assertEqual(check["error"]["code"], "claim_wait_unresolved")
-        for recipient in (None, "different-session"):
-            result, _, _ = self.show_fixture(launch=True, worker="fresh-worker", admission="spare-capacity",
-                                            dispatch_recipient=recipient, body_time="2026-10-01T00:00:00Z",
-                                            comments_extra=[request])
-            self.assertFalse(result["issue"]["launch_check"]["allowed"])
-            self.assertEqual(result["issue"]["launch_check"]["ownership"]["recipients"][0]["worker"],
-                             actor.removeprefix("agent:"))
 
     def test_launch_uses_body_edit_time_for_the_current_assignment(self) -> None:
         result, _, _ = self.show_fixture(launch=True, actor="agent:old-worker", worker="new-worker",
             body_time="2026-10-01T00:00:00Z", comments_extra=[{
                 "id": 2, "user": {"login": "fixture"}, "created_at": "2026-10-25T00:00:00Z",
                 "body": "Trial token: old-worker\n## Current Status\nNext actor: agent:new-worker\nTrial token: new-worker"}])
-        self.assertTrue(result["issue"]["launch_check"]["allowed"])
+        self.assertEqual(result["issue"]["launch_check"]["ownership"]["recipients"], [])
 
     def test_launch_returns_actionable_admission_argument_errors(self) -> None:
         for kind, links in (("own project", []), ("TBD", []), ("repeat-stop", []),

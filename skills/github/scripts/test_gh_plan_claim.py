@@ -138,17 +138,6 @@ class ClaimMarkerTests(unittest.TestCase):
         dispatched = f"Native session: {session} (Claude Code), dispatched by {lead}."
         self.assertTrue(CLAIM.belongs_to_session(dispatched, session))
         self.assertFalse(CLAIM.belongs_to_session(dispatched, lead))
-    def test_exact_dispatch_recipient_distinguishes_the_coordinator_without_a_fenced_request(self) -> None:
-        actor = "agent:01970242-7941-7f0c-b461-16aa5723fb52"
-        request = f"Next actor: {actor}\nBrief:\n````text\nTask.\n```sh\necho example\n```\n````\n"
-        for status in (request, request.replace("\n", "\r\n"), f"Next actor: {actor}\n"):
-            self.assertIsNone(CLAIM.recipient_evidence(status, [], repo="owner/repo", number=42, trusted={"owner"},
-                                                      dispatch_recipient=actor.removeprefix("agent:")))
-            for recipient in ("", "different-session"):
-                found = CLAIM.recipient_evidence(status, [], repo="owner/repo", number=42, trusted={"owner"},
-                                                dispatch_recipient=recipient)
-                assert found is not None
-                self.assertEqual(found["worker"], actor.removeprefix("agent:"))
 
     def test_fenced_claim_examples_never_become_holders_or_recorded_branches(self) -> None:
         for opening, closing in (("~~~text", "~~~"), ("```text", "```"), ("````text", "````")):
@@ -4145,15 +4134,7 @@ class ClaimTests(unittest.TestCase):
             self.assertEqual(parsed.wait_resolved, evidence)
             self.assertEqual(parsed.resume_from, calls[-1].resume_from)
             self.args = parsed
-            retained_body = self.targets["99"]["body"]
             self.targets["99"]["body"] += f"\n\n## Current Status\nNext actor: agent:{lead}\n"
-            with self.assertRaises(PLAN.ClassifiedPlanError) as stopped:
-                self.run_claim()
-            self.assertEqual(stopped.exception.code, "claim_conflict")
-            self.assertTrue(any(row["source"] == "recorded_recipient" and row["worker"] == lead
-                                for row in stopped.exception.payload["competing_evidence"]))
-            self.assert_no_writes()
-            self.targets["99"]["body"] = retained_body
             self.run_claim()
         result = self.emitted.call_args.args[0]
         self.assertEqual(result["claim"]["session"], OWNER["session"])
@@ -4324,7 +4305,6 @@ class ClaimTests(unittest.TestCase):
                     prompt = next(word.removeprefix("--prompt-interactive=") for word in shlex.split(commands[0])
                                   if word.startswith("--prompt-interactive="))
                     self.assertIn(shlex.quote(self.args.wait_resolved), prompt)
-                    self.args.dispatch_recipient = lead
                     self.run_claim()
                     self.assertEqual(wait_record.current(self.issue, self.comments, {TEST_BOT}), self.wait)
 
@@ -6340,14 +6320,13 @@ class ClaimTests(unittest.TestCase):
                 self.assertIn("post", self.events)
                 self.assertIn(status, self.emitted.call_args.args[0]["previous_current_status"])
 
-    def test_named_recipient_without_a_claim_requires_custody_reconciliation(self) -> None:
-        self.issue["body"] += "Next actor: agent:existing-worker\nTrial token: existing-worker\n"
-        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
-            self.run_claim()
-        self.assertEqual(caught.exception.code, "claim_conflict")
-        self.assertTrue(any(row["source"] == "recorded_recipient"
-                            for row in caught.exception.payload["competing_evidence"]))
-        self.assert_no_writes()
+    def test_named_next_actor_without_custody_does_not_block_a_claim(self) -> None:
+        for actor in ("existing-worker", "01a1b839-608e-7a73-b683-bb6c7da113a7"):
+            with self.subTest(actor=actor):
+                self.setUp()
+                self.issue["body"] += f"Next actor: agent:{actor}\nTrial token: existing-worker\n"
+                self.run_claim()
+                self.assertEqual(self.emitted.call_args.args[0]["claim"]["session"], OWNER["session"])
 
     def test_read_only_preflight_does_not_authorize_a_later_claim_of_live_work(self) -> None:
         self.issue["body"] += CLAIM.marker(OTHER)
@@ -6370,12 +6349,11 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual((self.issue, self.comments, self.wait), before)
         self.assert_no_writes()
 
-    def test_lead_launch_request_allows_a_fresh_worker_but_keeps_claims_and_waits(self) -> None:
+    def test_lead_next_actor_allows_a_fresh_worker_but_keeps_claims_and_waits(self) -> None:
         lead = "01970242-7941-7f0c-b461-16aa5723fb52"
-        for retained, mode, brief in product((None, "numeric", "url", "case-url"),
-                ("clear", "competitor", "wait", "redirected", "no-dispatch"), (False, True)):
+        for retained, mode, brief in product((None, "numeric", "url", "case-url"), ("clear", "competitor", "wait"), (False, True)):
             with self.subTest(retained=retained, mode=mode, brief=brief):
-                if retained in {"url", "case-url"} and mode not in {"clear", "no-dispatch"}: continue
+                if retained in {"url", "case-url"} and mode != "clear": continue
                 self.setUp()
                 if retained:
                     self.ordinary_handoff_fixture()
@@ -6390,9 +6368,6 @@ class ClaimTests(unittest.TestCase):
                         "Brief:\n```text\nAnchor and claim: https://github.com/owner/repo/issues/42\n"
                         "Implement the export in a new worktree.\n```\n"
                     )
-                self.args.dispatch_recipient = lead if mode != "no-dispatch" else None
-                if mode == "redirected":
-                    self.issue["body"] = self.issue["body"].replace(lead, "01970242-7941-7f0c-b461-16aa5723fb53")
                 if mode == "competitor":
                     self.compete({**OTHER, "session": lead})
                 if mode == "wait":
@@ -6414,40 +6389,6 @@ class ClaimTests(unittest.TestCase):
                 self.issue["body"] += f"Next actor: agent:{role}\n"
                 self.run_claim()
                 self.assertTrue(self.emitted.call_args.args[0]["ok"])
-
-    def test_comment_status_uses_the_same_trusted_reader_for_issues_and_prs(self) -> None:
-        for record_type in ("issue", "pull_request"):
-            self.setUp()
-            self.issue["body"] = "The original request, without a managed status"
-            if record_type == "pull_request":
-                self.pr_fixture()
-            self.comments = [{"id": 1, "user": {"login": TEST_BOT},
-                "body": "## Current Status\nNext actor: agent:existing-worker\nTrial token: existing-worker"}]
-            with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
-                self.run_claim()
-            self.assertEqual(caught.exception.code, "claim_conflict")
-            recipient = next(row for row in caught.exception.payload["competing_evidence"]
-                             if row["source"] == "recorded_recipient")
-            self.assertEqual(recipient["worker"], "existing-worker")
-            self.assert_no_writes()
-
-    def test_later_activity_does_not_replace_trusted_comment_assignment(self) -> None:
-        for record_type in ("issue", "pull_request"):
-            self.setUp()
-            if record_type == "pull_request":
-                self.pr_fixture()
-            self.issue["body"] += "\nNext actor: agent:old-worker\n"
-            self.issue["updated_at"] = "2026-10-26T00:00:00Z"
-            self.comments = [{"id": 1, "user": {"login": TEST_BOT},
-                "created_at": "2026-10-25T00:00:00Z",
-                "body": "## Current Status\nNext actor: agent:existing-worker\nTrial token: existing-worker"}]
-            with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
-                self.run_claim()
-            self.assertEqual(caught.exception.code, "claim_conflict")
-            recipients = [row["worker"] for row in caught.exception.payload["competing_evidence"]
-                          if row["source"] == "recorded_recipient"]
-            self.assertEqual(recipients, ["existing-worker"])
-            self.assert_no_writes()
 
     def test_global_invalid_wait_selection_still_requires_actual_claim_resolution(self):
         import test_gh_plan_next as selection

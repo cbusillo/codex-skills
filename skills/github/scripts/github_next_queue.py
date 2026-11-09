@@ -43,7 +43,7 @@ def compact_output(value: Any) -> Any:
 def ownership_facts(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[str],
                     resume_from: int | None = None, resume_source: dict[str, Any] | None = None,
                     expired_sessions: set[str] | frozenset[str] | None = None,
-                    worker: str = "", session: str = "", dispatch_recipient: str = "", wait_resolved: str | None = None) -> dict[str, Any]:
+                    worker: str = "", session: str = "", wait_resolved: str | None = None) -> dict[str, Any]:
     discussion = item.get("discussion") or {}
     status = current_status(discussion, trusted, body_recorded_at=discussion.get("body_recorded_at"),
                             preserve_markers=True, preserve_content=True)
@@ -66,7 +66,6 @@ def ownership_facts(item: dict[str, Any], ownership: dict[str, Any], *, trusted:
         recipients = []
         if recipient := github_plan_claim.recipient_evidence(
                 status, comments, repo=item["repo"], number=item["number"], trusted=trusted, worker=worker, session=session,
-                dispatch_recipient=dispatch_recipient,
                 ended_claims={source["claim_id"] for source in ended}):
             recipients.append(recipient)
         if item.get("record_type") == "pull_request":
