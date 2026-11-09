@@ -24,7 +24,7 @@ def heading_id(body: str) -> str | None:
 QUESTION_PREFIXES = ("Director question:", "Owner question:")
 DECISION_HEADING = re.compile(
     r"^(?:Director|Owner) (?:decision(?: on)?|answer to)"
-    r"(?: \[?(?P<number>Q[1-9][0-9]*)\]?(?:\(https://[^)\s]*\))?| \((?P<parenthetical_number>Q[1-9][0-9]*)\))?"
+    r"(?: \[?(?P<number>Q[1-9][0-9]*)]?(?:\(https://[^)\s]*\))?| \((?P<parenthetical_number>Q[1-9][0-9]*)\))?"
     r"(?: \([^\n)]*\))?(?:\s*[:,]|\*\*| (?=https://))"
 )
 
