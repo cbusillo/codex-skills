@@ -130,16 +130,18 @@ class AcceptanceTests(unittest.TestCase):
         self.mapping["mapping"]["repositories"] = []
         self.assertTrue(acceptance.read_production_commit(REPO).reason)
         self.setUp()
+        def transport_for(answer):
+            def read(**kwargs):
+                if kwargs["path"] == path:
+                    if isinstance(answer, Exception):
+                        raise answer
+                    return answer
+                return self.read(**kwargs)
+            return read
+
         for response in ({"promotion_status": {"destination": {}}}, {"promotion_status": None}, TimeoutError()):
             with self.subTest(response=type(response).__name__):
-                def read(response=response, **kwargs):
-                    if kwargs["path"] == path:
-                        if isinstance(response, Exception):
-                            raise response
-                        return response
-                    return self.read(**kwargs)
-
-                self.transport.side_effect = read
+                self.transport.side_effect = transport_for(response)
                 result = acceptance.read_production_commit(REPO)
                 self.assertEqual(result.commit, "")
                 self.assertTrue(result.reason)

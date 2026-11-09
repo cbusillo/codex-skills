@@ -273,7 +273,7 @@ def primary_reads(selection: dict, sessions: list[dict], *, owner_review: Callab
         elif check is None:
             note = "owner-review=UNKNOWN (no check on the current head)"
         else:
-            note = f"owner-review={check.get('status')}/{check.get('conclusion') or '-'} \"{check.get('title') or 'UNKNOWN'}\""
+            note = f"owner-review={read[0]['status']}/{read[0].get('conclusion') or '-'} \"{read[0].get('title') or 'UNKNOWN'}\""
         if state == "unknown":
             note += f" client_release=UNKNOWN ({getattr(release, 'reason', '') or 'read failed'})"
         if NOTHING_REVIEWABLE.search(str((check or {}).get("title") or "")) or state == "director_standing":
@@ -321,16 +321,17 @@ def digest(sources: dict[str, dict], *, full: bool = False) -> str:
     for name, report in sources.items():
         lines.extend(source_errors(name, report))
     primary = sources.get("primary", {})
-    annotations, anchors = primary.get("annotations", {}), primary.get("anchors", {})
+    annotations: dict[str, str] = primary.get("annotations") or {}
+    anchors: dict[str, str] = primary.get("anchors") or {}
 
-    def noted(text: str, row: dict) -> str:
-        return f"{text} | {annotations[pointer(row)]}" if pointer(row) in annotations else text
+    def noted(text: str, source: dict) -> str:
+        return f"{text} | {annotations[pointer(source)]}" if pointer(source) in annotations else text
 
     sessions = sources.get("sessions", {}).get("sessions", [])
-    for row in sessions:
-        if row.get("action") or row.get("error"):
-            suffix = f"; {anchors[pointer(row)]}" if pointer(row) in anchors else ""
-            lines.append(f"WORKER {pointer(row)}: {row.get('error') or row['action']}{suffix}")
+    for session in sessions:
+        if session.get("action") or session.get("error"):
+            suffix = f"; {anchors[pointer(session)]}" if pointer(session) in anchors else ""
+            lines.append(f"WORKER {pointer(session)}: {session.get('error') or session['action']}{suffix}")
     selection = sources.get("next", {})
     for milestone in selection.get("milestone_summary", []):
         lines.append(f"MILESTONE {milestone['milestone']}: {milestone['state']}")
@@ -341,8 +342,8 @@ def digest(sources: dict[str, dict], *, full: bool = False) -> str:
             lines.append(noted(f"WAIT {pointer(wait)}: {wait.get('waiting_for')}", wait))
     needs_status = []
     rows = queue_rows(selection)
-    actions = sorted((row for kind, row in rows if kind == "SUPERVISOR_ACTION"),
-                     key=lambda row: recorded_time(row["queue"].get("status_recorded_at")) or datetime.min.replace(tzinfo=UTC))
+    actions = sorted((candidate for kind, candidate in rows if kind == "SUPERVISOR_ACTION"),
+                     key=lambda action: recorded_time(action["queue"].get("status_recorded_at")) or datetime.min.replace(tzinfo=UTC))
     for row in actions:
         recorded = recorded_time(row["queue"].get("status_recorded_at"))
         age = now - recorded if recorded else None

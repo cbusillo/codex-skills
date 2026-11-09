@@ -2233,7 +2233,7 @@ def test_stale_wait_report_checks_realistic_parked_records_without_writes() -> N
     assert calls.count("repos/owner/tools/pulls/71") == 1
 
 
-def drift_wait(module: Any, waiting_for: str, ends_when: str, **entry: Any) -> dict[str, Any]:
+def drift_wait(waiting_for: str, ends_when: str, **entry: Any) -> dict[str, Any]:
     return {"version": 1, "state": "waiting", "evidence": "reviewed", "waits": [{"waiting_for": waiting_for, "ends_when": ends_when, **entry}]}
 
 
@@ -2260,15 +2260,15 @@ def drift_comment(ident: int, issue_number: int, body: str, author: str = "owner
 
 
 def drift_report(module: Any, row: dict[str, Any], responses: dict[str, Any]) -> dict[str, Any]:
-    with patch.object(module.github_plan_wait, "authors", return_value={"owner"}):
+    with patch(f"{module.github_plan_wait.__name__}.authors", return_value={"owner"}):
         return module.stale_wait_report([row], "owner/catalog", fetch=drift_fetch(responses), now=dt.datetime(2026, 11, 9, tzinfo=dt.UTC))
 
 
 def test_wait_citing_an_answered_question_is_stale_with_the_decisions_age() -> None:
     module = load()
     question = drift_comment(1, 7, "Director question: **Q71. Which layout?**", created="2026-11-05T05:41:00Z")
-    decision = drift_comment(2, 7, f"Director decision: {question['html_url']} (Q71): Shelf.", created="2026-11-05T17:57:00Z")
-    wait = drift_wait(module, "Director chooses the layout", f"The Director answers {question['html_url']}")
+    decision = drift_comment(2, 7, f"Director decision: {question['html_url']} (Q71): Shelf.")
+    wait = drift_wait("Director chooses the layout", f"The Director answers {question['html_url']}")
     report = drift_report(module, {**issue(7, "Layout"), "state": "open", "structured_wait": wait}, {"repos/owner/catalog/issues/7/comments": [question, decision]})
     item = report["items"][0]
     assert item["keeps_wait"] is True
@@ -2281,7 +2281,7 @@ def test_decision_recorded_on_a_linked_issue_counts_when_it_answers_the_cited_qu
     module = load()
     question = drift_comment(1, 7, "Director question: **Q71. Which layout?**")
     elsewhere = drift_comment(5, 9, f"Director decision: {question['html_url']} (Q71): Shelf.")
-    wait = drift_wait(module, "Director's choice in Q71 on owner/catalog#9", "The choice is recorded")
+    wait = drift_wait("Director's choice in Q71 on owner/catalog#9", "The choice is recorded")
     report = drift_report(module, {**issue(7, "Layout"), "state": "open", "structured_wait": wait},
                           {"repos/owner/catalog/issues/7/comments": [question], "repos/owner/catalog/issues/9/comments": [elsewhere],
                            "repos/owner/catalog/issues/9": {"state": "open"}})
@@ -2292,7 +2292,7 @@ def test_question_and_decision_both_on_a_cited_issue_are_matched() -> None:
     module = load()
     question = drift_comment(1, 9, "Director question: **Q71. Which layout?**", created="2026-11-05T05:41:00Z")
     decision = drift_comment(2, 9, f"Director decision: {question['html_url']} (Q71): Shelf.")
-    wait = drift_wait(module, "Director's choice", f"The Director answers {question['html_url']}")
+    wait = drift_wait("Director's choice", f"The Director answers {question['html_url']}")
     report = drift_report(module, {**issue(7, "Layout"), "state": "open", "structured_wait": wait},
                           {"repos/owner/catalog/issues/9/comments": [question, decision], "repos/owner/catalog/issues/9": {"state": "open"}})
     assert [item["evidence"][0]["url"] for item in report["items"]] == [decision["html_url"]]
@@ -2303,18 +2303,18 @@ def test_a_decision_that_only_resembles_the_wait_is_not_matched() -> None:
     question = drift_comment(1, 7, "Director question: **Q71. Which layout?**")
     other = drift_comment(3, 7, "Director question: **Q72. Which color?**")
     decision = drift_comment(4, 7, f"Director decision: {other['html_url']} (Q72): Blue.")
-    wait = drift_wait(module, "Director's layout choice", f"The Director answers {question['html_url']}")
+    wait = drift_wait("Director's layout choice", f"The Director answers {question['html_url']}")
     report = drift_report(module, {**issue(7, "Layout"), "state": "open", "structured_wait": wait}, {"repos/owner/catalog/issues/7/comments": [question, other, decision]})
     assert report["items"] == []
-    uncited = drift_wait(module, "The Director's layout choice", "A choice is recorded")
+    uncited = drift_wait("The Director's layout choice", "A choice is recorded")
     report = drift_report(module, {**issue(8, "Layout"), "state": "open", "structured_wait": uncited}, {"repos/owner/catalog/issues/8/comments": [decision]})
     assert report["items"] == []
 
 
 def test_wait_on_evidence_the_issue_says_was_not_kept_is_impossible() -> None:
     module = load()
-    statement = drift_comment(6, 5, "Closeout. The old quality scope was not retained and nothing else qualifies.", author="owner")
-    wait = drift_wait(module, "Event: new evidence for the original quality attempt", "The lead verifies the original quality scope with its stop proof")
+    statement = drift_comment(6, 5, "Closeout. The old quality scope was not retained and nothing else qualifies.")
+    wait = drift_wait("Event: new evidence for the original quality attempt", "The lead verifies the original quality scope with its stop proof")
     row = {**issue(5, "Retry"), "state": "open", "structured_wait": wait}
     report = drift_report(module, row, {"repos/owner/catalog/issues/5/comments": [statement]})
     evidence = report["items"][0]["evidence"][0]
@@ -2331,7 +2331,7 @@ def test_wait_on_evidence_the_issue_says_was_not_kept_is_impossible() -> None:
 
 def test_ends_when_naming_work_closed_as_not_planned_cannot_occur() -> None:
     module = load()
-    wait = drift_wait(module, "Migration", "owner/catalog#30 lands")
+    wait = drift_wait("Migration", "owner/catalog#30 lands")
     target = {"state": "closed", "state_reason": "not_planned", "closed_at": "2026-11-01T00:00:00Z", "html_url": "https://github.com/owner/catalog/issues/30"}
     report = drift_report(module, {**issue(6, "Follow"), "state": "open", "structured_wait": wait}, {"repos/owner/catalog/issues/30": target})
     assert report["items"][0]["evidence"][0]["kind"] == "impossible_ends_when"
@@ -2366,8 +2366,8 @@ def test_truncated_child_list_is_incomplete_not_a_finding() -> None:
 def test_stale_waits_only_reads_a_status_on_an_issue_with_no_comments() -> None:
     module = load()
     status = "## Current Status\nRemaining: #11.\nLast verified: October 28, 2026.\n"
-    row = {**issue(18, "Parent", body=status, comments=0), "state": "open", "sub_issues_summary": {"total": 1}}
-    with patch.object(module.github_plan_wait, "authors", return_value={"owner"}):
+    row = {**issue(18, "Parent", body=status), "state": "open", "sub_issues_summary": {"total": 1}}
+    with patch(f"{module.github_plan_wait.__name__}.authors", return_value={"owner"}):
         report = module.stale_wait_report([row], "owner/catalog", now=dt.datetime(2026, 11, 9, tzinfo=dt.UTC), read_waits=True,
                                           fetch=drift_fetch({"repos/owner/catalog/issues/18/sub_issues": [{"number": 11, "state": "closed"}]}))
     assert report["items"][0]["evidence"][0]["kind"] == "closed_children_status"
@@ -2384,21 +2384,21 @@ def test_status_with_no_recorded_date_stays_unknown() -> None:
 
 def test_past_recheck_date_is_stale_including_on_an_open_pull_request() -> None:
     module = load()
-    wait = drift_wait(module, "Director decision", "Chris answers", recheck="2026-11-04")
+    wait = drift_wait("Director decision", "Chris answers", recheck="2026-11-04")
     row = {**issue(188, "Fixture"), "state": "open", "pull_request": {}, "structured_wait": wait}
     report = drift_report(module, row, {})
     assert report["items"][0]["evidence"][0]["kind"] == "overdue_recheck"
     assert report["items"][0]["evidence"][0]["age_days"] == 5
-    future = {**row, "structured_wait": drift_wait(module, "Director decision", "Chris answers", recheck="2026-12-01")}
+    future = {**row, "structured_wait": drift_wait("Director decision", "Chris answers", recheck="2026-12-01")}
     assert drift_report(module, future, {})["items"] == []
 
 
 def test_stale_waits_only_finds_a_wait_recorded_in_a_comment() -> None:
     module = load()
-    wait = drift_wait(module, "Director decision", "Chris answers", recheck="2026-11-04")
-    record = drift_comment(9, 188, f"Waiting.\n\n<!-- github-plan:wait {json.dumps(wait)} -->", author="owner", created="2026-11-03T00:00:00Z")
+    wait = drift_wait("Director decision", "Chris answers", recheck="2026-11-04")
+    record = drift_comment(9, 188, f"Waiting.\n\n<!-- github-plan:wait {json.dumps(wait)} -->", created="2026-11-03T00:00:00Z")
     row = {**issue(188, "Fixture", comments=1), "state": "open", "pull_request": {}}
-    with patch.object(module.github_plan_wait, "authors", return_value={"owner"}):
+    with patch(f"{module.github_plan_wait.__name__}.authors", return_value={"owner"}):
         report = module.stale_wait_report([row], "owner/catalog", fetch=drift_fetch({"repos/owner/catalog/issues/188/comments": [record]}),
                                           now=dt.datetime(2026, 11, 9, tzinfo=dt.UTC), read_waits=True)
     assert report["items"][0]["evidence"][0]["kind"] == "overdue_recheck"
@@ -2406,7 +2406,7 @@ def test_stale_waits_only_finds_a_wait_recorded_in_a_comment() -> None:
 
 def test_unreadable_discussion_is_incomplete_not_a_finding() -> None:
     module = load()
-    wait = drift_wait(module, "Director's choice", "Q71 is answered")
+    wait = drift_wait("Director's choice", "Q71 is answered")
     report = drift_report(module, {**issue(7, "Layout"), "state": "open", "structured_wait": wait}, {"repos/owner/catalog/issues/7/comments": module.AuditError("denied")})
     assert report["items"] == []
     assert report["complete"] is False

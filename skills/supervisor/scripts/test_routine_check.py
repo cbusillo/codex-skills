@@ -914,7 +914,8 @@ class PrimaryReadTests(unittest.TestCase):
         for name in ("CODEX_SESSION_ID", "CLAUDE_CODE_SESSION_ID"):
             self.enterContext(patch.dict(os.environ, {name: ""}))
 
-    def run_digest(self, selection: dict[str, Any], sessions: list[dict[str, Any]] | None = None, **readers: Any) -> list[str]:
+    @staticmethod
+    def run_digest(selection: dict[str, Any], sessions: list[dict[str, Any]] | None = None, **readers: Any) -> list[str]:
         supplied = {"owner_review": Mock(return_value=None), "client_release": Mock(return_value=SimpleNamespace(state="client", reason="")),
                     "production": Mock(return_value={"reason": "unmapped"}), "anchor_response": Mock(return_value="anchor_response=UNKNOWN"), **readers}
         primary = routine_check.primary_reads(selection, sessions or [], **supplied)
@@ -941,7 +942,7 @@ class PrimaryReadTests(unittest.TestCase):
     def test_supervisor_action_inside_one_interval_is_not_an_error_and_unknown_age_is(self) -> None:
         fresh = queue_row(2, "agent:Supervisor", "Route it", recorded="2026-11-08T19:40:00+00:00")
         self.assertFalse([line for line in self.run_digest({"candidates": [fresh]}) if line.startswith("ERROR")])
-        undated = queue_row(3, "agent:supervisor", "Route it", recorded=None)
+        undated = queue_row(3, "agent:supervisor", "Route it")
         lines = self.run_digest({"candidates": [undated]})
         self.assertTrue([line for line in lines if line.startswith("SUPERVISOR_ACTION") and "age=UNKNOWN" in line])
         self.assertTrue([line for line in lines if line.startswith("ERROR supervisor_action")])
@@ -1062,8 +1063,8 @@ class PrimaryReadTests(unittest.TestCase):
         self.assertRegex(routine_check.clock_label(self.now), r"\d{1,2}:\d{2} [AP]M \S+$")
 
     def test_stale_items_repeat_with_their_age_and_evidence(self) -> None:
-        item = {"url": "https://github.com/owner/repo/issues/1", "evidence": [{"kind": "overdue_recheck", "recorded_at": "2026-11-04T00:00:00Z", "matched": "Waiting for proof"}]}
-        selection = {"stale_wait_report": {"items": [item]}}
+        stale = {"url": "https://github.com/owner/repo/issues/1", "evidence": [{"kind": "overdue_recheck", "recorded_at": "2026-11-04T00:00:00Z", "matched": "Waiting for proof"}]}
+        selection = {"stale_wait_report": {"items": [stale]}}
         for _ in range(2):
             row = next(line for line in self.run_digest(selection) if line.startswith("STALE"))
             self.assertIn("overdue_recheck age=4d19h evidence=Waiting for proof", row)

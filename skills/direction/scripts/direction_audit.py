@@ -959,13 +959,13 @@ def record_drift(
     errors: list[dict[str, Any]] = []
     waits = wait["waits"] if wait and wait["state"] == "waiting" else []
 
-    def discussion(target_repo: str, target: int) -> list[dict[str, Any]] | None:
+    def discussion(thread_repo: str, target: int) -> list[dict[str, Any]] | None:
         try:
-            rows, cut = fetch_paginated(f"repos/{target_repo}/issues/{target}/comments", fetch=lambda args: read(args[1]), max_pages=2)
+            rows, partial = fetch_paginated(f"repos/{thread_repo}/issues/{target}/comments", fetch=lambda args: read(args[1]), max_pages=2)
         except AuditError:
-            rows, cut = [], True
-        if cut:
-            errors.append({"number": number, "source": "drift_discussion", "reason": "unavailable", "url": f"https://github.com/{target_repo}/issues/{target}"})
+            rows, partial = [], True
+        if partial:
+            errors.append({"number": number, "source": "drift_discussion", "reason": "unavailable", "url": f"https://github.com/{thread_repo}/issues/{target}"})
             return None
         return [{**row, "body": row.get("body") or "", "author": (row.get("user") or {}).get("login") or "", "url": row.get("html_url") or ""} for row in rows]
 
