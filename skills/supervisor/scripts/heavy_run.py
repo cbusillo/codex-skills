@@ -28,6 +28,8 @@ from typing import BinaryIO, TextIO
 
 LABEL = "org.codex-skills.heavy-slot"
 LOWER_DIGEST_LABEL = "org.codex-skills.heavy-lower-sha256"
+LOWER_DIGEST_PREFIX = "content-v1:"
+LEGACY_LOWER_DIGEST = re.compile(r"[0-9a-f]{64}")
 CONFIG_PATH = Path(".config/codex-skills/heavy-run.json")
 STATE_PATH = Path(".local/state/codex-skills/heavy-run")
 MIN_NANO_CPUS = 10**7
@@ -298,8 +300,6 @@ def overlay_lower_digest(root: Path, hashes: dict[str, str] | None = None) -> st
             metadata.st_mode,
             metadata.st_uid,
             metadata.st_gid,
-            metadata.st_dev,
-            metadata.st_ino,
         ]
         if path.is_file():
             with path.open("rb") as stream:
@@ -308,7 +308,7 @@ def overlay_lower_digest(root: Path, hashes: dict[str, str] | None = None) -> st
                 hashes[str(path.relative_to(root))] = file_digest
             entry.append(file_digest)
         digest.update(json.dumps(entry).encode())
-    return digest.hexdigest()
+    return LOWER_DIGEST_PREFIX + digest.hexdigest()
 
 
 def local_endpoint(home: Path, log: TextIO) -> str:
@@ -334,6 +334,43 @@ def container_copy_mode(info: tarfile.TarInfo) -> tarfile.TarInfo:
     if info.isdir() or info.isfile():
         info.mode = container_input_mode(info.mode, directory=info.isdir())
     return info
+
+
+def legacy_lower_proven(lower: Path) -> bool:
+    """Accept a pre-content label only when the job's frozen inventory proves this lower's exact files.
+
+    Legacy labels embedded device and inode numbers that no record preserves, so they cannot be recomputed.
+    complete.json records file bytes only; everything else must match what input staging produces.
+    """
+    inventory = lower.parent.parent / "complete.json"
+    if lower.parent.name != "inputs":
+        return False
+    try:
+        if not stat.S_ISREG(inventory.lstat().st_mode) or inventory.resolve(strict=True) != inventory:
+            return False
+        recorded = json.loads(inventory.read_text())["hashes"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    if not isinstance(recorded, dict):
+        return False
+    prefix = f"inputs/{lower.name}/"
+    expected = {name.removeprefix(prefix): value for name, value in recorded.items() if name.startswith(prefix)}
+    actual: dict[str, str] = {}
+    overlay_lower_digest(lower, actual)
+    if not actual or actual != expected:
+        return False
+    recorded_directories = {parent for name in actual for parent in Path(name).parents}
+    owner = lower.lstat()
+    for path in [lower, *lower.rglob("*")]:
+        metadata = path.lstat()
+        directory = stat.S_ISDIR(metadata.st_mode)
+        if (
+            (metadata.st_uid, metadata.st_gid) != (owner.st_uid, owner.st_gid)
+            or stat.S_IMODE(metadata.st_mode) != container_input_mode(metadata.st_mode, directory=directory)
+            or (directory and path.relative_to(lower) not in recorded_directories)
+        ):
+            return False
+    return True
 
 
 class Docker:
@@ -422,8 +459,12 @@ class Docker:
             if lower in lowers and lowers[lower] != expected:
                 raise RuntimeError("Shared overlay lower bindings differ")
             lowers[lower] = expected
-        if any(overlay_lower_digest(lower) != expected for lower, expected in lowers.items()):
-            raise RuntimeError("Overlay lower changed during execution; preserve original input custody")
+        for lower, expected in lowers.items():
+            if LEGACY_LOWER_DIGEST.fullmatch(expected or ""):
+                if not legacy_lower_proven(lower):
+                    raise RuntimeError("Legacy overlay label lacks complete content evidence; preserve original input custody")
+            elif overlay_lower_digest(lower) != expected:
+                raise RuntimeError("Overlay lower changed during execution; preserve original input custody")
         for volume in sorted(volumes, key=lambda item: not bool(item.get("Options"))):
             self.call("volume", "rm", volume["Name"])
         if self.call("volume", "ls", "-q", "--filter", f"label={self.label}").split():
