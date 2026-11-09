@@ -5882,7 +5882,7 @@ def next_wait_context(
     checked_issue_refs = []
     def read_report(group: tuple[str, list[dict[str, Any]]]) -> tuple[str, dict[str, Any]]:
         repo, items = group
-        return repo, direction_audit.stale_wait_report(items, repo, fetch=fetch, inventory_complete=complete)
+        return repo, direction_audit.stale_wait_report(items, repo, fetch=fetch, inventory_complete=complete, read_waits=True)
     if (NEXT_READS and NEXT_READS.workers > 1
             and all(len(items) <= direction_audit.MAX_PAGES * 100 for items in groups.values())):
         # One large repository must not serialize the whole wait-evidence pass.
@@ -6563,8 +6563,10 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     for name, observed in graph_queue_context.get("repositories", {}).items():
         queue_context.setdefault("repositories", {}).setdefault(name, observed)
     NEXT_READS.start_phase("wait_evidence")
+    pull_waits: list[dict[str, Any]] = [{**item, "pull_request": {}, "structured_wait": item["queue"]["wait"]}
+                                        for item in pull_items if (item.get("queue") or {}).get("wait")]
     wait_context = next_wait_context(
-        [seeds[key] for key in evidence_keys if key in seeds],
+        [*filter(None, map(seeds.get, evidence_keys)), *pull_waits],
         scan_limit=args.scan_limit * 2 if args.scan_limit is not None else None,
         inventory_complete=candidate_coverage_complete,
         reference_repositories={item["repo"] for item in discovery.get("repositories", [])},
@@ -6572,7 +6574,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
         structured_waits={key: structured_waits[key] if key in structured_waits else node["item"]["structured_wait"]
                           for key, node in nodes.items() if key in structured_waits or "structured_wait" in node["item"]},
     )
-    stale = {(row["repo"].casefold(), row["number"]): row for row in wait_context["items"]}
+    stale = {(row["repo"].casefold(), row["number"]): row for row in wait_context["items"] if not row.get("keeps_wait")}
     checked_waits = {(row["repo"].casefold(), row["number"]) for row in wait_context["checked_issues"]}
     unread_waits = {(row["repo"].casefold(), row["number"]) for row in wait_context["unavailable"]}
     reported_entries = [*ranked["candidates"], *ranked["excluded"], *discoveries]

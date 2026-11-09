@@ -54,8 +54,8 @@ through their supported path within the task's authority.
 In a handoff's `Next action:`, name the next agent and its concrete step, such
 as "Next agent: refresh OWNER/REPO#N against main". Name the Supervisor only for a step
 that needs its authority: merge-train entry, presenting a Director question, a
-release, or releasing a claim. The daily stranded-work sweep lists every open
-issue whose Next action names the Supervisor.
+release, or releasing a claim. The routine digest lists each one as a
+`SUPERVISOR_ACTION` row with its age.
 Before recording a split or handoff, read github-plan's
 [Derived Status](../github-plan/SKILL.md#derived-status).
 Never substitute a comment for an unmet finish line, or keep completed work

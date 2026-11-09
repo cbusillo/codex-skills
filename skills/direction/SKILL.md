@@ -600,6 +600,10 @@ evidence; review it before assigning work. This does not change the claim guard.
 For a Supervisor check, use
 `--stale-waits-only` with the existing audit command: it reads only open issues
 and their prerequisites, leaving weekly audit markers and windows untouched.
+Items marked `keeps_wait` are records their own evidence has overtaken: a wait
+citing an already recorded decision, an `ends_when` its issue says cannot occur,
+a status over seven days old whose named children are all closed, and a past
+recheck date. Each carries its age and matched evidence; the wait stays in force.
 Unrecognized status formats and prerequisites closed as abandoned or duplicate
 remain unproven; closure evidence includes the issue closure reason. A recorded
 PR landing requires its default-branch destination; a merge means the PR merged

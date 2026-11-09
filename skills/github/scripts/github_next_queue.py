@@ -18,7 +18,7 @@ import github_plan_claim
 import github_plan_wait
 import github_direction_next
 import github_next_pr
-from github_plan_status.discussion import current_status, status_field
+from github_plan_status.discussion import current_status, current_status_record, status_field
 from github_plan_status import next_actor, waits
 from github_plan_status.references import linked_issues
 
@@ -165,6 +165,7 @@ def classify(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[st
     status = current_status(discussion, trusted, body_recorded_at=discussion.get("body_recorded_at")) if status_known and not scoping else ""
     row = {"next_action": "Assess this Track's proof; close it if met, or scope the remaining work." if scoping else status_field(status, "Next action"),
            "recorded_state": status_field(status, "State"),
+           "status_recorded_at": current_status_record(discussion, trusted, body_recorded_at=discussion.get("body_recorded_at")).recorded_at if status else None,
            "claim_required": True, "ownership_complete": False,
            "ownership_source": "current_reads", "ownership_coverage": ownership.get("coverage", {}),
            "observed_ownership_complete": ownership.get("complete") is True}

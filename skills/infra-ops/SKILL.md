@@ -82,6 +82,9 @@ and accepted-release authority.
 - **Production-impacting mutation**: verify host or account identity, satisfy
   snapshot or backup gates when relevant, review the redacted payload, and
   establish a rollback path before apply.
+- **Recorded host or guest setting**: before changing one, read the registry
+  line's stated reason and name the service that acts on the setting in the
+  change note.
 
 When the target is ambiguous, pause mutation and keep working read-only until
 the authority, blast radius, and who holds the rollback are clear.

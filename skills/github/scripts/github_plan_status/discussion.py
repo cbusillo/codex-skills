@@ -59,6 +59,7 @@ def unquoted_text(text: str) -> str:
 class CurrentStatus(NamedTuple):
     text: str
     author: str
+    recorded_at: str | None = None
 
 
 def current_status_record(discussion: dict[str, Any], trusted: set[str], *, body_recorded_at: str | None = None,
@@ -85,7 +86,7 @@ def current_status_record(discussion: dict[str, Any], trusted: set[str], *, body
             author = comment["author"]
             body_time = comment_time
             has_body_status = True
-    return CurrentStatus(status or "", author)
+    return CurrentStatus(status or "", author, body_time.isoformat() if status is not None and body_time else None)
 
 
 def current_status(discussion: dict[str, Any], trusted: set[str], *, body_recorded_at: str | None = None,

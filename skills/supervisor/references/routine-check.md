@@ -58,13 +58,12 @@ decisions, statuses or narrative; open linked records for action.
    The default hides acknowledged QUESTION rows and counts them in one line;
    `--full` prints the complete list at takeover, handoff or recovery. Outstanding
    comments, unacknowledged questions, reviews, missing status, errors and load
-   remain visible. NEXT rows currently have no observed claim, so they repeat
-   even when unchanged. Use the current ownership read, not a second claim
-   snapshot.
+   remain visible.
    Staffing uses the same global `next` as selection, including open issues
    outside Track trees and both agent families. Its 120-second read budget keeps
    omitted repositories, unread issues and other coverage gaps explicit.
-   NEXT rows have no observed claim or wait; REVIEW rows need status or custody
+   NEXT rows have no observed claim or wait and repeat until one appears; use the
+   current ownership read. REVIEW rows need status or custody
    reconciliation. Generic agent roles are available work, subject to the ownership
    check. Follow the shared [recipient check](../../github/references/cli-reference.md#planning-next-work)
    when assigning an unclaimed worker or reconciling its custody. Leads launch
@@ -119,15 +118,20 @@ decisions, statuses or narrative; open linked records for action.
    five-hour windows both have quota left, by name with `--account`, and note
    the sessions still running on the empty one. A refused preview or `null`
    value means the signal is unavailable; say so and continue. Refill
-   available capacity, handle stale waits and deferred-question conditions,
-   and read the stranded-work digest's oldest Supervisor actions and unasked
-   Director waits. Nudge stalls with exact evidence and process finished
+   available capacity, handle `STALE` rows and deferred-question conditions,
+   and act on the oldest `SUPERVISOR_ACTION` rows and unasked Director waits.
+   A `SUPERVISOR_ACTION` repeats as an error after one interval until its issue
+   names another actor, a wait or a claim. Nudge stalls with exact evidence and process finished
    notices immediately. Polling watchers keep own automation question notices and
    verified own issue-mention activity in the log without exiting for them.
    Mention proof covers the latest visible message versions; unknown activity,
    including PR mentions, wakes normally. Other notices settle briefly into
    one exit per burst. `--once` still performs one immediate poll.
    Re-arm bounded watchers; do not duplicate live services.
+
+Report a wait only with its primary read: the check's output, production's
+commit, the registry line and the service that acts on it, the anchor's status
+section, the clock. A label, a handoff sentence or a digest row is a claim.
 
 Every check links the question queue and reports source errors and untrusted
 record warnings alongside unknown coverage. Readers
