@@ -43,7 +43,7 @@ RELEASE_REQUEST = re.compile(r"\b(?:releas(?:e|es|ing)|promot(?:e|es|ing|ion))\b
 SETTING_CHANGE = re.compile(r"\b(?:set|sets|setting|change|changes|flip|flips|toggle|toggles)\b[^.;\n]*?(?<![-\w])[a-z][a-z0-9_]*=[a-z0-9]+\b", re.I)
 SHA = re.compile(r"[0-9a-f]{40}")
 REFUSED_READ = re.compile(r"production read refused:\s*(\S.*)", re.I)
-REFUSED_READ_ROUTE = ("start it with iterm_tab.py --brief-issue on a session that may run this read (Codex, or Claude once allowed), "
+REFUSED_READ_ROUTE = ("confirm the overall direction permits this read, then start it with iterm_tab.py --brief-issue on a session that may run it, "
                       "within claim, cap and account rules; the refused session never retries it")
 
 
@@ -200,14 +200,17 @@ def pointer(row: dict) -> str:
 
 
 def refused_read(row: dict) -> str:
-    match = REFUSED_READ.match((row.get("queue") or {}).get("next_action") or "")
+    queue = row.get("queue") or {}
+    # A request naming its lead keeps the worker's words here once the queue rewrites next_action.
+    named = queue.get("reason") == "named_recipient_requires_reconciliation"
+    match = REFUSED_READ.match(queue.get("recorded_next_action" if named else "next_action") or "")
     return " ".join(match[1].split()) if match else ""
 
 
 def queue_rows(selection: dict) -> list[tuple[str, dict]]:
     rows: dict[str, tuple[str, dict]] = {}
     actors = supervisor_actors()
-    for field in ("candidates", "excluded", "needs_status", "underway"):
+    for field in ("candidates", "excluded", "needs_status"):
         for row in selection.get(field, []):
             queue = row.get("queue", {})
             if str(row.get("state", "")).casefold() != "open":
@@ -215,11 +218,8 @@ def queue_rows(selection: dict) -> list[tuple[str, dict]]:
             if field == "excluded" and row.get("exclusion") not in {"assigned_elsewhere", "agent_assignment_unresolved"}:
                 continue
             actor = queue.get("next_actor") or ""
-            # The refused worker usually still holds its claim, so this one row also reads underway work.
-            if refused_read(row) and actor.startswith("agent") and queue.get("state") in {"available", "review", "needs_status", "underway"}:
+            if refused_read(row) and actor.startswith("agent") and queue.get("state") in {"available", "review", "needs_status"}:
                 rows[pointer(row)] = ("PRODUCTION_READ_REFUSED", row)
-            elif field == "underway":
-                continue
             elif actor.casefold() in actors and queue.get("state") in {"available", "review", "needs_status"}:
                 rows[pointer(row)] = ("SUPERVISOR_ACTION", row)
             elif row.get("record_type") == "pull_request":
@@ -372,8 +372,7 @@ def digest(sources: dict[str, dict], *, full: bool = False) -> str:
         request = (row["queue"].get("next_action") or row["queue"].get("reason") or "").splitlines()[0:1]
         detail = ''.join(request)[:180]
         if kind == "PRODUCTION_READ_REFUSED":
-            held = " claim=held" if row["queue"].get("state") == "underway" else ""
-            detail = f"read=\"{refused_read(row)[:400]}\" next_actor={row['queue']['next_actor']}{held} route={REFUSED_READ_ROUTE}"
+            detail = f"read=\"{refused_read(row)[:400]}\" next_actor={row['queue']['next_actor']} route={REFUSED_READ_ROUTE}"
         lines.append(noted(f"{kind} {pointer(row)} age={age_text(age) if age else 'UNKNOWN'}: {detail}", row))
         if (age is None or age > ROUTINE_INTERVAL) and (kind == "SUPERVISOR_ACTION" or row["queue"]["next_actor"].casefold() in supervisors):
             lines.append(f"ERROR supervisor_action {pointer(row)}: open {age_text(age) if age else 'for an UNKNOWN time'} with no disposition; "

@@ -475,13 +475,10 @@ def production_read_notice(brief):
     reads = re.findall(r"(?mi)^[^\S\n]*(?:[-*] )?(?:\*\*)?Production read:(?:\*\*)?[^\S\n]*(\S[^\n]*)$", brief)
     if not reads:
         return ""
-    return ("NOTICE: Claude auto mode may refuse this brief's production read.\n"
+    return ("NOTICE: Claude auto mode may refuse this brief's production read with [Production Reads].\n"
             f"Declared read: {' | '.join(read.strip() for read in reads)[:PRODUCTION_READ_NOTICE_LIMIT]}\n"
-            "If it is refused: stop that read, report the exact refusal on your item, and never retry it through another "
-            "tool, route, account or provider.\n"
-            "To continue: with gh-plan.py update-section set Next actor: to your lead or agent:supervisor, Next action: to "
-            "Production read refused: <the exact read, no values>, and add a fenced Brief: for a session that may run it. "
-            "The routine check routes it. Keep working on anything independent.\n\n")
+            "If it does: stop that read and never retry it through another tool, route, account or provider. "
+            "Hand it off with the refused production read step in the catalog's skills/references/execution-scope.md.\n\n")
 
 
 def append_brief(command_text, brief):

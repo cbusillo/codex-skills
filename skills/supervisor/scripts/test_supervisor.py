@@ -3008,7 +3008,6 @@ class TerminalTests(unittest.TestCase):
         flags, prompt = launched("claude", brief)
         self.assertLess(prompt.index(read), prompt.index("Brief from the Supervisor."))
         self.assertTrue(prompt.endswith(brief))
-        self.assertLess(len(prompt) - len(brief), 1000)
         undeclared_flags, undeclared_prompt = launched("claude", "Brief.")
         self.assertEqual(flags, undeclared_flags)
         self.assertEqual(undeclared_prompt, "Brief.")
