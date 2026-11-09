@@ -27,6 +27,7 @@ import time
 import tomllib
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -36,6 +37,10 @@ spec = importlib.util.spec_from_file_location("installer", Path(__file__).with_n
 assert spec and spec.loader
 installer = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(installer)
+
+
+def patch_attr(target: Any, name: str, *args: Any, **kwargs: Any) -> Any:
+    return mock.patch.object(target, name, *args, **kwargs)
 
 
 def command(*args, cwd=None):
@@ -320,7 +325,7 @@ class InstallTests(unittest.TestCase):
         private.write_text("Personal fixture rule.\n")
         target = self.root / "shared-CLAUDE.md"
         account = self.claude / "CLAUDE.md"
-        with mock.patch.object(self.sync, "direction_content", return_value=self.sync.DIRECTION_START + "\nFirst merged direction."):
+        with self.merged_direction("First merged direction."):
             self.install()
             target.write_bytes(account.read_bytes())
             account.unlink()
@@ -328,18 +333,20 @@ class InstallTests(unittest.TestCase):
             self.install()
         return account, target
 
+    def merged_direction(self, text: str) -> Any:
+        return patch_attr(self.sync, "direction_content", return_value=self.sync.DIRECTION_START + "\n" + text)
+
     def write_with_catalog_sync(self, destination: Path) -> None:
         arguments = ["sync-global-instructions.py", "--source", str(self.catalog / "instructions/global.md"),
                      "--local-source", str(self.catalog / ".local/global-instructions.md"), "--destination", str(destination), "--write"]
         with (mock.patch.object(sys, "argv", arguments), contextlib.redirect_stdout(io.StringIO()),
-              mock.patch.object(self.sync, "direction_content", return_value=self.sync.DIRECTION_START + "\nOlder merged direction.")):
+              self.merged_direction("Older merged direction.")):
             self.assertEqual(self.sync.main(), 0)
 
     def refresh_with_updated_direction(self) -> str:
-        updated = self.sync.DIRECTION_START + "\nUpdated merged direction."
-        with mock.patch.object(self.sync, "direction_content", return_value=updated):
+        with self.merged_direction("Updated merged direction.") as direction:
             installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
-        return updated
+        return direction.return_value
 
     def test_catalog_sync_writes_stay_refreshable_after_direction_changes(self) -> None:
         account, target = self.install_with_linked_target()
