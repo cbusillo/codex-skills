@@ -5882,7 +5882,7 @@ def next_wait_context(
     checked_issue_refs = []
     def read_report(group: tuple[str, list[dict[str, Any]]]) -> tuple[str, dict[str, Any]]:
         repo, items = group
-        return repo, direction_audit.stale_wait_report(items, repo, fetch=fetch, inventory_complete=complete)
+        return repo, direction_audit.stale_wait_report(items, repo, fetch=fetch, inventory_complete=complete, read_waits=True)
     if (NEXT_READS and NEXT_READS.workers > 1
             and all(len(items) <= direction_audit.MAX_PAGES * 100 for items in groups.values())):
         # One large repository must not serialize the whole wait-evidence pass.

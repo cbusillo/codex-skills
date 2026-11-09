@@ -2288,6 +2288,16 @@ def test_decision_recorded_on_a_linked_issue_counts_when_it_answers_the_cited_qu
     assert [item["evidence"][0]["url"] for item in report["items"]] == [elsewhere["html_url"]]
 
 
+def test_question_and_decision_both_on_a_cited_issue_are_matched() -> None:
+    module = load()
+    question = drift_comment(1, 9, "Director question: **Q71. Which layout?**", created="2026-11-05T05:41:00Z")
+    decision = drift_comment(2, 9, f"Director decision: {question['html_url']} (Q71): Shelf.")
+    wait = drift_wait(module, "Director's choice", f"The Director answers {question['html_url']}")
+    report = drift_report(module, {**issue(7, "Layout"), "state": "open", "structured_wait": wait},
+                          {"repos/owner/catalog/issues/9/comments": [question, decision], "repos/owner/catalog/issues/9": {"state": "open"}})
+    assert [item["evidence"][0]["url"] for item in report["items"]] == [decision["html_url"]]
+
+
 def test_a_decision_that_only_resembles_the_wait_is_not_matched() -> None:
     module = load()
     question = drift_comment(1, 7, "Director question: **Q71. Which layout?**")
@@ -2341,6 +2351,26 @@ def test_old_status_naming_only_closed_children_is_stale() -> None:
     children[1]["state"] = "closed"
     recent = {**row, "body": status.replace("October 28", "November 6")}
     assert drift_report(module, recent, {"repos/owner/catalog/issues/18/sub_issues": children})["items"] == []
+
+
+def test_truncated_child_list_is_incomplete_not_a_finding() -> None:
+    module = load()
+    status = "## Current Status\nRemaining: #11.\nLast verified: October 28, 2026.\n"
+    row = {**issue(18, "Parent", body=status), "state": "open", "structured_wait": None, "sub_issues_summary": {"total": 300}}
+    children = [{"number": 11, "state": "closed"}] * 100
+    report = drift_report(module, row, {"repos/owner/catalog/issues/18/sub_issues": children})
+    assert report["items"] == []
+    assert report["complete"] is False
+
+
+def test_stale_waits_only_reads_a_status_on_an_issue_with_no_comments() -> None:
+    module = load()
+    status = "## Current Status\nRemaining: #11.\nLast verified: October 28, 2026.\n"
+    row = {**issue(18, "Parent", body=status, comments=0), "state": "open", "sub_issues_summary": {"total": 1}}
+    with patch.object(module.github_plan_wait, "authors", return_value={"owner"}):
+        report = module.stale_wait_report([row], "owner/catalog", now=dt.datetime(2026, 11, 9, tzinfo=dt.UTC), read_waits=True,
+                                          fetch=drift_fetch({"repos/owner/catalog/issues/18/sub_issues": [{"number": 11, "state": "closed"}]}))
+    assert report["items"][0]["evidence"][0]["kind"] == "closed_children_status"
 
 
 def test_status_with_no_recorded_date_stays_unknown() -> None:

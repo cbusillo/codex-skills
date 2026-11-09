@@ -248,7 +248,7 @@ def primary_reads(selection: dict, sessions: list[dict], *, owner_review: Callab
     def attempt(label: str, read: Callable[[], Any]) -> Any:
         try:
             return read()
-        except Exception as error:  # noqa: BLE001 - every failed primary read must stay UNKNOWN
+        except (Exception, SystemExit) as error:  # noqa: BLE001 - every failed primary read must stay UNKNOWN
             errors.append({"read": label, "error": str(error)[:200]})
             return None
 

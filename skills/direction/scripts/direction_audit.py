@@ -980,11 +980,17 @@ def record_drift(
     if cited and own_comments is not None:
         linked = {(ref[1] or ref[4] or repo, int(ref[3] or ref[5])) for ref in WAIT_REFERENCE.finditer(f"{claimed} {' '.join(named)}")}
         linked.discard((repo, number))
-        related = [row for target, target_number in sorted(linked)[:DRIFT_LINKED_LIMIT] for row in (discussion(target, target_number) or [])]
-        for question in github_plan_questions.questions(own_comments, repo.split("/")[0], trusted, related, recorded_decisions_only=True):
-            if question["status"] == "answered" and (question["url"] in cited or github_plan_questions.heading_id(question["question"]) in cited):
-                answer = next((row for row in [*own_comments, *related] if row["url"] == question["answers"][0]), {})
-                evidence.append({"kind": "recorded_decision", "url": question["answers"][0], "question": question["url"], "recorded_at": answer.get("created_at")})
+        threads = [own_comments, *(discussion(target, target_number) or [] for target, target_number in sorted(linked)[:DRIFT_LINKED_LIMIT])]
+        everything = [row for thread in threads for row in thread]
+        matched: set[str] = set()
+        for thread in threads:
+            related = [row for row in everything if row not in thread]
+            for question in github_plan_questions.questions(thread, repo.split("/")[0], trusted, related, recorded_decisions_only=True):
+                if question["status"] == "answered" and question["url"] not in matched and (
+                        question["url"] in cited or github_plan_questions.heading_id(question["question"]) in cited):
+                    matched.add(question["url"])
+                    answer = next((row for row in everything if row["url"] == question["answers"][0]), {})
+                    evidence.append({"kind": "recorded_decision", "url": question["answers"][0], "question": question["url"], "recorded_at": answer.get("created_at")})
     for entry in waits:
         terms = set(re.findall(r"[a-z]{4,}", f"{entry['waiting_for']} {entry['ends_when']}".casefold())) - DRIFT_COMMON_TERMS
         for row in own_comments or []:
@@ -1021,6 +1027,7 @@ def record_drift(
             children, cut = [], True
         if cut:
             errors.append({"number": number, "source": "drift_children", "reason": "unavailable"})
+            children = []
         named_children = [child for child in children if (repo, child.get("number")) in refs]
         if named_children and all(child.get("state") == "closed" for child in named_children):
             if status_time is None:
@@ -1109,10 +1116,11 @@ def stale_wait_report(
         number = issue["number"]
         sections = github_direction_next.section_map(str(issue.get("body") or ""))
         status = next((text for title, text in sections.items() if title.casefold() == "current status"), "")
-        if str(issue.get("state", "open")).casefold() == "open" and (
-                "structured_wait" in issue or (read_waits and (issue.get("comments") or "github-plan:wait" in str(issue.get("body") or "")))):
+        if str(issue.get("state", "open")).casefold() == "open" and ("structured_wait" in issue or read_waits):
             try:
-                drift, drift_errors = record_drift(issue, repo, status, current_audit_wait(issue, repo, fetch=lambda args: read(args[1])), read=read, now=now)
+                recorded = "structured_wait" in issue or issue.get("comments") or "github-plan:wait" in str(issue.get("body") or "")
+                current = current_audit_wait(issue, repo, fetch=lambda args: read(args[1])) if recorded else None
+                drift, drift_errors = record_drift(issue, repo, status, current, read=read, now=now)
                 errors.extend(error for error in drift_errors if error not in errors)
                 if drift:
                     rows.append({"number": number, "title": issue.get("title"),
