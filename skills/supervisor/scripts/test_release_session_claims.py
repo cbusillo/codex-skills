@@ -1190,6 +1190,14 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertTrue(report["needs_reconciliation"])
 
+    def test_finish_asks_nothing_of_an_unreleased_claim_in_a_live_claim_repository(self) -> None:
+        self.reader.get_json.side_effect = lambda path, **_kw: {"body": ""}
+        self.pages.side_effect = lambda path, **_kw: [self.source]
+        entry = {**self.entry, "_finish_scope": "owner-wide scope"}
+        self.assertTrue(helper.finished_claims(self.reader, entry, ACTOR, [("test/a", 1)], False)["issue_refusals"])
+        with patch.object(helper.github_plan_lease, "uses_live_claims", return_value=True):
+            self.assertFalse(helper.finished_claims(self.reader, entry, ACTOR, [("test/a", 1)], False)["issue_refusals"])
+
     def test_finish_accounts_for_authored_signoffs_only_with_verified_releases(self) -> None:
         session = "11111111-1111-4111-8111-111111111111"
         source = {**self.source, "body": github_plan_claim.marker({**SOURCE, "session": session})}

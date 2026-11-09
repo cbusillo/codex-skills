@@ -48,6 +48,35 @@ class LeaseTests(unittest.TestCase):
         self.assertEqual(LEASE.state("session"), LEASE.LIVE)
         self.assertEqual(LEASE.state("never-seen"), LEASE.UNKNOWN)
 
+    def test_a_session_is_live_by_its_lease_or_by_a_recent_first_sighting_when_this_host_has_no_lease(self):
+        now = time.time()
+        period = LEASE.DEFAULT_LEASE_MINUTES * 60
+        self.assertTrue(LEASE.session_is_live("elsewhere", first_seen=now - period + 60))
+        self.assertFalse(LEASE.session_is_live("elsewhere", first_seen=now - period - 60))
+        LEASE.renew("session")
+        self.assertTrue(LEASE.session_is_live("session", first_seen=now - 10 * period))
+        self.age("session", LEASE.DEFAULT_LEASE_MINUTES + 1)
+        self.assertFalse(LEASE.session_is_live("session", first_seen=now))
+
+    def test_session_end_frees_its_claims_at_once_and_later_activity_revives_them(self):
+        LEASE.renew_from_hook({"session_id": "session", "hook_event_name": "PostToolUse"})
+        self.assertEqual(LEASE.state("session"), LEASE.LIVE)
+        LEASE.renew_from_hook({"session_id": "session", "hook_event_name": "SessionEnd"})
+        self.assertEqual(LEASE.state("session"), LEASE.EXPIRED)
+        self.assertFalse(LEASE.session_is_live("session", first_seen=time.time()))
+        LEASE.renew_from_hook({"session_id": "session", "hook_event_name": "UserPromptSubmit"})
+        self.assertEqual(LEASE.state("session"), LEASE.LIVE)
+        LEASE.renew_from_hook({"session_id": "never-claimed", "hook_event_name": "SessionEnd"})
+        self.assertEqual(LEASE.state("never-claimed"), LEASE.UNKNOWN)
+
+    def test_live_claim_repositories_come_from_the_host_list_and_default_to_none(self):
+        self.assertFalse(LEASE.uses_live_claims("Owner/Repo"))
+        listed = Path(os.environ["HOME"]) / ".code/skill-data/live-claim-repositories"
+        listed.parent.mkdir(parents=True)
+        listed.write_text("owner/repo\n\n")
+        self.assertTrue(LEASE.uses_live_claims("Owner/Repo"))
+        self.assertFalse(LEASE.uses_live_claims("owner/other"))
+
     def test_invalid_period_refuses_before_recording_a_lease(self):
         for value in ("0", "-5", "soon", "inf"):
             with self.subTest(value=value):

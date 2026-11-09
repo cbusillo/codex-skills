@@ -520,6 +520,11 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.assertFalse({f"/repos/{REPO}/issues", f"/repos/{REPO}/issues/comments"}.intersection(paths))
         self.assertEqual(report["coverage"]["repositories"], [REPO])
 
+    def test_live_claim_repository_needs_no_release_before_exit(self) -> None:
+        self.assertFalse(helper.check([self.receipt_entry()])["claims_clear"])
+        self.enterContext(patch_attr(helper.github_plan_lease, "uses_live_claims", return_value=True))
+        self.assertTrue(helper.check([self.receipt_entry()])["claims_clear"])
+
     def test_own_open_pr_without_a_current_head_handoff_refuses_with_its_remedies(self) -> None:
         handoffs: Any = importlib.import_module("ready_handoff")
         head = "c" * 40

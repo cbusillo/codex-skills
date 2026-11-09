@@ -10,6 +10,7 @@ import github_client
 import github_direction_next as direction
 import github_next_queue as queue
 import github_plan_claim as claim
+import github_plan_lease as lease
 import github_plan_wait as wait
 import test_gh_plan_next as cli
 
@@ -96,6 +97,21 @@ def test_claim_and_linked_pr_cannot_be_advertised_as_unclaimed_work() -> None:
     assert classify(row, observed)['state'] == 'available'
     row['discussion']['comments'].pop()
     assert classify(row, observed)['state'] == 'underway'
+
+
+def test_live_claim_repository_offers_work_once_its_claiming_session_is_no_longer_live() -> None:
+    row = item()
+    source = {'worker': 'worker', 'session': 'native-session', 'branch': 'work/source', 'claimed_at': '2026-10-01T00:00:00Z'}
+    row['discussion']['comments'] = [{'id': 1, 'author': 'bot', 'created_at': source['claimed_at'], 'body': claim.marker(source)}]
+    row['discussion']['body'] = "## Current Status\nNext actor: agent\nNext action: Implement the missing export path.\n"
+    assert classify(row)['reason'] == 'existing_claim_or_artifact'
+    with patch.object(lease, 'uses_live_claims', return_value=True):
+        assert classify(row)['state'] == 'available'
+        with patch.object(lease, 'session_is_live', return_value=True):
+            assert classify(row)['state'] == 'underway'
+        observed = evidence()
+        observed['pulls'] = [{'number': 80, 'state': 'open', 'title': 'Export', 'body': 'Closes #1', 'head': {'ref': 'work/else'}}]
+        assert classify(row, observed)['state'] == 'underway'
 
 
 def test_dated_wait_becomes_agent_work_when_its_event_arrives() -> None:

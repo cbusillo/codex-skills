@@ -15,6 +15,7 @@ from collections.abc import Callable
 from typing import Any
 
 import github_plan_claim
+import github_plan_lease
 import github_plan_wait
 import github_direction_next
 import github_next_pr
@@ -40,6 +41,26 @@ def compact_output(value: Any) -> Any:
     return result
 
 
+def live_ownership_facts(item: dict[str, Any], ownership: dict[str, Any], comments: list[dict[str, Any]], *,
+                         trusted: set[str], session: str) -> dict[str, Any]:
+    discussion = item.get("discussion") or {}
+    try:
+        holders = [{"source": "live_claim", **holder} for holder in github_plan_claim.live_claims(comments)
+                   if holder["session"] != session]
+        recorded = github_plan_wait.current(
+            {"body": discussion.get("body") or "", "user": {"login": discussion.get("author") or ""}}, comments, trusted)
+    except (ValueError, KeyError, TypeError) as exc:
+        return {"error": "unreadable_ownership_or_wait", "detail": str(exc)}
+    wait = waits.project_dates(recorded)
+    event_completed = wait != recorded and wait["state"] == "clear"
+    if wait["state"] == "review":
+        wait = github_plan_wait.reviewed(evidence="No wait is recorded")
+    implementing = [] if item.get("record_type") == "pull_request" else github_plan_claim.implementing_pulls(
+        ownership.get("pulls") or [], item["number"], repo=item["repo"])
+    return {"conflicts": holders, "artifacts": implementing, "wait": wait, "ended_ownership": [], "recipients": [],
+            "event_completed": event_completed}
+
+
 def ownership_facts(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[str],
                     resume_from: int | None = None, resume_source: dict[str, Any] | None = None,
                     expired_sessions: set[str] | frozenset[str] | None = None,
@@ -54,6 +75,8 @@ def ownership_facts(item: dict[str, Any], ownership: dict[str, Any], *, trusted:
         return {**row, "error": "incomplete_discussion"}
     if not discussion.get("author") or any(not comment.get("author") for comment in discussion.get("comments", [])):
         return {**row, "error": "discussion_authorship_unknown"}
+    if github_plan_lease.uses_live_claims(item["repo"]):
+        return {**row, **live_ownership_facts(item, ownership, comments, trusted=trusted, session=session)}
     inventory = ownership.get("inventory") or {"local_branches": [], "remote_branches": [], "worktrees": [], "sessions": []}
     retained = None
     try:

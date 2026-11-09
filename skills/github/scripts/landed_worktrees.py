@@ -28,6 +28,7 @@ from urllib.parse import urlencode
 import dev_worktree
 import github_api
 import github_plan_claim
+import github_plan_lease
 import github_plan_release
 import published_history
 from git_status import read_status
@@ -655,9 +656,12 @@ def claims_on(reader, github_read, records: list[tuple[str, int]], branches: set
 
     found = []
     for record_repo, record_number in dict.fromkeys(records):
-        issue = reader.get_json(f"repos/{record_repo}/issues/{record_number}", step="landed_claim_record")
         comments = reader.paged_json(f"repos/{record_repo}/issues/{record_number}/comments",
                                      step_prefix="landed_claim_discussion")
+        if github_plan_lease.uses_live_claims(record_repo):
+            found += [json.dumps(holder) for holder in github_plan_claim.live_claims(comments) if holder["branch"] in branches]
+            continue
+        issue = reader.get_json(f"repos/{record_repo}/issues/{record_number}", step="landed_claim_record")
         comments = github_plan_release.verified_comments(comments, release_evidence)
         released = {source["claim_id"] for source in github_plan_claim.ended_ownership(comments, NO_WORKTREES)}
         body = (issue or {}).get("body") or ""

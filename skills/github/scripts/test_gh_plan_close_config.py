@@ -322,6 +322,16 @@ class CloseConfigTests(unittest.TestCase):
                 result, _, _ = self.show_fixture(launch=True, comments_extra=comments, pulls=pulls)
                 self.assertEqual(result["issue"]["launch_check"]["allowed"], allowed)
 
+    def test_live_claim_repository_launches_past_a_claim_whose_session_is_no_longer_live(self) -> None:
+        source = {"worker": "codex", "session": "source", "branch": "work/export", "claimed_at": "2026-10-01T00:00:00Z"}
+        claim = {"id": 2, "user": {"login": "fixture"}, "created_at": source["claimed_at"],
+                 "body": PLAN.github_plan_claim.marker(source)}
+        self.assertFalse(self.show_fixture(launch=True, comments_extra=[claim])[0]["issue"]["launch_check"]["allowed"])
+        with patch.object(PLAN.github_plan_lease, "uses_live_claims", return_value=True):
+            self.assertTrue(self.show_fixture(launch=True, comments_extra=[claim])[0]["issue"]["launch_check"]["allowed"])
+            with patch.object(PLAN.github_plan_lease, "session_is_live", return_value=True):
+                self.assertFalse(self.show_fixture(launch=True, comments_extra=[claim])[0]["issue"]["launch_check"]["allowed"])
+
     def test_launch_allows_operational_work_and_only_authored_retained_handoffs(self) -> None:
         for action in ("Audit the helper.", "Run the testing migration.", "Qualify the release."):
             result, _, _ = self.show_fixture(launch=True, action=action)

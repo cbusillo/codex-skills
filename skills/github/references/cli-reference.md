@@ -1444,6 +1444,31 @@ reports the old claim's branches and worktrees in `retained_artifacts`, and
 freezes that session against a later Codex resume, as for a released source.
 Search claim comments for `Lease takeover:` to count crash takeovers.
 
+A Claude Code session that ends expires its own lease at once, so its
+unreleased claims stop holding work without waiting out the period. Later
+activity in a resumed session renews it.
+
+#### Live-claim trial
+
+A repository listed in this host's `~/.code/skill-data/live-claim-repositories`
+(one `OWNER/REPO` per line) uses the simple rule from
+[cbusillo/codex-skills#4013](https://github.com/cbusillo/codex-skills/issues/4013):
+a record is taken while a claim on it belongs to a live session, an issue is
+also taken while an open pull request implements it, and everything else is
+free. A session is live while its lease on this host is inside its period; with
+no lease on this host, while its claim comment is younger than the period. To
+continue an open pull request's work, claim the pull request.
+
+There, `claim` reads the record, refuses on a live holder, an implementing
+open pull request, a recorded person or event wait, an open native blocker or
+an agent-label mismatch, posts one claim comment and reads it back; the later
+of two racing claims withdraws. A missing wait record is no wait. Nothing must
+be released: `release` still frees a record at once, and closeout,
+`release_session_claims.py finish` and landed-worktree retirement ask nothing
+of a claim whose session is no longer live. `next` and `show --launch-check`
+apply the same rule. The rest of this section describes every other
+repository.
+
 An exact authored release also establishes ended claim ownership. Its retained
 branches, worktrees and closed-PR artifacts no longer block an independent claim;
 the result names them in `retained_artifacts` and leaves them intact. Automatic reconciliation grants no

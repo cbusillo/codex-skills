@@ -31,6 +31,7 @@ GITHUB = Path(__file__).resolve().parents[2] / "github/scripts"
 sys.path.insert(0, str(GITHUB))
 import github_identity
 import github_plan_claim as claim
+import github_plan_lease
 import github_plan_release as release
 import github_plan_closure as closure
 from github_comment import CommentError, comment
@@ -666,6 +667,8 @@ def finished_claims(reader, entry, actor, issues, apply):
     ended = release.stamp(entry["ended_at"])
     posted = None
     for repo, number in issues:
+        if github_plan_lease.uses_live_claims(repo):
+            continue
         reader.deadline_at = time.time() + entry.get("_read_deadline_seconds", 600)
         identity = {"repository": repo, "issue": number}
         try:

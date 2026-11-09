@@ -381,6 +381,85 @@ class ClaimTests(unittest.TestCase):
         branch = "dependabot/python" if author == "dependabot[bot]" else "work/tool-repair"
         self.pulls = [_pull_fixture(42, branch, author=author, body=self.issue["body"], title=self.issue["title"])]
 
+    def use_live_claims(self) -> None:
+        listed = Path.home() / ".code/skill-data/live-claim-repositories"
+        listed.parent.mkdir(parents=True, exist_ok=True)
+        listed.write_text("owner/repo\n")
+
+    def other_claim(self, *, comment_id: int, minutes_old: float) -> dict[str, Any]:
+        posted = datetime.fromtimestamp(time.time() - minutes_old * 60).astimezone().isoformat()
+        return {"id": comment_id, "user": {"login": TEST_BOT}, "created_at": posted,
+                "body": f"Claimed by {OTHER['worker']}\n\n{CLAIM.marker(OTHER)}"}
+
+    def test_live_repository_claims_past_an_ended_session_with_no_release_and_no_wait_record(self) -> None:
+        self.use_live_claims()
+        self.wait = None
+        self.comment_id_offset = 10
+        self.comments = [self.other_claim(comment_id=1, minutes_old=LEASE.DEFAULT_LEASE_MINUTES + 1)]
+        self.run_claim()
+        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+        self.assertEqual([event for event in self.events if event in {"post", "status"}], ["post"])
+
+    def test_live_repository_refuses_while_another_session_is_live(self) -> None:
+        self.use_live_claims()
+        self.comments = [self.other_claim(comment_id=1, minutes_old=LEASE.DEFAULT_LEASE_MINUTES + 1)]
+        LEASE.renew(OTHER["session"])
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_claim()
+        self.assertEqual(caught.exception.code, "claim_conflict")
+        self.assertNotIn("post", self.events)
+
+    def test_live_repository_holds_a_claim_from_another_host_only_while_it_is_recent(self) -> None:
+        self.use_live_claims()
+        self.comments = [self.other_claim(comment_id=1, minutes_old=LEASE.DEFAULT_LEASE_MINUTES - 1)]
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_claim()
+        self.assertEqual(caught.exception.code, "claim_conflict")
+
+    def test_live_repository_sends_an_issue_with_an_implementing_pull_request_to_that_pull_request(self) -> None:
+        self.use_live_claims()
+        for body, refused in (("Fixes #42", True), ("Refs #42", False)):
+            with self.subTest(body=body):
+                self.events, self.comments = [], []
+                self.pulls = [_pull_fixture(7, "work/earlier", body=body)]
+                if not refused:
+                    self.run_claim()
+                    self.assertIn("post", self.events)
+                    continue
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_conflict")
+                self.assertEqual(caught.exception.payload["competing_evidence"][0]["number"], 7)
+
+    def test_live_repository_withdraws_the_later_of_two_racing_claims(self) -> None:
+        self.use_live_claims()
+        self.comment_id_offset = 10
+
+        def earlier_claim_appears() -> None:
+            if not any(comment["id"] == 1 for comment in self.comments):
+                self.comments.append(self.other_claim(comment_id=1, minutes_old=0))
+
+        self.after_post = earlier_claim_appears
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_claim()
+        self.assertEqual(caught.exception.code, "claim_conflict")
+        own_claim = next(comment["id"] for comment in self.comments if OWNER["session"] in comment["body"])
+        self.assertTrue(self.comments[-1]["body"].startswith(f"Released claim {own_claim}"))
+
+    def test_live_repository_still_refuses_a_recorded_person_wait_and_an_open_blocker(self) -> None:
+        self.use_live_claims()
+        self.wait = wait_record.reviewed(evidence="Reviewed", waiting_for="Director's device test",
+                                         ends_when="Director records acceptance on this issue")
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_claim()
+        self.assertEqual(caught.exception.code, "claim_wait_unresolved")
+        self.wait = None
+        self.blockers = [{"number": 9, "state": "open"}]
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_claim()
+        self.assertEqual(caught.exception.code, "claim_native_blockers_unresolved")
+        self.assertNotIn("post", self.events)
+
     def test_failed_initial_target_read_does_not_poison_the_journal(self) -> None:
         with patch.object(PLAN, "claim_snapshot", side_effect=PLAN.PlanError("not found")):
             with self.assertRaises(PLAN.PlanError):

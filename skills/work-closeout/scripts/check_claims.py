@@ -27,6 +27,7 @@ import claim_transcripts as history
 import github_identity
 import github_plan_claim as claim
 import github_plan_claim_log as claim_log
+import github_plan_lease
 import github_plan_release as release
 import github_plan_termination as termination
 import release_session_claims as sessions
@@ -503,6 +504,8 @@ def check(
     signoffs, release_proofs = {}, []
 
     def check_target(native: str, repo: str, number: int) -> None:
+        if github_plan_lease.uses_live_claims(repo):
+            return
         try:
             if repo not in readers:
                 readers[repo] = (reader_for_repo or repository_reader)(repo, deadline)

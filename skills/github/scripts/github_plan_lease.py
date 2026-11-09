@@ -101,6 +101,35 @@ def state(session: str, *, now: float | None = None) -> str:
     return EXPIRED if elapsed > lease.minutes * 60 else LIVE
 
 
+def end(session: str) -> None:
+    if read(session) is not None:
+        os.utime(lease_path(session), (0, 0))
+
+
+def session_is_live(session: str, *, first_seen: float, now: float | None = None) -> bool:
+    lease = read(session)
+    current = time.time() if now is None else now
+    if lease is None:
+        return current - first_seen <= lease_minutes() * 60
+    return current - lease.renewed_at <= lease.minutes * 60
+
+
+def live_claim_repositories() -> frozenset[str]:
+    try:
+        listed = (Path.home() / ".code/skill-data/live-claim-repositories").read_text()
+    except FileNotFoundError:
+        return frozenset()
+    return frozenset(line.strip().casefold() for line in listed.splitlines() if line.strip())
+
+
+def uses_live_claims(repo: str) -> bool:
+    return repo.casefold() in live_claim_repositories()
+
+
 def renew_from_hook(payload: object) -> None:
-    if isinstance(payload, dict) and isinstance(payload.get("session_id"), str):
-        renew(payload["session_id"])
+    if not isinstance(payload, dict) or not isinstance(payload.get("session_id"), str):
+        return
+    if payload.get("hook_event_name") == "SessionEnd":
+        end(payload["session_id"])
+        return
+    renew(payload["session_id"])
