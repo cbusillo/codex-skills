@@ -312,11 +312,17 @@ def posted_comments(entry: dict) -> list[dict]:
     return found
 
 
+CLAUDE_EXIT_BOOKKEEPING_TYPES = {"file-history-snapshot", "last-prompt", "cost-state"}
+
+
 def strip_claude_exit_tail(records: list[dict]) -> list[dict]:
-    """Only the complete local /exit sequence may follow a close-out response."""
-    if len(records) < 3 or not all(r.get("type") == "user" for r in records[-3:]):
+    """Only the complete local /exit sequence and its bookkeeping may follow a close-out response."""
+    end = len(records)
+    while end and records[end - 1].get("type") in CLAUDE_EXIT_BOOKKEEPING_TYPES:
+        end -= 1
+    if end < 3 or not all(r.get("type") == "user" for r in records[end - 3:end]):
         return records
-    caveat, command, output = records[-3:]
+    caveat, command, output = records[end - 3:end]
     text = text_content(command.get("message", {}).get("content"))
     exit_command = re.fullmatch(
         r"<command-name>/exit</command-name>\s*<command-message>exit</command-message>"
@@ -336,7 +342,7 @@ def strip_claude_exit_tail(records: list[dict]) -> list[dict]:
             re.DOTALL,
         )
     ):
-        return records[:-3]
+        return records[:end - 3] + records[end:]
     return records
 
 
