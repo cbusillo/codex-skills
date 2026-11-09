@@ -366,7 +366,7 @@ class OverlayTests(unittest.TestCase):
     def test_content_label_never_falls_back_to_legacy_evidence(self) -> None:
         lower, _inventory, _recorded = self.retained_lower()
         self.create_labeled_overlay(lower)
-        (lower / "attachment").chmod(0o777)
+        self.relabel_legacy(heavy_run.LOWER_DIGEST_PREFIX + "a" * 64)
         with self.assertRaises(RuntimeError):
             self.docker.cleanup_overlay_volumes()
         self.assertEqual(len(self.docker.volumes), 2)
