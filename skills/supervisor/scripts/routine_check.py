@@ -15,7 +15,7 @@ from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import compact_check
 import foreign_watch
@@ -24,8 +24,9 @@ import oq
 from question_delivery import run_queue, source_item
 
 if TYPE_CHECKING:
-    from skills.github.scripts import github_next_pr, github_read, ready_handoff
+    from skills.github.scripts import github_change_feed, github_next_pr, github_read, ready_handoff
 else:
+    github_change_feed = importlib.import_module("github_change_feed")
     github_read = importlib.import_module("github_read")
     github_next_pr = importlib.import_module("github_next_pr")
     ready_handoff = importlib.import_module("ready_handoff")
@@ -38,6 +39,7 @@ director_waits = importlib.import_module("director_waits")
 
 READS_AFTER = {"comments": "questions"}
 ROUTINE_INTERVAL = timedelta(minutes=30)
+RADAR_FULL_READ_FOR_CHANGES_SEARCH_MISSES_EVERY = timedelta(hours=6)
 OWNER_REVIEW_CHECK = "launchplane/owner-review"
 CLIENT_WAIT = re.compile(r"waiting (?:for|on) (?:the |this )?client|client(?:'s)? acceptance", re.I)
 NOTHING_REVIEWABLE = re.compile(r"preview failed|nothing\b[^.]*\b(?:reviewable|to review)", re.I)
@@ -549,7 +551,12 @@ def build_readers(args: argparse.Namespace, watch: dict) -> dict[str, Callable[[
         settings = radar.resolve_settings(radar_args, radar.rollup.load_config(args.radar_config))
         settings["discussion_sources"] = discussions
         settings["scan_state"] = scan_state_path(args)
+        feed_path, started = radar_feed_path(args), datetime.now(UTC)
+        previous = load_radar_feed(feed_path)
+        settings["read_scope"] = None if args.repo else radar_read_scope(github_reader(), args.owner, previous, started)
         result = radar.collect_payload(settings, comment_hints=tuple(hints))
+        if feed_path is not None and not args.repo:
+            save_radar_feed(feed_path, next_radar_feed(previous, started, settings["read_scope"], result))
         result["coverage"]["errors"].extend(errors)
         result["ok"] = result["ok"] and not errors
         if getattr(args, "foreign_state", None):
@@ -619,6 +626,54 @@ def anchor_note(discussion: dict) -> str:
     if latest:
         return f"anchor_response={clock_label(latest)} via=comment"
     return "anchor_response=UNKNOWN"
+
+
+class RadarFeed(NamedTuple):
+    last_look: datetime | None = None
+    full_read_at: datetime | None = None
+    recheck: frozenset[tuple[str, int]] = frozenset()
+
+
+def radar_feed_path(args: argparse.Namespace) -> Path | None:
+    ledger = getattr(args, "ledger", None)
+    return ledger.with_name(f"{ledger.stem}-radar-feed.json") if isinstance(ledger, Path) else None
+
+
+def load_radar_feed(path: Path | None) -> RadarFeed:
+    try:
+        data = json.loads(path.read_text()) if path is not None and path.exists() else {}
+        return RadarFeed(recorded_time(data["last_look"]), recorded_time(data["full_read_at"]),
+                         frozenset((repo.casefold(), int(number)) for repo, number in data["recheck"]))
+    except (OSError, ValueError, KeyError, TypeError):
+        return RadarFeed()
+
+
+def save_radar_feed(path: Path, feed: RadarFeed) -> None:
+    if feed.last_look is None or feed.full_read_at is None:
+        return
+    path.write_text(json.dumps({"last_look": feed.last_look.isoformat(), "full_read_at": feed.full_read_at.isoformat(),
+                                "recheck": sorted([repo, number] for repo, number in feed.recheck)}) + "\n")
+
+
+def radar_read_scope(reader: github_read.GitHubReader, owner: str, previous: RadarFeed, started: datetime) -> Any:
+    if previous.last_look is None or previous.full_read_at is None:
+        return None
+    if started - previous.full_read_at >= RADAR_FULL_READ_FOR_CHANGES_SEARCH_MISSES_EVERY:
+        return None
+    feed = github_change_feed.changed(reader, [owner], previous.last_look)
+    if not feed.complete:
+        return None
+    changed = frozenset((thread.repository.casefold(), thread.number) for thread in feed.threads)
+    return radar.ReadScope(frozenset({owner}), changed | previous.recheck)
+
+
+def next_radar_feed(previous: RadarFeed, started: datetime, scope: Any, result: dict) -> RadarFeed:
+    attention = frozenset((row["repo"].casefold(), row["number"]) for row in result.get("attention", []))
+    if result.get("ok"):
+        return RadarFeed(started, started if scope is None else previous.full_read_at, attention)
+    if scope is None:
+        return previous
+    return RadarFeed(started, previous.full_read_at, attention | scope.threads)
 
 
 def scan_state_path(args: argparse.Namespace) -> Path | None:

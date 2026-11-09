@@ -906,6 +906,63 @@ def client_wait(number: int, title: str = "Change") -> dict[str, Any]:
             "url": f"https://github.com/owner/repo/pull/{number}", "queue": {"reason": "current_head_client_wait"}}
 
 
+RADAR_START = datetime(2026, 11, 9, 12, tzinfo=UTC)
+
+
+def radar_feed_showing(*threads: tuple[str, int], complete: bool = True) -> Any:
+    feed = routine_check.github_change_feed
+    pointers = tuple(feed.Thread(repo, number, "issue", "2026-11-09T12:00:00Z") for repo, number in threads)
+    return patch_attr(feed, "changed", return_value=feed.Feed(pointers, complete))
+
+
+def radar_result(*attention: tuple[str, int], ok: bool = True) -> dict:
+    return {"ok": ok, "attention": [{"repo": repo, "number": number} for repo, number in attention]}
+
+
+class RadarFeedTests(unittest.TestCase):
+    def test_the_first_run_reads_every_thread_and_remembers_only_attention_pointers(self) -> None:
+        first = routine_check.radar_read_scope(Mock(), "director", routine_check.RadarFeed(), RADAR_START)
+        self.assertIsNone(first)
+        recorded = routine_check.next_radar_feed(routine_check.RadarFeed(), RADAR_START, first, radar_result(("Director/App", 4)))
+        self.assertEqual(recorded, routine_check.RadarFeed(RADAR_START, RADAR_START, frozenset({("director/app", 4)})))
+
+    def test_later_runs_read_changed_threads_and_last_runs_attention(self) -> None:
+        previous = routine_check.RadarFeed(RADAR_START, RADAR_START, frozenset({("director/app", 4)}))
+        with radar_feed_showing(("director/app", 9)) as changed:
+            scope = routine_check.radar_read_scope(Mock(), "director", previous, RADAR_START + timedelta(minutes=30))
+        self.assertEqual(changed.call_args.args[1:], (["director"], RADAR_START))
+        self.assertEqual(scope.threads, {("director/app", 4), ("director/app", 9)})
+        candidates = {("director/app", 4): set(), ("director/app", 9): set(), ("director/app", 7): set(),
+                      ("client/app", 3): set(), ("director/named", 1): set()}
+        settings = {"read_scope": scope, "threads": [("Director/Named", 1)]}
+        self.assertEqual(routine_check.radar.unchanged_threads(candidates, settings), {("director/app", 7)})
+
+    def test_an_incomplete_search_or_a_six_hour_gap_reads_every_thread(self) -> None:
+        previous = routine_check.RadarFeed(RADAR_START, RADAR_START, frozenset())
+        with radar_feed_showing(complete=False):
+            self.assertIsNone(routine_check.radar_read_scope(Mock(), "director", previous, RADAR_START + timedelta(minutes=30)))
+        with radar_feed_showing() as changed:
+            self.assertIsNone(routine_check.radar_read_scope(Mock(), "director", previous, RADAR_START + timedelta(hours=6)))
+        self.assertFalse(changed.called)
+
+    def test_a_degraded_run_rereads_every_thread_it_tried(self) -> None:
+        previous = routine_check.RadarFeed(RADAR_START, RADAR_START, frozenset())
+        scope = routine_check.radar.ReadScope(frozenset({"director"}), frozenset({("director/app", 9)}))
+        later = RADAR_START + timedelta(minutes=30)
+        degraded = routine_check.next_radar_feed(previous, later, scope, radar_result(ok=False))
+        self.assertEqual(degraded, routine_check.RadarFeed(later, RADAR_START, frozenset({("director/app", 9)})))
+        self.assertEqual(routine_check.next_radar_feed(previous, later, None, radar_result(ok=False)), previous)
+
+    def test_the_feed_state_round_trips_and_unreadable_state_means_a_full_read(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "radar-feed.json"
+            feed = routine_check.RadarFeed(RADAR_START, RADAR_START, frozenset({("director/app", 4)}))
+            routine_check.save_radar_feed(path, feed)
+            self.assertEqual(routine_check.load_radar_feed(path), feed)
+            path.write_text("not json")
+            self.assertEqual(routine_check.load_radar_feed(path), routine_check.RadarFeed())
+
+
 class PrimaryReadTests(unittest.TestCase):
     now = datetime(2026, 11, 8, 19, 55, tzinfo=UTC)
 

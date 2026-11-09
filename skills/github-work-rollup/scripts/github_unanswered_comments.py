@@ -104,6 +104,11 @@ query($id: ID!, $after: String) {
 """.strip()
 
 
+class ReadScope(NamedTuple):
+    owners: frozenset[str]
+    threads: frozenset[tuple[str, int]]
+
+
 @dataclass(frozen=True)
 class Comment:
     repo: str
@@ -1717,6 +1722,18 @@ def outbound_states_for_thread(
     return results
 
 
+def unchanged_threads(candidate_ids: dict[tuple[str, int], set[Any]], settings: dict[str, Any]) -> set[tuple[str, int]]:
+    read_scope = settings.get("read_scope")
+    if read_scope is None:
+        return set()
+    owners = {owner.casefold() for owner in read_scope.owners}
+    named = {(repo.casefold(), number) for repo, number in settings["threads"]}
+    return {
+        (repo, number) for repo, number in candidate_ids
+        if repo.split("/")[0].casefold() in owners and (repo.casefold(), number) not in named | read_scope.threads
+    }
+
+
 def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, ...] = ()) -> dict[str, Any]:
     settings = dict(settings, discussion_sources=dict(settings.get("discussion_sources", {})))
     self_logins = {normalize_login(login) for login in settings["self_logins"] if normalize_login(login)}
@@ -1836,6 +1853,10 @@ def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, .
         coverage_errors.extend(mention_errors)
         repositories = rollup.unique([*repositories, *(repo for repo, _ in found)])
 
+    candidate_count = len(candidate_ids)
+    unchanged = unchanged_threads(candidate_ids, settings)
+    for thread_key in unchanged:
+        candidate_ids.pop(thread_key)
     collected_threads: list[tuple[dict[str, Any], list[Comment], set[tuple[str, int]]]] = []
     reaction_candidates: list[Comment] = []
     scanned_threads = 0
@@ -1976,7 +1997,8 @@ def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, .
         "bot_logins": sorted(bot_logins),
         "coverage": {
             "repository_count": len(repositories),
-            "candidate_thread_count": len(candidate_ids),
+            "candidate_thread_count": candidate_count,
+            "unchanged_thread_count": len(unchanged),
             "full_history_thread_count": len(full_history_threads),
             "scanned_thread_count": scanned_threads,
             "errors": coverage_errors,

@@ -2563,3 +2563,27 @@ def test_graphql_pr_identity_and_bot_body_anchor_reply(
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
+
+
+def test_a_read_scope_skips_only_unchanged_threads_in_the_owners_repositories(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    outside = comment(comment_id=2, author="outside-user", body="Which format?", created_at="2026-07-25T10:30:00Z")
+    patch_thread(monkeypatch, thread(), [outside], {outside.global_key: []})
+    reads: list[tuple[str, int]] = []
+    read_thread = github_unanswered_comments.collect_thread
+    patch_radar(monkeypatch, "collect_thread", lambda repo, number, *rest: reads.append((repo, number)) or read_thread(repo, number, *rest))
+    settings = thread_settings(thread=["example/named#7"], self_login=["cbusillo"], bot_login=["fixture-automation"],
+                               people_index=people_index(tmp_path))
+    scope = github_unanswered_comments.ReadScope
+
+    settings["read_scope"] = scope(frozenset({"example"}), frozenset())
+    unchanged = github_unanswered_comments.collect_payload(settings, comment_hints=(outside,))
+    assert reads == [("example/named", 7)]
+    assert unchanged["coverage"]["unchanged_thread_count"] == 1
+
+    reads.clear()
+    settings["read_scope"] = scope(frozenset({"example"}), frozenset({("example/repo", 42)}))
+    changed = github_unanswered_comments.collect_payload(settings, comment_hints=(outside,))
+    assert sorted(reads) == [("example/named", 7), ("example/repo", 42)]
+    assert changed["coverage"]["unchanged_thread_count"] == 0
