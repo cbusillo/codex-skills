@@ -4138,6 +4138,7 @@ def test_open_milestone_node_without_an_author_reads_its_full_record_for_body_wa
     summary = {"updated_at": "2026-11-01T00:00:00Z", "state": "open"}
     assert module.milestone_node_needs_full_record(summary)
     assert not module.milestone_node_needs_full_record({**summary, "user": {"login": "owner"}})
+    assert not module.milestone_node_needs_full_record({**summary, "structured_wait": None})
     assert not module.milestone_node_needs_full_record({**summary, "state": "closed", "closed_at": "2026-11-02T00:00:00Z"})
 
 

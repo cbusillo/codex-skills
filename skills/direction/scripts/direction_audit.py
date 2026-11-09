@@ -451,7 +451,8 @@ def graph_route(args: list[str]) -> GraphRoute | None:
 
 def milestone_node_needs_full_record(node: dict[str, Any]) -> bool:
     state = node.get("state")
-    return "updated_at" not in node or (state == "closed" and "closed_at" not in node) or (state == "open" and "user" not in node)
+    wait_needs_author = state == "open" and "user" not in node and "structured_wait" not in node
+    return "updated_at" not in node or (state == "closed" and "closed_at" not in node) or wait_needs_author
 
 
 def rest_may_answer(error: Exception) -> bool:
