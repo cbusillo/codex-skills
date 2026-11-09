@@ -1639,7 +1639,7 @@ class ClaimTests(unittest.TestCase):
         self.inventory = {"worktrees": [], "local_branches": [], "remote_branches": []}
         get_issue = self.get_issue
 
-        def product_read(ref: str, repo: str) -> tuple[str, dict[str, Any]]:
+        def product_read(ref: str, repo: str, **_kwargs: Any) -> tuple[str, dict[str, Any]]:
             self.assertEqual(repo, "client/b")
             return get_issue(ref, repo)
 
@@ -3191,7 +3191,7 @@ class ClaimTests(unittest.TestCase):
                 if phase == "preflight": invalidate()
                 else: setattr(self, phase, invalidate)
                 get_issue = self.get_issue
-                def read(ref, repo):
+                def read(ref, repo, **_kwargs):
                     if failed and failure == "unreadable" and str(ref) == "41":
                         raise PLAN.PlanError("Ancestor unreadable", api_result={"status": 403})
                     return get_issue(ref, repo)
@@ -3379,7 +3379,7 @@ class ClaimTests(unittest.TestCase):
                     self.pulls[0]["head"]["ref"] = CLAIM.records(self.comments[0]["body"])[0]["branch"]
                     self.inventory.update(worktrees=[], local_branches=[], remote_branches=[])
                 get_issue = self.get_issue
-                def unreadable_child(ref, repo):
+                def unreadable_child(ref, repo, **_kwargs):
                     if str(ref) == "43":
                         raise PLAN.PlanError("Child unreadable", api_result={"status": status})
                     return get_issue(ref, repo)
@@ -6407,6 +6407,34 @@ class ClaimTests(unittest.TestCase):
                     self.assertEqual(caught.exception.code, "claim_wait_unresolved" if mode == "wait" else "claim_conflict")
                     self.assert_no_writes()
 
+    def test_planning_reads_never_touch_rest_when_the_graphql_route_answers(self) -> None:
+        rest = Mock(side_effect=AssertionError("REST read"))
+        fields: list[str] = []
+
+        def connection(_reader: Any, _repo: str, _number: int, field: str, **_kwargs: Any) -> list[dict[str, Any]]:
+            fields.append(field)
+            return []
+
+        with patch.multiple(PLAN, next_graph_reader=lambda _repo: Mock(actor=TEST_BOT), NEXT_READS=None,
+                            collect_paged_rest_items=rest, api_json=rest), \
+                patch.object(PLAN.github_plan_graph, "issue_connection", connection):
+            PLAN.read_issue_relationships("owner/repo", 42, include_blocking=True)
+        self.assertEqual(fields, ["blockedBy", "blocking", "subIssues"])
+
+        row = {"number": 7, "body": "", "user": {"login": TEST_BOT}, "_graph_comments": []}
+        with patch.multiple(PLAN, read_planning_graph=Mock(return_value=[row]), collect_paged_rest_items=rest,
+                            read_planning_connection=rest, wait_authors=Mock(return_value={TEST_BOT}),
+                            default_repo=lambda repo: repo, emit=self.emitted):
+            PLAN.wait_once(PLAN.build_parser().parse_args(["--repo", "owner/repo", "wait", "--all"]))
+        self.assertEqual(self.emitted.call_args.args[0]["checked"], 1)
+
+    def test_claim_snapshot_reads_the_issue_through_graphql(self) -> None:
+        reader = Mock(side_effect=self.get_issue)
+        with patch.multiple(PLAN, get_issue=reader, collect_paged_rest_items=self.read_pages, EXPECTED_ACTOR=TEST_BOT,
+                            wait_authors=Mock(return_value={TEST_BOT})):
+            PLAN.claim_snapshot("42", "owner/repo")
+        self.assertTrue(reader.call_args.kwargs["graphql"])
+
     def test_role_actor_does_not_reserve_execution_without_a_claim(self) -> None:
         for role in ("launchplane-engineer", "launchplane", "launchplane-native-qualification"):
             with self.subTest(role=role):
@@ -7211,7 +7239,7 @@ class ClaimTests(unittest.TestCase):
         link = self.milestone_fixture()
         self.args.admission, self.args.admission_link = "milestone", [link, "https://github.com/other/private/issues/50"]
         original = self.get_issue
-        def get_issue(ref: str, repo: str) -> tuple[str, dict[str, Any]]:
+        def get_issue(ref: str, repo: str, **_kwargs: Any) -> tuple[str, dict[str, Any]]:
             if repo == "other/private": raise PLAN.PlanError("Unrelated context is not readable")
             return original(ref, repo)
         with patch.object(self, "get_issue", side_effect=get_issue):
@@ -7248,7 +7276,7 @@ class ClaimTests(unittest.TestCase):
         link = self.milestone_fixture()
         self.args.admission, self.args.admission_link = "milestone", [link]
         original = self.get_issue
-        def get_issue(ref: str, repo: str) -> tuple[str, dict[str, Any]]:
+        def get_issue(ref: str, repo: str, **_kwargs: Any) -> tuple[str, dict[str, Any]]:
             if repo == "owner/direction": raise PLAN.PlanError("Track read unavailable")
             return original(ref, repo)
         with patch.object(self, "get_issue", side_effect=get_issue), self.assertRaises(PLAN.PlanError):
@@ -7462,6 +7490,7 @@ class GraphQLRepositoryIdentityTests(unittest.TestCase):
                         patch.object(github_identity, "github_app_auth", side_effect=authenticate), \
                         patch.object(PLAN.subprocess, "run", side_effect=execute), \
                         patch.object(PLAN, "load_direction", return_value="## Milestones\n- `Inventory` proves the trial."), \
+                        patch.object(PLAN, "read_planning_connection", return_value=("bot", [comment])), \
                         patch.object(PLAN, "collect_paged_rest_items", side_effect=lambda path, **_: (
                             "bot", reactions if path.endswith("/reactions") else [comment])):
                     if read == "history":

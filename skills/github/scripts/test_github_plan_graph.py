@@ -397,6 +397,7 @@ def test_recorded_rest_show_provenance_and_fallback():
         batched = output.call_args.args[0]["issue"]
         with (
             mock_attribute(plan, "read_planning_graph", return_value=None),
+            mock_attribute(plan, "next_graph_reader", return_value=None),
             mock_attribute(
                 plan, "get_issue", return_value=("fixture-reader", record["rest"])
             ),

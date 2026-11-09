@@ -107,7 +107,7 @@ class LaunchIssueTests(unittest.TestCase):
                       patch.multiple(plan, get_issue=Mock(return_value=("automation-gh", current)),
                           EXPECTED_ACTOR="fixture-bot[bot]", load_config=Mock(return_value={}),
                           collect_paged_rest_items=Mock(return_value=("automation-gh", [*comments, wait_comment])),
-                          read_planning_graph=Mock(return_value=None),
+                          read_planning_graph=Mock(return_value=None), next_graph_reader=Mock(return_value=None),
                           read_issue_relationships=Mock(return_value=("automation-gh",
                               {"blocked_by": blockers, "blocking": [], "sub_issues": []})),
                           next_status_body_time=Mock(return_value=current["updated_at"]),
