@@ -133,6 +133,12 @@ def save_json(path: Path, value: object) -> Path:
     return path
 
 
+def run_cli(transcript: str, *arguments: str) -> tuple[int, dict]:
+    with contextlib.redirect_stdout(io.StringIO()) as output:
+        code = helper.main(["--session", SESSION, "--transcript", transcript, *arguments])
+    return code, json.loads(output.getvalue())
+
+
 def native_terminal_result(identifier: str, output: str = "", *, javascript: bool = False) -> dict:
     return {
         "payload": {
@@ -324,13 +330,8 @@ class ClaimCloseoutTests(unittest.TestCase):
             with self.subTest(rows=rows):
                 self.assertEqual(helper.history.literal_targets(rows, SESSION), NO_CLAIMS)
 
-    def run_cli(self, transcript: str, *arguments: str) -> tuple[int, dict]:
-        with contextlib.redirect_stdout(io.StringIO()) as output:
-            code = helper.main(["--session", SESSION, "--transcript", transcript, *arguments])
-        return code, json.loads(output.getvalue())
-
     def hold_issue_five(self) -> None:
-        held = comment(50, "Claimed by worker\n\n" + helper.claim.marker(SOURCE))
+        held = comment(50, "Claimed by worker\n\n" + claim_logic.marker(SOURCE))
         self.reader.paged_json.side_effect = lambda path, **kw: (
             [held] if path.endswith("/issues/5/comments") else self.paged(path, **kw))
 
@@ -820,7 +821,7 @@ class ClaimCloseoutTests(unittest.TestCase):
 
     def test_malformed_nested_claim_data_returns_a_json_failure(self) -> None:
         entry = self.entry(rows=[{"claim": SOURCE, "issue": "unreadable"}])
-        code, report = self.run_cli(entry["transcript"])
+        code, report = run_cli(entry["transcript"])
         self.assertNotEqual(code, 0)
         self.assertFalse(report["claims_clear"])
 
@@ -828,7 +829,7 @@ class ClaimCloseoutTests(unittest.TestCase):
         entry = self.entry()
         for failure in (helper.subprocess.CalledProcessError(1, ["git"]), helper.subprocess.TimeoutExpired(["tmux"], 10)):
             with self.subTest(failure=type(failure).__name__), patch.object(helper, "check", side_effect=failure):
-                code, report = self.run_cli(entry["transcript"])
+                code, report = run_cli(entry["transcript"])
             self.assertNotEqual(code, 0)
             self.assertFalse(report["claims_clear"])
             self.assertFalse(report["coverage"]["complete"])
@@ -838,12 +839,12 @@ class ClaimCloseoutTests(unittest.TestCase):
         with patch.object(helper, "check", return_value={"claims_clear": True}) as read:
             for budget in ("0", "-1", "nan", "inf"):
                 with self.subTest(budget=budget):
-                    code, report = self.run_cli(entry["transcript"], "--read-timeout", budget)
+                    code, report = run_cli(entry["transcript"], "--read-timeout", budget)
                 self.assertNotEqual(code, 0)
                 self.assertFalse(report["coverage"]["complete"])
             read.assert_not_called()
             requested = 1800.0
-            self.assertEqual(self.run_cli(entry["transcript"], "--read-timeout", str(requested))[0], 0)
+            self.assertEqual(run_cli(entry["transcript"], "--read-timeout", str(requested))[0], 0)
             self.assertEqual(read.call_args.kwargs["read_timeout"], requested)
 
     def test_reader_gets_the_checks_deadline_before_its_first_read(self) -> None:
@@ -1361,7 +1362,7 @@ class ClaimCloseoutTests(unittest.TestCase):
     def test_structured_native_denial_is_prewrite_but_unknown_interrupt_is_not(self) -> None:
         root = self.entry()
         path = Path(root["transcript"])
-        rows = [
+        rows: list[dict[str, Any]] = [
             *bash_call("uv run gh-plan.py claim 1", "denied", sessionId=SESSION),
             {
                 "sessionId": SESSION,
@@ -3167,7 +3168,7 @@ print(root)"""
     def test_cli_empty_session_needs_no_github_reads(self) -> None:
         entry = self.entry()
         with patch.object(helper, "repository_reader") as reader:
-            code, report = self.run_cli(entry["transcript"], "--owner", "test")
+            code, report = run_cli(entry["transcript"], "--owner", "test")
         self.assertEqual(code, 0, report)
         reader.assert_not_called()
 
@@ -3181,7 +3182,7 @@ print(root)"""
             with self.subTest(source=source):
                 entry = self.entry(rows=[code_call("read", source), native_terminal_result("read", javascript=True)])
                 with patch.object(helper, "repository_reader") as reader:
-                    code, report = self.run_cli(entry["transcript"], "--owner", "test")
+                    code, report = run_cli(entry["transcript"], "--owner", "test")
                 self.assertEqual(code, 0, report)
                 self.assertTrue(report["claims_clear"], report)
                 self.assertTrue(report["coverage"]["complete"], report)
@@ -3191,15 +3192,15 @@ print(root)"""
     def test_cli_refuses_a_transcript_of_another_session_before_reading_github(self):
         other = self.entry("newer-session", "2026-03-01T00:00:00Z")
         for transcript in (other["transcript"], str(self.folder / "missing.jsonl")):
-            with self.subTest(transcript=transcript), patch.object(helper, "GitHubReader") as reader:
-                code, report = self.run_cli(transcript)
+            with self.subTest(transcript=transcript), patch_attr(helper, "GitHubReader") as reader:
+                code, report = run_cli(transcript)
             self.assertNotEqual(code, 0)
             self.assertFalse(report["claims_clear"])
             reader.assert_not_called()
 
     def test_cli_refuses_an_unpaired_transcript_before_reading_github(self):
         entry = self.entry()
-        with patch.object(helper, "GitHubReader") as reader, contextlib.redirect_stdout(io.StringIO()):
+        with patch_attr(helper, "GitHubReader") as reader, contextlib.redirect_stdout(io.StringIO()):
             code = helper.main(["--session", SESSION, "--session", "child", "--transcript", entry["transcript"]])
         self.assertNotEqual(code, 0)
         reader.assert_not_called()
