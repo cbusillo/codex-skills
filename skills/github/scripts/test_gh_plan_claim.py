@@ -6428,6 +6428,22 @@ class ClaimTests(unittest.TestCase):
             PLAN.wait_once(PLAN.build_parser().parse_args(["--repo", "owner/repo", "wait", "--all"]))
         self.assertEqual(self.emitted.call_args.args[0]["checked"], 1)
 
+    def test_wait_inventory_past_the_graph_limit_reads_every_issue_through_rest(self) -> None:
+        rows = [{"number": number, "body": "", "user": {"login": TEST_BOT}, "_graph_comments": []} for number in (1, 2)]
+        complete = [*rows, {"number": 3, "body": "", "user": {"login": TEST_BOT}, "_graph_comments": []}]
+        with patch.multiple(PLAN, NEXT_PLAN_INVENTORY_LIMIT=1, read_planning_graph=Mock(return_value=rows),
+                            collect_paged_rest_items=Mock(return_value=("bot", complete)),
+                            wait_authors=Mock(return_value={TEST_BOT}), default_repo=lambda repo: repo, emit=self.emitted):
+            PLAN.wait_once(PLAN.build_parser().parse_args(["--repo", "owner/repo", "wait", "--all"]))
+        self.assertEqual(self.emitted.call_args.args[0]["checked"], 3)
+
+    def test_graphql_comments_keep_the_node_id_reaction_approval_needs(self) -> None:
+        self.assertIn("id", PLAN.github_plan_graph.CONNECTIONS["comments"].split())
+        node = {"id": "IC_decision", "databaseId": 7, "body": "Director decision: Close #42 as not planned.",
+                "createdAt": "2026-10-02T00:00:00Z", "updatedAt": "2026-10-02T00:00:00Z", "url": "https://github.com/o/r/issues/42#issuecomment-7",
+                "author": {"__typename": "Bot", "login": "fixture"}}
+        self.assertEqual(PLAN.github_plan_graph.rest_comment(node)["node_id"], node["id"])
+
     def test_claim_snapshot_reads_the_issue_through_graphql(self) -> None:
         reader = Mock(side_effect=self.get_issue)
         with patch.multiple(PLAN, get_issue=reader, collect_paged_rest_items=self.read_pages, EXPECTED_ACTOR=TEST_BOT,
@@ -7485,12 +7501,12 @@ class GraphQLRepositoryIdentityTests(unittest.TestCase):
                               "user": {"login": source_repo.split("/")[0]}}]
                 with patch.dict(os.environ, environment, clear=True), \
                         patch.multiple(PLAN, BOT_GH=Path(__file__).with_name("gh-with-env-token"),
-                                       EXPECTED_ACTOR=TEST_BOT, CURRENT_OPERATION="github.plan.claim", NEXT_READS=None), \
+                                       EXPECTED_ACTOR=TEST_BOT, CURRENT_OPERATION="github.plan.claim", NEXT_READS=None,
+                                       read_planning_connection=Mock(return_value=("bot", [comment]))), \
                         patch.object(github_identity, "github_app_config", return_value=object()), \
                         patch.object(github_identity, "github_app_auth", side_effect=authenticate), \
                         patch.object(PLAN.subprocess, "run", side_effect=execute), \
                         patch.object(PLAN, "load_direction", return_value="## Milestones\n- `Inventory` proves the trial."), \
-                        patch.object(PLAN, "read_planning_connection", return_value=("bot", [comment])), \
                         patch.object(PLAN, "collect_paged_rest_items", side_effect=lambda path, **_: (
                             "bot", reactions if path.endswith("/reactions") else [comment])):
                     if read == "history":

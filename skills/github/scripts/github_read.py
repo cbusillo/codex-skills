@@ -803,7 +803,8 @@ def graphql_author(author: dict[str, Any] | None) -> dict[str, str]:
 
 def graphql_comment(node: dict[str, Any]) -> dict[str, Any]:
     return {"id": node["databaseId"], "body": node["body"], "created_at": node["createdAt"],
-        "updated_at": node["updatedAt"], "html_url": node["url"], "user": graphql_author(node["author"])}
+        "updated_at": node["updatedAt"], "html_url": node["url"], "user": graphql_author(node["author"]),
+        **({"node_id": node["id"]} if "id" in node else {})}
 
 
 DISCUSSION_REACTIONS = """reactions(first:10, orderBy:{field:CREATED_AT,direction:ASC}) {

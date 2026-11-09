@@ -60,7 +60,7 @@ CONNECTIONS = {
     "blockedBy": CLOSURE_FIELDS,
     "blocking": CLOSURE_FIELDS,
     "subIssues": CLOSURE_FIELDS,
-    "comments": "databaseId body createdAt updatedAt url author { __typename login }",
+    "comments": "id databaseId body createdAt updatedAt url author { __typename login }",
 }
 
 PULL_FIELDS = """databaseId number title body state isDraft createdAt updatedAt closedAt url merged mergedAt

@@ -4668,8 +4668,8 @@ def wait_once(args: argparse.Namespace) -> None:
         if (args.issue or args.clear or args.waiting_for or args.ends_when or args.evidence
                 or any(getattr(args, field, None) for field in ("release_product", "release_commit", "release_next_action", "not_before", "event", "recheck"))):
             raise PlanError("--all is a read-only inventory; choose a single issue to record a review")
-        issues = read_planning_graph(repo)
-        if issues is None:
+        issues = read_planning_graph(repo, limit=NEXT_PLAN_INVENTORY_LIMIT + 1)
+        if issues is None or len(issues) > NEXT_PLAN_INVENTORY_LIMIT:
             _, issues = collect_paged_rest_items(f"/repos/{repo}/issues", query={"state": "open"},
                                                 bucket="rest_core", step_prefix="wait_inventory")
         review = []
