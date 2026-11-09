@@ -304,6 +304,16 @@ def primary_reads(selection: dict, sessions: list[dict], *, owner_review: Callab
     return {"annotations": annotations, "anchors": anchors, "errors": errors, "coverage": {"complete": not errors}}
 
 
+def ask_note(row: dict) -> str:
+    ask = row.get("ask")
+    if not ask:
+        return ""
+    if ask["ask_url"] is None:
+        return " | ask=MISSING"
+    replied = {True: "yes", False: "no"}.get(ask["replied_since"], "UNKNOWN")
+    return f" | ask={ask['ask_url']} by {ask['author'] or 'UNKNOWN'} replied={replied}"
+
+
 def stale_row(row: dict, now: datetime) -> str:
     evidence = row.get("evidence") or [{}]
     first = evidence[0]
@@ -337,7 +347,7 @@ def digest(sources: dict[str, dict], *, full: bool = False) -> str:
             lines.append(f"TRACK {pointer(track)}: {'read' if track['read'] else 'UNKNOWN, not refreshed'}")
             lines.extend(f"DECISION {url}" for url in track.get("decisions", []))
         for wait in [*milestone.get("waits", []), *milestone.get("wait_reviews", [])]:
-            lines.append(noted(f"WAIT {pointer(wait)}: {wait.get('waiting_for')}", wait))
+            lines.append(noted(f"WAIT {pointer(wait)}: {wait.get('waiting_for')}{ask_note(wait)}", wait))
     needs_status = []
     rows = queue_rows(selection)
     actions = sorted((candidate for kind, candidate in rows if kind == "SUPERVISOR_ACTION"),

@@ -24,6 +24,8 @@ REPO = "director/project"
 QUEUE = "director/catalog#9"
 BOT = "helper-bot"
 ISSUE = f"https://github.com/{REPO}/issues/7"
+BOOK = {"justin": frozenset({"justin-login"}), "justin-login": frozenset({"justin-login"}),
+        "mike": frozenset({"mike-login"}), "mike-login": frozenset({"mike-login"})}
 
 
 def comment(number: int, author: str, body: str) -> dict[str, Any]:
@@ -43,8 +45,10 @@ QUEUE_COMMENTS = [{"user": {"login": BOT}, "body": question_delivery.marker_body
                   for number in (11, 16)]
 
 
-def wait(waiting_for: str, evidence: str = "Recorded in the session") -> dict[str, Any]:
-    return github_plan_wait.reviewed(evidence=evidence, waiting_for=waiting_for, ends_when="It happens")
+def wait(waiting_for: str, ask_url: str | None = None, **entry: Any) -> dict[str, Any]:
+    record = github_plan_wait.reviewed(evidence="Recorded in the session", waiting_for=waiting_for, ends_when="It happens")
+    record["waits"][0].update(entry, **({"ask_url": ask_url} if ask_url else {}))
+    return record
 
 
 def link(number: int) -> str:
@@ -56,6 +60,7 @@ class DirectorQuestionGateTests(unittest.TestCase):
         self.queue: str | None = QUEUE
         self.queue_reads = 0
         for patcher in (patch.object(gate, "director_terms", side_effect=lambda owner: [owner, "Chris", "Director"]),
+                        patch.object(gate, "address_book", side_effect=lambda owner: BOOK),
                         patch.object(gate, "configured_queue", side_effect=lambda: self.queue),
                         patch.object(github_identity, "configured_bot_logins", return_value=[BOT]),
                         patch.object(github_identity, "automation_login", return_value=BOT)):
@@ -72,7 +77,7 @@ class DirectorQuestionGateTests(unittest.TestCase):
         return QUEUE_COMMENTS
 
     def gap(self, record: dict[str, Any]) -> str | None:
-        return gate.director_question_gap(REPO, record, read_comment=self.read_comment, read_pages=self.read_pages)
+        return gate.ask_gap(REPO, record, read_comment=self.read_comment, read_pages=self.read_pages)
 
     def refusal(self, record: dict[str, Any]) -> str:
         message = self.gap(record)
@@ -84,15 +89,18 @@ class DirectorQuestionGateTests(unittest.TestCase):
         self.assertIn('"Chris approves the live install"', message)
 
     def test_registered_numbered_question_allows_the_wait(self) -> None:
-        self.assertIsNone(self.gap(wait("Chris approves the live install", f"Asked: {link(11)}")))
-        self.assertIsNone(self.gap(wait("Chris approves the live install", f"{link(12)} and {link(11)}")))
-        self.assertEqual(self.queue_reads, 2)
+        self.assertIsNone(self.gap(wait("Chris approves the live install", link(11))))
+        self.assertEqual(self.queue_reads, 1)
+
+    def test_a_question_link_only_in_evidence_no_longer_counts(self) -> None:
+        record = github_plan_wait.reviewed(evidence=f"Asked: {link(11)}", waiting_for="Chris approves the live install", ends_when="It happens")
+        self.assertIsNotNone(self.gap(record))
 
     def test_unregistered_unnumbered_or_untrusted_links_still_refuse(self) -> None:
         self.enterContext(patch.dict(COMMENTS, {17: comment(17, BOT, "Director question: Q814. Approve the install?")}))
-        for evidence in (link(12), link(15), link(17)):
-            with self.subTest(evidence=evidence):
-                self.assertIsNotNone(self.gap(wait("Chris approves the live install", evidence)))
+        for ask_url in (link(12), link(15), link(17)):
+            with self.subTest(ask_url=ask_url):
+                self.assertIsNotNone(self.gap(wait("Chris approves the live install", ask_url)))
 
     def test_asker_withdrawal_does_not_authorize_a_director_hold(self) -> None:
         with patch.dict(COMMENTS, {17: comment(17, BOT, "Q812 withdrawn by the Supervisor. Premise corrected.")}):
@@ -111,18 +119,87 @@ class DirectorQuestionGateTests(unittest.TestCase):
             with self.subTest(waiting_for=waiting_for):
                 self.assertIsNotNone(self.gap(wait(waiting_for)))
 
-    def test_unreadable_link_is_skipped_and_named_when_nothing_else_qualifies(self) -> None:
+    def test_unreadable_ask_is_named_and_refused(self) -> None:
         for missing in (f"{ISSUE}#issuecomment-404", f"{ISSUE}#issuecomment-500"):
             with self.subTest(missing=missing):
-                self.assertIsNone(self.gap(wait("Chris approves the live install", f"{missing} then {link(11)}")))
                 self.assertIn(missing, self.refusal(wait("Chris approves the live install", missing)))
 
-    def test_timers_and_other_peoples_steps_are_not_on_the_director(self) -> None:
+    def test_events_and_later_steps_need_no_ask(self) -> None:
         for waiting_for in ("Two weeks with no use of the token, then Chris retires it",
-                            "Mike tests the build", "No Director decision needed; CI finishes"):
+                            "A free Anthropic fleet worker slot", "No Director decision needed; CI finishes",
+                            "The client cache rebuild finishes"):
             with self.subTest(waiting_for=waiting_for):
                 self.assertIsNone(self.gap(wait(waiting_for)))
         self.assertEqual(self.queue_reads, 0)
+
+    def test_unasked_people_from_the_november_reports_refuse(self) -> None:
+        unasked = comment(30, BOT, "Justin, five questions for the demo; no rush on these.")
+        for waiting_for in ("Justin creates the docker-tk-prod guest and backup SSH access",
+                            "Justin confirms switch-back triggers",
+                            "Client gives QBO country and blank bill template",
+                            "Mike acceptance of the qualified cbusillo/odoo-tenant-opw#323 candidate",
+                            "Mike accepts the motor-price correction release"):
+            with self.subTest(waiting_for=waiting_for):
+                self.assertIn(waiting_for, self.refusal(wait(waiting_for)))
+        with patch.dict(COMMENTS, {30: unasked}):
+            for waiting_for in ("Justin confirms switch-back triggers", "Client gives QBO country and blank bill template"):
+                with self.subTest(waiting_for=waiting_for):
+                    self.assertIn(link(30), self.refusal(wait(waiting_for, link(30))))
+
+    def test_real_asks_and_own_words_allow_the_person_wait(self) -> None:
+        with patch.dict(COMMENTS, {31: comment(31, BOT, "Please confirm the guest, @justin-login."),
+                                   32: comment(32, "justin-login", "I will build the guest on Friday."),
+                                   33: comment(33, BOT, "Review is ready for @client-login: accept it here.")}):
+            for waiting_for, ask in (("Justin creates the docker-tk-prod guest", link(31)),
+                                     ("Justin creates the docker-tk-prod guest", link(32)),
+                                     ("Justin creates the docker-tk-prod guest", link(14)),
+                                     ("Client accepts the deletion candidate", link(33))):
+                with self.subTest(ask=ask):
+                    self.assertIsNone(self.gap(wait(waiting_for, ask)))
+
+    def test_an_ask_mentioning_someone_else_does_not_count(self) -> None:
+        with patch.dict(COMMENTS, {34: comment(34, BOT, "Asking @someone-else about the guest.")}):
+            self.assertIsNotNone(self.gap(wait("Justin creates the guest", link(34))))
+
+    def test_quoted_mention_is_not_an_ask(self) -> None:
+        with patch.dict(COMMENTS, {35: comment(35, BOT, "Noted: `@justin-login` was not asked yet.")}):
+            self.assertIsNotNone(self.gap(wait("Justin creates the guest", link(35))))
+
+    def test_observable_ending_keeps_a_named_person_wait_without_an_ask(self) -> None:
+        event = {"version": 1, "kind": "date", "at": "2026-11-20", "evidence": "Agreed window"}
+        self.assertIsNone(self.gap(wait("Mike's testing window", event=event)))
+        self.assertIsNotNone(self.gap(wait("Chris approves the live install", event=event)))
+
+    def test_ask_url_must_match_the_comment_github_returns(self) -> None:
+        self.assertIsNotNone(self.gap(wait("Justin creates the guest", f"https://github.com/{REPO}/issues/99#issuecomment-31")))
+
+    def test_attach_asks_gives_each_person_wait_its_own_link_and_refuses_extras(self) -> None:
+        record = github_plan_wait.reviewed(evidence="Reviewed", ends_when=["It happens", "It ends", "It lands"],
+                                           waiting_for=["Justin creates the guest", "A free worker slot", "Mike tests the build"])
+        gate.attach_asks("director", record, [link(11), link(12)])
+        self.assertEqual([entry.get("ask_url") for entry in record["waits"]], [link(11), None, link(12)])
+        with self.assertRaises(ValueError):
+            gate.attach_asks("director", record, [link(11), link(12), link(13)])
+
+    def test_status_reports_author_and_only_the_askeds_reply(self) -> None:
+        thread = [
+            {"url": link(11), "author": BOT, "body": "Asking @justin-login"},
+            {"url": link(12), "author": "someone", "body": "unrelated"},
+        ]
+        status = gate.ask_status("director", wait("Justin creates the guest", link(11)), wait("Justin creates the guest", link(11))["waits"][0],
+                                 trusted={BOT.casefold(), "director"}, read_thread=lambda repo, number: thread)
+        self.assertEqual((status["author"], status["replied_since"]), (BOT, False))
+        thread.append({"url": link(13), "author": "justin-login", "body": "Done, thanks"})
+        status = gate.ask_status("director", wait("Justin creates the guest", link(11)), wait("Justin creates the guest", link(11))["waits"][0],
+                                 trusted={BOT.casefold(), "director"}, read_thread=lambda repo, number: thread)
+        self.assertEqual((status["author"], status["replied_since"]), (BOT, True))
+
+    def test_status_is_unknown_when_the_thread_cannot_be_read_and_empty_for_events(self) -> None:
+        record = wait("Justin creates the guest", link(11))
+        status = gate.ask_status("director", record, record["waits"][0], trusted=set(), read_thread=lambda repo, number: None)
+        self.assertEqual((status["ask_url"], status["author"], status["replied_since"]), (link(11), None, None))
+        record = wait("A free Anthropic fleet worker slot")
+        self.assertIsNone(gate.ask_status("director", record, record["waits"][0], trusted=set(), read_thread=lambda repo, number: None))
 
     def test_without_a_configured_queue_a_numbered_question_suffices(self) -> None:
         self.queue = None

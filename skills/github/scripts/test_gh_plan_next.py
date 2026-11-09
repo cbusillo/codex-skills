@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["PyYAML==6.0.3"]
 # ///
 """Focused regression tests for dependency-aware next-work selection."""
 
@@ -1717,7 +1717,7 @@ def test_global_agent_only_waits_are_unowned_and_real_holds_stay_parked() -> Non
     assert {row["number"] for row in result["unowned"]} == set(range(1, 7))
     assert [row["number"] for row in result["waiting"]] == [20]
     assert result["waiting"][0]["stale_wait_evidence"] is None
-    assert {row["number"] for row in result["stale_wait_report"]["items"]} == {1, 2, 4, 5}
+    assert {row["number"] for row in result["stale_wait_report"]["items"]} == {1, 2, 4, 5, 20}
     assert result["candidates"] == []  # Report-only evidence never releases a hold.
 
 

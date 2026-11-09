@@ -4469,6 +4469,8 @@ def wait_summary(wait: dict[str, Any]) -> str:
             line += f" {github_plan_wait.release_event_hint(release['product'], release['source_commit'])}. {release['next_action']}"
         if "recheck" in entry:
             line += f" An agent rechecks it on {entry['recheck']}."
+        if "ask_url" in entry:
+            line += f" Asked in {entry['ask_url']}."
         lines.append(line)
     summary = "\n\n".join(lines) or "Nothing here is waiting on a person or event."
     if mentions := github_comment_core.live_mentions(summary):
@@ -4477,7 +4479,7 @@ def wait_summary(wait: dict[str, Any]) -> str:
     return summary
 
 
-def reviewed_wait(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
+def reviewed_wait(args: argparse.Namespace) -> dict[str, Any]:
     try:
         wait = github_plan_wait.reviewed(evidence=args.evidence or "", waiting_for=args.waiting_for,
                                         ends_when=args.ends_when,
@@ -4489,10 +4491,76 @@ def reviewed_wait(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
                                         recheck=getattr(args, "recheck", None))
         repo = issue_ref(args.issue, default_repo(args.repo))[0]
         github_comment_core.validate_planning_references(wait, repo)
+        director_question_gate.attach_asks(repo.split("/")[0], wait, getattr(args, "ask_url", None) or [])
     except ValueError as exc:
         raise PlanError(str(exc)) from exc
-    require_recheck_dates(repo, wait)
-    return wait, wait_summary(wait)
+    return wait
+
+
+def dependency_references(issue: dict[str, Any], entry: dict[str, Any]) -> list[dict[str, Any]]:
+    if (github_plan_wait.machine_checked(entry)
+            or director_question_gate.asked_person(issue["repo"].split("/")[0], entry["waiting_for"])):
+        return []
+    named = github_direction_next.issue_references(github_plan_wait.first_step(entry["waiting_for"]), repo=issue["repo"])
+    return [ref for ref in named if (ref["repo"].casefold(), ref["number"]) != (issue["repo"].casefold(), issue["number"])]
+
+
+def issue_pull_closes(pull: dict[str, Any], repo: str, number: int) -> dict[str, Any]:
+    reader = github_read.GitHubReader(operation="github.plan.wait")
+    references = github_plan_landing.closing_references(reader, repo, number, landed=False)[1]
+    issues = [get_issue(str(ref_number), ref_repo)[1] for ref_repo, ref_number in references]
+    target = next((issue for issue in issues if issue.get("state") == "open"), None)
+    if target is None:
+        raise PlanError(f"{pull['html_url']} closes no open issue, and GitHub refuses a pull request as a native blocker. "
+                        "Add `Closes #N` to the PR, or record the wait with --event "
+                        f'\'{{"version": 1, "kind": "pr_merged", "url": "{pull["html_url"]}", "evidence": "..."}}\'.')
+    return target
+
+
+def native_blocker(issue: dict[str, Any], ref: dict[str, Any]) -> dict[str, Any]:
+    _, target = get_issue(str(ref["number"]), ref["repo"])
+    if target.get("state") != "open":
+        raise PlanError(f"{target['html_url']} is already closed, so there is nothing to wait for. "
+                        "Clear the wait, or name what is still in the way.")
+    if "pull_request" in target:
+        target = issue_pull_closes(target, ref["repo"], ref["number"])
+    _, blocking = collect_paged_rest_items(f"/repos/{target['repo']}/issues/{target['number']}/dependencies/blocking",
+                                           query={}, bucket="rest_core", step_prefix="wait_dependency")
+    holders = [edge for edge in blocking
+               if edge.get("state") == "open" and edge.get("number") != issue["number"]
+               and not str(edge.get("title", "")).startswith("Track:")]
+    if holders:
+        first = min(holders, key=lambda edge: edge["number"])
+        raise PlanError(f"{first['html_url']} already records {target['html_url']} as its blocker, so a second wait for it is "
+                        f"refused. Run gh-plan.py --repo {issue['repo']} link {issue['number']} blocked-by {first['html_url']}, "
+                        "or close this issue as a duplicate of it.")
+    return target
+
+
+def split_dependency_waits(issue: dict[str, Any], wait: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    kept, targets = [], []
+    for entry in wait["waits"]:
+        references = dependency_references(issue, entry)
+        if references:
+            targets.extend(native_blocker(issue, reference) for reference in references)
+        else:
+            kept.append(entry)
+    if not targets:
+        return wait, []
+    links = ", ".join(target["html_url"] for target in targets)
+    return {**wait, "state": "waiting" if kept else "clear", "waits": kept,
+            "evidence": f"{wait['evidence']}\nNative blocked-by: {links}"}, targets
+
+
+def record_native_blockers(issue: dict[str, Any], targets: list[dict[str, Any]]) -> None:
+    if not targets:
+        return
+    _, existing = collect_paged_rest_items(f"/repos/{issue['repo']}/issues/{issue['number']}/dependencies/blocked_by",
+                                           query={}, bucket="rest_core", step_prefix="wait_dependency")
+    linked = {edge.get("id") for edge in existing}
+    for target in targets:
+        if target["id"] not in linked:
+            link_native_dependency(issue, target, failed_step="wait_link_blocked_by")
 
 
 def require_recheck_dates(repo: str, wait: dict[str, Any]) -> None:
@@ -4512,17 +4580,17 @@ def readable_comment(path: str) -> dict[str, Any] | None:
         return None
 
 
-def require_asked_director_wait(repo: str, wait: dict[str, Any], *, creating: bool = False) -> None:
+def require_asked_wait(repo: str, wait: dict[str, Any], *, creating: bool = False) -> None:
     try:
-        gap = director_question_gate.director_question_gap(
+        gap = director_question_gate.ask_gap(
             repo, wait, read_comment=readable_comment,
             read_pages=lambda path: collect_paged_rest_items(path, query={}, bucket="rest_core",
                                                              step_prefix="director_question")[1])
     except ValueError as exc:
         raise PlanError(str(exc)) from exc
     if gap and creating:
-        gap += (" A new issue has no question yet: create it without --waiting-for, post and register the "
-                "question on it, then run gh-plan.py wait.")
+        gap += (" A new issue has no ask yet: create it without --waiting-for, post the ask (and register a Director "
+                "question) on it, then run gh-plan.py wait.")
     if gap:
         raise PlanError(gap, failure=github_api_core.FailureDetail(
             cause="director_question_missing", message=gap, retryable=False, fallback_eligible=False,
@@ -4575,8 +4643,12 @@ def wait_once(args: argparse.Namespace) -> None:
                              "--waiting-for and --ends-when, or --clear after verifying absence. "
                              "The review also covers any prose-only current owner; preserve it as a wait until released."})
         return
-    wait, summary = recorded
-    require_asked_director_wait(issue["repo"], wait)
+    wait, native_targets = split_dependency_waits(issue, recorded)
+    require_asked_wait(issue["repo"], wait)
+    require_recheck_dates(issue["repo"], wait)
+    summary = wait_summary(wait)
+    if native_targets:
+        summary += "\n\nBlocked natively by " + ", ".join(target["html_url"] for target in native_targets) + "."
     # A dedicated authored comment works for PRs and contributor issues without
     # replacing anyone's prose. Later status edits do not erase the record.
     actor, gh_cmd, expected_actor = comment_route()
@@ -4589,6 +4661,7 @@ def wait_once(args: argparse.Namespace) -> None:
     except ValueError:
         next_actor = None
     label_direction_route(issue["repo"], issue["number"], next_actor, wait)
+    record_native_blockers(issue, native_targets)
     result = github_comment_core.comment(kind, issue["number"],
         summary + "\n\n" + github_plan_wait.marker(wait), repo=issue["repo"],
         gh_cmd=gh_cmd, expected_actor=expected_actor, operation=CURRENT_OPERATION, dedupe_body=True)
@@ -4630,14 +4703,18 @@ def cmd_create(args: argparse.Namespace) -> None:
                                         event=json.loads(args.event) if getattr(args, "event", None) else None,
                                         recheck=getattr(args, "recheck", None))
             github_comment_core.validate_planning_references(wait, repo)
+            director_question_gate.attach_asks(repo.split("/")[0], wait, getattr(args, "ask_url", None) or [])
         except ValueError as exc:
             raise PlanError(str(exc)) from exc
+        if any(dependency_references({"repo": repo, "number": 0}, entry) for entry in wait["waits"]):
+            raise PlanError("A wait on another issue or PR is a native blocker: create this issue without that "
+                            "--waiting-for, then run gh-plan.py wait or link on it.")
         require_recheck_dates(repo, wait)
     elif (getattr(args, "ends_when", None) or getattr(args, "wait_evidence", None)
           or any(getattr(args, field, None) for field in ("release_product", "release_commit", "release_next_action", "not_before", "event", "recheck"))):
         raise PlanError("Choose --wait-clear or --waiting-for with --ends-when and --wait-evidence")
     if wait is not None:
-        require_asked_director_wait(repo, wait, creating=True)
+        require_asked_wait(repo, wait, creating=True)
     release_summary = wait_summary(wait) if wait and any("release" in entry or "recheck" in entry for entry in wait["waits"]) else ""
     completed_steps: list[str] = []
     actor, exact = find_existing_plan_issues(repo, title, completed_steps=completed_steps)
@@ -5896,6 +5973,7 @@ def next_wait_context(
     for item in selected:
         groups.setdefault(item["repo"], []).append(item)
     reports: list[dict[str, Any]] = []
+    asks: list[dict[str, Any]] = []
     complete = inventory_complete and (scan_limit is None or len(unique) <= scan_limit)
     references: dict[str, dict[str, Any]] = {}
     checked = 0
@@ -5918,7 +5996,7 @@ def next_wait_context(
             combined = group_reports[repo]
             combined["complete"] &= report["complete"]
             combined["checked"] += report["checked"]
-            for field in ("items", "checked_issues", "frozen_issues"):
+            for field in ("items", "asks", "checked_issues", "frozen_issues"):
                 combined[field].extend(report[field])
             for field in ("unavailable", "unresolved_references"):
                 for error in report[field]:
@@ -5946,6 +6024,7 @@ def next_wait_context(
     for repo, items in groups.items():
         report = group_reports[repo]
         reports.extend({**row, "repo": repo} for row in report["items"])
+        asks.extend({**ask, "repo": repo} for ask in report["asks"])
         for row in report["unavailable"]:
             if row["source"] == "repository":
                 unavailable.extend({**row, "repo": repo, "number": item["number"]} for item in items)
@@ -5998,7 +6077,7 @@ def next_wait_context(
                     complete = False
     return {"read_only": True, "complete": complete, "checked": checked, "items": reports,
             "repositories": repositories, "frozen_issues": frozen_issues,
-            "unavailable": unavailable, "unresolved_references": unresolved, "references": references,
+            "asks": asks, "unavailable": unavailable, "unresolved_references": unresolved, "references": references,
             "inventory_complete": inventory_complete, "scope": "evaluated_global_next_issues",
             "read_limit": budget, "read_count": len(read_paths),
             "checked_issues": checked_issue_refs}
@@ -6649,6 +6728,10 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
         evidence = stale.get((row["repo"].casefold(), row["number"]))
         row["stale_wait_evidence"] = evidence if evidence and "completion_proven" not in evidence else None
         row["review_required"] = True
+    asks = {(ask["repo"].casefold(), ask["number"], ask["waiting_for"]): ask for ask in wait_context["asks"]}
+    for row in [*ranked["waiting"], *ranked["recorded_waits"], *ranked["stale_waits"], *graph_waits]:
+        if ask := asks.get((row["repo"].casefold(), row["number"], row.get("waiting_for"))):
+            row["ask"] = ask
     ranked["client_context"] = {key: {field: value for field, value in record.items() if field != "login"} for key, record in client_records.items()}
     github_agent.filter_selection(ranked, github_agent.running_agent(getattr(args, "agent", None)))
     ranked["milestone_summary"] = github_direction_next.milestone_summary(
@@ -8104,6 +8187,7 @@ def build_parser() -> argparse.ArgumentParser:
     choice = p.add_mutually_exclusive_group()
     choice.add_argument("--clear", action="store_true", help="Record verified absence/resolution after full review")
     choice.add_argument("--waiting-for", action="append", help="Person, decision or external event; repeat for every wait")
+    p.add_argument("--ask-url", action="append", help="Comment that asks the named person; repeat per person wait, in order")
     p.add_argument("--ends-when", action="append", help="Observable ending condition; repeat in the same order as --waiting-for")
     p.add_argument("--evidence", help="Existing decision or full-record review evidence; grants no authority")
     p.add_argument("--release-product", help="Bind the first wait to this Launchplane product's next successful production release")
@@ -8130,6 +8214,7 @@ def build_parser() -> argparse.ArgumentParser:
     choice = p.add_mutually_exclusive_group()
     choice.add_argument("--wait-clear", action="store_true", help="Record reviewed absence of person/event/owner holds at creation")
     choice.add_argument("--waiting-for", action="append", help="Record every person/event hold; repeat per wait")
+    p.add_argument("--ask-url", action="append", help="Comment that asks the named person; repeat per person wait, in order")
     p.add_argument("--ends-when", action="append", help="Ending condition for each wait, in order")
     p.add_argument("--wait-evidence", help="Existing decision or full-record review evidence")
     p.add_argument("--release-product", help="Bind the first wait to this Launchplane product's next successful production release")

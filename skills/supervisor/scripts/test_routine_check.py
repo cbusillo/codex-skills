@@ -1071,6 +1071,21 @@ class PrimaryReadTests(unittest.TestCase):
         self.assertIn(routine_check.clock_label(self.now), header)
         self.assertRegex(routine_check.clock_label(self.now), r"\d{1,2}:\d{2} [AP]M \S+$")
 
+    def test_wait_rows_show_the_ask_author_and_reply(self) -> None:
+        asked = {"url": "https://github.com/owner/repo/issues/120", "waiting_for": "Justin confirms triggers",
+                 "ask": {"ask_url": "https://github.com/owner/repo/issues/120#issuecomment-5", "author": "helper-bot", "replied_since": False}}
+        missing = {"url": "https://github.com/owner/repo/issues/7", "waiting_for": "Justin builds the guest",
+                   "ask": {"ask_url": None, "author": None, "replied_since": None}}
+        unknown = {"url": "https://github.com/owner/repo/issues/8", "waiting_for": "Justin reviews",
+                   "ask": {"ask_url": "https://github.com/owner/repo/issues/8#issuecomment-6", "author": None, "replied_since": None}}
+        event = {"url": "https://github.com/owner/repo/issues/9", "waiting_for": "A free worker slot"}
+        lines = self.run_digest({"milestone_summary": [{"milestone": "M", "state": "waiting", "waits": [asked, missing, unknown, event]}]})
+        waits = [line for line in lines if line.startswith("WAIT")]
+        self.assertIn("by helper-bot replied=no", waits[0])
+        self.assertIn("ask=MISSING", waits[1])
+        self.assertIn("replied=UNKNOWN", waits[2])
+        self.assertNotIn("ask=", waits[3])
+
     def test_stale_items_repeat_with_their_age_and_evidence(self) -> None:
         stale = {"url": "https://github.com/owner/repo/issues/1", "evidence": [{"kind": "overdue_recheck", "recorded_at": "2026-11-04T00:00:00Z", "matched": "Waiting for proof"}]}
         selection = {"stale_wait_report": {"items": [stale]}}

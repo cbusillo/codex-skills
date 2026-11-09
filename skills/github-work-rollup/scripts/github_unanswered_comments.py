@@ -1314,6 +1314,11 @@ def comment_states_for_thread(
 
 names_director = github_plan_wait.names_recipient
 
+
+def asserted_step(reason: str) -> str:
+    return re.sub(r"\b(?:no|not|nothing|without|never)\b[^.;]*", "", github_plan_wait.first_step(reason), flags=re.IGNORECASE)
+
+
 def current_director_wait(
     reason: str, terms: list[str], logins: set[str] | frozenset[str] = frozenset()
 ) -> str | None:
@@ -1326,10 +1331,7 @@ def current_director_wait(
     pending decision, but not attention on its own. Anything else is a
     ``decision``.
     """
-    current = re.split(
-        r"(?:[,;]\s*|\s+)(?:then|thereafter|followed by|after which)\b", reason, maxsplit=1, flags=re.IGNORECASE
-    )[0]
-    asserted = re.sub(r"\b(?:no|not|nothing|without|never)\b[^.;]*", "", current, flags=re.IGNORECASE)
+    asserted = asserted_step(reason)
     if not names_director(asserted, terms, logins):
         return None
     if re.search(r"\b(?:resum\w*|park\w*|holds?|select\w*|reprioriti\w*|revisit\w*)\b", asserted, re.IGNORECASE):

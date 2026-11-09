@@ -1400,7 +1400,7 @@ def milestone_summary(
         reviews: list[dict[str, Any]] = []
         for row in graph_waits:
             record = {"repo": row["repo"], "number": row["number"], "url": row["url"],
-                      "waiting_for": row.get("waiting_for")}
+                      "waiting_for": row.get("waiting_for"), **({"ask": row["ask"]} if row.get("ask") else {})}
             target = reviews if (row.get("source") == "legacy_wait_review" or row.get("wait_review_required")) and row.get("plan_status") != "waiting" else waits
             if ((row.get("milestone") or {}).get("title") == title or title in (row.get("overall_milestone_context") or {}).get("titles", [])) and record not in target:
                 target.append(record)

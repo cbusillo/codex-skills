@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["PyYAML==6.0.3"]
 # ///
 """Tests for the read-only direction audit. Each case plants a real drift."""
 
@@ -2263,6 +2263,72 @@ def drift_report(module: Any, row: dict[str, Any], responses: dict[str, Any]) ->
     return module.stale_wait_report([row], "owner/catalog", fetch=drift_fetch(responses), now=dt.datetime(2026, 11, 9, tzinfo=dt.UTC))
 
 
+def people_book(module: Any) -> Any:
+    book = {"justin": frozenset({"justin-login"}), "justin-login": frozenset({"justin-login"})}
+    return patch.object(module.director_question_gate, "address_book", return_value=book)
+
+
+def test_person_wait_with_no_ask_link_is_stale_and_keeps_its_hold() -> None:
+    module = load()
+    wait = drift_wait("Justin creates the docker-tk-prod guest", "The guest exists", recheck="2026-11-20")
+    with people_book(module):
+        report = drift_report(module, {**issue(7, "Guest"), "state": "open", "structured_wait": wait}, {})
+    assert [row["kind"] for row in report["items"][0]["evidence"]] == ["ask_link_missing"]
+    assert report["items"][0]["keeps_wait"] is True
+    assert report["asks"][0]["ask_url"] is None
+
+
+def test_person_wait_reports_the_ask_author_and_whether_they_replied() -> None:
+    module = load()
+    ask = drift_comment(5, 7, "Please confirm the guest, @justin-login", author="helper-bot")
+    wait = drift_wait("Justin creates the guest", "The guest exists", ask_url=ask["html_url"], recheck="2026-11-20")
+    with people_book(module):
+        asked = drift_report(module, {**issue(7, "Guest"), "state": "open", "structured_wait": wait}, {"repos/owner/catalog/issues/7/comments": [ask]})
+        replied = drift_report(module, {**issue(7, "Guest"), "state": "open", "structured_wait": wait},
+                               {"repos/owner/catalog/issues/7/comments": [ask, drift_comment(6, 7, "Done on Friday", author="justin-login")]})
+    assert (asked["asks"][0]["author"], asked["asks"][0]["replied_since"]) == ("helper-bot", False)
+    assert replied["asks"][0]["replied_since"] is True
+    assert not any(row["kind"] == "ask_link_missing" for item in asked["items"] for row in item["evidence"])
+
+
+def test_a_later_comment_never_ends_or_clears_a_person_wait() -> None:
+    module = load()
+    ask = drift_comment(5, 7, "Please accept the release, @justin-login", author="helper-bot")
+    wait = drift_wait("Justin accepts the release", "Launchplane records acceptance", ask_url=ask["html_url"], recheck="2026-11-20")
+    with people_book(module):
+        report = drift_report(module, {**issue(7, "Release"), "state": "open", "structured_wait": wait},
+                              {"repos/owner/catalog/issues/7/comments": [ask, drift_comment(6, 7, "Looks good!", author="justin-login")]})
+    assert report["items"] == []
+    assert wait["state"] == "waiting"
+
+
+def test_wait_naming_a_closed_issue_is_stale_from_either_field() -> None:
+    module = load()
+    closed = {"state": "closed", "state_reason": "completed", "closed_at": "2026-10-31T00:00:00Z", "html_url": "https://github.com/owner/catalog/issues/4555"}
+    for waiting_for, ends_when in (("OPW testing admission on owner/catalog#4555", "Admission recorded"), ("Runner capacity", "owner/catalog#4555 closes")):
+        wait = drift_wait(waiting_for, ends_when, recheck="2026-11-20")
+        report = drift_report(module, {**issue(7, "Admission"), "state": "open", "structured_wait": wait}, {"repos/owner/catalog/issues/4555": closed})
+        assert [row["kind"] for row in report["items"][0]["evidence"]] == ["closed_dependency"]
+        assert report["items"][0]["keeps_wait"] is True
+
+
+def test_genuine_event_waits_report_no_ask() -> None:
+    module = load()
+    wait = drift_wait("A free Anthropic fleet worker slot", "A slot opens", recheck="2026-11-20")
+    report = drift_report(module, {**issue(7, "Slot"), "state": "open", "structured_wait": wait}, {})
+    assert report["asks"] == []
+    assert report["items"] == []
+
+
+def test_director_wait_with_its_question_in_old_evidence_is_not_called_unasked() -> None:
+    module = load()
+    question = drift_comment(1, 7, "Director question: **Q71. Which layout?**", author="helper-bot")
+    wait = {**drift_wait("owner chooses the layout", "The owner answers"), "evidence": f"Asked in {question['html_url']}"}
+    report = drift_report(module, {**issue(7, "Layout"), "state": "open", "structured_wait": wait}, {"repos/owner/catalog/issues/7/comments": [question]})
+    assert report["asks"][0]["ask_url"] == question["html_url"]
+    assert not any(row["kind"] == "ask_link_missing" for item in report["items"] for row in item["evidence"])
+
+
 def test_wait_citing_an_answered_question_is_stale_with_the_decisions_age() -> None:
     module = load()
     question = drift_comment(1, 7, "Director question: **Q71. Which layout?**", created="2026-11-05T05:41:00Z")
@@ -2307,7 +2373,7 @@ def test_a_decision_that_only_resembles_the_wait_is_not_matched() -> None:
     assert report["items"] == []
     uncited = drift_wait("The Director's layout choice", "A choice is recorded")
     report = drift_report(module, {**issue(8, "Layout"), "state": "open", "structured_wait": uncited}, {"repos/owner/catalog/issues/8/comments": [decision]})
-    assert report["items"] == []
+    assert not any(row["kind"] == "recorded_decision" for item in report["items"] for row in item["evidence"])
 
 
 def test_wait_on_evidence_the_issue_says_was_not_kept_is_impossible() -> None:
@@ -2388,7 +2454,7 @@ def test_past_recheck_date_is_stale_including_on_an_open_pull_request() -> None:
     assert report["items"][0]["evidence"][0]["kind"] == "overdue_recheck"
     assert report["items"][0]["evidence"][0]["age_days"] == 5
     for not_past in ("2026-12-01", "2026-11-09"):
-        future = {**row, "structured_wait": drift_wait("Director decision", "Chris answers", recheck=not_past)}
+        future = {**row, "structured_wait": drift_wait("A vendor quote", "It arrives", recheck=not_past)}
         assert drift_report(module, future, {})["items"] == []
 
 
@@ -2404,7 +2470,7 @@ def test_stale_waits_only_finds_a_wait_recorded_in_a_comment() -> None:
 
 def test_unreadable_discussion_is_incomplete_not_a_finding() -> None:
     module = load()
-    wait = drift_wait("Director's choice", "Q71 is answered")
+    wait = drift_wait("Layout choice", "Q71 is answered")
     report = drift_report(module, {**issue(7, "Layout"), "state": "open", "structured_wait": wait}, {"repos/owner/catalog/issues/7/comments": module.AuditError("denied")})
     assert report["items"] == []
     assert report["complete"] is False
@@ -3247,7 +3313,7 @@ def test_closeout_wait_preserves_real_holds_partial_stacks_and_unknown_history()
         held = {**row, "body": row["body"].replace("Waiting for: Supervisor delivery closeout.", patch_field),
                 "structured_wait": module.github_plan_wait.reviewed(evidence="Current request remains unresolved",
                     waiting_for=waiting_for, ends_when="The recorded request is completed")}
-        assert not module.stale_wait_report([held], "owner/catalog", fetch=current_repository_fetch(fetch))["items"]
+        assert all(item.get("keeps_wait") for item in module.stale_wait_report([held], "owner/catalog", fetch=current_repository_fetch(fetch))["items"])
     for change in ({"merged_at": None}, {"base": {"ref": "work/root"}}, {"body": "Refs #4"}):
         def incomplete(args: list[str]) -> Any:
             value = fetch(args)
@@ -3839,8 +3905,8 @@ def test_waiting_cross_repository_blocker_outside_milestones_is_a_named_finding(
     for changed in ({"state": "closed"}, {"structured_wait": github_plan_wait.reviewed(evidence="Test result recorded")}):
         assert "waiting_blocks_other_repository" not in kinds(run(module, issues=[{**gate, **changed}]))
 
-    held = github_plan_wait.reviewed(evidence="Client requested acceptance", waiting_for="Client acceptance",
-                                    ends_when="Client accepts the candidate")
+    held = github_plan_wait.reviewed(evidence="Vendor requested acceptance", waiting_for="Vendor acceptance",
+                                    ends_when="Vendor accepts the candidate")
     clear = github_plan_wait.reviewed(evidence="Client accepted the candidate")
     for cleared in (False, True):
         raw = {**issue(2554, "Delivery outside milestones", comments=1, body=(

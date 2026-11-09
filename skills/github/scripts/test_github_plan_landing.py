@@ -820,8 +820,8 @@ class MutationProjectionTests(unittest.TestCase):
 
     def test_wait_records_person_hold_and_refreshes_persisted_labels(self):
         original = self.records[7]["body"]
-        self.command("wait", "7", "--waiting-for", "Client acceptance", "--ends-when",
-                     "Client accepts the current head", "--evidence", "Client requested acceptance", "--recheck", "2026-12-01")
+        self.command("wait", "7", "--waiting-for", "Vendor acceptance", "--ends-when",
+                     "Vendor accepts the current head", "--evidence", "Vendor requested acceptance", "--recheck", "2026-12-01")
         observed = PLAN.current_wait(self.records[7], self.discussion[7], REPO)
         self.assertEqual(observed["state"], "waiting")
         self.assertEqual(self.records[7]["state"], "open")
@@ -903,8 +903,8 @@ class MutationProjectionTests(unittest.TestCase):
                 self.assertEqual(self.records[9]["title"], "Fix #550 regression")
 
     def test_create_with_actual_wait_persists_waiting_instead_of_default_active(self):
-        self.command("create", "Await acceptance", "--waiting-for", "Client acceptance", "--ends-when",
-                     "Client accepts", "--wait-evidence", "Client requested a test", "--recheck", "2026-12-01")
+        self.command("create", "Await acceptance", "--waiting-for", "Vendor acceptance", "--ends-when",
+                     "Vendor accepts", "--wait-evidence", "Vendor requested a test", "--recheck", "2026-12-01")
         observed = PLAN.current_wait(self.records[9], self.discussion[9], REPO)
         self.assertEqual(observed["state"], "waiting")
         self.assertEqual(self.records[9]["state"], "open")
