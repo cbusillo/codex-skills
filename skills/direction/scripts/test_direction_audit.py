@@ -2259,8 +2259,12 @@ def drift_comment(ident: int, issue_number: int, body: str, author: str = "owner
             "html_url": f"https://github.com/owner/catalog/issues/{issue_number}#issuecomment-{ident}"}
 
 
+def trusting_owner(module: Any) -> Any:
+    return patch.object(getattr(module, "github_plan_wait"), "authors", return_value={"owner"})
+
+
 def drift_report(module: Any, row: dict[str, Any], responses: dict[str, Any]) -> dict[str, Any]:
-    with patch(f"{module.github_plan_wait.__name__}.authors", return_value={"owner"}):
+    with trusting_owner(module):
         return module.stale_wait_report([row], "owner/catalog", fetch=drift_fetch(responses), now=dt.datetime(2026, 11, 9, tzinfo=dt.UTC))
 
 
@@ -2367,7 +2371,7 @@ def test_stale_waits_only_reads_a_status_on_an_issue_with_no_comments() -> None:
     module = load()
     status = "## Current Status\nRemaining: #11.\nLast verified: October 28, 2026.\n"
     row = {**issue(18, "Parent", body=status), "state": "open", "sub_issues_summary": {"total": 1}}
-    with patch(f"{module.github_plan_wait.__name__}.authors", return_value={"owner"}):
+    with trusting_owner(module):
         report = module.stale_wait_report([row], "owner/catalog", now=dt.datetime(2026, 11, 9, tzinfo=dt.UTC), read_waits=True,
                                           fetch=drift_fetch({"repos/owner/catalog/issues/18/sub_issues": [{"number": 11, "state": "closed"}]}))
     assert report["items"][0]["evidence"][0]["kind"] == "closed_children_status"
@@ -2398,7 +2402,7 @@ def test_stale_waits_only_finds_a_wait_recorded_in_a_comment() -> None:
     wait = drift_wait("Director decision", "Chris answers", recheck="2026-11-04")
     record = drift_comment(9, 188, f"Waiting.\n\n<!-- github-plan:wait {json.dumps(wait)} -->", created="2026-11-03T00:00:00Z")
     row = {**issue(188, "Fixture", comments=1), "state": "open", "pull_request": {}}
-    with patch(f"{module.github_plan_wait.__name__}.authors", return_value={"owner"}):
+    with trusting_owner(module):
         report = module.stale_wait_report([row], "owner/catalog", fetch=drift_fetch({"repos/owner/catalog/issues/188/comments": [record]}),
                                           now=dt.datetime(2026, 11, 9, tzinfo=dt.UTC), read_waits=True)
     assert report["items"][0]["evidence"][0]["kind"] == "overdue_recheck"

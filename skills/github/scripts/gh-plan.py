@@ -6563,9 +6563,10 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     for name, observed in graph_queue_context.get("repositories", {}).items():
         queue_context.setdefault("repositories", {}).setdefault(name, observed)
     NEXT_READS.start_phase("wait_evidence")
+    pull_waits: list[dict[str, Any]] = [{**item, "pull_request": {}, "structured_wait": item["queue"]["wait"]}
+                                        for item in pull_items if (item.get("queue") or {}).get("wait")]
     wait_context = next_wait_context(
-        [seeds[key] for key in evidence_keys if key in seeds]
-        + [{**item, "pull_request": {}, "structured_wait": item["queue"]["wait"]} for item in pull_items if (item.get("queue") or {}).get("wait")],
+        [*filter(None, map(seeds.get, evidence_keys)), *pull_waits],
         scan_limit=args.scan_limit * 2 if args.scan_limit is not None else None,
         inventory_complete=candidate_coverage_complete,
         reference_repositories={item["repo"] for item in discovery.get("repositories", [])},
