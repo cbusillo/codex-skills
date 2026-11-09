@@ -55,9 +55,10 @@ For chat and durable reports, read [talking with the Director](talking-with-the-
   in Current Status, names its lead or `agent:supervisor` as `Next actor:`,
   adds the parallel-session `Brief:` from the
   [brief rules](../supervisor/references/brief-rules.md), and releases its
-  claim, or files that handoff on a child issue if other work remains. Only
-  that lead or the Supervisor may assign the read to another session, after
-  confirming the direction permits it. When only the
+  claim, or files that handoff on a child issue if other work remains.
+  Whether another session may then run that read is the Director's to record;
+  without that decision the lead or Supervisor keeps the item waiting on it.
+  When only the
   Director can do the refused step by hand, post it as a `Director question:`
   on the item with the exact command and what happens after it runs, then
   record the wait; never leave it only in a comment. A command-policy

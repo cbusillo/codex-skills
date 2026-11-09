@@ -2999,8 +2999,8 @@ class TerminalTests(unittest.TestCase):
         self.assertNotIn(iterm_tab.CLAUDE_QUESTION_TOOL, iterm_tab.append_brief("codex --remote unix://", "brief"))
 
     def test_declared_production_read_leads_a_claude_prompt_and_changes_no_permission(self) -> None:
-        def launched(command: str, brief: str) -> tuple[list[str], str]:
-            words = shlex.split(iterm_tab.append_brief(command, brief))
+        def launched(command: str, text: str) -> tuple[list[str], str]:
+            words = shlex.split(iterm_tab.append_brief(command, text))
             return words[: words.index("--")], words[words.index("--") + 1]
 
         read = "health payload of owner/app production over the private operations path"

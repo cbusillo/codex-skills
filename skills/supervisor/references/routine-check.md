@@ -120,8 +120,8 @@ decisions, statuses or narrative; open linked records for action.
    value means the signal is unavailable; say so and continue. Refill
    available capacity, handle `STALE` rows and deferred-question conditions,
    and act on the oldest `SUPERVISOR_ACTION` rows and unasked Director waits.
-   Start a `PRODUCTION_READ_REFUSED` row as its route says, after confirming
-   the overall direction permits that read.
+   A `PRODUCTION_READ_REFUSED` row's route opens only under a recorded
+   Director decision; until then record a wait on that decision.
    A `SUPERVISOR_ACTION` repeats as an error after one interval until its issue
    names another actor, a wait or a claim. Nudge stalls with exact evidence and process finished
    notices immediately. Polling watchers keep own automation question notices and
