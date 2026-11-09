@@ -603,7 +603,8 @@ installed local helper bindings.
   `product-profile-read` for direct repository matches. The dedicated mapping read is
   GET-only; it is not an exposed write-action CLI command. It answers Client,
   Director standing (every mapped Client product releases on
-  `director_standing`), no Client, or unknown. Missing credentials, a failed
+  `director_standing` or Launchplane reports `client_is_director` for it), no
+  Client, or unknown. Missing credentials, a failed
   read, an ambiguous or malformed mapping, or a mismatched profile answer
   unknown, which keeps the Client path and is
   never an exemption. The [ready handoff rule](../../github/references/cli-reference.md#ready-handoffs)
