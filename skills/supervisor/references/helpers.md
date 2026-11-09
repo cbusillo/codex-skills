@@ -1315,9 +1315,6 @@ and appends its brief verbatim under the header,
 normalizing CRLF line endings to LF for terminal transport. The header owns
 token, anchor, admission and rules; matching labels in the task are context only.
 Repeat both brief options in command-file order for a batch.
-A brief line starting `Production read:` that names the exact read and target
-puts a short notice first on a Claude launch; it never refuses the launch or
-changes a permission.
 For an already authorized ordinary retained-source prerequisite with `--brief-issue`,
 the standard header may also carry `Resume from: <exact-source-claim-comment-URL>` and
 `Wait resolution: <verified existing scoped authority and retained hold evidence>`.

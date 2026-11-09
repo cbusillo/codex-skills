@@ -56,15 +56,19 @@ For chat and durable reports, read [talking with the Director](talking-with-the-
   adds the parallel-session `Brief:` from the
   [brief rules](../supervisor/references/brief-rules.md), and releases its
   claim, or files that handoff on a child issue if other work remains.
-  Whether another session may then run that read is the Director's to record;
-  without that decision the lead or Supervisor keeps the item waiting on it.
-  When only the
+  The lead or Supervisor then sends that permitted read to a session whose
+  guard allows it; the refused session never reroutes it itself. When only the
   Director can do the refused step by hand, post it as a `Director question:`
   on the item with the exact command and what happens after it runs, then
   record the wait; never leave it only in a comment. A command-policy
   message that names the helper to run instead is the supported route, not a
   refusal. When the refusal is wrong for in-scope work, fix its cause as the
-  overall direction says; never ask for a grant to get around it.
+  [overall direction](https://github.com/cbusillo/direction/blob/HEAD/DIRECTION.md#stop-boundaries)
+  says; never ask for a grant to get around it. Teaching a harness guard what
+  that direction already allows, through the guard's own narrow configuration,
+  is a tool fix and not a question for the Director. Real access boundaries,
+  Client data protection and production write and promotion gates stay as they
+  are, and a refusal that protects one of them is never handed off this way.
 - When delegating to a helper agent, write the actions it may take, including
   each kind of GitHub write, into the agent's prompt itself. Claude Code's auto
   mode judges authority from the prompt and treats a file the agent reads as

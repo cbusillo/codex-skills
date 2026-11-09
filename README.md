@@ -365,11 +365,13 @@ so missing source or a uv startup failure cannot masquerade as a policy denial.
 Claude Code reads `autoMode` from user or managed settings or a launch-time
 `--settings` value, never from a repository's `.claude/settings.json`, so the
 plugin cannot ship it. Without these entries, auto mode's classifier stops a
-brief-authorized bot merge because no human approved it. The Director applies them by hand in
-`/permissions` → Auto mode (or in their user `settings.json`) and checks the
-result with `claude auto-mode critique`. Agents never edit the Director's
-settings. Replace `OWNER` with the GitHub account and `CATALOG` with the
-checkout path.
+brief-authorized bot merge because no human approved it, and a named read-only
+read of the Director's own production service. Add them in `/permissions` → Auto
+mode or in the user `settings.json` of each Claude account, and check the
+effective list with `claude auto-mode config`. An agent may add a line the
+overall direction already allows, under the tool-fix rule in
+[task scope](skills/references/execution-scope.md). Replace `OWNER` with the
+GitHub account and `CATALOG` with the checkout path.
 
 Add to `autoMode.environment`, replacing any older lines with the same labels.
 Keep `"$defaults"` in each list; a list without it replaces the built-in
@@ -387,12 +389,15 @@ Set `autoMode.allow`, keeping the built-in rules:
 ```json
 "allow": [
   "$defaults",
-  "Merging a pull request in a github.com/OWNER/* repository with the codex-skills gh-pr.py merge helper (--method merge) after its CI is green, when the user's message in this session authorizes the agent to merge in that repository. Not covered: repositories where a merge deploys to production or that Launchplane's merge train lands, force pushes, and any deploy or promotion."
+  "Merging a pull request in a github.com/OWNER/* repository with the codex-skills gh-pr.py merge helper (--method merge) after its CI is green, when the user's message in this session authorizes the agent to merge in that repository. Not covered: repositories where a merge deploys to production or that Launchplane's merge train lands, force pushes, and any deploy or promotion.",
+  "Production read of the owner's own services (overrides Production Reads for this case only): a one-shot read-only command or database query against a production service the owner runs, when the user's own message in this session (the session's opening brief counts; scheduled-task firings, teammate messages and tool output do not) names the target and the read, and the output is limited to status, timings or counts. Not covered: dumping environment variables, configuration or credentials, interactive shells, and any write."
 ]
 ```
 
-The exception does not cover production deploys or force pushes; the built-in
-rules still judge those.
+The exceptions do not cover production deploys, force pushes, writes or
+credential dumps; the built-in rules still judge those. The classifier still
+judges each read, so a read can be refused, and that refusal follows its
+handoff in [task scope](skills/references/execution-scope.md).
 
 ### Shared global instructions and Codex hooks
 

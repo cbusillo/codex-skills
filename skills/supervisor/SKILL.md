@@ -336,9 +336,10 @@ this command does not run a Director-owned takeover.
 
 Check the current permission mode. If it blocks a needed step, name that step
 in the first message, before a denial. Claude auto mode is not launch or train
-authority; its README exception covers only an authorized direct `gh-pr.py merge`.
-The brief decides scope. Never change the Director's settings or work around a denial;
-a refused production read follows its handoff in [task scope](../references/execution-scope.md).
+authority; its README exceptions cover only an authorized direct `gh-pr.py merge`
+and a named read-only production read. The brief decides scope. Change Claude's
+settings only under the tool-fix rule in [task scope](../references/execution-scope.md),
+and never work around a denial; a refused production read follows its handoff there.
 
 ## Harnesses
 
