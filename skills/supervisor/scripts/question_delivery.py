@@ -9,9 +9,10 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import fcntl
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -163,6 +164,8 @@ def inventory(source_comments, queue_comments, owner, decision_authors, now=None
     source_authors = {c["url"]: (c.get("author") or "") for c in source_comments}
     source_updates = {c["url"]: c.get("updated_at") for c in source_comments}
     withdrawn = oq.question_records.supervisor_settled_questions([*source_comments, *answers], trusted, asker_only=True)
+    answered_urls = [question["url"] for question in found
+                     if question["status"] == "answered" and question["url"] in registrations]
     for question in found:
         if question["status"] == "answered" or question["url"] in withdrawn:
             continue
@@ -207,6 +210,7 @@ def inventory(source_comments, queue_comments, owner, decision_authors, now=None
     untrusted = [q["url"] for q in rows if q.get("author_trusted") is False]
     unnumbered = [q["url"] for q in rows if q.get("needs_repair")]
     return {"complete": not (missing or untrusted or unnumbered), "queue_length": len(rows), "questions": rows,
+            "answered_urls": answered_urls,
             "unnumbered_sources": unnumbered,
             "missing_sources": missing, "untrusted_sources": untrusted,
             "untrusted_records": untrusted_records,
@@ -225,6 +229,31 @@ def run_queue(args, fetch):
     return reconcile(args, fetch)
 
 
+ANSWERED_REFRESH = timedelta(days=1)
+
+
+def answered_path() -> Path:
+    return counter_path().with_name("director-questions-answered.json")
+
+
+def known_answered(now: datetime) -> tuple[set[str], datetime]:
+    try:
+        data = json.loads(answered_path().read_text())
+        checked = datetime.fromisoformat(data["checked_at"])
+        answered = {url for url in data["answered"] if isinstance(url, str)}
+    except (OSError, ValueError, KeyError, TypeError):
+        return set(), now
+    return (answered, checked) if now - checked < ANSWERED_REFRESH else (set(), now)
+
+
+def save_answered(answered: set[str], checked_at: datetime) -> None:
+    path = answered_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps({"checked_at": checked_at.isoformat(), "answered": sorted(answered)}) + "\n")
+    temporary.replace(path)
+
+
 def reconcile(args, fetch):
     trusted = {author.casefold() for author in [args.owner, *args.decision_author]}
     queue_comments = fetch(args.queue)
@@ -232,7 +261,9 @@ def reconcile(args, fetch):
     targets = {value for value in args.items if COMMENT_URL.fullmatch(value)}
     if args.register and not targets:
         raise ValueError("registration requires exact original question URLs, not whole discussions")
-    registered = set() if targets else {r["question_url"] for r in existing}
+    now = datetime.now(timezone.utc)
+    answered, checked_at = known_answered(now)
+    registered = set() if targets else {r["question_url"] for r in existing} - answered
     active = {url for url in registered if not settled(url, queue_comments, args.owner, args.decision_author)}
     items = list(dict.fromkeys([*(source_item(value) if value in targets else value for value in args.items),
                                *(source_item(url) for url in sorted(active))]))
@@ -294,5 +325,8 @@ def reconcile(args, fetch):
             raise ValueError("question delivery record confirmation failed")
         queue_comments = [*queue_comments, saved]
     report = inventory(comments, queue_comments, args.owner, args.decision_author, question_urls=selected)
+    newly_answered = set(report.pop("answered_urls"))
+    if not targets and report["complete"] and not errors:
+        save_answered(answered | newly_answered, checked_at)
     return {"queue": args.queue, "scope": items, **report,
             "source_errors": errors, "complete": report["complete"] and not errors}
