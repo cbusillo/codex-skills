@@ -340,7 +340,7 @@ def legacy_lower_proven(lower: Path) -> bool:
     """Accept a pre-content label only when the job's frozen inventory proves this lower's exact files.
 
     Legacy labels embedded device and inode numbers that no record preserves, so they cannot be recomputed.
-    complete.json records file bytes only; everything else must match what input staging produces.
+    complete.json records file bytes only, so every entry must also be a plain staged entry owned by this receiver.
     """
     inventory = lower.parent.parent / "complete.json"
     if lower.parent.name != "inputs":
@@ -360,13 +360,12 @@ def legacy_lower_proven(lower: Path) -> bool:
     if not actual or actual != expected:
         return False
     recorded_directories = {parent for name in actual for parent in Path(name).parents}
-    owner = lower.lstat()
     for path in [lower, *lower.rglob("*")]:
         metadata = path.lstat()
         directory = stat.S_ISDIR(metadata.st_mode)
         if (
-            (metadata.st_uid, metadata.st_gid) != (owner.st_uid, owner.st_gid)
-            or stat.S_IMODE(metadata.st_mode) != container_input_mode(metadata.st_mode, directory=directory)
+            (metadata.st_uid, metadata.st_gid) != (os.geteuid(), os.getegid())
+            or stat.S_IMODE(metadata.st_mode) != (0o777 if directory else 0o666)
             or (directory and path.relative_to(lower) not in recorded_directories)
         ):
             return False

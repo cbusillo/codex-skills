@@ -232,14 +232,11 @@ class OverlayTests(unittest.TestCase):
                 self.docker.volumes = {}
 
     @staticmethod
-    def changed_stat(*, ino: int = 0, dev: int = 0, uid: int = 0, only: Path | None = None) -> AbstractContextManager[object]:
+    def changed_stat(*, ino: int = 0, dev: int = 0, uid: int = 0) -> AbstractContextManager[object]:
         original = Path.lstat
 
         def lstat(path: Path) -> os.stat_result:
-            metadata = original(path)
-            if only is not None and path != only:
-                return metadata
-            values = list(metadata[:10])
+            values = list(original(path)[:10])
             values[1] += ino
             values[2] += dev
             values[4] += uid
@@ -315,8 +312,8 @@ class OverlayTests(unittest.TestCase):
         def changed_bytes(lower: Path, _inventory: Path, _recorded: dict[str, str]) -> None:
             (lower / "attachment").write_bytes(b"unexpected host change")
 
-        def mode_staging_cannot_produce(lower: Path, _inventory: Path, _recorded: dict[str, str]) -> None:
-            (lower / "attachment").chmod(0o646)
+        def made_executable(lower: Path, _inventory: Path, _recorded: dict[str, str]) -> None:
+            (lower / "attachment").chmod(0o777)
 
         def added_empty_directory(lower: Path, _inventory: Path, _recorded: dict[str, str]) -> None:
             (lower / "unrecorded").mkdir()
@@ -335,7 +332,7 @@ class OverlayTests(unittest.TestCase):
             partial_inventory,
             recorded_file_removed,
             changed_bytes,
-            mode_staging_cannot_produce,
+            made_executable,
             added_empty_directory,
             aliased_inventory,
         ):
@@ -351,11 +348,11 @@ class OverlayTests(unittest.TestCase):
                 shutil.rmtree(self.root / "jobs")
                 shutil.rmtree(self.docker.root / "volumes")
 
-    def test_legacy_label_refuses_a_file_owned_by_someone_else(self) -> None:
+    def test_legacy_label_refuses_a_lower_owned_by_someone_else(self) -> None:
         lower, _inventory, _recorded = self.retained_lower()
         self.create_labeled_overlay(lower)
         self.relabel_legacy()
-        with self.changed_stat(uid=1, only=lower / "attachment"), self.assertRaises(RuntimeError):
+        with self.changed_stat(uid=1), self.assertRaises(RuntimeError):
             self.docker.cleanup_overlay_volumes()
         self.assertEqual(len(self.docker.volumes), 2)
 
