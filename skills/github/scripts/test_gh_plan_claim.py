@@ -6716,7 +6716,7 @@ class ClaimTests(unittest.TestCase):
         self.open_issues["/repos/owner/repo/issues"] = [{**self.issue, "number": 50, "html_url": "https://github.com/owner/repo/issues/50"}]
         self.record_merge_wait()
         coverage = self.assert_merge_wait_posted()
-        self.assertEqual(coverage["unread"], [])
+        self.assertEqual((coverage["unread"], coverage["read_repositories"], coverage["issues_read"]), ([], ["owner/repo"], 1))
         self.assertIn("UNKNOWN", coverage["other_repositories"])
 
     def test_a_holder_elsewhere_is_found_through_the_pull_requests_references(self) -> None:
@@ -6758,7 +6758,17 @@ class ClaimTests(unittest.TestCase):
     def test_unread_inventory_is_reported_and_is_not_read_as_unique(self) -> None:
         self.open_issues["/repos/owner/repo/issues"] = PLAN.PlanError("Unavailable")
         self.record_merge_wait()
-        self.assertTrue(self.assert_merge_wait_posted()["unread"])
+        coverage = self.assert_merge_wait_posted()
+        self.assertTrue(coverage["unread"])
+        self.assertEqual((coverage["read_repositories"], coverage["issues_read"]), ([], 0))
+
+    def test_an_issue_whose_discussion_cannot_be_read_is_not_counted_as_read(self) -> None:
+        self.target_comments["/repos/owner/repo/issues/60/comments"] = PLAN.PlanError("Unavailable")
+        self.open_issues["/repos/owner/repo/issues"] = [{**self.issue, "number": 60, "html_url": "https://github.com/owner/repo/issues/60"}]
+        self.record_merge_wait()
+        coverage = self.assert_merge_wait_posted()
+        self.assertTrue(coverage["unread"])
+        self.assertEqual(coverage["issues_read"], 0)
 
     def test_one_unreadable_issue_does_not_hide_a_holder_that_was_read(self) -> None:
         unread = {**self.issue, "number": 60, "html_url": "https://github.com/owner/repo/issues/60"}

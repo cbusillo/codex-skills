@@ -4590,8 +4590,13 @@ def merge_wait_holders(issue: dict[str, Any], urls: set[str]) -> tuple[list[dict
     pulls = [match for url in sorted(urls) if (match := github_plan_events.TARGET.fullmatch(url))]
     repositories = {repo.casefold(): repo for repo in (issue["repo"], *(pull[1] for pull in pulls))}
     candidates: dict[tuple[str, int], dict[str, Any]] = {}
+    read_repositories, issues_read = [], 0
     for repo in repositories.values():
-        for item in pages(f"/repos/{repo}/issues", state="open") or []:
+        listing = pages(f"/repos/{repo}/issues", state="open")
+        if listing is None:
+            continue
+        read_repositories.append(repo)
+        for item in listing:
             if "pull_request" not in item:
                 candidates[repo.casefold(), item["number"]] = {**item, "repo": repo}
     for pull in pulls:
@@ -4608,12 +4613,15 @@ def merge_wait_holders(issue: dict[str, Any], urls: set[str]) -> tuple[list[dict
         if comments is None:
             continue
         try:
-            if merge_event_urls(current_wait(item, comments, item["repo"])) & urls:
-                holders.append(item)
+            record = current_wait(item, comments, item["repo"])
         except ValueError as exc:
             unread.append(f"{item.get('html_url')}: {exc}")
-    return holders, {"pull_requests": sorted(urls), "read_repositories": sorted(repositories.values()),
-                     "issues_read": len(candidates), "unread": unread,
+            continue
+        issues_read += 1
+        if merge_event_urls(record) & urls:
+            holders.append(item)
+    return holders, {"pull_requests": sorted(urls), "read_repositories": sorted(read_repositories),
+                     "issues_read": issues_read, "unread": unread,
                      "other_repositories": "UNKNOWN beyond open issues that reference the pull request"}
 
 

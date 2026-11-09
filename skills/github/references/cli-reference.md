@@ -1259,8 +1259,15 @@ forward, so no condition is dropped. A second wait on a blocker another open
 issue already holds is refused with a pointer to it; `gh-plan.py link` to that
 issue, or close this one as its duplicate. A wait that names a pull request
 needs `--event` with `pr_merged`, because GitHub refuses a pull request as a
-native blocker (`Target issue may only be an issue`); who waits on a given PR
-cannot be listed, so those waits are not duplicate-checked.
+native blocker (`Target issue may only be an issue`). A second such wait on the
+same pull request is refused with a pointer to the first holder, found by
+reading the current wait record of every open issue in this repository and the
+pull request's, and of open issues elsewhere that reference it. `gh-plan.py
+link` to that holder, close this issue as its duplicate, or name a different
+condition without the pull request. Tracks, pull request records and an issue
+re-recording its own wait are not refused. The result's `merge_wait_coverage`
+lists what was read; unread records and other repositories are UNKNOWN, not
+proof the wait is the first.
 
 `next` and the routine digest show each person wait's ask link, its author and
 whether the person has commented since. A missing or deleted ask, and a named
