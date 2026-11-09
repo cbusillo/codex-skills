@@ -337,7 +337,7 @@ def container_copy_mode(info: tarfile.TarInfo) -> tarfile.TarInfo:
 
 
 def legacy_lower_proven(lower: Path) -> bool:
-    """Accept a pre-content label only when the job's frozen inventory proves this lower's exact files.
+    """Accept a pre-content label only when the job's frozen inventory proves the exact files in this lower.
 
     Legacy labels embedded device and inode numbers that no record preserves, so they cannot be recomputed.
     complete.json records file bytes only, so every entry must also be a plain staged entry owned by this receiver.

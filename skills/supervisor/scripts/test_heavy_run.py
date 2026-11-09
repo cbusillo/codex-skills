@@ -337,10 +337,10 @@ class OverlayTests(unittest.TestCase):
             aliased_inventory,
         ):
             with self.subTest(damage=damage.__name__):
-                lower, inventory, recorded = self.retained_lower()
-                self.create_labeled_overlay(lower)
+                staged = self.retained_lower()
+                self.create_labeled_overlay(staged[0])
                 self.relabel_legacy()
-                damage(lower, inventory, recorded)
+                damage(*staged)
                 with self.assertRaises(RuntimeError):
                     self.docker.cleanup_overlay_volumes()
                 self.assertEqual(len(self.docker.volumes), 2)
