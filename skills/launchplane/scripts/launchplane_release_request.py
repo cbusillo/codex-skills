@@ -289,6 +289,8 @@ def _settle_uncertain_post(
         return _finish(h, intent, "outcome_unknown", diagnostics=diagnostics)
     if (saved := _matching_request(state, intent)) is not None:
         return _finish_recorded(h, settings, intent, state, acceptance, saved, readback=True)
+    if _recorded_differently(state, intent):
+        return _finish(h, intent, "conflict", diagnostics=diagnostics)
     return _finish(h, intent, status, refusal=refusal, diagnostics=diagnostics)
 
 
