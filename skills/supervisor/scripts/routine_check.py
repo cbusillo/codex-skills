@@ -305,7 +305,7 @@ def primary_reads(selection: dict, sessions: list[dict], *, owner_review: Callab
 
 
 def ask_note(row: dict) -> str:
-    ask = row.get("ask")
+    ask = row.get("ask") or {}
     if not ask:
         return ""
     if ask["ask_url"] is None:

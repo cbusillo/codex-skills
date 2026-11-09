@@ -16,6 +16,7 @@ os.environ["CODEX_SKILLS_ENV_FILE"] = "/definitely/missing/codex-skills-test.env
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import director_question_gate as gate
+import github_client
 import github_identity
 import github_plan_wait
 import question_delivery
@@ -61,7 +62,7 @@ class DirectorQuestionGateTests(unittest.TestCase):
         self.queue_reads = 0
         for patcher in (patch.object(gate, "director_terms", side_effect=lambda owner: [owner, "Chris", "Director"]),
                         patch.object(gate, "address_book", side_effect=lambda owner: BOOK),
-                        patch("github_client.recorded_client", return_value={"status": "none"}),
+                        patch.object(github_client, "recorded_client", return_value={"status": "none"}),
                         patch.object(gate, "configured_queue", side_effect=lambda: self.queue),
                         patch.object(github_identity, "configured_bot_logins", return_value=[BOT]),
                         patch.object(github_identity, "automation_login", return_value=BOT)):
@@ -166,7 +167,7 @@ class DirectorQuestionGateTests(unittest.TestCase):
 
     def test_a_recorded_client_must_be_the_one_mentioned(self) -> None:
         with patch.dict(COMMENTS, {37: comment(37, BOT, "Please confirm, @someone-else.")}), \
-                patch("github_client.recorded_client", return_value={"status": "recorded", "login": "real-client"}):
+                patch.object(github_client, "recorded_client", return_value={"status": "recorded", "login": "real-client"}):
             self.assertIsNotNone(self.gap(wait("Client accepts the deletion candidate", link(37))))
 
     def test_an_ask_mentioning_someone_else_does_not_count(self) -> None:
@@ -198,22 +199,26 @@ class DirectorQuestionGateTests(unittest.TestCase):
             {"url": link(11), "author": BOT, "body": "Asking @justin-login"},
             {"url": link(12), "author": "someone", "body": "unrelated"},
         ]
-        status = gate.ask_status("director", wait("Justin creates the guest", link(11)), wait("Justin creates the guest", link(11))["waits"][0],
-                                 trusted={BOT.casefold(), "director"}, read_thread=lambda repo, number: thread)
+        status = self.status(wait("Justin creates the guest", link(11)), thread)
         self.assertEqual((status["author"], status["replied_since"]), (BOT, False))
         thread.append({"url": link(13), "author": "justin-login", "body": "Done, thanks"})
-        status = gate.ask_status("director", wait("Justin creates the guest", link(11)), wait("Justin creates the guest", link(11))["waits"][0],
-                                 trusted={BOT.casefold(), "director"}, read_thread=lambda repo, number: thread)
+        status = self.status(wait("Justin creates the guest", link(11)), thread)
         self.assertEqual((status["author"], status["replied_since"]), (BOT, True))
 
     def test_status_is_unknown_when_the_thread_cannot_be_read_and_empty_for_events(self) -> None:
         record = wait("Justin creates the guest", link(11))
-        status = gate.ask_status("director", record, record["waits"][0], trusted=set(), read_thread=lambda repo, number: None)
+        status = self.status(record, None)
         self.assertEqual((status["ask_url"], status["author"], status["replied_since"], status["found"]), (link(11), None, None, None))
-        deleted = gate.ask_status("director", record, record["waits"][0], trusted=set(), read_thread=lambda repo, number: [])
-        self.assertIs(deleted["found"], False)
+        self.assertIs(self.status(record, [])["found"], False)
         record = wait("A free Anthropic fleet worker slot")
-        self.assertIsNone(gate.ask_status("director", record, record["waits"][0], trusted=set(), read_thread=lambda repo, number: None))
+        self.assertIsNone(gate.ask_status("director", record["evidence"], record["waits"][0], trusted=set(), read_thread=lambda _repo, _number: None))
+
+    @staticmethod
+    def status(record: dict[str, Any], thread: list[dict[str, Any]] | None) -> dict[str, Any]:
+        status = gate.ask_status("director", record["evidence"], record["waits"][0], trusted={BOT.casefold(), "director"},
+                                 read_thread=lambda _repo, _number: thread)
+        assert status is not None
+        return status
 
     def test_without_a_configured_queue_a_numbered_question_suffices(self) -> None:
         self.queue = None

@@ -2265,7 +2265,7 @@ def drift_report(module: Any, row: dict[str, Any], responses: dict[str, Any]) ->
 
 def people_book(module: Any) -> Any:
     book = {"justin": frozenset({"justin-login"}), "justin-login": frozenset({"justin-login"})}
-    return patch.object(module.director_question_gate, "address_book", return_value=book)
+    return patch.multiple(module.director_question_gate, address_book=lambda _owner: book)
 
 
 def test_person_wait_with_no_ask_link_is_stale_and_keeps_its_hold() -> None:

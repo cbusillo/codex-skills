@@ -41,9 +41,9 @@ def first_step(text: str) -> str:
 
 
 def agent_step(actor: str) -> bool:
-    current = first_step(actor).strip()
-    return (re.match(r"(?i)^(?:the\s+|next\s+)?(?:agents?|supervisor)(?:\b|:)", current) is not None
-            or NAMED_AGENT.search(current) is not None)
+    step = first_step(actor).strip()
+    return (re.match(r"(?i)^(?:the\s+|next\s+)?(?:agents?|supervisor)(?:\b|:)", step) is not None
+            or NAMED_AGENT.search(step) is not None)
 
 
 def reviewed(*, evidence: str, waiting_for: str | list[str] | None = None,

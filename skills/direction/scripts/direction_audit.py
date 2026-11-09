@@ -1015,7 +1015,7 @@ def record_drift(
                 kind = "impossible_ends_when" if target.get("state_reason") in {"not_planned", "duplicate"} else "closed_dependency"
                 evidence.append({"kind": kind, "url": target.get("html_url") or f"https://github.com/{target_repo}/issues/{target_number}",
                                  "recorded_at": target.get("closed_at"), "ends_when": entry["ends_when"], "state_reason": target.get("state_reason")})
-        ask = director_question_gate.ask_status(repo.split("/")[0], wait, entry, trusted=trusted, read_thread=discussion)
+        ask = director_question_gate.ask_status(repo.split("/")[0], str((wait or {}).get("evidence") or ""), entry, trusted=trusted, read_thread=discussion)
         if ask is not None:
             asks.append({"number": number, **ask})
             if ask["ask_url"] is None:

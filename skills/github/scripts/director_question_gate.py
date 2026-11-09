@@ -196,9 +196,9 @@ def ask_gap(repo: str, wait: dict[str, Any], *, read_comment: Callable[[str], An
     trusted = github_plan_wait.authors(repo)
     registered = functools.cache(lambda: registered_question_ids(queue, read_pages))
 
-    def director_asked(comment: dict[str, Any], url: str) -> bool:
-        return is_director_record(comment, owner, trusted) or (is_numbered_question(comment, trusted) and (
-            queue is None or COMMENT_LINK.fullmatch(url)[3] in registered()))
+    def director_asked(asked: dict[str, Any], asked_url: str) -> bool:
+        return is_director_record(asked, owner, trusted) or (is_numbered_question(asked, trusted) and (
+            queue is None or COMMENT_LINK.fullmatch(asked_url)[3] in registered()))
 
     for entry, person in person_waits(owner, wait):
         url = entry.get("ask_url")
@@ -214,23 +214,22 @@ def ask_gap(repo: str, wait: dict[str, Any], *, read_comment: Callable[[str], An
     return None
 
 
-def ask_status(owner: str, wait: dict[str, Any], entry: dict[str, Any], *, trusted: set[str],
+def ask_status(owner: str, evidence: str, entry: dict[str, Any], *, trusted: set[str],
                read_thread: Callable[[str, int], list[dict[str, Any]] | None]) -> dict[str, Any] | None:
     person = asked_person(owner, entry["waiting_for"])
     if person is None:
         return None
-    status: dict[str, Any] = {"waiting_for": entry["waiting_for"], "ask_url": entry.get("ask_url"), "author": None,
-                              "replied_since": None, "found": None}
-    if status["ask_url"] is None and person.director and (
-            link := COMMENT_LINK.search(f"{entry['waiting_for']} {entry['ends_when']} {wait['evidence']}")):
-        status["ask_url"] = link[0]
-    if status["ask_url"] is None:
+    ask_url = entry.get("ask_url")
+    if ask_url is None and person.director and (cited := COMMENT_LINK.search(f"{entry['waiting_for']} {entry['ends_when']} {evidence}")):
+        ask_url = cited[0]
+    status: dict[str, Any] = {"waiting_for": entry["waiting_for"], "ask_url": ask_url, "author": None, "replied_since": None, "found": None}
+    if ask_url is None:
         return status
-    link = COMMENT_LINK.fullmatch(status["ask_url"])
+    link = COMMENT_LINK.fullmatch(ask_url)
     thread = read_thread(link[1], int(link[2]))
     if thread is None:
         return status
-    position = next((index for index, row in enumerate(thread) if row["url"].casefold() == status["ask_url"].casefold()), None)
+    position = next((index for index, row in enumerate(thread) if row["url"].casefold() == ask_url.casefold()), None)
     if position is None:
         return {**status, "found": False}
     ask = thread[position]

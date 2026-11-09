@@ -6680,7 +6680,7 @@ class ClaimTests(unittest.TestCase):
 
     def test_person_wait_is_refused_until_a_real_ask_is_linked(self) -> None:
         book = {"mike": frozenset({"mike-login"})}
-        with patch.object(PLAN.director_question_gate, "address_book", return_value=book):
+        with patch.multiple(PLAN.director_question_gate, address_book=lambda _owner: book):
             with self.assertRaises(PLAN.PlanError) as caught:
                 self.record_dependency_wait("Mike accepts the motor-price correction release")
             self.assertIn("--ask-url", str(caught.exception))
@@ -6688,7 +6688,7 @@ class ClaimTests(unittest.TestCase):
             ask = {"html_url": "https://github.com/owner/repo/issues/42#issuecomment-77", "user": {"login": TEST_BOT}, "body": "Please check this, @mike-login."}
             self.args.ask_url = [ask["html_url"]]
             self.args.recheck = "2026-12-01"
-            with patch.object(PLAN, "readable_comment", return_value=ask):
+            with patch.multiple(PLAN, readable_comment=lambda _path: ask):
                 self.record_dependency_wait("Mike accepts the motor-price correction release")
         self.assertEqual(self.emitted.call_args.args[0]["structured_wait"]["waits"][0]["ask_url"], ask["html_url"])
         self.assertIn(ask["html_url"], self.comments[-1]["body"])
@@ -6783,7 +6783,7 @@ class ClaimTests(unittest.TestCase):
         ask_url = "https://github.com/owner/repo/issues/42#issuecomment-71"
         self.args.ask_url = [ask_url]
         asked = {"html_url": ask_url, "user": {"login": TEST_BOT}, "body": "Please confirm the run, @mike-b."}
-        with patch.object(PLAN, "readable_comment", return_value=asked):
+        with patch.multiple(PLAN, readable_comment=lambda _path: asked):
             with self.assertRaises(PLAN.PlanError): self.run_claim(command=PLAN.cmd_wait)
             self.assert_no_writes()
             self.args.waiting_for = "<code>@mike-b</code> to confirm the run"
