@@ -337,6 +337,8 @@ def process_arguments(pid, command):
                 consistent = bool(identity) and (command == prefix or command.startswith(prefix + " "))
             else:
                 consistent = bool(identity) and identity == list(command)[:len(identity)]
+            if browser_helper:
+                consistent = command == " ".join(native) if isinstance(command, str) else list(command) == native
             return ([], True) if consistent else (fallback, False)
         return argv, not uncertain
     except (OSError, ValueError, UnicodeError):

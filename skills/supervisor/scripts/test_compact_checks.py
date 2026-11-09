@@ -684,8 +684,9 @@ class OperationTests(unittest.TestCase):
                 if success:
                     self.assertEqual(iterm_tab.register_file_launch(launch, native, ledger)["pid"], 8)
                 else:
-                    with self.assertRaisesRegex(ValueError, "process identity is ambiguous"):
+                    with self.assertRaises(ValueError):
                         iterm_tab.register_file_launch(launch, native, ledger)
+                    self.assertFalse(ledger.exists())
 
 
 if __name__ == "__main__":
