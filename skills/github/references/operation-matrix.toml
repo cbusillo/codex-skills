@@ -503,6 +503,42 @@ reconciliation_strategy = "quota_snapshot"
 retained_graphql_rationale = "No retained GraphQL transport; the REST rate-limit endpoint reports the GraphQL bucket without spending GraphQL quota."
 
 [[operations]]
+id = "github.question.read"
+request_priority = "bulk"
+capabilities = ["issues_read"]
+permission_mode = "fixed"
+permission_note = "Read-only issue discussion reads of Director question sources and the question queue under the configured automation identity. No grants or identity fallback."
+entrypoint = "supervisor/scripts/oq.py"
+intent = "Read question source and queue discussions to report open, answered and delivered Director questions."
+current_transport = "rest_api"
+endpoint_or_command = "Paged GET /repos/{repo}/issues/{number}/comments for each question source and the queue issue"
+quota_bucket = "rest_core"
+actor_policy = "automation_required"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "safe"
+reconciliation_strategy = "paged_read"
+retained_graphql_rationale = "No GraphQL transport; plain paged comment reads."
+
+[[operations]]
+id = "github.session_claims.read"
+request_priority = "bulk"
+capabilities = ["issues_read", "pull_requests_read"]
+permission_mode = "fixed"
+permission_note = "Read-only claim discovery and verification reads for ended sessions. Releases and handoff comments keep their own essential write operations. No grants or identity fallback."
+entrypoint = "supervisor/scripts/release_session_claims.py"
+intent = "Find and verify the claims an ended session left, before its release writes."
+current_transport = "composite"
+endpoint_or_command = "Paged GET /installation/repositories and /repos/{repo}/issues/comments?since=; GET issue, comment, pull and branch reads of claimed threads; GraphQL issue status batches"
+quota_bucket = "mixed"
+actor_policy = "automation_required"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "safe"
+reconciliation_strategy = "paged_read"
+retained_graphql_rationale = "GraphQL reads issue status bodies in batches; REST supplies the comment feed and claim discussions."
+
+[[operations]]
 id = "github.supervisor.foreign_watch"
 request_priority = "bulk"
 capabilities = ["issues_read"]
@@ -2187,7 +2223,7 @@ retained_graphql_rationale = "No GraphQL transport; the existing related-issue p
 
 [[operations]]
 id = "github.worktree.retire_landed"
-request_priority = "essential"
+request_priority = "bulk"
 capabilities = ["pull_requests_read", "issues_read"]
 permission_mode = "delegated"
 permission_note = "PR, PR commit and claim-discussion reads under the existing pull-request and issue read grants. Local retirement uses the configured host helper or guarded portable offline IDE proof; no GitHub write, branch deletion on the remote or new grant."

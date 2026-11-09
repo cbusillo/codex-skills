@@ -568,7 +568,7 @@ def handoff_association(entry: dict, saved: dict | None, *, reader: GitHubReader
             actor = actor or github_identity.automation_login()
             if not actor:
                 raise ValueError("configured automation identity is unknown")
-            reader = reader or GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 60)
+            reader = reader or GitHubReader(operation="github.session_claims.read", gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 60)
             if release.stamp(handoff(reader, {**entry, "handoff_url": url}, actor)["created_at"]) < started:
                 continue
         if current and current != url:
@@ -1093,7 +1093,7 @@ def main():
                                     "claim_comment": r["claim_comment_id"], "status": "preserved"}
                                     for r in inventory_rows]})
         entries = verified
-        reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + args.deadline_seconds)
+        reader = GitHubReader(operation="github.session_claims.read", gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + args.deadline_seconds)
         if not entries:
             raise ValueError("no verified closed sessions; inspect the per-session reports")
         if all(e.get("_inventory") for e in entries):
