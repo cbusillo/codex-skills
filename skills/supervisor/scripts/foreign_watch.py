@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
 import director_mentions
+import github_change_feed
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github-work-rollup/scripts"))
 import review_notifications
 import services
@@ -45,6 +46,8 @@ from session_record import load_ledger, read_jsonl, session_status, text_content
 
 REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 MENTIONS = "director-mentions"  # watermark key; not a repository name
+FULL_SCAN_WATERMARK = "full-scan"
+FULL_SCAN_FOR_CHANGES_SEARCH_MISSES_EVERY = timedelta(hours=6)
 # Search indexing can lag; each mention search overlaps the previous one and
 # skips thread versions already reported.
 MENTION_OVERLAP = timedelta(minutes=15)
@@ -357,6 +360,30 @@ def read_error(repo: str, error: Exception) -> dict:
             None,
         ),
     }
+
+
+def changed_repositories(reader: GitHubReader, watched: list[str], watermarks: dict[str, str], started: str) -> list[str]:
+    if not watched:
+        return []
+    since = min(timestamp(watermarks[repo]) for repo in watched)
+    feed = github_change_feed.changed(reader, sorted({repo.split("/")[0] for repo in watched}, key=str.casefold), since)
+    if not feed.complete:
+        return watched
+    changed = feed.repositories()
+    advance_quiet_watermarks([repo for repo in watched if repo.casefold() not in changed], watermarks, started)
+    return [repo for repo in watched if repo.casefold() in changed]
+
+
+def advance_quiet_watermarks(quiet: list[str], watermarks: dict[str, str], started: str) -> None:
+    quiet_through = timestamp(started) - github_change_feed.SEARCH_INDEX_LAG
+    for repo in quiet:
+        if timestamp(watermarks[repo]) < quiet_through:
+            watermarks[repo] = quiet_through.isoformat()
+
+
+def full_scan_due(watermarks: dict[str, str], started: str) -> bool:
+    last = watermarks.get(FULL_SCAN_WATERMARK)
+    return last is None or timestamp(started) - timestamp(last) >= FULL_SCAN_FOR_CHANGES_SEARCH_MISSES_EVERY
 
 
 def scan(repos: list[str], watermarks: dict[str, str], own_logins: list[str], launchplane_logins: list[str],
@@ -1107,7 +1134,11 @@ def watch(args, repos, initial, deadline):
         else:
             cover(watermarks, [repo for repo in watched if repo not in covered], initial, args.since is not None and not persistent)
             covered.update(watched)
-            notices, errors, watermarks = scan(watched, watermarks, args.own_login, args.launchplane_login, started, reader, getattr(args, "client_agent_logins", ()))
+            full = rewind or full_scan_due(watermarks, started)
+            scanned = watched if full else changed_repositories(reader, watched, watermarks, started)
+            notices, errors, watermarks = scan(scanned, watermarks, args.own_login, args.launchplane_login, started, reader, getattr(args, "client_agent_logins", ()))
+            if full and not errors:
+                watermarks[FULL_SCAN_WATERMARK] = started
             mentions, gaps, mention_errors, watermarks, seen = scan_mentions(
                 args, watched, watermarks, seen, args.own_login, started, reader
             )
