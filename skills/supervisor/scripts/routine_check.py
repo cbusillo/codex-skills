@@ -43,9 +43,9 @@ RELEASE_REQUEST = re.compile(r"\b(?:releas(?:e|es|ing)|promot(?:e|es|ing|ion))\b
 SETTING_CHANGE = re.compile(r"\b(?:set|sets|setting|change|changes|flip|flips|toggle|toggles)\b[^.;\n]*?(?<![-\w])[a-z][a-z0-9_]*=[a-z0-9]+\b", re.I)
 SHA = re.compile(r"[0-9a-f]{40}")
 REFUSED_READ = re.compile(r"production read refused:\s*(\S.*)", re.I)
-REFUSED_READ_ROUTE = ("only under a recorded Director decision allowing it, start it with iterm_tab.py --brief-issue on a session that may run it, "
-                      "citing that decision in --agent-override if the issue's agent family differs, within claim, cap and account rules; "
-                      "otherwise record a wait on that decision; the refused session never retries it")
+REFUSED_READ_ROUTE = ("for a read the overall direction permits (skills/references/execution-scope.md), start it with iterm_tab.py --brief-issue "
+                      "on a session whose guard allows it, citing that rule in --agent-override if the issue's agent family differs, "
+                      "within claim, cap and account rules; a refusal protecting a real boundary stays stopped; the refused session never retries it")
 
 
 def clock() -> datetime:

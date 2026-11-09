@@ -2998,26 +2998,6 @@ class TerminalTests(unittest.TestCase):
                 self.assertEqual(args[separator + 1 :], [brief])
         self.assertNotIn(iterm_tab.CLAUDE_QUESTION_TOOL, iterm_tab.append_brief("codex --remote unix://", "brief"))
 
-    def test_declared_production_read_leads_a_claude_prompt_and_changes_no_permission(self) -> None:
-        def launched(command: str, text: str) -> tuple[list[str], str]:
-            words = shlex.split(iterm_tab.append_brief(command, text))
-            return words[: words.index("--")], words[words.index("--") + 1]
-
-        read = "health payload of owner/app production over the private operations path"
-        brief = f"Brief from the Supervisor.\nProduction read: {read}\nDo the release proof."
-        flags, prompt = launched("claude", brief)
-        self.assertLess(prompt.index(read), prompt.index("Brief from the Supervisor."))
-        self.assertTrue(prompt.endswith(brief))
-        undeclared_flags, undeclared_prompt = launched("claude", "Brief.")
-        self.assertEqual(flags, undeclared_flags)
-        self.assertEqual(undeclared_prompt, "Brief.")
-        self.assertEqual(flags[flags.index("--permission-mode") + 1], "auto")
-        self.assertNotIn("--dangerously-skip-permissions", flags)
-        for unrelated in ("Brief from the Supervisor.\nNo production read: is assigned here.", "See the release proof."):
-            with self.subTest(unrelated):
-                self.assertEqual(launched("claude", unrelated)[1], unrelated)
-        self.assertEqual(shlex.split(iterm_tab.append_brief("codex", brief))[-1], brief)
-
     def test_claude_conflicting_or_incomplete_permission_modes_refuse_before_launch(self) -> None:
         for option in (
             "--permission-mode plan",

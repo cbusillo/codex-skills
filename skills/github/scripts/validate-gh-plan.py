@@ -334,7 +334,7 @@ def test_cmd_show_reads_unmarked_human_authored_plan_sections() -> None:
             login=f"{association.casefold()}-user",
             association=association,
         )
-        plan.get_issue = lambda _ref, _repo: ("automation-gh", issue)
+        plan.get_issue = lambda _ref, _repo, **_: ("automation-gh", issue)
         output = StringIO()
 
         with redirect_stdout(output):
@@ -360,7 +360,7 @@ def test_cmd_show_full_reports_unmanaged_provenance() -> None:
     issue = plan_issue(body=body, login="owner-user", association="OWNER")
     plan.default_repo = lambda _repo: "owner/repo"
     plan.load_config = lambda _repo: {}
-    plan.get_issue = lambda _ref, _repo: ("automation-gh", issue)
+    plan.get_issue = lambda _ref, _repo, **_: ("automation-gh", issue)
     output = StringIO()
 
     with redirect_stdout(output):
@@ -376,7 +376,7 @@ def test_cmd_show_fails_closed_on_malformed_contributor_markers() -> None:
     issue = plan_issue(body=f"{plan.PLAN_MANAGED_START}\n## Current Status\n\nState: Active\n")
     plan.default_repo = lambda _repo: "owner/repo"
     plan.load_config = lambda _repo: {"default_sections": ["Current Status"]}
-    plan.get_issue = lambda _ref, _repo: ("automation-gh", issue)
+    plan.get_issue = lambda _ref, _repo, **_: ("automation-gh", issue)
 
     try:
         plan.cmd_show(types.SimpleNamespace(repo="owner/repo", issue="1", full=False, sections=None))
@@ -393,7 +393,7 @@ def test_cmd_show_full_reads_malformed_contributor_markers_with_unknown_provenan
     issue = plan_issue(body=body)
     plan.default_repo = lambda _repo: "owner/repo"
     plan.load_config = lambda _repo: {}
-    plan.get_issue = lambda _ref, _repo: ("automation-gh", issue)
+    plan.get_issue = lambda _ref, _repo, **_: ("automation-gh", issue)
     output = StringIO()
 
     with redirect_stdout(output):
@@ -437,7 +437,7 @@ def test_native_link_and_unlink_allow_unmarked_human_authored_bodies() -> None:
             login=f"{association.casefold()}-user",
             association=association,
         )
-        plan.get_issue = lambda ref, _repo: ("automation-gh", source if ref == "1" else target)
+        plan.get_issue = lambda ref, _repo, **_: ("automation-gh", source if ref == "1" else target)
         for relationship in ("blocked-by", "blocks", "subissue"):
             with redirect_stdout(StringIO()):
                 plan.cmd_link(
@@ -459,7 +459,7 @@ def test_related_link_and_unlink_stay_strict_on_unmarked_human_authored_body() -
     target["number"] = 2
     target["id"] = 1002
     plan.default_repo = lambda _repo: "owner/repo"
-    plan.get_issue = lambda ref, _repo: ("automation-gh", source if ref == "1" else target)
+    plan.get_issue = lambda ref, _repo, **_: ("automation-gh", source if ref == "1" else target)
     plan.api_json = lambda *_args, **_kwargs: (_ for _ in ()).throw(
         AssertionError("related-note ownership failure must happen before native API writes")
     )
@@ -480,7 +480,7 @@ def test_cmd_update_section_posts_a_status_comment_on_a_reporter_body() -> None:
     plan = load_plan_module()
     issue = plan_issue(body="Outside reporter request")
     plan.default_repo = lambda _repo: "owner/repo"
-    plan.get_issue = lambda _ref, _repo: ("automation-gh", issue)
+    plan.get_issue = lambda _ref, _repo, **_: ("automation-gh", issue)
     plan.comment_current_status = lambda _issue: "State: Active"
     plan.comment_route = lambda: ("automation-gh", "bot-gh", plan.EXPECTED_ACTOR)
     posted = []
@@ -551,7 +551,7 @@ def test_cmd_show_reads_only_managed_contributor_sections() -> None:
         {"body": "Contributor status"}, "## Current Status\n\nManaged status"))
     plan.default_repo = lambda _repo: "owner/repo"
     plan.load_config = lambda _repo: {"default_sections": ["Current Status"]}
-    plan.get_issue = lambda _ref, _repo: ("automation-gh", issue)
+    plan.get_issue = lambda _ref, _repo, **_: ("automation-gh", issue)
     output = StringIO()
 
     with redirect_stdout(output):
@@ -576,7 +576,7 @@ def test_cmd_show_reports_automation_managed_provenance() -> None:
     )
     plan.default_repo = lambda _repo: "owner/repo"
     plan.load_config = lambda _repo: {"default_sections": ["Current Status"]}
-    plan.get_issue = lambda _ref, _repo: ("automation-gh", issue)
+    plan.get_issue = lambda _ref, _repo, **_: ("automation-gh", issue)
     output = StringIO()
 
     with redirect_stdout(output):
@@ -670,15 +670,15 @@ def test_cmd_show_does_not_emit_success_for_an_incomplete_discussion() -> None:
         plan.default_repo = lambda _repo: "owner/repo"
         plan.load_config = lambda _repo: {}
         issue = plan_issue(body="Original request")
-        plan.get_issue = lambda _ref, _repo: ("automation-gh", issue)
+        plan.get_issue = lambda _ref, _repo, **_: ("automation-gh", issue)
 
         def fake_api(_method: str, path: str, **kwargs: Any) -> tuple[str, Any]:
             page = urllib.parse.parse_qs(urllib.parse.urlparse(path).query)["page"][0]
             if page == "1":
                 return "automation-gh", [{"id": index, "body": "Earlier comment"} for index in range(100)]
             assert page == "2", path
-            assert kwargs["completed_steps"] == ["list_issue_comments_page_1"], kwargs
-            assert kwargs["failed_step"] == "list_issue_comments_page_2", kwargs
+            assert kwargs["completed_steps"] == ["planning_connection_page_1"], kwargs
+            assert kwargs["failed_step"] == "planning_connection_page_2", kwargs
             if failure == "unavailable":
                 raise plan.PlanError("Comment read unavailable")
             return "automation-gh", {} if failure == "malformed_page" else [None]
@@ -1094,7 +1094,7 @@ def test_project_commands_are_recoverable() -> None:
     plan.gh_json = fake_gh_json
     plan.ensure_graphql_budget = recording_budget
     plan.load_config = lambda repo: {"projects": {"default_project": "Roadmap"}}
-    plan.get_issue = lambda ref, repo: (
+    plan.get_issue = lambda ref, repo, **_: (
         "automation-gh",
         {"repo": "owner/repo", "number": 1, "html_url": "https://github.com/owner/repo/issues/1"},
     )
@@ -1627,7 +1627,7 @@ def test_close_rejects_open_cross_repo_blocker_before_any_write() -> None:
         "labels": {"active": "plan:active", "done": "plan:done"},
         "projects": {},
     }
-    plan.get_issue = lambda _ref, _repo: ("automation-gh", issue)
+    plan.get_issue = lambda _ref, _repo, **_: ("automation-gh", issue)
 
     def fake_api_json(method: str, path: str, _payload: Any = None, **_kwargs: Any) -> tuple[str, Any]:
         assert method == "GET", method
@@ -1671,7 +1671,7 @@ def test_close_rejects_partial_subissues_before_any_write() -> None:
         "labels": {"active": "plan:active", "done": "plan:done"},
         "projects": {},
     }
-    plan.get_issue = lambda _ref, _repo: ("automation-gh", issue)
+    plan.get_issue = lambda _ref, _repo, **_: ("automation-gh", issue)
     plan.read_issue_relationships = lambda *_args, **_kwargs: (
         "automation-gh",
         {
@@ -1709,7 +1709,7 @@ def test_close_allows_closed_relationships_and_ignores_issues_it_blocks() -> Non
         "labels": {"active": "plan:active", "done": "plan:done"},
         "projects": {},
     }
-    plan.get_issue = lambda _ref, _repo: ("automation-gh", issue)
+    plan.get_issue = lambda _ref, _repo, **_: ("automation-gh", issue)
     plan.read_issue_relationships = lambda *_args, **_kwargs: (
         "automation-gh",
         {
@@ -1755,7 +1755,7 @@ def test_close_relationship_preflight_fails_closed_on_unavailable_and_ambiguous_
             "labels": {"active": "plan:active", "done": "plan:done"},
             "projects": {},
         }
-        plan.get_issue = lambda _ref, _repo: ("automation-gh", issue)
+        plan.get_issue = lambda _ref, _repo, **_: ("automation-gh", issue)
         if result == "unavailable":
             unavailable_failure = plan.github_api_core.FailureDetail(
                 cause="network_provider_failure",
@@ -1816,7 +1816,7 @@ def test_close_not_planned_retains_and_reports_open_relationships() -> None:
         "labels": {"active": "plan:active", "done": "plan:done"},
         "projects": {},
     }
-    plan.get_issue = lambda _ref, _repo: ("automation-gh", issue)
+    plan.get_issue = lambda _ref, _repo, **_: ("automation-gh", issue)
     plan.read_issue_relationships = lambda *_args, **_kwargs: (
         "automation-gh",
         {
@@ -1874,7 +1874,7 @@ def owner_decision_close(
         issue["milestone"] = {"title": milestone}
     calls: list[str] = []
     plan.load_config = lambda _repo, **_: {"labels": {"active": "plan:active", "done": "plan:done"}, "projects": {}}
-    plan.get_issue = lambda _ref, _repo: ("automation-gh", issue)
+    plan.get_issue = lambda _ref, _repo, **_: ("automation-gh", issue)
     plan.comment_route = lambda: ("automation-gh", "fake-gh", "shiny-code-bot")
 
     def fake_direction(_repo: str) -> str:
@@ -2085,7 +2085,7 @@ def test_close_known_failure_reports_project_split_and_stops_metadata() -> None:
         "projects": {"owner": "owner", "default_project": "Roadmap"},
         "project_fields": {"focus": "Focus"},
     }
-    plan.get_issue = lambda _ref, _repo: ("automation-gh", issue)
+    plan.get_issue = lambda _ref, _repo, **_: ("automation-gh", issue)
     plan.comment_route = lambda: ("automation-gh", "fake-gh", "shiny-code-bot")
     plan.project_meta = lambda _owner, project, recoverable=False: (
         "automation-gh",
@@ -2159,7 +2159,7 @@ def test_close_unknown_outcome_reports_unavailable_reconciliation() -> None:
         "projects": {},
     }
 
-    def fake_get_issue(_ref: str, _repo: str) -> tuple[str, dict[str, Any]]:
+    def fake_get_issue(_ref: str, _repo: str, **_: Any) -> tuple[str, dict[str, Any]]:
         nonlocal issue_reads
         issue_reads += 1
         if issue_reads == 1:
@@ -2229,7 +2229,7 @@ def test_close_reconciles_unknown_success_before_metadata() -> None:
         "projects": {},
     }
 
-    def fake_get_issue(_ref: str, _repo: str) -> tuple[str, dict[str, Any]]:
+    def fake_get_issue(_ref: str, _repo: str, **_: Any) -> tuple[str, dict[str, Any]]:
         nonlocal issue_reads
         issue_reads += 1
         return "automation-gh", issue if issue_reads == 1 else observed
@@ -2285,7 +2285,7 @@ def test_close_already_complete_reuses_completion_comment() -> None:
         "labels": {"active": "plan:active", "done": "plan:done"},
         "projects": {},
     }
-    plan.get_issue = lambda _ref, _repo: ("automation-gh", issue)
+    plan.get_issue = lambda _ref, _repo, **_: ("automation-gh", issue)
     plan.comment_route = lambda: ("automation-gh", "fake-gh", "shiny-code-bot")
 
     def fake_comment(kind: str, number: int, body: str, **kwargs: Any) -> dict[str, Any]:
@@ -2336,7 +2336,7 @@ def test_close_delegates_comment_to_shared_rest_helper() -> None:
         "labels": {"active": "plan:active", "done": "plan:done"},
         "projects": {},
     }
-    plan.get_issue = lambda ref, repo: ("automation-gh", issue)
+    plan.get_issue = lambda ref, repo, **_: ("automation-gh", issue)
     plan.comment_route = lambda: ("automation-gh", "fake-gh", "shiny-code-bot")
 
     def fake_edit_issue(number: int, **kwargs: Any) -> dict[str, Any]:
@@ -2398,7 +2398,7 @@ def test_close_posts_a_fresh_reply_before_closing_when_it_answers_a_confirmation
         plan.close_attention_preflight = lambda *_args, **_kwargs: {
             "result": "passed", "answered_by_close_comment": [{"author": "teammate"}]}
         plan.load_config = lambda repo, **_: {"labels": {}, "projects": {}}
-        plan.get_issue = lambda ref, repo: ("automation-gh", close_plan_issue())
+        plan.get_issue = lambda ref, repo, **_: ("automation-gh", close_plan_issue())
         plan.comment_route = lambda: ("automation-gh", "fake-gh", "shiny-code-bot")
         events: list[tuple[str, Any]] = []
 
@@ -2458,7 +2458,7 @@ def test_close_preserves_comment_reconciliation_after_partial_failure() -> None:
         "labels": {"active": "plan:active", "done": "plan:done"},
         "projects": {},
     }
-    plan.get_issue = lambda ref, repo: ("automation-gh", issue)
+    plan.get_issue = lambda ref, repo, **_: ("automation-gh", issue)
     plan.comment_route = lambda: ("automation-gh", "fake-gh", "shiny-code-bot")
 
     def fake_edit_issue(number: int, **kwargs: Any) -> dict[str, Any]:
@@ -2537,7 +2537,7 @@ def test_close_state_failure_preserves_compound_steps() -> None:
         "labels": {"active": "plan:active", "done": "plan:done"},
         "projects": {},
     }
-    plan.get_issue = lambda ref, repo: ("automation-gh", issue)
+    plan.get_issue = lambda ref, repo, **_: ("automation-gh", issue)
     plan.comment_route = lambda: ("automation-gh", "fake-gh", "shiny-code-bot")
     edit_calls: list[dict[str, Any]] = []
 
@@ -2603,7 +2603,7 @@ def test_close_syncs_project_before_closing_issue() -> None:
         "projects": {"owner": "owner", "default_project": "Roadmap"},
         "project_fields": {"focus": "Focus"},
     }
-    plan.get_issue = lambda ref, repo: ("automation-gh", issue)
+    plan.get_issue = lambda ref, repo, **_: ("automation-gh", issue)
     plan.comment_route = lambda: ("automation-gh", "fake-gh", "shiny-code-bot")
     plan.project_meta = lambda owner, project, recoverable=False: (
         "automation-gh",

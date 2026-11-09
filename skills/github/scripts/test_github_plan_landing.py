@@ -73,7 +73,7 @@ class LandingTests(unittest.TestCase):
         self.labels = Mock(side_effect=self.edit_labels)
         self.body = Mock(side_effect=self.edit_body)
         self.comments = Mock(return_value={"actor": "fixture-bot"})
-        patches = [patch.multiple(PLAN, load_config=Mock(side_effect=self.load_config),
+        patches = [patch.multiple(PLAN, next_graph_reader=Mock(return_value=None), load_config=Mock(side_effect=self.load_config),
                                   get_issue=Mock(side_effect=lambda *_: ("fixture-bot", copy.deepcopy(self.issue))),
                                   close_relationship_preflight=Mock(return_value=("fixture-bot", {"result": "passed"})),
                                   comment_route=Mock(return_value=("fixture-bot", "fake-gh", "fixture-bot")),
@@ -741,7 +741,7 @@ class MutationProjectionTests(unittest.TestCase):
             discovery.update(status="discovered")
         return copy.deepcopy(self.config)
 
-    def get_issue(self, ref, repo):
+    def get_issue(self, ref, repo, **_kwargs):
         issue_repo, number = PLAN.issue_ref(str(ref), repo)
         assert issue_repo == self.records[number]["repo"]
         return "fixture-bot", copy.deepcopy(self.records[number])
@@ -850,7 +850,7 @@ class MutationProjectionTests(unittest.TestCase):
     def settle_after_first_read(self, number, change):
         original_get = self.get_issue
         reads = []
-        def get_issue(ref, repo):
+        def get_issue(ref, repo, **_kwargs):
             result = original_get(ref, repo)
             if PLAN.issue_ref(str(ref), repo)[1] == number and self.fact_writes:
                 reads.append(ref)

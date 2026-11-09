@@ -1612,19 +1612,9 @@ def read_issue_relationships(
 ) -> tuple[str, dict[str, list[dict[str, Any]]]]:
     relationships: dict[str, list[dict[str, Any]]] = {}
     actor = ""
-    endpoints = [
-        ("blocked_by", f"/repos/{issue_repo}/issues/{number}/dependencies/blocked_by"),
-    ]
-    if include_blocking:
-        endpoints.append(("blocking", f"/repos/{issue_repo}/issues/{number}/dependencies/blocking"))
-    endpoints.append(("sub_issues", f"/repos/{issue_repo}/issues/{number}/sub_issues"))
-    for relationship, endpoint in endpoints:
-        page_actor, items = collect_paged_rest_items(
-            endpoint,
-            query={},
-            bucket="rest_core",
-            step_prefix=f"read_{relationship}",
-        )
+    connections = [("blocked_by", "blockedBy"), *([("blocking", "blocking")] if include_blocking else []), ("sub_issues", "subIssues")]
+    for relationship, field in connections:
+        page_actor, items = read_planning_connection(issue_repo, number, field)
         actor = page_actor or actor
         relationships[relationship] = [
             compact_relationship_issue(item, relationship)
@@ -2187,7 +2177,7 @@ def cmd_show(args: argparse.Namespace) -> None:
     issue_repo, number = issue_ref(args.issue, repo)
     config = load_config(issue_repo)
     graph = read_planning_graph(issue_repo, number=number)
-    actor, issue = (graph[0]["_graph_actor"], graph[0]) if graph else get_issue(args.issue, repo)
+    actor, issue = (graph[0]["_graph_actor"], graph[0]) if graph else get_issue(args.issue, repo, graphql=True)
     body = issue.get("body") or ""
     result = compact_issue(issue)
     if args.full:
@@ -2211,12 +2201,7 @@ def cmd_show(args: argparse.Namespace) -> None:
     if graph:
         comments = issue["_graph_comments"]
     else:
-        _, comments = collect_paged_rest_items(
-            f"/repos/{issue['repo']}/issues/{issue['number']}/comments",
-            query={},
-            bucket="rest_core",
-            step_prefix="list_issue_comments",
-        )
+        _, comments = read_planning_connection(issue["repo"], issue["number"], "comments")
     result["comments"] = [
         {
             "id": comment.get("id"),
@@ -2453,7 +2438,7 @@ def comment_current_status(issue: dict[str, Any]) -> str:
 
 def claim_snapshot(ref: str, repo: str, *, allow_closed: bool = False,
                    preserve_content: bool = False) -> tuple[dict[str, Any], str, list[dict[str, Any]], bool]:
-    _, issue = get_issue(ref, repo)
+    _, issue = get_issue(ref, repo, graphql=True)
     if issue.get("state") not in ({"open", "closed"} if allow_closed else {"open"}):
         raise PlanError("Claim requires an open issue or pull request")
     sections, provenance = read_plan_sections(issue)
@@ -4664,15 +4649,16 @@ def wait_once(args: argparse.Namespace) -> None:
         if (args.issue or args.clear or args.waiting_for or args.ends_when or args.evidence
                 or any(getattr(args, field, None) for field in ("release_product", "release_commit", "release_next_action", "not_before", "event", "recheck"))):
             raise PlanError("--all is a read-only inventory; choose a single issue to record a review")
-        _, issues = collect_paged_rest_items(f"/repos/{repo}/issues", query={"state": "open"},
-                                            bucket="rest_core", step_prefix="wait_inventory")
+        issues = read_planning_graph(repo, limit=NEXT_PLAN_INVENTORY_LIMIT + 1)
+        if issues is None or len(issues) > NEXT_PLAN_INVENTORY_LIMIT:
+            _, issues = collect_paged_rest_items(f"/repos/{repo}/issues", query={"state": "open"},
+                                                bucket="rest_core", step_prefix="wait_inventory")
         review = []
         checked = 0
         for issue in issues:
             if "pull_request" in issue:
                 continue
-            _, comments = collect_paged_rest_items(f"/repos/{repo}/issues/{issue['number']}/comments",
-                                                  query={}, bucket="rest_core", step_prefix="wait_inventory_comments")
+            comments = issue["_graph_comments"] if "_graph_comments" in issue else read_planning_connection(repo, issue["number"], "comments")[1]
             checked += 1
             try:
                 wait = current_wait(issue, comments, repo)
@@ -6327,8 +6313,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     graph_read_ahead: set[tuple[str, int]] = set()
 
     def graph_comments(issue_repo: str, number: int, rows_to_read: int | None) -> tuple[list[dict[str, Any]], bool]:
-        rows = collect_paged_rest_items(f"/repos/{issue_repo}/issues/{number}/comments", query={},
-            bucket="rest_core", step_prefix="next_issue_comments", limit=rows_to_read)[1]
+        rows = read_planning_connection(issue_repo, number, "comments", limit=rows_to_read)[1]
         return rows, rows_to_read is None or len(rows) < rows_to_read
 
     def graph_relationships(issue_repo: str, number: int, raw: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
@@ -7254,9 +7239,7 @@ def cmd_close(args: argparse.Namespace) -> None:
             raise PlanError("Use only --reopen-trigger to supply the close comment's trigger")
         trigger_comment = (close_comment + "\n\nReopen trigger: " + github_plan_trigger.describe(trigger) +
                            "\n\n" + github_plan_trigger.marker(trigger)).strip()
-        _, prior_comments = collect_paged_rest_items(
-            f"/repos/{issue_repo}/issues/{number}/comments", query={}, bucket="rest_core",
-            step_prefix="reopen_trigger_preflight")
+        _, prior_comments = read_planning_connection(issue_repo, number, "comments")
         try:
             prior_trigger = github_plan_trigger.current(issue, prior_comments, wait_authors(issue_repo))
         except ValueError as exc:
@@ -7272,9 +7255,7 @@ def cmd_close(args: argparse.Namespace) -> None:
         completed_steps.append("post_reopen_trigger")
         try:
             _, latest_issue = get_issue(args.issue, repo)
-            _, latest_comments = collect_paged_rest_items(
-                f"/repos/{issue_repo}/issues/{number}/comments", query={}, bucket="rest_core",
-                step_prefix="reopen_trigger_readback")
+            _, latest_comments = read_planning_connection(issue_repo, number, "comments")
             if github_plan_trigger.current(latest_issue, latest_comments, wait_authors(issue_repo)) != trigger:
                 raise PlanError("Published reopen trigger differs from the current authoritative record")
         except (PlanError, ValueError) as exc:
@@ -7504,8 +7485,7 @@ def cmd_close(args: argparse.Namespace) -> None:
             stopped_reason = reason
 
     try:
-        _, wait_comments = collect_paged_rest_items(
-            f"/repos/{issue_repo}/issues/{number}/comments", query={}, bucket="rest_core", step_prefix="close_wait_comments")
+        _, wait_comments = read_planning_connection(issue_repo, number, "comments")
         close_wait = current_wait(issue, wait_comments, issue_repo)
     except (PlanError, ValueError) as error:
         try:
@@ -8100,11 +8080,7 @@ def check_owner_decides_not_planned(
             cause="read_failure",
         )
 
-    _, comments = collect_paged_rest_items(
-        f"/repos/{issue_repo}/issues/{number}/comments",
-        query={}, bucket="rest_core",
-        step_prefix="owner_decision_comments",
-    )
+    _, comments = read_planning_connection(issue_repo, number, "comments")
     for comment in comments:
         author = (comment.get("user") or {}).get("login")
         created_at = comment.get("created_at")
