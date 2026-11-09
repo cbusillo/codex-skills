@@ -119,7 +119,8 @@ class SectionTests(unittest.TestCase):
         edit = Mock(side_effect=lambda _repo, _number, *, body: ("fixture-bot[bot]", {**self.issue, "body": body}))
         replacements = {"default_repo": Mock(return_value="owner/repo"),
                         "get_issue": Mock(return_value=("fixture-bot[bot]", self.issue)),
-                        "rest_edit_issue": edit, "EXPECTED_ACTOR": "fixture-bot[bot]", **overrides}
+                        "rest_edit_issue": edit, "EXPECTED_ACTOR": "fixture-bot[bot]",
+                        "next_graph_reader": Mock(return_value=None), **overrides}
         with patch.multiple(PLAN, **replacements), \
                 patch.object(github_identity, "configured_bot_logins", return_value=["fixture-bot[bot]"]), \
                 patch.object(sys, "argv", [str(SCRIPT), "update-section", target, section, *body_args]), \
