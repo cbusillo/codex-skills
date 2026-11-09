@@ -2387,8 +2387,9 @@ def test_past_recheck_date_is_stale_including_on_an_open_pull_request() -> None:
     report = drift_report(module, row, {})
     assert report["items"][0]["evidence"][0]["kind"] == "overdue_recheck"
     assert report["items"][0]["evidence"][0]["age_days"] == 5
-    future = {**row, "structured_wait": drift_wait("Director decision", "Chris answers", recheck="2026-12-01")}
-    assert drift_report(module, future, {})["items"] == []
+    for not_past in ("2026-12-01", "2026-11-09"):
+        future = {**row, "structured_wait": drift_wait("Director decision", "Chris answers", recheck=not_past)}
+        assert drift_report(module, future, {})["items"] == []
 
 
 def test_stale_waits_only_finds_a_wait_recorded_in_a_comment() -> None:

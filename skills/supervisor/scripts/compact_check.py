@@ -68,6 +68,12 @@ def candidates(ledger: Path, session_id: str | None = None) -> list[dict]:
     return results
 
 
+def session_anchor(entry: dict) -> str | None:
+    """Name the session's issue as OWNER/REPO#NUMBER when the ledger records both."""
+    issue, repository = entry.get("issue"), entry.get("repository")
+    return f"{repository}#{issue}" if issue and repository else None
+
+
 def report(ledger: Path, capacity_state: Path | None = None) -> dict:
     entries = {entry["session_id"]: entry for entry in load_ledger(ledger)}
     rows = []
@@ -78,7 +84,7 @@ def report(ledger: Path, capacity_state: Path | None = None) -> dict:
             "harness": entry["harness"],
             "transcript": entry["transcript"],
             "handoff_url": entry.get("handoff_url"),
-            "issue": entry.get("issue"),
+            "issue": session_anchor(entry),
         }
         if "error" in result:
             row.update(error=result["error"], action="inspect_coverage_gap")

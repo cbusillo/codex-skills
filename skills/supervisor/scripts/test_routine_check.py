@@ -1057,6 +1057,16 @@ class PrimaryReadTests(unittest.TestCase):
         worker = next(line for line in self.run_digest({}, [session], anchor_response=Mock(return_value=edited)) if line.startswith("WORKER"))
         self.assertIn("via=current_status", worker)
 
+    def test_ledger_issue_number_becomes_a_readable_anchor(self) -> None:
+        anchor = routine_check.compact_check.session_anchor({"issue": 3946, "repository": "owner/repo"})
+        self.assertEqual(anchor, "owner/repo#3946")
+        self.assertIsNone(routine_check.compact_check.session_anchor({"issue": 3946}))
+        github = SimpleNamespace(deadline_at=None)
+        with patch_attr(routine_check.github_read, "GitHubReader", return_value=github), patch_attr(routine_check.github_access, "reader_options", return_value={}), \
+                patch_attr(routine_check.github_read, "read_discussion", return_value={"comments": [], "body": ""}) as read:
+            routine_check.primary_readers(argparse.Namespace())["anchor_response"](anchor)
+        self.assertEqual(read.call_args.args[1:], ("owner/repo", 3946))
+
     def test_digest_timestamp_comes_from_the_clock_and_names_its_zone(self) -> None:
         header = routine_check.digest({}).splitlines()[0]
         self.assertIn(routine_check.clock_label(self.now), header)

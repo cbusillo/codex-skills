@@ -970,7 +970,7 @@ def record_drift(
         return [{**row, "body": row.get("body") or "", "author": (row.get("user") or {}).get("login") or "", "url": row.get("html_url") or ""} for row in rows]
 
     for entry in waits:
-        if github_plan_wait.recheck_due(entry, now):
+        if "recheck" in entry and dt.datetime.fromisoformat(entry["recheck"]).date() < now.date():
             evidence.append({"kind": "overdue_recheck", "recheck": entry["recheck"], "recorded_at": f"{entry['recheck']}T00:00:00Z", "matched": entry["waiting_for"]})
     claimed = " ".join(f"{entry['waiting_for']} {entry['ends_when']}" for entry in waits)
     named = re.findall(r"(?im)^\s*(?:[-*]\s+)?(?:Next actor:\s*person:|Waiting for:).*$", status)
