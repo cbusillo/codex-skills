@@ -48,7 +48,17 @@ For chat and durable reports, read [talking with the Director](talking-with-the-
 - When a permission check refuses an action, such as a harness classifier, a
   declined permission prompt, or a helper's authorization refusal, stop that
   action, report the refusal with its exact text, and continue other work.
-  Never redo it through another tool, agent, or identity. When only the
+  Never redo it through another tool, agent, or identity. A Claude auto-mode
+  `[Production Reads]` refusal of a read the overall direction permits is
+  handed off, never retried: the refused session puts
+  `Next action: Production read refused: <exact read and target, no values>`
+  in Current Status, names its lead or `agent:supervisor` as `Next actor:`,
+  adds the parallel-session `Brief:` from the
+  [brief rules](../supervisor/references/brief-rules.md), and releases its
+  claim, or files that handoff on a child issue if other work remains.
+  Whether another session may then run that read is the Director's to record;
+  without that decision the lead or Supervisor keeps the item waiting on it.
+  When only the
   Director can do the refused step by hand, post it as a `Director question:`
   on the item with the exact command and what happens after it runs, then
   record the wait; never leave it only in a comment. A command-policy

@@ -946,6 +946,40 @@ class PrimaryReadTests(unittest.TestCase):
         self.assertTrue([line for line in lines if line.startswith("SUPERVISOR_ACTION") and "age=UNKNOWN" in line])
         self.assertTrue([line for line in lines if line.startswith("ERROR supervisor_action")])
 
+    def test_refused_production_read_is_routed_with_its_read_and_repeats_until_settled(self) -> None:
+        read = "health payload of owner/app production over the private operations path"
+        row = queue_row(190, "agent:supervisor", f"Production read refused: {read}", recorded="2026-11-08T15:42:00+00:00")
+        lines = self.run_digest({"candidates": [row]})
+        refused = [line for line in lines if line.startswith("PRODUCTION_READ_REFUSED")]
+        self.assertEqual(len(refused), 1)
+        self.assertIn(read, refused[0])
+        self.assertIn(routine_check.REFUSED_READ_ROUTE, refused[0])
+        self.assertFalse([line for line in lines if line.startswith(("SUPERVISOR_ACTION", "NEXT"))])
+        self.assertTrue([line for line in lines if line.startswith("ERROR supervisor_action") and "/190" in line])
+
+    def test_a_refused_read_handed_to_a_named_lead_keeps_its_read_through_the_queue(self) -> None:
+        lead = "01a1b839-608e-7a73-b683-bb6c7da113a7"
+        read = "timed export profile on owner/app production"
+        issue = item(number=5, actor=f"agent:{lead}", action=f"Production read refused: {read}")
+        queued = {**issue, "queue": classify(issue)}
+        self.assertEqual(queued["queue"]["reason"], "named_recipient_requires_reconciliation")
+        lines = self.run_digest({"needs_status": [queued]})
+        self.assertTrue([line for line in lines if line.startswith("PRODUCTION_READ_REFUSED") and read in line and f"next_actor=agent:{lead}" in line])
+        self.assertFalse([line for line in lines if line.startswith("ERROR")])
+
+    def test_other_denials_and_settled_records_are_not_routed_as_refused_reads(self) -> None:
+        cases = {
+            "other denial": {"candidates": [queue_row(6, "agent:supervisor", "Helper refused the deploy [Production Reads]; name the next route")]},
+            "person owns it": {"candidates": [queue_row(7, "person:owner", "Production read refused: export profile")]},
+            "recorded wait": {"candidates": [queue_row(8, "agent:supervisor", "Production read refused: export profile", state="waiting")]},
+            "claim still held": {"candidates": [queue_row(9, "agent:supervisor", "Production read refused: export profile", state="underway")]},
+        }
+        for name, selection in cases.items():
+            with self.subTest(name):
+                self.assertFalse([line for line in self.run_digest(selection) if line.startswith("PRODUCTION_READ_REFUSED")])
+        lines = self.run_digest(cases["other denial"])
+        self.assertTrue([line for line in lines if line.startswith("SUPERVISOR_ACTION") and "/6" in line])
+
     def test_either_harness_native_id_names_the_supervisor(self) -> None:
         for variable in ("CODEX_SESSION_ID", "CLAUDE_CODE_SESSION_ID"):
             with self.subTest(variable=variable), patch.dict(os.environ, {variable: "Native-1"}):
