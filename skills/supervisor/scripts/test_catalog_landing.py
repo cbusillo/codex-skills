@@ -473,87 +473,82 @@ class CatalogLandingTests(unittest.TestCase):
 
     def test_conclusive_github_deadlines_retry_on_next_service_poll(self) -> None:
         for stage in ("identity", "report"):
-            with self.subTest(stage=stage), tempfile.TemporaryDirectory() as directory:
-                evidence = Path(directory)
-                config = evidence / "catalog.json"
-                config.write_text(json.dumps(self.config))
-                service = evidence / "services.json"
-                service.write_text(
-                    json.dumps(
-                        {
-                            "uv": "/fixture/uv",
-                            "services": {"catalog": {"argv": ["/fixture/catalog"], "cwd": str(evidence), "restart_seconds": 0.001}},
-                        }
-                    )
+            with self.subTest(stage=stage):
+                self.assert_deadline_retries(stage)
+
+    def assert_deadline_retries(self, stage: str) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory)
+            config = evidence / "catalog.json"
+            config.write_text(json.dumps(self.config))
+            service = evidence / "services.json"
+            service.write_text(
+                json.dumps(
+                    {
+                        "uv": "/fixture/uv",
+                        "services": {"catalog": {"argv": ["/fixture/catalog"], "cwd": str(evidence), "restart_seconds": 0.001}},
+                    }
                 )
-                cursor = {"repo": self.config["repo"], "last_sha": "previous"}
-                landing.save_state(evidence / "cursor.json", cursor)
-                stopped = threading.Event()
-                log = io.StringIO()
-                posts: list[list[str]] = []
-                polls = 0
-                failure = self.deadline_result(is_write=stage == "report")
-                read_error = landing.GitHubReadError("deadline", result=failure, diagnostics={})
+            )
+            cursor = {"repo": self.config["repo"], "last_sha": "previous"}
+            landing.save_state(evidence / "cursor.json", cursor)
+            stopped = threading.Event()
+            log = io.StringIO()
+            posts: list[list[str]] = []
+            polls = 0
+            failure = self.deadline_result(is_write=stage == "report")
+            read_error = landing.GitHubReadError("deadline", result=failure, diagnostics={})
 
-                def command(
-                    argv: list[str],
-                    *,
-                    posts: list[list[str]] = posts,
-                    failure: github_api.ApiResult = failure,
-                    stage: str = stage,
-                    **kwargs: Any,
-                ) -> subprocess.CompletedProcess:
-                    if "--body-file" not in argv:
-                        return subprocess.CompletedProcess(
-                            argv, 0, json.dumps({"status": "already_current", "after_sha": "tip"}), ""
-                        )
-                    posts.append(argv)
-                    deadline = float(next(value.split("=", 1)[1] for value in argv if value.startswith("GITHUB_RETRY_DEADLINE_AT=")))
-                    self.assertLess(deadline - landing.time.time(), kwargs["timeout"])
-                    payload = failure.as_dict() if stage == "report" and len(posts) == 1 else {"url": "posted"}
-                    return subprocess.CompletedProcess(argv, int(payload.get("ok") is False), json.dumps(payload), "")
+            def command(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+                if "--body-file" not in argv:
+                    return subprocess.CompletedProcess(
+                        argv, 0, json.dumps({"status": "already_current", "after_sha": "tip"}), ""
+                    )
+                posts.append(argv)
+                deadline = float(next(value.split("=", 1)[1] for value in argv if value.startswith("GITHUB_RETRY_DEADLINE_AT=")))
+                self.assertLess(deadline - landing.time.time(), kwargs["timeout"])
+                payload = failure.as_dict() if stage == "report" and len(posts) == 1 else {"url": "posted"}
+                return subprocess.CompletedProcess(argv, int(payload.get("ok") is False), json.dumps(payload), "")
 
-                def child(
-                    *_args: Any, config: Path = config, evidence: Path = evidence, stopped: threading.Event = stopped, **_kwargs: Any
-                ) -> SimpleNamespace:
-                    nonlocal polls
-                    polls += 1
-                    with patch.object(sys, "argv", ["catalog", "--poll", "--config", str(config), "--evidence", str(evidence)]):
-                        code = landing.main()
-                    self.assertEqual(code, 0)
-                    current = json.loads((evidence / "cursor.json").read_text())
-                    self.assertEqual(current["last_sha"], "previous" if polls == 1 else "landing")
-                    if polls == 2:
-                        stopped.set()
-                    return SimpleNamespace(pid=123, returncode=code, poll=lambda: code)
+            def child(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
+                nonlocal polls
+                polls += 1
+                with patch.object(sys, "argv", ["catalog", "--poll", "--config", str(config), "--evidence", str(evidence)]):
+                    code = landing.main()
+                self.assertEqual(code, 0)
+                current = json.loads((evidence / "cursor.json").read_text())
+                self.assertEqual(current["last_sha"], "previous" if polls == 1 else "landing")
+                if polls == 2:
+                    stopped.set()
+                return SimpleNamespace(pid=123, returncode=code, poll=lambda: code)
 
-                with (
-                    patch.object(Operation, "run", operation_run),
-                    patch.object(subprocess, "run", side_effect=command),
-                    patch.object(
-                        landing, "pending_landings", side_effect=[read_error, ["landing"]] if stage == "identity" else [["landing"]]
-                    ),
-                    patch.object(landing, "git", return_value="script.py"),
-                    patch.object(landing, "verify", return_value={"ok": True}) as verify,
-                    patch.object(landing.GitHubReader, "paged_json", return_value=[]) as read,
-                    patch.object(landing.github_identity, "automation_login", return_value="agent[bot]"),
-                    patch.object(services.threading, "Event", return_value=stopped),
-                    patch.object(services.subprocess, "Popen", side_effect=child),
-                    patch.object(services, "stop_child"),
-                    redirect_stdout(log),
-                ):
-                    self.assertEqual(services.main(["run", "--config", str(service), "--service", "catalog"]), 0, log.getvalue())
-                    self.assertFalse(services.reconciliation_marker(service, "catalog").exists())
-                    verify.assert_called_once()
-                    if stage == "report":
-                        self.assertEqual(len(posts), 2)
-                        self.assertEqual(read.call_count, 2)
-                        self.assertEqual(read.call_args_list[0].kwargs["params"], read.call_args_list[1].kwargs["params"])
-                        journal = json.loads((evidence / "landing/operation.json").read_text())
-                        retained = next(iter(journal["report_retries"].values()))
-                        self.assertEqual(json.loads(retained[0]["helper"]["stdout"]), failure.as_dict())
-                    else:
-                        self.assertEqual(len(posts), 1)
+            with (
+                patch.object(Operation, "run", operation_run),
+                patch.object(subprocess, "run", side_effect=command),
+                patch.object(
+                    landing, "pending_landings", side_effect=[read_error, ["landing"]] if stage == "identity" else [["landing"]]
+                ),
+                patch.object(landing, "git", return_value="script.py"),
+                patch.object(landing, "verify", return_value={"ok": True}) as verify,
+                patch.object(landing.GitHubReader, "paged_json", return_value=[]) as read,
+                patch.object(landing.github_identity, "automation_login", return_value="agent[bot]"),
+                patch.object(services.threading, "Event", return_value=stopped),
+                patch.object(services.subprocess, "Popen", side_effect=child),
+                patch.object(services, "stop_child"),
+                redirect_stdout(log),
+            ):
+                self.assertEqual(services.main(["run", "--config", str(service), "--service", "catalog"]), 0, log.getvalue())
+                self.assertFalse(services.reconciliation_marker(service, "catalog").exists())
+                verify.assert_called_once()
+                if stage == "report":
+                    self.assertEqual(len(posts), 2)
+                    self.assertEqual(read.call_count, 2)
+                    self.assertEqual(read.call_args_list[0].kwargs["params"], read.call_args_list[1].kwargs["params"])
+                    journal = json.loads((evidence / "landing/operation.json").read_text())
+                    retained = next(iter(journal["report_retries"].values()))
+                    self.assertEqual(json.loads(retained[0]["helper"]["stdout"]), failure.as_dict())
+                else:
+                    self.assertEqual(len(posts), 1)
 
     def test_report_deadline_cannot_retry_after_unknown_or_incomplete_readback(self) -> None:
         for uncertain, readback in ((True, []), (False, landing.GitHubReadShapeError("partial"))):

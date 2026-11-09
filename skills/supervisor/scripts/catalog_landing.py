@@ -11,7 +11,7 @@ import os
 import subprocess
 import time
 import uuid
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from subprocess import SubprocessError
 
