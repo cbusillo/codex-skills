@@ -20,6 +20,7 @@ import time
 import unittest
 from argparse import Namespace
 from collections.abc import AsyncIterator, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime
 from itertools import product
@@ -31,7 +32,10 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).parent))
 import github_agent
 import github_plan_claim as CLAIM
+import github_plan_claim_log as claim_log
+import github_plan_closure as closure
 import github_plan_lease as LEASE
+import github_read
 import github_plan_wait as wait_record
 import github_identity
 import github_comment
@@ -409,9 +413,7 @@ class ClaimTests(unittest.TestCase):
 
     def test_claim_target_is_journaled_before_the_post_even_when_readback_fails(self) -> None:
         def post_then_interrupt() -> None:
-            import github_plan_claim_log
-
-            self.assertIn(("owner/repo", 42), github_plan_claim_log.read(OWNER["session"]))
+            self.assertIn(("owner/repo", 42), claim_log.read(OWNER["session"]))
             raise OSError("connection lost after posting")
 
         self.after_post = post_then_interrupt
@@ -1302,7 +1304,8 @@ class ClaimTests(unittest.TestCase):
                 self.assertEqual(result["retained_artifacts"][0]["worktrees"], [path])
                 self.assertEqual(result["retained_artifacts"][0]["branch"], source["branch"])
 
-    def ended_holder_fixture(self, *, released=True):
+    def ended_holder_fixture(self, *, released=True, lease=None):
+        if lease: self.lease_fixture(lease)
         self.comments = [
             {"id": 71, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}, "created_at": OTHER["claimed_at"]},
             {"id": 72, "body": "Released claim 71\n\nRetire the retained worktree after acceptance and ownership checks.",
@@ -1322,9 +1325,14 @@ class ClaimTests(unittest.TestCase):
     def show_session_as_running(self):
         self.inventory["sessions"] = [{"sessionId": OTHER["session"], "cwd": "/retained/other-42"}]
 
+    def assert_resume_refused(self, session: str = OTHER["session"]) -> ValueError:
+        with self.assertRaises(ValueError) as refused:
+            with closure.resume_guard(session):
+                self.fail(f"{session} resumed despite the refusal")
+        return refused.exception
+
     def test_exact_release_frees_the_issue_without_a_native_scan(self):
-        self.ended_holder_fixture()
-        self.lease_fixture("live")
+        self.ended_holder_fixture(lease="live")
         self.show_session_as_running()
         self.issue["body"] = self.issue["body"].replace("State: Open, not started.", CLAIM.marker(OTHER))
         self.run_claim()
@@ -1333,22 +1341,20 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual([entry["claim_id"] for entry in result["retained_artifacts"]], [71])
 
     def test_stale_native_action_records_of_a_released_session_do_not_block_a_successor(self):
-        import github_plan_closure
         for resume in (False, True):
             with self.subTest(resume_from=resume):
                 self.setUp()
                 self.ended_holder_fixture()
-                with github_plan_closure.ownership(OTHER["session"], create=True):
-                    github_plan_closure.set_action_pending(OTHER["session"], True, method="turn/start")
+                with closure.ownership(OTHER["session"], create=True):
+                    closure.set_action_pending(OTHER["session"], True, method="turn/start")
                 self.show_session_as_running()
                 self.args.resume_from = 71 if resume else None
                 self.run_claim()
                 self.assertTrue(self.emitted.call_args.args[0]["ok"])
-                self.assertTrue(github_plan_closure.lease_state(OTHER["session"])["successor_admitted"])
+                self.assertTrue(closure.lease_state(OTHER["session"])["successor_admitted"])
 
     def test_live_lease_refuses_a_successor_before_any_write(self):
-        self.ended_holder_fixture(released=False)
-        self.lease_fixture("live")
+        self.ended_holder_fixture(released=False, lease="live")
         self.show_session_as_running()
         with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
             self.run_claim()
@@ -1356,8 +1362,7 @@ class ClaimTests(unittest.TestCase):
         self.assert_no_writes()
 
     def test_expired_lease_lets_a_successor_take_over_and_records_the_takeover(self):
-        self.ended_holder_fixture(released=False)
-        self.lease_fixture("expired")
+        self.ended_holder_fixture(released=False, lease="expired")
         self.show_session_as_running()
         self.run_claim()
         result = self.emitted.call_args.args[0]
@@ -1368,8 +1373,7 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(LEASE.state(OWNER["session"]), LEASE.LIVE)
 
     def test_unreadable_lease_keeps_the_claim_for_supervisor_release(self):
-        self.ended_holder_fixture(released=False)
-        self.lease_fixture("unknown")
+        self.ended_holder_fixture(released=False, lease="unknown")
         self.show_session_as_running()
         with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
             self.run_claim()
@@ -1377,21 +1381,16 @@ class ClaimTests(unittest.TestCase):
         self.assertIn("release-claim", caught.exception.payload["coordination"][0]["next_action"])
 
     def test_released_source_can_be_claimed_and_cannot_resume_after_handoff(self):
-        import github_plan_closure
         self.ended_holder_fixture()
         self.args.resume_from = 71
         self.run_claim()
         self.assertTrue(self.emitted.call_args.args[0]["ok"])
         self.assertTrue(self.emitted.call_args.args[0]["retained_artifacts"])
-        with self.assertRaises(ValueError):
-            with github_plan_closure.resume_guard(OTHER["session"]): pass
-        with github_plan_closure.resume_guard(OWNER["session"]): pass
+        self.assert_resume_refused()
+        with closure.resume_guard(OWNER["session"]): pass
 
     def test_partial_successor_handoff_preserves_source_queue_until_all_claims_transfer(self) -> None:
-        import github_plan_closure as closure
-        import github_plan_claim_log as claim_log
         import github_plan_native as native
-        import github_read
         proxy = importlib.import_module("codex_session_proxy")
 
         claim_log.record(OTHER["session"], "owner/repo", 42)
@@ -1451,10 +1450,7 @@ class ClaimTests(unittest.TestCase):
         self.run_claim()
         remaining[:] = self.comments
         claim_log.record(OTHER["session"], "owner/unclaimed", 44)
-        with self.assertRaises(ValueError) as refused:
-            with closure.resume_guard(OTHER["session"]):
-                self.fail("fully transferred source resumed")
-        self.assertIsNone(refused.exception.__cause__)
+        self.assertIsNone(self.assert_resume_refused().__cause__)
 
         claim_log.record(OTHER["session"], "owner/new", 46)
         histories["owner/new"] = [{"id": 90, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}, "created_at": OTHER["claimed_at"]}]
@@ -1463,15 +1459,11 @@ class ClaimTests(unittest.TestCase):
 
         closure.admit_sources({OTHER["session"]})
         with patch.object(github_read, "GitHubReader", side_effect=github_read.GitHubReadShapeError("unavailable")):
-            with self.assertRaises(ValueError) as unavailable:
-                with closure.resume_guard(OTHER["session"]):
-                    self.fail("unknown ownership resumed")
-        self.assertIsInstance(unavailable.exception.__cause__, github_read.GitHubReadShapeError)
+            unavailable = self.assert_resume_refused()
+        self.assertIsInstance(unavailable.__cause__, github_read.GitHubReadShapeError)
 
     def test_resume_after_takeover_preflight_renews_ownership_before_publication(self) -> None:
-        import github_plan_closure as closure
-        self.ended_holder_fixture(released=False)
-        self.lease_fixture("expired")
+        self.ended_holder_fixture(released=False, lease="expired")
         entered = False
         ownership = closure.ownership
 
@@ -1493,10 +1485,7 @@ class ClaimTests(unittest.TestCase):
         self.assert_no_writes()
 
     def test_takeover_holds_source_ownership_through_publication_and_readback(self) -> None:
-        import github_plan_closure as closure
-        from concurrent.futures import ThreadPoolExecutor
-        self.ended_holder_fixture(released=False)
-        self.lease_fixture("expired")
+        self.ended_holder_fixture(released=False, lease="expired")
         blocked = []
 
         def attempt_resume() -> None:
@@ -1513,16 +1502,9 @@ class ClaimTests(unittest.TestCase):
         self.after_status = source_waits
         self.run_claim()
         self.assertEqual(len(blocked), 2)
-        with self.assertRaises(ValueError) as handed_off:
-            with closure.resume_guard(OTHER["session"]):
-                self.fail("fully handed-off source resumed")
-        self.assertNotIsInstance(handed_off.exception, closure.LeaseBusy)
+        self.assertNotIsInstance(self.assert_resume_refused(), closure.LeaseBusy)
 
     def test_current_custody_checks_all_records_without_guessing_uncertain_ownership(self) -> None:
-        import github_plan_closure as closure
-        import github_plan_claim_log as claim_log
-        import github_read
-
         for held_number in (1, 2):
             with self.subTest(held_number=held_number):
                 self.setUp()
@@ -1546,16 +1528,10 @@ class ClaimTests(unittest.TestCase):
                     with closure.ownership(OTHER["session"], create=True):
                         closure.write_lease_state(OTHER["session"], {"successor_admitted": True,
                             "claim_admission_unknown": {"repo": "owner/repo", "number": 1}})
-                    with self.assertRaises(ValueError) as fenced:
-                        with closure.resume_guard(OTHER["session"]):
-                            self.fail("unknown publication resumed despite its fence")
-                    self.assertIsNone(fenced.exception.__cause__)
+                    self.assertIsNone(self.assert_resume_refused().__cause__)
                     self.assertFalse(closure.action_pending(OTHER["session"]))
 
     def test_malformed_source_claim_reads_refuse_without_starting_an_action(self) -> None:
-        import github_plan_closure as closure
-        import github_plan_claim_log as claim_log
-        import github_read
         self.ended_holder_fixture()
         self.run_claim()
         claim_log.record(OTHER["session"], "owner/repo", 42)
@@ -1570,15 +1546,12 @@ class ClaimTests(unittest.TestCase):
             with self.subTest(issue=issue, actor=actor, comments=comments):
                 reader = Mock(expected_actor=actor, get_json=Mock(return_value=issue), paged_json=Mock(return_value=comments))
                 with patch.object(github_read, "GitHubReader", return_value=reader):
-                    with self.assertRaises(ValueError) as unknown:
-                        with closure.resume_guard(OTHER["session"]):
-                            self.fail("unauthenticated source ownership resumed")
-                self.assertIsInstance(unknown.exception.__cause__, github_read.GitHubReadShapeError)
+                    unknown = self.assert_resume_refused()
+                self.assertIsInstance(unknown.__cause__, github_read.GitHubReadShapeError)
                 self.assertFalse(closure.action_pending(OTHER["session"]))
 
     def unknown_takeover_fixture(self, *, crash: bool = False) -> dict[str, Any]:
-        self.ended_holder_fixture(released=False)
-        self.lease_fixture("expired")
+        self.ended_holder_fixture(released=False, lease="expired")
         marker = {"operation_id": PLAN.github_api_core.new_operation_id(), "started_at": datetime.now().astimezone().isoformat(),
                   "kind": "request_fingerprint", "value": "fixture-fingerprint"}
         bodies = []
@@ -1612,7 +1585,6 @@ class ClaimTests(unittest.TestCase):
                     pending["body"], operation_id or pending["marker"]["operation_id"])}
 
     def test_unknown_takeover_requires_exact_original_readback_without_reposting(self) -> None:
-        import github_plan_closure as closure
         for crash in (False, True):
             with self.subTest(crash=crash):
                 self.setUp()
@@ -1628,9 +1600,7 @@ class ClaimTests(unittest.TestCase):
                         self.args.branch = original_branch
                 self.assertEqual(pending["publisher"].call_count, 1)
                 with patch.object(closure, "has_current_claim", side_effect=AssertionError("unknown admission queried ownership")):
-                    with self.assertRaises(ValueError):
-                        with closure.resume_guard(OTHER["session"]):
-                            self.fail("unknown admission resumed")
+                    self.assert_resume_refused()
                 self.comments.append(self.delayed_takeover(pending))
                 self.run_claim()
                 result = self.emitted.call_args.args[0]
@@ -1640,7 +1610,6 @@ class ClaimTests(unittest.TestCase):
                 self.assertNotIn("claim_admission_unknown", closure.lease_state(OTHER["session"]))
 
     def test_another_agent_can_reconcile_the_exact_original_operation_without_claiming_its_work(self) -> None:
-        import github_plan_closure as closure
         pending = self.unknown_takeover_fixture()
         self.comments.append(self.delayed_takeover(pending))
         self.args.worker, self.args.session, self.args.branch = "other-agent", "other-session", "work/other-agent"
@@ -1651,7 +1620,6 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(pending["publisher"].call_count, 1)
 
     def test_unknown_operation_on_another_product_does_not_block_an_authored_released_claim(self) -> None:
-        import github_plan_closure as closure
         ordinary_post = self.post
         self.unknown_takeover_fixture()
         fence = copy.deepcopy(closure.lease_state(OTHER["session"])["claim_admission_unknown"])
@@ -1676,7 +1644,6 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(closure.lease_state(OTHER["session"])["claim_admission_unknown"], fence)
 
     def test_unknown_takeover_rejects_foreign_ambiguous_and_missing_operation_evidence(self) -> None:
-        import github_plan_closure as closure
         for mode in ("foreign_actor", "different_operation", "duplicate", "missing_marker", "missing_claim"):
             with self.subTest(mode=mode):
                 self.setUp()
@@ -1702,7 +1669,6 @@ class ClaimTests(unittest.TestCase):
                 self.assertEqual(pending["publisher"].call_count, 1)
 
     def test_a_different_target_receipt_cannot_clear_the_original_operation(self) -> None:
-        import github_plan_closure as closure
         pending = self.unknown_takeover_fixture()
         self.comments.append(self.delayed_takeover(pending))
         with closure.ownership(OTHER["session"], create=True):
@@ -1715,7 +1681,6 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(pending["publisher"].call_count, 1)
 
     def test_a_new_expired_takeover_cannot_overwrite_another_unresolved_operation(self) -> None:
-        import github_plan_closure as closure
         pending = self.unknown_takeover_fixture()
         fence = copy.deepcopy(closure.lease_state(OTHER["session"])["claim_admission_unknown"])
         self.args.issue = "43"
@@ -1732,7 +1697,6 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(pending["publisher"].call_count, 1)
 
     def test_unknown_takeover_readback_precedes_wait_gates_and_source_renewal(self) -> None:
-        import github_plan_closure as closure
         for boundary in ("wait", "source_renewed", "closed"):
             with self.subTest(boundary=boundary):
                 self.setUp()
@@ -1764,15 +1728,11 @@ class ClaimTests(unittest.TestCase):
                 self.assertEqual(pending["publisher"].call_count, 1)
 
     def test_confirmed_rejected_takeovers_do_not_create_an_unknown_fence(self) -> None:
-        import github_plan_closure as closure
-        import github_plan_claim_log as journal
-        import github_read
         for outcome in ("rejected", "not_started"):
             with self.subTest(outcome=outcome):
                 self.setUp()
-                self.ended_holder_fixture(released=False)
-                self.lease_fixture("expired")
-                journal.record(OTHER["session"], "owner/repo", 42)
+                self.ended_holder_fixture(released=False, lease="expired")
+                claim_log.record(OTHER["session"], "owner/repo", 42)
                 failure = github_comment.CommentError("fixture confirmed refusal", failure=PLAN.github_api_core.FailureDetail(
                     cause="fixture_refusal", message="fixture confirmed refusal", retryable=False,
                     fallback_eligible=False, disposition="stop", write_outcome=outcome, failed_step="post_claim"))
@@ -1792,10 +1752,7 @@ class ClaimTests(unittest.TestCase):
                 self.assertNotIn("claim_admission_unknown", closure.lease_state(OTHER["session"]))
 
     def test_authored_release_source_can_continue_through_successor_publication(self) -> None:
-        import github_plan_closure as closure
-        from concurrent.futures import ThreadPoolExecutor
-        self.ended_holder_fixture()
-        self.lease_fixture("live")
+        self.ended_holder_fixture(lease="live")
         continued = set()
 
         def resume_source() -> None:
@@ -1814,13 +1771,9 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(continued, {"post", "status"})
 
     def test_expired_takeover_stays_superseded_when_source_continues_and_successor_hands_off(self) -> None:
-        import github_plan_closure as closure
-        import github_plan_claim_log as journal
-        import github_read
-        self.ended_holder_fixture(released=False)
-        self.lease_fixture("expired")
-        journal.record(OTHER["session"], "owner/repo", 42)
-        journal.record(OTHER["session"], "owner/other", 43)
+        self.ended_holder_fixture(released=False, lease="expired")
+        claim_log.record(OTHER["session"], "owner/repo", 42)
+        claim_log.record(OTHER["session"], "owner/other", 43)
         self.run_claim()
         artifacts = copy.deepcopy(self.inventory)
         remaining = [{"id": 81, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}, "created_at": OTHER["claimed_at"]}]
@@ -1881,8 +1834,7 @@ class ClaimTests(unittest.TestCase):
         for state in ("unknown", "live"):
             with self.subTest(state=state):
                 self.setUp()
-                self.ended_holder_fixture(released=False)
-                self.lease_fixture(state)
+                self.ended_holder_fixture(released=False, lease=state)
                 with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
                     self.run_claim()
                 self.assert_no_writes()
@@ -5771,7 +5723,6 @@ class ClaimTests(unittest.TestCase):
         self.assertTrue(output["claim"]["retained_handoff"].endswith("#issuecomment-2"))
 
     def test_admission_freezes_sources_proven_only_by_retained_pr_comments(self):
-        closure = PLAN.github_plan_closure
         admit = closure.admit_sources
         for phase in ("preflight", "after_post", "after_status"):
             with self.subTest(phase=phase):
@@ -5796,11 +5747,9 @@ class ClaimTests(unittest.TestCase):
                 with patch.object(closure, "admit_sources", side_effect=freeze): self.run_claim()
                 self.assertTrue(self.emitted.call_args.args[0]["ok"])
                 self.assertIn(target["session"], admitted)
-                with self.assertRaises(ValueError):
-                    with closure.resume_guard(target["session"]): pass
+                self.assert_resume_refused(target["session"])
 
     def test_admission_freezes_released_ownership_recorded_only_on_family_peer(self):
-        closure = PLAN.github_plan_closure
         admit = closure.admit_sources
         for busy, phase in product((False, True), ("preflight", "after_post", "after_status")):
             with self.subTest(busy=busy, phase=phase):
@@ -5838,8 +5787,7 @@ class ClaimTests(unittest.TestCase):
                         self.assertTrue(self.emitted.call_args.args[0]["ok"])
                         self.assertIn(peer["session"], admitted)
                 if not busy:
-                    with self.assertRaises(ValueError):
-                        with closure.resume_guard(peer["session"]): pass
+                    self.assert_resume_refused(peer["session"])
 
     def test_busy_closure_publication_is_classified_before_claim_writes(self):
         with patch.object(PLAN.github_plan_closure, "admit_sources", side_effect=PLAN.github_plan_closure.LeaseBusy("held")):
