@@ -123,7 +123,11 @@ decisions, statuses or narrative; open linked records for action.
    A `PRODUCTION_READ_REFUSED` row follows its handoff in
    [task scope](../../references/execution-scope.md).
    A `SUPERVISOR_ACTION` repeats as an error after one interval until its issue
-   names another actor, a wait or a claim. Nudge stalls with exact evidence and process finished
+   names another actor, a wait or a claim. A `NO_HANDOFF` row is an open
+   non-draft PR whose checks pass by Ready's rule and whose current head has no
+   Ready, Client handoff, stated hold or recorded wait. It repeats with its age
+   until one appears; its owner readies it, states the hold or makes it draft.
+   Nudge stalls with exact evidence and process finished
    notices immediately. Polling watchers keep own automation question notices and
    verified own issue-mention activity in the log without exiting for them.
    Mention proof covers the latest visible message versions; unknown activity,

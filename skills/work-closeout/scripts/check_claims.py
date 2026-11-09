@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import math
 import os
@@ -17,14 +18,13 @@ from collections.abc import Callable, Sequence
 from collections.abc import Set as AbstractSet
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 SKILLS = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(SKILLS / "github/scripts"))
 sys.path.insert(0, str(SKILLS / "supervisor/scripts"))
 import claim_transcripts as history
 import github_identity
-import github_next_pr as next_pr
-import github_plan_wait as wait
 import github_plan_claim as claim
 import github_plan_claim_log as claim_log
 import github_plan_release as release
@@ -36,6 +36,13 @@ from github_read import (
     GitHubReadShapeError,
     path_with_query,
 )
+
+if TYPE_CHECKING:
+    from skills.github.scripts import github_next_pr as next_pr
+    from skills.github.scripts import github_plan_wait as wait
+else:
+    next_pr = importlib.import_module("github_next_pr")
+    wait = importlib.import_module("github_plan_wait")
 
 CHECK_OPERATION = "work-closeout.claims"
 JOURNAL_SHIPPED = datetime(2026, 10, 22, 3, 29, 9, tzinfo=UTC)
@@ -192,7 +199,8 @@ def handoff_gaps(readers: dict[str, GitHubReader], released: list[dict]) -> list
         except (ValueError, KeyError, TypeError, GitHubReadError, GitHubReadShapeError) as error:
             gaps.append(f"{url}: handoff is UNKNOWN ({error})")
             continue
-        if pull.get("state") == "open" and (next_pr.lacks_handoff(row) or row["state"] == "unknown"):
+        # This session's own claims are already released; a live claim here is a successor's work.
+        if pull.get("state") == "open" and row["reason"] != "existing_claim" and (next_pr.lacks_handoff(row) or row["state"] == "unknown"):
             gaps.append(f"{url}: open non-draft PR has no current-head Ready, Client handoff or stated hold ({row['reason']}); "
                         f"run gh-pr.py --repo {repo} ready {number} (with --waiting-for-client when the Client must accept), "
                         "post a PR comment whose first line is \"Engineering ready; waiting for <reason>\", or mark it draft")

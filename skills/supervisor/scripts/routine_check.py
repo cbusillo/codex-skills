@@ -281,8 +281,9 @@ def primary_reads(selection: dict, sessions: list[dict], *, owner_review: Callab
 
     def green_since(row: dict, read: dict) -> tuple[bool, datetime | None]:
         summary = read["summary"]
-        if summary.get("countsComplete") is not True or summary.get("unavailableComponents"):
-            errors.append({"read": f"checks {row['repo']}#{row['number']}", "error": "check evidence incomplete"})
+        if summary.get("countsComplete") is not True or summary.get("unavailableComponents") or read.get("headSha") != row.get("head_sha"):
+            errors.append({"read": f"checks {row['repo']}#{row['number']}",
+                           "error": "check evidence incomplete" if read.get("headSha") == row.get("head_sha") else "head moved since the handoff read"})
             return False, None
         client = sum(run.get("name") == OWNER_REVIEW_CHECK and run.get("status") != "completed" for run in read["checkRuns"])
         if ready_handoff.checks_unsettled(summary, client):
@@ -402,7 +403,7 @@ def digest(sources: dict[str, dict], *, full: bool = False) -> str:
                          "set another actor, record a wait or claim it on the issue")
     for row in client_wait_rows(selection):
         lines.append(noted(f"CLIENT_WAIT {pointer(row)}: {row.get('title') or row.get('next_action') or ''}", row))
-    for row in sorted(primary.get("no_handoff", []), key=lambda row: row["since"] or now):
+    for row in sorted(primary.get("no_handoff", []), key=lambda entry: entry["since"] or now):
         lines.append(f"NO_HANDOFF {row['url']} age={age_text(now - row['since']) if row['since'] else 'UNKNOWN'}: "
                      f"{' '.join(str(row.get('title') or '').split())[:120]} (ready it, state its hold or make it draft)")
     for kind, row in rows:

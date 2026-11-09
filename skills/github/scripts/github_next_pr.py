@@ -71,12 +71,11 @@ def project(repo: str, pull: dict[str, Any], comments: list[dict[str, Any]], *, 
     if not complete or not isinstance(head, str) or not head:
         return {**row, "state": "unknown", "reason": "incomplete_pr_evidence"}
     trusted_comments = [comment for comment in comments if str((comment.get("user") or {}).get("login") or "").casefold() in trusted]
+    conflicts: list[dict[str, Any]] = []
     try:
         conflicts, _ = github_plan_claim.discussion_evidence(
             "", trusted_comments, {"worker": "", "session": "", "branch": "", "claimed_at": ""}
         )
-        if conflicts:
-            return {**row, "state": "underway", "reason": "existing_claim", "ownership_evidence": conflicts}
         wait = github_plan_wait.current(pull, comments, trusted)
         ready = ready_handoff.latest_ready(pull, comments, trusted)
         source = current_source(pull, comments, trusted)
@@ -88,7 +87,13 @@ def project(repo: str, pull: dict[str, Any], comments: list[dict[str, Any]], *, 
         client_wait = ready_handoff.latest_ready(pull, handoffs, trusted, include_client_wait=True) and not ready
         hold = ready_handoff.stated_hold(handoffs, trusted)
     except (KeyError, ValueError, TypeError) as exc:
+        if conflicts:
+            return {**row, "state": "underway", "reason": "existing_claim", "ownership_evidence": conflicts}
         return {**row, "state": "unknown", "reason": "unreadable_pr_evidence", "detail": str(exc)}
+    # A claim is ownership, not a handoff: a claimed PR can still lack one.
+    missing = {"handoff": "none"} if wait["state"] != "waiting" and not (ready or client_wait or hold) else {}
+    if conflicts:
+        return {**row, "state": "underway", "reason": "existing_claim", "ownership_evidence": conflicts, **missing}
     row["wait"] = wait
     if wait["state"] == "waiting":
         return {**row, "state": "waiting", "reason": "recorded_wait"}
@@ -108,10 +113,10 @@ def project(repo: str, pull: dict[str, Any], comments: list[dict[str, Any]], *, 
     if hold:
         return {**row, "state": "waiting", "reason": "stated_hold"}
     if wait["state"] != "clear":
-        return {**row, "state": "scope_review", "reason": "wait_review_required"}
-    return {**row, "state": "review", "reason": "pr_followthrough_needs_fresh_readiness"}
+        return {**row, "state": "scope_review", "reason": "wait_review_required", **missing}
+    return {**row, "state": "review", "reason": "pr_followthrough_needs_fresh_readiness", **missing}
 
 
 def lacks_handoff(row: dict[str, Any]) -> bool:
     """An open non-draft PR with no current-head Ready, Client handoff, stated hold or recorded wait."""
-    return row.get("reason") in {"wait_review_required", "pr_followthrough_needs_fresh_readiness"} and "next_actor" not in row
+    return row.get("handoff") == "none"

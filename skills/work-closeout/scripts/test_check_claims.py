@@ -532,7 +532,7 @@ class ClaimCloseoutTests(unittest.TestCase):
         on_pr: list[dict] = []
         issue_comments = self.paged
         self.reader.paged_json.side_effect = lambda path, **kw: on_pr if path.endswith("/issues/2/comments") else issue_comments(path, **kw)
-        self.enterContext(patch_attr(helper.wait, "authors", return_value={ACTOR}))
+        self.enterContext(patch_attr(importlib.import_module("github_plan_wait"), "authors", return_value={ACTOR}))
         report = helper.check([self.receipt_entry()])
         self.assertFalse(report["claims_clear"])
         gap = [row for row in report["blocked"] if own["html_url"] in row]
@@ -548,6 +548,9 @@ class ClaimCloseoutTests(unittest.TestCase):
                 self.assertTrue(helper.check([self.receipt_entry()])["claims_clear"])
         on_pr[:] = [comment(30, handoffs.handoff_body("d" * 40), at=later)]
         self.assertFalse(helper.check([self.receipt_entry()])["claims_clear"])
+        successor = {**SOURCE, "session": "successor-session", "worker": "successor"}
+        on_pr[:] = [comment(30, "Claimed by successor\n\n" + claim_logic.marker(successor), at=later)]
+        self.assertTrue(helper.check([self.receipt_entry()])["claims_clear"])
         on_pr[:] = []
         own["draft"] = True
         self.assertTrue(helper.check([self.receipt_entry()])["claims_clear"])

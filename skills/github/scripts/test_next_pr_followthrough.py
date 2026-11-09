@@ -96,6 +96,10 @@ def test_a_stated_hold_waits_and_only_a_missing_current_head_handoff_lacks_one()
     for missing in ([], [clear], [ready], [comment(5, "Engineering ready; waiting for")],
                     [{**hold, "user": {"login": "stranger"}}], [hold, {**clear, "id": 8, "created_at": "2026-10-28T18:08:00Z"}]):
         assert github_next_pr.lacks_handoff(project(missing, head={"sha": "b" * 40} if missing == [ready] else {"sha": HEAD})), missing
+    # A claim is ownership, not a handoff.
+    claimed = comment(9, claim.marker({"worker": "w", "session": "s", "branch": "work/source", "claimed_at": "2026-10-28T18:00:00Z"}))
+    assert project([claimed])["reason"] == "existing_claim" and github_next_pr.lacks_handoff(project([claimed]))
+    assert not github_next_pr.lacks_handoff(project([claimed, ready]))
 
 
 def pr_evidence(row: dict) -> dict:

@@ -1145,14 +1145,14 @@ class PrimaryReadTests(unittest.TestCase):
                                                 "conclusion": "failure" if state == "failing" else "success"}]
             if state == "client":
                 runs.append({"name": routine_check.OWNER_REVIEW_CHECK, "status": "queued", "completedAt": None})
-            return {"headSha": head, "checkRuns": runs, "statuses": [], "summary": {
+            return {"headSha": "f" * 40 if state == "moved" else head, "checkRuns": runs, "statuses": [], "summary": {
                 "countsComplete": state != "partial", "countsAreLowerBounds": state == "partial",
                 "unavailableComponents": ["checkRuns"] if state == "partial" else [], "failingCount": int(state == "failing"),
                 "pendingCount": int(state == "client"), "unfinishedWorkflowRunCount": 0, "checkRunCount": len(runs), "statusCount": 0}}
 
-        states = {906: "green", 907: "failing", 910: "client", 911: "none", 912: "partial"}
+        states = {906: "green", 907: "failing", 910: "client", 911: "none", 912: "partial", 915: "moved"}
         rows = [row(906), row(907), row(908, "Engineering ready; waiting for the Director's landing decision"),
-                row(909, handoffs.handoff_body(head)), row(910), row(911), row(912), row(913, draft=True), row(914, head={})]
+                row(909, handoffs.handoff_body(head)), row(910), row(911), row(912), row(913, draft=True), row(914, head={}), row(915)]
         reader = Mock(side_effect=lambda _repo, number: checks(states[number]))
         for _ in range(2):
             lines = self.run_digest({"pr_followthrough": rows}, checks=reader)
@@ -1164,6 +1164,7 @@ class PrimaryReadTests(unittest.TestCase):
             errors = [line for line in lines if line.startswith("ERROR primary")]
             self.assertTrue([line for line in errors if "#912" in line], errors)
             self.assertTrue([line for line in errors if "/pull/914" in line], errors)
+            self.assertTrue([line for line in errors if "#915" in line and "head moved" in line], errors)
         self.assertEqual({call.args[1] for call in reader.call_args_list}, set(states))
 
 

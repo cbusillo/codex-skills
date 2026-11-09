@@ -415,6 +415,12 @@ authorized read path, or record an irrecoverable-evidence decision for the
 Director. Do not silently retire the target or manufacture an all-clear.
 The Supervisor runs the same check for any session.
 
+Each retained open non-draft PR needs a handoff on its current head before
+exit: Ready (`gh-pr.py ready`, with `--waiting-for-client` when the Client must
+accept), a stated hold (a PR comment whose first line is `Engineering ready;
+waiting for <reason>`), a recorded wait, or draft. Without one the check
+refuses, naming the PR and those remedies. It does not wait for checks.
+
 An open PR need not merge before a session exits. Its exact release names the
 retained PR, and the check verifies the same repository, source identity and
 independent issue link under the successor's handoff contract. Retained work is
@@ -654,6 +660,8 @@ standards.
   and safe-to-exit final answers. The section must include two explicit labels:
   `Love:` for what you love about the result, and `Do not love:` for concerns,
   compromises, or "nothing material" when no meaningful concern remains.
+  An own open PR the claim check refuses for a missing handoff goes under
+  `Do not love:` with its remedy, and the verdict stays no until it has one.
 
 This gate ensures that the session ends not just with technical passing, but
 with a shared understanding of the work's quality and "soul."
