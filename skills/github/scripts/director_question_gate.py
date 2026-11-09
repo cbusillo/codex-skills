@@ -33,10 +33,16 @@ for scripts in ("github-work-rollup/scripts", "supervisor/scripts"):
         sys.path.append(str(SKILLS / scripts))
 
 
+def radar_module() -> Any:
+    # noinspection PyUnresolvedReferences
+    import github_unanswered_comments
+
+    return github_unanswered_comments
+
+
 @functools.cache
 def people_source(owner: str) -> dict[str, Any]:
-    import github_unanswered_comments as radar
-
+    radar = radar_module()
     identities = radar.people_identities({radar.normalize_login(owner)}, None)
     if identities["status"] == "error":
         raise ValueError(f"The people index could not be read, so a wait cannot be checked: {identities['error']}")
@@ -44,17 +50,13 @@ def people_source(owner: str) -> dict[str, Any]:
 
 
 def director_terms(owner: str) -> list[str]:
-    import github_unanswered_comments as radar
-
-    return [owner, *people_source(owner)["director_names"], *radar.DIRECTOR_ROLE_WORDS]
+    return [owner, *people_source(owner)["director_names"], *radar_module().DIRECTOR_ROLE_WORDS]
 
 
 def waits_on_director(owner: str, wait: dict[str, Any]) -> list[str]:
-    import github_unanswered_comments as radar
-
     terms = director_terms(owner)
     return [entry["waiting_for"] for entry in wait["waits"]
-            if radar.current_director_wait(entry["waiting_for"], terms, {owner.casefold()})]
+            if radar_module().current_director_wait(entry["waiting_for"], terms, {owner.casefold()})]
 
 
 @functools.cache
@@ -71,8 +73,7 @@ def address_book(owner: str) -> dict[str, frozenset[str]]:
 
 
 def asked_person(owner: str, waiting_for: str) -> AskedPerson | None:
-    import github_unanswered_comments as radar
-
+    radar = radar_module()
     director = radar.current_director_wait(waiting_for, director_terms(owner), {owner.casefold()}) is not None
     asserted = radar.asserted_step(LOWERCASE_CLIENT.sub("", waiting_for))
     book = address_book(owner)
@@ -202,14 +203,17 @@ def ask_gap(repo: str, wait: dict[str, Any], *, read_comment: Callable[[str], An
 
     for entry, person in person_waits(owner, wait):
         url = entry.get("ask_url")
-        comment = read_ask_comment(url, read_comment) if url else None
-        if url and comment is None:
+        if url is None:
+            return (unasked_director_message(owner, entry["waiting_for"], queue) if person.director
+                    else unasked_person_message(entry["waiting_for"], None))
+        comment = read_ask_comment(url, read_comment)
+        if comment is None:
             return f"The ask comment {url} could not be read. Fix the link or retry; a wait on a person needs a readable ask."
         if person.director:
-            if comment is None or not director_asked(comment, url):
+            if not director_asked(comment, url):
                 return unasked_director_message(owner, entry["waiting_for"], queue)
             continue
-        if comment is None or not ask_is_real(comment, resolve_client(person, repo), owner, trusted):
+        if not ask_is_real(comment, resolve_client(person, repo), owner, trusted):
             return unasked_person_message(entry["waiting_for"], url)
     return None
 
