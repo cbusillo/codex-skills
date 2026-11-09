@@ -62,6 +62,8 @@ For implementation work, scope this to one PR-sized deliverable using
 close it at the PR completing its work. Record a real event finish line as a
 wait naming the event and actor; do not create an agent come-back check on a
 parent. Preserve the original request when splitting an older broad issue.
+A Client-filed issue closes on an observable fact, ours or theirs, never on a
+thank-you.
 
 ### Current Status
 The recovery point for future sessions. Keep it short and concrete.
