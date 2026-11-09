@@ -241,6 +241,7 @@ class SectionTests(unittest.TestCase):
                             load_config=Mock(return_value={"default_sections": [section]}),
                             get_issue=Mock(return_value=("fixture-bot[bot]", self.issue)),
                             next_status_body_time=Mock(return_value="2026-01-01T00:00:00+00:00"),
+                            next_graph_reader=Mock(return_value=None),
                             collect_paged_rest_items=Mock(return_value=("fixture-bot[bot]", comments or []))), \
                 patch.object(github_identity, "configured_bot_logins", return_value=["fixture-bot[bot]"]), \
                 patch.object(sys, "argv", [str(SCRIPT), "show", "42", *(["--full"] if full else [])]), \

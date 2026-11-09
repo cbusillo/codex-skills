@@ -215,6 +215,7 @@ class CompleteInventoryTests(unittest.TestCase):
                     next_wait_context=check_parent_evidence,
                     next_graph_reader=lambda *_: Mock(results=[], actor="bot"),
                     collect_paged_rest_items=collect,
+                    read_planning_connection=lambda repo, number, field, **_: collect(f"/repos/{repo}/issues/{number}/{field}"),
                 ),
                 patch.multiple(module.github_identity, github_app_config=dict),
                 patch.multiple(module.github_next_inventory, read_repository=read_repository),

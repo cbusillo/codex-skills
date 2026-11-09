@@ -56,6 +56,7 @@ class NotPlannedScopeTests(unittest.TestCase):
             load_direction=Mock(return_value="## Milestones\n- `Catalog adoption` proves adoption."),
             wait_authors=Mock(return_value={"fixture", "fixture-bot"}),
             EXPECTED_ACTOR="fixture-bot",
+            next_graph_reader=Mock(return_value=None),
             api_json=Mock(side_effect=self.api),
             collect_paged_rest_items=Mock(side_effect=self.pages))
         self.patches.start()
@@ -257,7 +258,8 @@ class CloseConfigTests(unittest.TestCase):
         with patch.multiple(PLAN, default_repo=Mock(return_value="fixture/local"),
                 load_config=Mock(side_effect=lambda repo, **_: configs[repo]),
                 api_json=Mock(side_effect=AssertionError("Unexpected API call in read-only show")),
-                get_issue=Mock(side_effect=lambda ref, repo: ("fixture-bot", track if repo == "fixture/direction" else issue)),
+                next_graph_reader=Mock(return_value=None),
+                get_issue=Mock(side_effect=lambda ref, repo, **_: ("fixture-bot", track if repo == "fixture/direction" else issue)),
                 milestone_direction_repo=Mock(return_value="fixture/direction"),
                 load_direction=Mock(side_effect=lambda repo: "## Milestones\n- `" + ("Launch product" if repo == "fixture/direction" else "Catalog adoption") + "` proves delivery.\n"),
                 milestone_claim_ancestry=Mock(return_value=Mock(nodes=ancestry or set(), complete=True)),
@@ -594,6 +596,7 @@ class CloseConfigTests(unittest.TestCase):
                     output, errors = io.StringIO(), io.StringIO()
                     with patch.multiple(PLAN,
                                         default_repo=Mock(return_value=caller), load_config=config,
+                                        next_graph_reader=Mock(return_value=None),
                                         get_issue=Mock(return_value=("fixture-bot", issue)),
                                         collect_paged_rest_items=Mock(return_value=("fixture-bot", [
                                             {"user": {"login": "fixture"}, "body": PLAN.github_plan_wait.marker(
@@ -678,6 +681,7 @@ class CloseConfigTests(unittest.TestCase):
                 argv.extend(("--planning-checkout", str(target)))
             with patch.multiple(PLAN, git_root=Mock(return_value=target if discovered else caller),
                                 repo_from_git=origin, workspace_config_path=Mock(return_value=workspace_path),
+                                next_graph_reader=Mock(return_value=None),
                                 get_issue=Mock(return_value=("fixture-bot", issue)),
                                 close_relationship_preflight=preflight,
                                 ensure_labels=Mock(return_value=("fixture-bot", [])),
