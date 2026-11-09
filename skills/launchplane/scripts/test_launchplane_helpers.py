@@ -3770,12 +3770,14 @@ def test_odoo_host_grants_read_calls_fixed_testing_route_and_projects_result() -
     {"container_cleanup": "maybe"},
     {"evidence_sha256": "not-a-digest"},
     {"account": "reader"},
+    {"failure_stage": "ghp_" + "EXAMPLEONLYNOTAREALTOKEN"},
 ])
 def test_odoo_host_grants_read_refuses_rows_or_unexpected_shapes(changes: dict[str, Any]) -> None:
     argv = ["odoo-host-source-grants-read", "--product", "example-product"]
     status, payload, _calls = _run_product_read(argv, _odoo_host_grants_response(**changes))
     assert status != 0
     assert "reader" not in json.dumps(payload)
+    assert "EXAMPLEONLY" not in json.dumps(payload)
 
 
 def test_product_environment_read_uses_path_route_and_projects_deploy_identity() -> None:

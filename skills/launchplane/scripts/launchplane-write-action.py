@@ -6307,7 +6307,7 @@ def _project_odoo_host_grants(value: object) -> dict[str, object]:
     if evidence != "" and not (isinstance(evidence, str) and re.fullmatch(r"[a-f0-9]{64}", evidence)):
         raise LaunchplaneSafetyError("invalid_response")
     failure = source["failure_stage"]
-    return {
+    projected = {
         "source": "fishbowl",
         "grants": source["grants"],
         "grant_names": names,
@@ -6316,6 +6316,8 @@ def _project_odoo_host_grants(value: object) -> dict[str, object]:
         "rechecks": source["rechecks"],
         "evidence_sha256": evidence,
     }
+    assert_public_safe_shape(projected)
+    return projected
 
 
 def summarize_odoo_host_source_grants_read(
