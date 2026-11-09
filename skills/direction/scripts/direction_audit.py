@@ -449,16 +449,18 @@ def graph_route(args: list[str]) -> GraphRoute | None:
     return None
 
 
+def milestone_node_needs_full_record(node: dict[str, Any]) -> bool:
+    state = node.get("state")
+    return "updated_at" not in node or (state == "closed" and "closed_at" not in node) or (state == "open" and "user" not in node)
+
+
 def rest_may_answer(error: Exception) -> bool:
     if isinstance(error, github_plan_graph.github_read.GitHubReadShapeError):
         return error.rest_recovery_allowed or error.retryable
-    return isinstance(error, github_plan_graph.github_read.GitHubReadError) and error.rest_recovery_allowed
-
-
-def graph_read_failure(path: str, error: Exception) -> AuditError:
-    failure = error.result.failure if isinstance(error, github_plan_graph.github_read.GitHubReadError) else None
-    missing = failure is not None and failure.cause == "not_found"
-    return (ReferenceNotFound if missing else AuditError)(f"GraphQL read of {path} failed: {error}")
+    if not isinstance(error, github_plan_graph.github_read.GitHubReadError):
+        return False
+    failure = error.result.failure
+    return error.rest_recovery_allowed or (failure is not None and failure.cause == "not_found")
 
 
 def repository_inventory(reader: Any, repo: str) -> dict[int, dict[str, Any]]:
@@ -493,7 +495,7 @@ def graph_first_reads(
         except GRAPH_READ_ERRORS as error:
             if rest_may_answer(error):
                 return rest(args)
-            raise graph_read_failure(args[1], error) from error
+            raise AuditError(f"GraphQL read of {args[1]} failed: {error}") from error
 
     return read
 
@@ -1716,7 +1718,7 @@ def milestone_outcomes(
         def read_outcome(item: tuple[tuple[str, int], dict[str, Any]]) -> dict[str, Any]:
             (repo, number), node = item
             outcome: dict[str, Any] = {"issues_closed": [], "issues_open": 0, "issues_waiting": 0, "unavailable": []}
-            if "updated_at" not in node or (node.get("state") == "closed" and "closed_at" not in node):
+            if milestone_node_needs_full_record(node):
                 try:
                     node = fetch(["api", f"repos/{repo}/issues/{number}", "--method", "GET"])
                     if (not isinstance(node, dict) or "updated_at" not in node

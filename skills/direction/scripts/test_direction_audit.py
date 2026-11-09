@@ -4117,14 +4117,28 @@ def test_graphql_comment_pages_keep_the_page_cap_and_terminate() -> None:
     assert not cut and len(whole) == 100
 
 
-def test_graphql_missing_issue_raises_reference_not_found() -> None:
+def test_graphql_not_found_lets_rest_follow_a_transferred_issue_or_report_it_missing() -> None:
     module = load()
+    transferred = {"number": 7, "state": "open"}
+
+    def missing(args: list[str]) -> Any:
+        raise module.ReferenceNotFound(f"gh api {args[1]} failed: gh: Not Found (HTTP 404)")
+
     for path in ("repos/o/r/issues/7", "repos/o/r/issues/7/comments?per_page=100&page=1", "repos/o/r/pulls/7"):
+        assert graph_reads(module, GraphReaderFixture(module, missing=True), rest=lambda _args: transferred)(get(path)) == transferred
         try:
-            graph_reads(module, GraphReaderFixture(module, missing=True))(get(path))
+            graph_reads(module, GraphReaderFixture(module, missing=True), rest=missing)(get(path))
         except module.ReferenceNotFound:
             continue
         raise AssertionError(f"{path} did not report a missing issue")
+
+
+def test_open_milestone_node_without_an_author_reads_its_full_record_for_body_waits() -> None:
+    module = load()
+    summary = {"updated_at": "2026-11-01T00:00:00Z", "state": "open"}
+    assert module.milestone_node_needs_full_record(summary)
+    assert not module.milestone_node_needs_full_record({**summary, "user": {"login": "owner"}})
+    assert not module.milestone_node_needs_full_record({**summary, "state": "closed", "closed_at": "2026-11-02T00:00:00Z"})
 
 
 def test_unrecoverable_graphql_failure_is_an_audit_error_not_an_empty_read() -> None:
@@ -4190,7 +4204,7 @@ def inventory_row(number: int, *, complete: bool = True) -> dict[str, Any]:
             "_graph_comments_complete": complete, "_graph_relationships": {"blocked_by": [], "blocking": [], "sub_issues": []}}
 
 
-def counted_inventory(module: Any, rows: list[dict[str, Any]]) -> tuple[list[str], Any]:
+def counted_inventory(rows: list[dict[str, Any]]) -> tuple[list[str], Any]:
     calls: list[str] = []
 
     def read_repository(_reader: Any, repo: str) -> list[dict[str, Any]]:
@@ -4206,7 +4220,7 @@ def must_not_query(*_args: Any, **_kwargs: Any) -> Any:
 
 def test_many_issues_in_one_repository_cost_one_inventory_read() -> None:
     module = load()
-    calls, read_repository = counted_inventory(module, [inventory_row(number) for number in range(1, 41)])
+    calls, read_repository = counted_inventory([inventory_row(number) for number in range(1, 41)])
     with module.github_next_reads.NextReads(workers=1, seconds=0, label="test") as reads, patch.dict(vars(module.github_next_inventory), {"read_repository": read_repository}):
         fetch = graph_reads(module, types.SimpleNamespace(graphql_json=must_not_query), inventory=module.owner_inventory("O", reads))
         for number in range(1, 41):
@@ -4219,7 +4233,7 @@ def test_many_issues_in_one_repository_cost_one_inventory_read() -> None:
 
 def test_items_the_inventory_does_not_cover_keep_the_single_query_route() -> None:
     module = load()
-    calls, read_repository = counted_inventory(module, [inventory_row(1), inventory_row(7, complete=False)])
+    calls, read_repository = counted_inventory([inventory_row(1), inventory_row(7, complete=False)])
     with module.github_next_reads.NextReads(workers=1, seconds=0, label="test") as reads, patch.dict(vars(module.github_next_inventory), {"read_repository": read_repository}):
         reader = GraphReaderFixture(module, comments=2)
         fetch = graph_reads(module, reader, inventory=module.owner_inventory("o", reads))
