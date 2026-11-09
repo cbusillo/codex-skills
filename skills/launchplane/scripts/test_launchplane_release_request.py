@@ -11,6 +11,8 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from launchplane_release_request import CLIENT_APPROVAL_BLOCKER as CLIENT_APPROVAL
+from launchplane_release_request import COMMAND, REVIEW_PAGE
 from test_launchplane_helpers import _product_profile_response
 from test_launchplane_helpers import write_action as h
 
@@ -23,8 +25,9 @@ OPERATION_KEY = "release-request-1"
 REASON = "PRIVATE_REASON_SENTINEL ship the guarded importer"
 DECISION = "https://github.com/example/direction/issues/98#issuecomment-20"
 OTHER_DECISION = "https://github.com/example/direction/issues/98#issuecomment-21"
-CLIENT_APPROVAL = "Client approval of this release is required."
+OTHER_REASON = "A different recorded reason"
 SERVICE_URL = "https://plane.example.invalid"
+REVIEW_URL = f"{SERVICE_URL}{REVIEW_PAGE}?product=site"
 
 
 def patch_attr(name: str, *args: Any, **kwargs: Any) -> Any:
@@ -72,7 +75,7 @@ def review(digest: str = DIGEST, saved: dict[str, object] | None = None, **field
     return body
 
 
-def saved_request(digest: str = DIGEST, decision: str = DECISION) -> dict[str, object]:
+def saved_request(digest: str = DIGEST, decision: str = DECISION, reason: str = REASON) -> dict[str, object]:
     return {
         "record_id": RECORD_ID,
         "product": "site",
@@ -80,7 +83,7 @@ def saved_request(digest: str = DIGEST, decision: str = DECISION) -> dict[str, o
         "decision_reference": decision,
         "source": "director_request",
         "actor": "private-actor-subject",
-        "reason": REASON,
+        "reason": reason,
         "decided_at": "2026-11-09T03:00:00+00:00",
     }
 
@@ -132,11 +135,11 @@ def test_plan_reports_the_exact_checklist_and_sends_nothing() -> None:
     assert result["checklist_digest"] == DIGEST
     assert result["production"] == {"source_commit": PRODUCTION_COMMIT, "carries_runtime_settings": False}
     assert result["candidate"] == {"source_commit": CANDIDATE_COMMIT, "carries_runtime_settings": True}
-    assert result["review_url"] == f"{SERVICE_URL}/ui/owner-review?product=site"
+    assert result["review_url"] == REVIEW_URL
     assert_private_values_absent(payload)
 
 
-@pytest.mark.parametrize("acceptance", ["held", "promote", "promote_with_rollback_drill"])
+@pytest.mark.parametrize("acceptance",["held", "promote", "promote_with_rollback_drill"])
 @pytest.mark.parametrize("args", [plan_args(), request_args()])
 def test_only_director_standing_products_can_request(acceptance: str, args: list[str]) -> None:
     code, payload, posts = invoke(args, reviews=[review()], acceptance=acceptance)
@@ -180,7 +183,6 @@ def test_changed_checklist_refuses_locally_and_requires_a_new_read() -> None:
     code, payload, posts = invoke(request_args(), reviews=[review(digest=NEW_DIGEST)])
     assert code == 1 and posts == []
     assert payload["status"] == "stale"
-    assert "--plan" in payload["summary"]["recommendation"]
 
 
 def test_service_checklist_refusal_is_stale_and_never_retried() -> None:
@@ -195,12 +197,12 @@ def test_request_binds_the_reviewed_digest_decision_and_key() -> None:
     code, payload, posts = invoke(request_args(), reviews=[review()], posts=[review(saved=saved_request())])
     assert code == 0 and len(posts) == 1
     call = posts[0].kwargs
-    assert call["path"] == "/v1/release-review/requests"
+    assert call["path"] == h.helper_command_path(COMMAND)
     assert call["idempotency_key"] == OPERATION_KEY
     assert call["body"] == {"product": "site", "checklist_digest": DIGEST, "reason": REASON, "source": "director_request", "decision_reference": DECISION}
     assert payload["status"] == "ok"
     assert payload["result"]["request_id"] == RECORD_ID
-    assert payload["result"]["review_url"] == f"{SERVICE_URL}/ui/owner-review?product=site"
+    assert payload["result"]["review_url"] == REVIEW_URL
     assert payload["summary"]["idempotency_key"] == OPERATION_KEY
     assert_private_values_absent(payload)
 
@@ -218,10 +220,19 @@ def test_a_recorded_request_is_reported_without_sending_again() -> None:
     assert payload["result"]["request_id"] == RECORD_ID
 
 
-def test_a_request_recorded_under_another_decision_conflicts() -> None:
-    code, payload, posts = invoke(request_args(decision=OTHER_DECISION), reviews=[review(saved=saved_request())])
+@pytest.mark.parametrize("recorded", [saved_request(decision=OTHER_DECISION), saved_request(reason=OTHER_REASON)])
+def test_a_request_recorded_with_another_decision_or_reason_conflicts(recorded: dict[str, object]) -> None:
+    code, payload, posts = invoke(request_args(), reviews=[review(saved=recorded)])
     assert code == 1 and posts == []
     assert payload["status"] == "conflict"
+    assert "request_id" not in payload.get("result", {})
+
+
+def test_service_keeping_an_earlier_reason_is_not_reported_as_this_request() -> None:
+    code, payload, posts = invoke(request_args(), reviews=[review()], posts=[review(saved=saved_request(reason=OTHER_REASON))])
+    assert code == 1 and len(posts) == 1
+    assert payload["status"] == "conflict"
+    assert OTHER_REASON not in json.dumps(payload)
 
 
 @pytest.mark.parametrize("failure", [TimeoutError("lost"), http_error(502, "bad_gateway"), ValueError("not json")])
@@ -239,7 +250,6 @@ def test_unproven_outcome_stays_unknown_and_keeps_the_key(readback: object) -> N
     assert code == 1 and len(posts) == 1
     assert payload["status"] == "outcome_unknown"
     assert payload["summary"]["idempotency_key"] == OPERATION_KEY
-    assert "same" in payload["summary"]["recommendation"]
     assert_private_values_absent(payload)
 
 

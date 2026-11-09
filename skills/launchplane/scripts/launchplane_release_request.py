@@ -44,7 +44,7 @@ RECOVERY = {
     "ok": "Request recorded. Standing acceptance starts the gated release; observe it and do not promote by hand.",
     "plan": "Nothing was sent. Review this checklist, then submit its checklist_digest with --checklist-digest.",
     "stale": "The checklist changed. Run --plan for a new current read and review it before submitting its digest. A retry or a new key cannot bypass this.",
-    "conflict": "A request for this checklist is already recorded under another decision. Inspect it instead of replacing it.",
+    "conflict": "A request for this checklist is already recorded with a different decision or reason. Inspect it instead of replacing it.",
     "accepted_unverified": "Launchplane accepted the call but did not return this exact request. Keep the same digest, reason, decision reference and key, and rerun to read it back.",
     "outcome_unknown": "The request may have been recorded. Keep the same digest, reason, decision reference and key, and rerun to read it back. Do not start over with a new key.",
     "unavailable": "The current release review could not be read. Nothing was sent; retry once the service is available.",
@@ -150,7 +150,7 @@ def _project_saved_request(h: Any, value: object) -> dict[str, Any] | None:
     for field, pattern in (("record_id", SHA256_RE), ("checklist_digest", SHA256_RE)):
         if not isinstance(saved.get(field), str) or not pattern.fullmatch(saved[field]):
             raise h.LaunchplaneSafetyError("invalid_response")
-    if not isinstance(saved.get("decision_reference"), str):
+    if not isinstance(saved.get("decision_reference"), str) or not isinstance(saved.get("reason"), str):
         raise h.LaunchplaneSafetyError("invalid_response")
     return saved
 
@@ -211,14 +211,14 @@ def _read_review(h: Any, settings: dict[str, str], product: str, timeout: float)
 
 def _matching_request(state: ReviewState, intent: Intent) -> dict[str, Any] | None:
     saved = state.saved
-    if saved is None or saved["checklist_digest"] != intent.digest or saved["decision_reference"] != intent.decision_reference:
+    if saved is None or (saved["checklist_digest"], saved["decision_reference"], saved["reason"]) != (intent.digest, intent.decision_reference, intent.reason):
         return None
     return saved
 
 
-def _recorded_under_other_decision(state: ReviewState, intent: Intent) -> bool:
+def _recorded_differently(state: ReviewState, intent: Intent) -> bool:
     saved = state.saved
-    return saved is not None and saved["checklist_digest"] == intent.digest and saved["decision_reference"] != intent.decision_reference
+    return saved is not None and saved["checklist_digest"] == intent.digest and _matching_request(state, intent) is None
 
 
 def _result(h: Any, settings: dict[str, str], intent: Intent, state: ReviewState, acceptance: str) -> dict[str, object]:
@@ -313,7 +313,7 @@ def _submit(h: Any, settings: dict[str, str], intent: Intent, acceptance: str, t
         return _settle_uncertain_post(h, settings, intent, acceptance, timeout, status="outcome_unknown", diagnostics=diagnostics)
     if (saved := _matching_request(state, intent)) is not None:
         return _finish_recorded(h, settings, intent, state, acceptance, saved)
-    status = "conflict" if _recorded_under_other_decision(state, intent) else "accepted_unverified"
+    status = "conflict" if _recorded_differently(state, intent) else "accepted_unverified"
     return _finish(h, intent, status, diagnostics=h.service_response_diagnostics(response))
 
 
@@ -363,7 +363,7 @@ def execute(h: Any, args: argparse.Namespace) -> int:
         return _finish_plan(h, settings, intent, state, acceptance)
     if (saved := _matching_request(state, intent)) is not None:
         return _finish_recorded(h, settings, intent, state, acceptance, saved)
-    if _recorded_under_other_decision(state, intent):
+    if _recorded_differently(state, intent):
         return _finish(h, intent, "conflict")
     if state.digest and state.digest != intent.digest:
         return _finish(h, intent, "stale", diagnostics=CHECKLIST_CHANGED_DIAGNOSTICS)

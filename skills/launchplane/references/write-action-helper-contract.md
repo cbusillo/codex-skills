@@ -2800,8 +2800,8 @@ recorded production settings.
 
 `stale` means the checklist changed, before or during the call. Run `--plan` for
 a new current read and review it; neither a retry nor a new key bypasses this. A
-digest already recorded under this decision returns `ok` without sending again;
-under another decision it is `conflict`. After a lost response or a 5xx the helper
+digest already recorded with this decision and reason returns `ok` without sending again;
+with a different decision or reason it is `conflict`. After a lost response or a 5xx the helper
 reads back once: a matching saved request is `ok` with `verified_by_readback`,
 otherwise `outcome_unknown`. Keep the same digest, reason, decision reference and
 key, and rerun to read it back. An accepted response without this exact request
