@@ -23,6 +23,8 @@ sys.path.insert(0, str(SKILLS / "github/scripts"))
 sys.path.insert(0, str(SKILLS / "supervisor/scripts"))
 import claim_transcripts as history
 import github_identity
+import github_next_pr as next_pr
+import github_plan_wait as wait
 import github_plan_claim as claim
 import github_plan_claim_log as claim_log
 import github_plan_release as release
@@ -175,6 +177,26 @@ def check_record(
         if release_proofs is not None:
             release_proofs.append({"repo": repo, "number": number, "source": source, "release": evidence})
     return result
+
+
+def handoff_gaps(readers: dict[str, GitHubReader], released: list[dict]) -> list[str]:
+    """Each retained open non-draft PR needs a current-head Ready, Client handoff, stated hold or recorded wait."""
+    gaps = []
+    for url, repo in dict.fromkeys((url, row["repository"]) for row in released for url in row["retained_prs"]):
+        number, reader = url.rsplit("/pull/", 1)[1], readers[repo]
+        try:
+            pull = reader.get_json(f"/repos/{repo}/pulls/{number}", step="closeout_pr_handoff")
+            comments = reader.paged_json(f"/repos/{repo}/issues/{number}/comments", step_prefix="closeout_pr_handoff")
+            row = next_pr.project(repo, pull, comments, trusted=wait.authors(repo, expected_actor=reader.expected_actor),
+                                  complete=True, acceptance_reader=lambda *_: False)
+        except (ValueError, KeyError, TypeError, GitHubReadError, GitHubReadShapeError) as error:
+            gaps.append(f"{url}: handoff is UNKNOWN ({error})")
+            continue
+        if pull.get("state") == "open" and (next_pr.lacks_handoff(row) or row["state"] == "unknown"):
+            gaps.append(f"{url}: open non-draft PR has no current-head Ready, Client handoff or stated hold ({row['reason']}); "
+                        f"run gh-pr.py --repo {repo} ready {number} (with --waiting-for-client when the Client must accept), "
+                        "post a PR comment whose first line is \"Engineering ready; waiting for <reason>\", or mark it draft")
+    return gaps
 
 
 def receipt_values(rows: list[dict]) -> list[dict]:
@@ -496,6 +518,7 @@ def check(
     blocked.extend(f"{repo}#{number}: status-only ownership needs reconciliation"
                    for (repo, number, native), (issue, actor) in signoffs.items() if not claim.released_session_signoff(
                        issue, native, actor, repo=repo, number=number, releases=release_proofs))
+    blocked.extend(handoff_gaps(readers, released))
     checked_at = time.time()
     for native in sorted(journal_covered):
         blocked.extend(f"session {native}: {reason}" for reason in unsettled_attempts(native, written[native], running_before[native], checked_at))

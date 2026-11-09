@@ -200,7 +200,7 @@ def classify(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[st
         actor = row["next_actor"] = "agent"
     if actor and actor.startswith(("person:", "event:")):
         return {**row, "state": "waiting", "reason": "recorded_next_actor"}
-    if projected.get("reason") in {"current_head_ready", "current_head_client_wait"}:
+    if projected.get("reason") in {"current_head_ready", "current_head_client_wait", "stated_hold"}:
         return {**row, "state": projected["state"], "reason": projected["reason"]}
     if item.get("record_type") == "pull_request":
         row["ownership_evidence"] = artifacts

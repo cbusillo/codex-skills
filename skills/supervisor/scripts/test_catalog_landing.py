@@ -391,6 +391,14 @@ class CatalogLandingTests(unittest.TestCase):
         self.assertEqual(saved["stderr"], "failure detail")
         self.assertFalse(operation.state["steps"]["write"]["complete"])
 
+    def test_refusal_names_what_the_helper_blocked(self) -> None:
+        blocked = {"ok": False, "blocked": ["https://github.com/owner/repo/pull/906: open non-draft PR has no handoff; mark it draft"]}
+        operation = Operation(self.root, ["claims"])
+        with (patch.object(Operation, "run", operation_run),
+              patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 1, json.dumps(blocked), ""))):
+            with self.assertRaisesRegex(GateFailed, r"pull/906: .*mark it draft.*helper exited 1"):
+                operation.run("claims", ["helper"])
+
     def test_unknown_failed_report_can_be_superseded_without_rewriting_it(self) -> None:
         operation = Operation(self.root, ["failure"])
         failed = {"ok": False, "landings": ["B"], "gate": "smoke_response"}

@@ -520,6 +520,38 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.assertFalse({f"/repos/{REPO}/issues", f"/repos/{REPO}/issues/comments"}.intersection(paths))
         self.assertEqual(report["coverage"]["repositories"], [REPO])
 
+    def test_own_open_pr_without_a_current_head_handoff_refuses_with_its_remedies(self) -> None:
+        handoffs: Any = importlib.import_module("ready_handoff")
+        head = "c" * 40
+        own = pull(title="Own change", head={"ref": SOURCE["branch"], "sha": head, "repo": {"full_name": REPO}})
+        # Same bot author, same repository, not this session's claim: never gated here.
+        other = pull(5, "work/other", body="Fixes #9", title="Another session's change",
+                     head={"ref": "work/other", "sha": head, "repo": {"full_name": REPO}})
+        self.pulls = [own, other]
+        self.comments.append({**self.release, "body": self.release["body"] + "\n" + own["html_url"]})
+        on_pr: list[dict] = []
+        issue_comments = self.paged
+        self.reader.paged_json.side_effect = lambda path, **kw: on_pr if path.endswith("/issues/2/comments") else issue_comments(path, **kw)
+        self.enterContext(patch_attr(helper.wait, "authors", return_value={ACTOR}))
+        report = helper.check([self.receipt_entry()])
+        self.assertFalse(report["claims_clear"])
+        gap = [row for row in report["blocked"] if own["html_url"] in row]
+        self.assertEqual(len(gap), 1, report["blocked"])
+        for remedy in (f"ready {own['number']}", "--waiting-for-client", "Engineering ready; waiting for <reason>", "draft"):
+            self.assertIn(remedy, gap[0])
+        self.assertFalse([row for row in report["blocked"] if other["html_url"] in row])
+        later = "2026-01-01T00:05:00Z"
+        for body in (handoffs.handoff_body(head), handoffs.handoff_body(head, waiting_for_client=True),
+                     "Engineering ready; waiting for the Director's landing decision"):
+            with self.subTest(handoff=body.splitlines()[0]):
+                on_pr[:] = [comment(30, body, at=later)]
+                self.assertTrue(helper.check([self.receipt_entry()])["claims_clear"])
+        on_pr[:] = [comment(30, handoffs.handoff_body("d" * 40), at=later)]
+        self.assertFalse(helper.check([self.receipt_entry()])["claims_clear"])
+        on_pr[:] = []
+        own["draft"] = True
+        self.assertTrue(helper.check([self.receipt_entry()])["claims_clear"])
+
     def test_authored_signoff_on_an_unclaimed_record_needs_a_verified_session_release(self) -> None:
         entry = self.receipt_entry(records=((REPO, 1), (REPO, 2)))
         for released in (False, True):

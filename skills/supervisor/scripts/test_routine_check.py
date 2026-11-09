@@ -917,7 +917,8 @@ class PrimaryReadTests(unittest.TestCase):
     @staticmethod
     def run_digest(selection: dict[str, Any], sessions: list[dict[str, Any]] | None = None, **readers: Any) -> list[str]:
         supplied = {"owner_review": Mock(return_value=None), "client_release": Mock(return_value=SimpleNamespace(state="client", reason="")),
-                    "production": Mock(return_value={"reason": "unmapped"}), "anchor_response": Mock(return_value="anchor_response=UNKNOWN"), **readers}
+                    "production": Mock(return_value={"reason": "unmapped"}), "anchor_response": Mock(return_value="anchor_response=UNKNOWN"),
+                    "checks": Mock(side_effect=AssertionError("no PR lacks a handoff")), **readers}
         primary = routine_check.primary_reads(selection, sessions or [], **supplied)
         return routine_check.digest({"next": selection, "primary": primary, "sessions": {"sessions": sessions or []}}).splitlines()
 
@@ -1126,6 +1127,44 @@ class PrimaryReadTests(unittest.TestCase):
         for _ in range(2):
             row = next(line for line in self.run_digest(selection) if line.startswith("STALE"))
             self.assertIn("overdue_recheck age=4d19h evidence=Waiting for proof", row)
+
+    def test_every_green_pr_without_a_handoff_repeats_with_its_age_until_handed_off(self) -> None:
+        next_pr: Any = importlib.import_module("github_next_pr")
+        handoffs: Any = importlib.import_module("ready_handoff")
+        head = "e" * 40
+
+        def row(number: int, *bodies: str, **changes: Any) -> dict[str, Any]:
+            pull = {"number": number, "html_url": f"https://github.com/owner/repo/pull/{number}", "title": f"Change {number}",
+                    "created_at": "2026-11-08T12:00:00Z", "head": {"sha": head, "ref": f"work/{number}"}, **changes}
+            comments = [{"id": index, "body": body, "user": {"login": "bot"}, "created_at": "2026-11-08T13:00:00Z"}
+                        for index, body in enumerate(bodies, 1)]
+            return next_pr.project("owner/repo", pull, comments, trusted={"bot"}, complete=True)
+
+        def checks(state: str) -> dict[str, Any]:
+            runs: list[dict[str, Any]] = [] if state == "none" else [{"name": "test", "status": "completed", "completedAt": "2026-11-08T14:55:00Z",
+                                                "conclusion": "failure" if state == "failing" else "success"}]
+            if state == "client":
+                runs.append({"name": routine_check.OWNER_REVIEW_CHECK, "status": "queued", "completedAt": None})
+            return {"headSha": head, "checkRuns": runs, "statuses": [], "summary": {
+                "countsComplete": state != "partial", "countsAreLowerBounds": state == "partial",
+                "unavailableComponents": ["checkRuns"] if state == "partial" else [], "failingCount": int(state == "failing"),
+                "pendingCount": int(state == "client"), "unfinishedWorkflowRunCount": 0, "checkRunCount": len(runs), "statusCount": 0}}
+
+        states = {906: "green", 907: "failing", 910: "client", 911: "none", 912: "partial"}
+        rows = [row(906), row(907), row(908, "Engineering ready; waiting for the Director's landing decision"),
+                row(909, handoffs.handoff_body(head)), row(910), row(911), row(912), row(913, draft=True), row(914, head={})]
+        reader = Mock(side_effect=lambda _repo, number: checks(states[number]))
+        for _ in range(2):
+            lines = self.run_digest({"pr_followthrough": rows}, checks=reader)
+            found = {line.split()[1].rsplit("/", 1)[1]: line for line in lines if line.startswith("NO_HANDOFF")}
+            self.assertEqual(set(found), {"906", "910", "911"})
+            self.assertIn("age=5h00m: Change 906", found["906"])
+            self.assertIn("age=7h55m", found["911"])
+            self.assertIn("draft", found["906"])
+            errors = [line for line in lines if line.startswith("ERROR primary")]
+            self.assertTrue([line for line in errors if "#912" in line], errors)
+            self.assertTrue([line for line in errors if "/pull/914" in line], errors)
+        self.assertEqual({call.args[1] for call in reader.call_args_list}, set(states))
 
 
 if __name__ == "__main__":

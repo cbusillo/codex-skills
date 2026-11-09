@@ -86,6 +86,7 @@ def project(repo: str, pull: dict[str, Any], comments: list[dict[str, Any]], *, 
             else comments
         )
         client_wait = ready_handoff.latest_ready(pull, handoffs, trusted, include_client_wait=True) and not ready
+        hold = ready_handoff.stated_hold(handoffs, trusted)
     except (KeyError, ValueError, TypeError) as exc:
         return {**row, "state": "unknown", "reason": "unreadable_pr_evidence", "detail": str(exc)}
     row["wait"] = wait
@@ -104,6 +105,13 @@ def project(repo: str, pull: dict[str, Any], comments: list[dict[str, Any]], *, 
             return {**row, "state": "review", "reason": "pr_followthrough_needs_fresh_readiness", "next_actor": "agent",
                     "next_action": "Post checked Ready for the accepted current head after fresh readiness and custody checks."}
         return {**row, "state": "waiting", "reason": "current_head_client_wait"}
+    if hold:
+        return {**row, "state": "waiting", "reason": "stated_hold"}
     if wait["state"] != "clear":
         return {**row, "state": "scope_review", "reason": "wait_review_required"}
     return {**row, "state": "review", "reason": "pr_followthrough_needs_fresh_readiness"}
+
+
+def lacks_handoff(row: dict[str, Any]) -> bool:
+    """An open non-draft PR with no current-head Ready, Client handoff, stated hold or recorded wait."""
+    return row.get("reason") in {"wait_review_required", "pr_followthrough_needs_fresh_readiness"} and "next_actor" not in row

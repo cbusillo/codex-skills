@@ -24,6 +24,7 @@ import github_comment as github_comment_core
 import github_read as github_read_core
 import github_identity
 from ready_handoff import (
+    checks_unsettled,
     client_handoff,
     pending_client_reviews,
     handoff_body,
@@ -640,11 +641,7 @@ def cmd_ready(args: argparse.Namespace) -> dict[str, Any]:
         raise PrHelperError("PR head or labels changed during readiness checks; read it again", repo=repo, pr=number)
     handoff = client_handoff(current, checks["checkRuns"], repository=repo, waiting_for_client=args.waiting_for_client)
     pending_client = pending_client_reviews(checks["checkRuns"], handoff, waiting_for_client=args.waiting_for_client)
-    if (
-        summary["failingCount"]
-        or summary["pendingCount"] > pending_client
-        or summary["unfinishedWorkflowRunCount"]
-    ):
+    if checks_unsettled(summary, pending_client):
         raise PrHelperError("PR checks are pending or failing", repo=repo, pr=number, summary=summary)
     if not (summary["checkRunCount"] or summary["statusCount"]) and not args.allow_no_checks:
         raise PrHelperError("No checks exist for this head yet; wait for CI, or use --allow-no-checks for a repository with no CI checks configured", repo=repo, pr=number)
