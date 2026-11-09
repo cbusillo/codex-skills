@@ -174,6 +174,9 @@ class ReleaseTests(ReleaseHarness):
             return "bot", [graph_row(88, "Owner/Control", 884), graph_row(89, "Owner/Control", 884)]
 
         reads = []
+        graph, rest = graph_row(7, "owner/repo", 42), graph_row(7, "owner/repo", 42)
+        rest.update(node_id="IC_7", issue_url="https://api.github.com/repos/owner/repo/issues/42", user={"login": BOT, "id": 9, "type": "Bot"})
+        self.assertEqual(PLAN._release_evidence_comment([graph], 7), PLAN._release_evidence_comment([rest], 7))
         with patch.multiple(PLAN, read_planning_connection=connection):
             read = PLAN._claim_release_evidence("owner/repo", 42, [graph_row(7, "owner/repo", 42)])
             self.assertEqual(read("OWNER/repo", 42, 7)["issue_url"], "https://api.github.com/repos/owner/repo/issues/42")

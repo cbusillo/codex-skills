@@ -2397,12 +2397,16 @@ def recorded_wait_decisions(wait: dict[str, Any], _repo: str) -> list[dict[str, 
 
 
 def _release_evidence_comment(comments: list[dict[str, Any]], evidence_id: int) -> dict[str, Any] | None:
-    """Return the cited comment with the issue binding a REST comment record carries."""
+    """Return the cited comment's release fields, identical from GraphQL and REST recovery."""
     comment = next((c for c in comments if c.get("id") == evidence_id), None)
-    if comment is None or "issue_url" in comment:
-        return comment
+    if comment is None:
+        return None
     match = github_plan_release.COMMENT_URL.fullmatch(comment.get("html_url") or "")
-    return {**comment, "issue_url": f"https://api.github.com/repos/{match[1]}/issues/{match[2]}"} if match else comment
+    bound = f"https://api.github.com/repos/{match[1]}/issues/{match[2]}" if match else None
+    user = comment.get("user")
+    return {**{key: comment.get(key) for key in ("id", "body", "created_at", "updated_at")},
+            "issue_url": comment["issue_url"] if "issue_url" in comment else bound,
+            "user": {"login": user.get("login")} if isinstance(user, dict) else user}
 
 
 def _claim_release_evidence(repo: str, number: int, comments: list[dict[str, Any]]) -> Any:
@@ -2491,9 +2495,7 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
         found = _release_evidence_comment(discussion, int(evidence_id))
         if found is None or found.get("issue_url") != f"https://api.github.com/repos/{evidence_repo}/issues/{evidence_number}":
             raise PlanError("Session-ended evidence is not on the cited issue")
-        # REST recovery returns more comment and user fields; only these decide the release.
-        return {**{key: found.get(key) for key in ("id", "body", "created_at", "updated_at", "issue_url")},
-                "user": {"login": (found.get("user") or {}).get("login")}}
+        return found
     evidence = read_session_evidence()
     completed = []
     result = {}
