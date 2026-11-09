@@ -366,7 +366,7 @@ Claude Code reads `autoMode` from user or managed settings or a launch-time
 `--settings` value, never from a repository's `.claude/settings.json`, so the
 plugin cannot ship it. Without these entries, auto mode's classifier stops a
 brief-authorized bot merge because no human approved it, and a named read-only
-read of the owner's own production service. Add them in `/permissions` → Auto
+read of the Director's own production service. Add them in `/permissions` → Auto
 mode or in the user `settings.json` of each Claude account, and check the
 effective list with `claude auto-mode config`. An agent may add a line the
 overall direction already allows, under the tool-fix rule in
