@@ -134,8 +134,7 @@ class SectionTests(unittest.TestCase):
                 code = exc.code
         return code, json.loads(output.getvalue()), edit, errors.getvalue()
 
-    def run_over_transport(self, *body_args: str, returned: Any) -> tuple[int, dict, Mock]:
-        """Answer the PATCH like `gh api --include`, with the transport's own confirmed 200 receipt."""
+    def run_with_confirmed_transport_receipt(self, *body_args: str, returned: Any) -> tuple[int, dict, Mock]:
         def respond(_args: list[str], **kwargs: Any) -> tuple[str, str, str]:
             PLAN.record_retry_summary(PLAN.github_api_core.RetrySummary(
                 attempts=1, elapsed_wait=0.0, retry_eligible=False, last_actor="fixture-bot[bot]", last_bucket="rest_core",
@@ -154,7 +153,7 @@ class SectionTests(unittest.TestCase):
                  "no body": lambda _sent: None}
         for name, returned in cases.items():
             with self.subTest(name):
-                code, result, transport = self.run_over_transport("--body", requested, returned=returned)
+                code, result, transport = self.run_with_confirmed_transport_receipt("--body", requested, returned=returned)
                 self.assertNotEqual(code, 0)
                 self.assertFalse(result["ok"])
                 self.assertEqual(result["write_outcome"], "unknown")
@@ -169,7 +168,7 @@ class SectionTests(unittest.TestCase):
     def test_returned_requested_text_and_genuine_no_op_stay_confirmed(self) -> None:
         for text in ("New section content.", "Old text."):
             with self.subTest(text):
-                code, result, transport = self.run_over_transport("--body", text, returned=lambda sent: sent)
+                code, result, transport = self.run_with_confirmed_transport_receipt("--body", text, returned=lambda sent: sent)
                 self.assertEqual(code, 0)
                 self.assertTrue(result["ok"])
                 self.assertEqual(result["outcome_certainty"], "confirmed")

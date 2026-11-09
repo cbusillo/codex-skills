@@ -5019,7 +5019,6 @@ def cmd_update_section(args: argparse.Namespace) -> None:
     if refreshed.get("body") != updated:
         returned = "the unchanged issue body" if refreshed.get("body") == issue.get("body") else "a different issue body"
         message = f"GitHub accepted the {args.section} update but returned {returned}; read the issue back and do not replay this write"
-        # The PATCH's own confirmed receipt would otherwise overwrite this outcome in the envelope.
         CURRENT_RETRY_FIELDS.update(outcome_certainty="unknown", recommended_next_action="follow_operation_reconciliation_strategy")
         failure = github_api_core.FailureDetail(cause="section_update_unconfirmed", message=message, retryable=False,
                                                 fallback_eligible=False, disposition="stop", write_outcome="unknown",
