@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import math
 import os
@@ -17,6 +18,7 @@ from collections.abc import Callable, Sequence
 from collections.abc import Set as AbstractSet
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 SKILLS = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(SKILLS / "github/scripts"))
@@ -34,6 +36,13 @@ from github_read import (
     GitHubReadShapeError,
     path_with_query,
 )
+
+if TYPE_CHECKING:
+    from skills.github.scripts import github_next_pr as next_pr
+    from skills.github.scripts import github_plan_wait as wait
+else:
+    next_pr = importlib.import_module("github_next_pr")
+    wait = importlib.import_module("github_plan_wait")
 
 CHECK_OPERATION = "work-closeout.claims"
 JOURNAL_SHIPPED = datetime(2026, 10, 22, 3, 29, 9, tzinfo=UTC)
@@ -175,6 +184,29 @@ def check_record(
         if release_proofs is not None:
             release_proofs.append({"repo": repo, "number": number, "source": source, "release": evidence})
     return result
+
+
+def claimed_by_successor(row: dict) -> bool:
+    return row["reason"] == "existing_claim"
+
+
+def handoff_gaps(readers: dict[str, GitHubReader], released: list[dict]) -> list[str]:
+    gaps = []
+    for url, repo in dict.fromkeys((url, row["repository"]) for row in released for url in row["retained_prs"]):
+        number, reader = url.rsplit("/pull/", 1)[1], readers[repo]
+        try:
+            pull = reader.get_json(f"/repos/{repo}/pulls/{number}", step="closeout_pr_handoff")
+            comments = reader.paged_json(f"/repos/{repo}/issues/{number}/comments", step_prefix="closeout_pr_handoff")
+            row = next_pr.project(repo, pull, comments, trusted=wait.authors(repo, expected_actor=reader.expected_actor),
+                                  complete=True, acceptance_reader=lambda *_: False)
+        except (ValueError, KeyError, TypeError, GitHubReadError, GitHubReadShapeError) as error:
+            gaps.append(f"{url}: handoff is UNKNOWN ({error})")
+            continue
+        if pull.get("state") == "open" and not claimed_by_successor(row) and (next_pr.lacks_handoff(row) or row["state"] == "unknown"):
+            gaps.append(f"{url}: open non-draft PR has no current-head Ready, Client handoff or stated hold ({row['reason']}); "
+                        f"run gh-pr.py --repo {repo} ready {number} (with --waiting-for-client when the Client must accept), "
+                        "post a PR comment whose first line is \"Engineering ready; waiting for <reason>\", or mark it draft")
+    return gaps
 
 
 def receipt_values(rows: list[dict]) -> list[dict]:
@@ -496,6 +528,7 @@ def check(
     blocked.extend(f"{repo}#{number}: status-only ownership needs reconciliation"
                    for (repo, number, native), (issue, actor) in signoffs.items() if not claim.released_session_signoff(
                        issue, native, actor, repo=repo, number=number, releases=release_proofs))
+    blocked.extend(handoff_gaps(readers, released))
     checked_at = time.time()
     for native in sorted(journal_covered):
         blocked.extend(f"session {native}: {reason}" for reason in unsettled_attempts(native, written[native], running_before[native], checked_at))

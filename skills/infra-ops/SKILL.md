@@ -85,6 +85,14 @@ and accepted-release authority.
 - **Recorded host or guest setting**: before changing one, read the registry
   line's stated reason and name the service that acts on the setting in the
   change note.
+- **Host or guest event**: a session that powers off, reboots, starts, stops
+  or re-cables a host or guest, or takes a backup pool, runner guest or
+  storage device offline on purpose, records it in the same hour on that
+  host's incident or event record in the private operations repo: date, time
+  with zone, what, why and who was present. It links that entry from its own
+  issue. This holds when the Director is present too. Record readers look
+  only there, so an event written only in a session thread reads as a missing
+  record.
 
 When the target is ambiguous, pause mutation and keep working read-only until
 the authority, blast radius, and who holds the rollback are clear.

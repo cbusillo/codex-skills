@@ -80,6 +80,30 @@ def test_non_dependency_followthrough_preserves_conditions_and_current_head_hand
     assert observation["author"] == long_comment["user"]["login"] and observation["url"]
 
 
+def test_a_stated_hold_waits_and_only_a_missing_current_head_handoff_lacks_one() -> None:
+    hold = comment(5, "Engineering ready; waiting for the Director's landing decision")
+    ready = comment(6, ready_handoff.handoff_body(HEAD))
+    held = project([hold])
+    assert (held["state"], held["reason"]) == ("waiting", "stated_hold")
+    assert project([ready, {**hold, "id": 7, "created_at": "2026-10-28T18:07:00Z"}])["reason"] == "stated_hold"
+    for handed_off in ([hold], [hold, ready], [comment(1, wait.marker(wait.reviewed(
+            evidence="Owner watch", waiting_for="owner", ends_when="Watch observed")))]):
+        assert not github_next_pr.lacks_handoff(project(handed_off))
+    assert not github_next_pr.lacks_handoff(project([], draft=True))
+    with patch.object(github_next_pr, "read_acceptance", return_value=False):
+        assert not github_next_pr.lacks_handoff(project([comment(2, ready_handoff.handoff_body(HEAD, waiting_for_client=True))]))
+    clear = comment(1, wait.marker(wait.reviewed(evidence="No person or event wait.")))
+    for missing in ([], [clear], [ready], [comment(5, "Engineering ready; waiting for")],
+                    [{**hold, "user": {"login": "stranger"}}], [hold, {**clear, "id": 8, "created_at": "2026-10-28T18:08:00Z"}]):
+        assert github_next_pr.lacks_handoff(project(missing, head={"sha": "b" * 40} if missing == [ready] else {"sha": HEAD})), missing
+
+
+def test_a_claimed_pr_without_a_handoff_still_lacks_one() -> None:
+    claimed = comment(9, claim.marker({"worker": "w", "session": "s", "branch": "work/source", "claimed_at": "2026-10-28T18:00:00Z"}))
+    assert project([claimed])["reason"] == "existing_claim" and github_next_pr.lacks_handoff(project([claimed]))
+    assert not github_next_pr.lacks_handoff(project([claimed, comment(10, ready_handoff.handoff_body(HEAD))]))
+
+
 def pr_evidence(row: dict) -> dict:
     observed = evidence()
     observed["pulls"] = [{**pull(author="bot"), "number": row["number"], "body": row["discussion"]["body"],
@@ -230,6 +254,8 @@ def test_existing_inventory_supplies_pr_followthrough_without_dependency_age_rul
 
 if __name__ == "__main__":
     test_non_dependency_followthrough_preserves_conditions_and_current_head_handoffs()
+    test_a_stated_hold_waits_and_only_a_missing_current_head_handoff_lacks_one()
+    test_a_claimed_pr_without_a_handoff_still_lacks_one()
     test_existing_inventory_supplies_pr_followthrough_without_dependency_age_rule()
     test_saved_current_head_acceptance_ends_only_the_client_handoff_wait()
     test_acceptance_reads_preserve_deadline_coverage_and_bound_the_child()

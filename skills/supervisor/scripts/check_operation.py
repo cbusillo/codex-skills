@@ -103,6 +103,8 @@ class Operation:
                 self.state["steps"].pop(gate, None)
                 save_state(self.path, self.state)
             reason = f"{payload['reason_code']}; " if isinstance(payload, dict) and payload.get("reason_code") else ""
+            if isinstance(payload, dict) and isinstance(payload.get("blocked"), list):
+                reason += "".join(f"{row}; " for row in payload["blocked"][:3])
             raise GateFailed(gate, f"{reason}helper exited {result.returncode}; inspect {gate}.json")
         if not isinstance(payload, (dict, list)):
             raise GateFailed(gate, "helper result must be an object or array")
