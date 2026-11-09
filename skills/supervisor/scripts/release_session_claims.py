@@ -31,13 +31,12 @@ GITHUB = Path(__file__).resolve().parents[2] / "github/scripts"
 sys.path.insert(0, str(GITHUB))
 import github_identity
 import github_plan_claim as claim
-import github_plan_lease
 import github_plan_release as release
 import github_plan_closure as closure
 from github_comment import CommentError, comment
 
 if TYPE_CHECKING:
-    from skills.github.scripts import github_api
+    from skills.github.scripts import github_api, github_plan_lease
     from skills.github.scripts.github_read import (
         GitHubReader, GitHubReadError, GitHubReadShapeError, automation_only_gh_prefix_args,
         read_repository_connections,
@@ -45,6 +44,7 @@ if TYPE_CHECKING:
     from skills.github.scripts import github_plan_native as native_closure
 else:
     import github_api
+    import github_plan_lease
     from github_read import (
         GitHubReader, GitHubReadError, GitHubReadShapeError, automation_only_gh_prefix_args,
         read_repository_connections,

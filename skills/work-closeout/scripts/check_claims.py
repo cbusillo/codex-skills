@@ -27,7 +27,6 @@ import claim_transcripts as history
 import github_identity
 import github_plan_claim as claim
 import github_plan_claim_log as claim_log
-import github_plan_lease
 import github_plan_release as release
 import github_plan_termination as termination
 import release_session_claims as sessions
@@ -40,9 +39,11 @@ from github_read import (
 
 if TYPE_CHECKING:
     from skills.github.scripts import github_next_pr as next_pr
+    from skills.github.scripts import github_plan_lease
     from skills.github.scripts import github_plan_wait as wait
 else:
     next_pr = importlib.import_module("github_next_pr")
+    github_plan_lease = importlib.import_module("github_plan_lease")
     wait = importlib.import_module("github_plan_wait")
 
 CHECK_OPERATION = "work-closeout.claims"

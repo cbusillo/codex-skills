@@ -381,12 +381,14 @@ class ClaimTests(unittest.TestCase):
         branch = "dependabot/python" if author == "dependabot[bot]" else "work/tool-repair"
         self.pulls = [_pull_fixture(42, branch, author=author, body=self.issue["body"], title=self.issue["title"])]
 
-    def use_live_claims(self) -> None:
+    @staticmethod
+    def use_live_claims() -> None:
         listed = Path.home() / ".code/skill-data/live-claim-repositories"
         listed.parent.mkdir(parents=True, exist_ok=True)
         listed.write_text("owner/repo\n")
 
-    def other_claim(self, *, comment_id: int, minutes_old: float) -> dict[str, Any]:
+    @staticmethod
+    def other_claim(*, comment_id: int, minutes_old: float) -> dict[str, Any]:
         posted = datetime.fromtimestamp(time.time() - minutes_old * 60).astimezone().isoformat()
         return {"id": comment_id, "user": {"login": TEST_BOT}, "created_at": posted,
                 "body": f"Claimed by {OTHER['worker']}\n\n{CLAIM.marker(OTHER)}"}

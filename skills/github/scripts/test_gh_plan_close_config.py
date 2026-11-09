@@ -24,6 +24,7 @@ SCRIPT = Path(__file__).with_name("gh-plan.py")
 sys.path.insert(0, str(SCRIPT.parent))
 import github_work_graph
 import github_plan_claim
+import github_plan_lease
 SPEC = importlib.util.spec_from_file_location("gh_plan_close_config_under_test", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 PLAN: Any = importlib.util.module_from_spec(SPEC)
@@ -327,9 +328,9 @@ class CloseConfigTests(unittest.TestCase):
         claim = {"id": 2, "user": {"login": "fixture"}, "created_at": source["claimed_at"],
                  "body": PLAN.github_plan_claim.marker(source)}
         self.assertFalse(self.show_fixture(launch=True, comments_extra=[claim])[0]["issue"]["launch_check"]["allowed"])
-        with patch.object(PLAN.github_plan_lease, "uses_live_claims", return_value=True):
+        with patch.object(github_plan_lease, "uses_live_claims", return_value=True):
             self.assertTrue(self.show_fixture(launch=True, comments_extra=[claim])[0]["issue"]["launch_check"]["allowed"])
-            with patch.object(PLAN.github_plan_lease, "session_is_live", return_value=True):
+            with patch.object(github_plan_lease, "session_is_live", return_value=True):
                 self.assertFalse(self.show_fixture(launch=True, comments_extra=[claim])[0]["issue"]["launch_check"]["allowed"])
 
     def test_launch_allows_operational_work_and_only_authored_retained_handoffs(self) -> None:

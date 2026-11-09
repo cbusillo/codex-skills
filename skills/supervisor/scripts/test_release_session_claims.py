@@ -1195,7 +1195,7 @@ class ReleaseTests(unittest.TestCase):
         self.pages.side_effect = lambda path, **_kw: [self.source]
         entry = {**self.entry, "_finish_scope": "owner-wide scope"}
         self.assertTrue(helper.finished_claims(self.reader, entry, ACTOR, [("test/a", 1)], False)["issue_refusals"])
-        with patch.object(helper.github_plan_lease, "uses_live_claims", return_value=True):
+        with patch_attribute(helper.github_plan_lease, "uses_live_claims", return_value=True):
             self.assertFalse(helper.finished_claims(self.reader, entry, ACTOR, [("test/a", 1)], False)["issue_refusals"])
 
     def test_finish_accounts_for_authored_signoffs_only_with_verified_releases(self) -> None:

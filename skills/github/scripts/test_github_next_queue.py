@@ -101,8 +101,8 @@ def test_claim_and_linked_pr_cannot_be_advertised_as_unclaimed_work() -> None:
 
 def test_live_claim_repository_offers_work_once_its_claiming_session_is_no_longer_live() -> None:
     row = item()
-    source = {'worker': 'worker', 'session': 'native-session', 'branch': 'work/source', 'claimed_at': '2026-10-01T00:00:00Z'}
-    row['discussion']['comments'] = [{'id': 1, 'author': 'bot', 'created_at': source['claimed_at'], 'body': claim.marker(source)}]
+    row['discussion']['comments'] = [{'id': 1, 'author': 'bot', 'created_at': '2026-10-01T00:00:00Z', 'body': claim.marker(
+        {'worker': 'worker', 'session': 'ended-session', 'branch': 'work/ended', 'claimed_at': '2026-10-01T00:00:00Z'})}]
     row['discussion']['body'] = "## Current Status\nNext actor: agent\nNext action: Implement the missing export path.\n"
     assert classify(row)['reason'] == 'existing_claim_or_artifact'
     with patch.object(lease, 'uses_live_claims', return_value=True):

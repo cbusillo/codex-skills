@@ -1011,14 +1011,12 @@ class MainTests(Fixture):
 
     def test_live_claim_repository_keeps_the_tree_only_while_the_claiming_session_is_live(self):
         refresh, pull, commits = self.merged_refresh()
-        claim = {"id": 11, "user": {"login": "bot"}, "created_at": "2026-10-22T00:00:00Z",
-                 "body": "Claimed by refresher\n" + github_plan_claim.marker(
-                     {"worker": "refresher", "session": "s1", "branch": "work/refresh", "claimed_at": "2026-10-22T00:00:00Z"})}
+        discussions = self.claimed_source(released=False, branch="work/refresh")["discussions"]
         for live, decision in ((True, "kept"), (False, "retired")):
             with self.subTest(live=live), \
                     mock.patch.object(github_plan_lease, "uses_live_claims", return_value=True), \
                     mock.patch.object(github_plan_lease, "session_is_live", return_value=live):
-                code, result, _ = self.run_main(pull, commits=commits, discussions={"3": [claim]})
+                code, result, _ = self.run_main(pull, commits=commits, discussions=discussions)
                 self.assertEqual((code, {r["path"]: r["decision"] for r in result["worktrees"]}[str(refresh)]), (0, decision))
 
     @staticmethod

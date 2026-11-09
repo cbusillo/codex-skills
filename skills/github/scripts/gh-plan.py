@@ -4150,25 +4150,25 @@ def claim_once(args: argparse.Namespace) -> None:
         if admission == "milestone":
             milestone_claim_track(live_issue, admission_links)
         completed.append("ownership_preflight")
-        actor, gh_cmd, expected_actor = comment_route()
+        writer, writer_command, writer_login = comment_route()
 
-        def post(text: str, step: str) -> dict[str, Any]:
+        def post(body: str, step: str) -> dict[str, Any]:
             return github_comment_core.comment(
-                kind, number, text, repo=issue_repo, gh_cmd=gh_cmd, expected_actor=expected_actor,
+                kind, number, body, repo=issue_repo, gh_cmd=writer_command, expected_actor=writer_login,
                 operation=CURRENT_OPERATION, completed_steps=completed, failed_step=step, dedupe_body=True)
 
         claim_comment = post(live_claim_text(kind), "post_claim")
         completed.append("post_claim")
-        claim_id = claim_comment["comment"]["id"]
+        posted_id = claim_comment["comment"]["id"]
         _, _, seen_comments, _ = claim_snapshot(args.issue, repo, preserve_content=True)
-        if earlier := [holder for holder in other_live_holders(seen_comments) if holder["claim_id"] < claim_id]:
-            post(f"Released claim {claim_id}\n\nAn earlier live claim holds this record.", "withdraw_claim")
+        if earlier := [holder for holder in other_live_holders(seen_comments) if holder["claim_id"] < posted_id]:
+            post(f"Released claim {posted_id}\n\nAn earlier live claim holds this record.", "withdraw_claim")
             refuse_live_holders(earlier)
         completed.append("claim_readback")
         emit({
-            "ok": True, "actor": actor, "record_kind": kind, "claim": claim, "claim_comment": claim_comment,
+            "ok": True, "actor": writer, "record_kind": kind, "claim": claim, "claim_comment": claim_comment,
             "release_command": github_plan_claim_log.release_command(
-                pathlib.Path(__file__).resolve(), issue_repo, number, claim_id, claim["session"]),
+                pathlib.Path(__file__).resolve(), issue_repo, number, posted_id, claim["session"]),
             "issue": compact_issue(live_issue), "current_status_location": "claim_comment",
             "previous_current_status": live_status, "retained_artifacts": [],
             "lease_minutes": github_plan_lease.lease_minutes(), "exclusive_lock": False, "completed_steps": completed,
