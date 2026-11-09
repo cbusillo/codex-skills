@@ -203,8 +203,9 @@ but never activation or credentials from another installation.
 
 If activation has lapsed, a licence prompt appears, or any trial is offered,
 the runner stops its process group, cleans its private state and writes a
-count-only `native-activation-stop.json` beside the worker. Post an
-`Owner question:` on the item asking the Director to restore the independent
+count-only `native-activation-stop.json` beside the worker. Create a
+[Director question](../../references/talking-with-the-director.md#director-questions)
+on the item asking the Director to restore the independent
 profile through the normal product UI with existing entitlements. Do not start
 a trial, purchase or grant access. After the Director's recorded confirmation,
 the authorized continuation removes only that stop receipt before reassessing;

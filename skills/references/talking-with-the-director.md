@@ -160,7 +160,7 @@ and refuses an answered question or a changed source. If the options changed
 meaning, confirm which version the Director answered before recording the decision.
 Older presentation receipts become stale after an edit, so the queue resurfaces the revision.
 Keep the number hook until the Discord card adopts this source too. Existing
-prose comment, queue and acknowledgement commands remain available.
+queue and acknowledgement commands remain available.
 
 ## Same-Issue Supervisor Replies
 
@@ -282,13 +282,12 @@ When asking, follow [Director Questions](#director-questions).
   or acknowledge an unnumbered original. Its read view keeps numbered peers
   usable and marks the original as needing repair, without presenting its text.
   For an exact-text personal-identity write, include the ID before asking for
-  approval. If this is a new question, allocate it with the chat command below,
-  show that numbered text for approval, then post it unchanged. The personal
+  approval. If this is a new question, allocate it from the
+  [shared question counter](../direction/scripts/question_id.py) with
+  `uv run <direction-skill-dir>/scripts/question_id.py next`, show that
+  numbered text for approval, then post it unchanged. The personal
   write path refuses an unnumbered heading before publishing anything.
   Briefs link this reference instead of repeating numbering instructions.
-  In chat, get each new question's short ID from the
-  [shared question counter](../direction/scripts/question_id.py):
-  `uv run <direction-skill-dir>/scripts/question_id.py next`.
   Both harnesses use the counter in `CODE_HOME` or `~/.code`. For multiple
   machines, use the same existing `[questions].queue` in each machine's
   private `skill-data/supervisor.toml`, in the Director's personal repository
