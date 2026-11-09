@@ -111,8 +111,8 @@ terminal helper may submit that route only from a private local payload file and
 must never accept plaintext secret values as CLI arguments, stdin, chat, issue
 text, PR text, or committed examples. The payload file is explicit private
 admin input, not checked-in repo config or copied provider topology.
-Local admin apply requires a prior matching dry-run and a stable idempotency
-key.
+Local admin apply requires a prior matching dry-run and a separate stable
+idempotency key.
 
 `POST /v1/work-graph/merge-train/controller/run-once` accepts repository,
 base-branch, and mutate mode. Mutating helper calls require an idempotency key;

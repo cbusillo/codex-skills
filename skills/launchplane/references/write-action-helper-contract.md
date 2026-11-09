@@ -1815,7 +1815,10 @@ The payload file is explicit private admin input. Do not commit it, paste it,
 log it, or summarize its raw contents. It must live outside the active
 repository or worktree so checked-in config and examples cannot quietly become
 write payloads. Local admin apply still requires a prior matching dry-run
-recorded by Launchplane.
+recorded by Launchplane, from the same file under its own stable key; reusing
+the dry-run key is refused with `409 idempotency_key_reused`. Keep each mode's
+original key for reconciliation or an unchanged retry, and never change keys
+to bypass a conflict or an uncertain outcome.
 
 A secret stored for one exact lane (scope `context_instance`) may carry
 `secret_class` in the payload, the writer's key-safety classification for that
@@ -1849,8 +1852,9 @@ verification are refused. Existing responses without this result remain valid.
 Apply's verified read-back proves provider route configuration, not public HTTP
 reachability. No target-setup grant, DNS/TLS change, Client release or separate
 target-inspection permission is needed to consume this result. On a stale plan
-or partial provider outcome, save a new dry-run and review it before retrying;
-never infer success from the previous request's transport outcome.
+or partial provider outcome, keep the original request and key and review a
+new dry-run under a new key before retrying; never infer success from the
+previous request's transport outcome.
 
 ### Odoo business-hours policy
 
@@ -1872,7 +1876,7 @@ in the stored policy.
 
 Save the complete dry-run output. Set/clear apply additionally requires
 `--expected-plan-digest` from `result.odoo_business_hours.plan_digest` and
-`--dry-run-evidence-file`, alongside `--reviewed-dry-run` and the original
+`--dry-run-evidence-file`, alongside `--reviewed-dry-run` and the apply's own
 `--idempotency-key`. The helper binds the exact request, reason, source label,
 scope and selection to that saved review and supplies `reviewed_plan_sha256`;
 do not put that field in the private payload. A new runtime/endpoint authority
@@ -1940,10 +1944,8 @@ lane-exact. A declared `secret_class` and a sharing reason with evidence are
 required; Launchplane does not check token permissions, so a person verifies
 them and the evidence records it.
 
-Take `version_id` from `product-secret-bindings-read`. Run
-`product-config-dry-run` first, then `product-config-apply --reviewed-dry-run`
-with the same file and an idempotency key; the service refuses an apply
-without its matching dry-run. The redacted secret results show `copy_from`
+Take `version_id` from `product-secret-bindings-read`, then dry-run and apply
+with the same file as above. The redacted secret results show `copy_from`
 (context, instance and version id) with `action`, `binding_key`,
 `secret_class` and `sharing_reason`, through dry-run, apply and replay.
 
