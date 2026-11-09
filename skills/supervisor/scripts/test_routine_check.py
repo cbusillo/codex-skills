@@ -915,50 +915,58 @@ def radar_feed_showing(*threads: tuple[str, int], complete: bool = True) -> Any:
     return patch_attr(feed, "changed", return_value=feed.Feed(pointers, complete))
 
 
-def radar_result(*attention: tuple[str, int], ok: bool = True) -> dict:
-    return {"ok": ok, "attention": [{"repo": repo, "number": number} for repo, number in attention]}
+def radar_result(*attention: tuple[str, int], ok: bool = True, candidates: tuple[tuple[str, int], ...] = (),
+                 identity: str = "basis") -> dict:
+    return {"ok": ok, "attention": [{"repo": repo, "number": number} for repo, number in attention],
+            "coverage": {"read_basis": {"identity": identity, "candidates": [list(pointer) for pointer in candidates]}}}
+
+
+def radar_feed(recheck: frozenset = frozenset(), known: frozenset = frozenset()) -> Any:
+    return routine_check.RadarFeed(RADAR_START, RADAR_START, recheck, known, "basis")
 
 
 class RadarFeedTests(unittest.TestCase):
-    def test_the_first_run_reads_every_thread_and_remembers_only_attention_pointers(self) -> None:
+    def test_the_first_run_reads_every_thread_and_remembers_pointers(self) -> None:
         first = routine_check.radar_read_scope(Mock(), "director", None, RADAR_START)
         self.assertIsNone(first)
-        recorded = routine_check.next_radar_feed(None, RADAR_START, first, radar_result(("Director/App", 4)))
-        self.assertEqual(recorded, routine_check.RadarFeed(RADAR_START, RADAR_START, frozenset({("director/app", 4)})))
+        result = radar_result(("Director/App", 4), candidates=(("director/app", 4), ("director/app", 7)))
+        self.assertEqual(routine_check.next_radar_feed(None, RADAR_START, first, result),
+                         radar_feed(frozenset({("director/app", 4)}), frozenset({("director/app", 4), ("director/app", 7)})))
 
-    def test_later_runs_read_changed_threads_and_last_runs_attention(self) -> None:
-        previous = routine_check.RadarFeed(RADAR_START, RADAR_START, frozenset({("director/app", 4)}))
+    def test_later_runs_skip_only_known_unchanged_threads_in_the_owners_repositories(self) -> None:
+        previous = radar_feed(frozenset({("director/app", 4)}), frozenset({("director/app", 4), ("director/app", 7), ("director/app", 9)}))
         with radar_feed_showing(("director/app", 9)) as changed:
             scope = routine_check.radar_read_scope(Mock(), "director", previous, RADAR_START + timedelta(minutes=30))
         self.assertEqual(changed.call_args.args[1:], (["director"], RADAR_START))
-        self.assertEqual(scope.threads, {("director/app", 4), ("director/app", 9)})
         candidates = {("director/app", 4): set(), ("director/app", 9): set(), ("director/app", 7): set(),
-                      ("client/app", 3): set(), ("director/named", 1): set()}
+                      ("director/new", 2): set(), ("client/app", 3): set(), ("director/named", 1): set()}
         settings = {"read_scope": scope, "threads": [("Director/Named", 1)]}
-        self.assertEqual(routine_check.radar.unchanged_threads(candidates, settings), {("director/app", 7)})
+        self.assertEqual(routine_check.radar.unchanged_threads(candidates, settings, "basis"), {("director/app", 7)})
+        self.assertEqual(routine_check.radar.unchanged_threads(candidates, settings, "changed people"), set())
 
     def test_an_incomplete_search_or_a_six_hour_gap_reads_every_thread(self) -> None:
-        previous = routine_check.RadarFeed(RADAR_START, RADAR_START, frozenset())
         with radar_feed_showing(complete=False):
-            self.assertIsNone(routine_check.radar_read_scope(Mock(), "director", previous, RADAR_START + timedelta(minutes=30)))
+            self.assertIsNone(routine_check.radar_read_scope(Mock(), "director", radar_feed(), RADAR_START + timedelta(minutes=30)))
         with radar_feed_showing() as changed:
-            self.assertIsNone(routine_check.radar_read_scope(Mock(), "director", previous, RADAR_START + timedelta(hours=6)))
+            self.assertIsNone(routine_check.radar_read_scope(Mock(), "director", radar_feed(), RADAR_START + timedelta(hours=6)))
         self.assertFalse(changed.called)
 
-    def test_a_degraded_run_rereads_every_thread_it_tried(self) -> None:
-        previous = routine_check.RadarFeed(RADAR_START, RADAR_START, frozenset())
-        scope = routine_check.radar.ReadScope(frozenset({"director"}), frozenset({("director/app", 9)}))
+    def test_a_degraded_run_rereads_what_it_tried_and_a_failed_full_read_forces_another(self) -> None:
+        previous = radar_feed(known=frozenset({("director/app", 9)}))
+        scope = routine_check.radar.ReadScope(frozenset({"director"}), frozenset({("director/app", 9)}), previous.known, "basis")
         later = RADAR_START + timedelta(minutes=30)
-        degraded = routine_check.next_radar_feed(previous, later, scope, radar_result(ok=False))
-        self.assertEqual(degraded, routine_check.RadarFeed(later, RADAR_START, frozenset({("director/app", 9)})))
-        self.assertEqual(routine_check.next_radar_feed(previous, later, None, radar_result(ok=False)), previous)
+        degraded = routine_check.next_radar_feed(previous, later, scope, radar_result(ok=False, candidates=(("director/new", 2),)))
+        self.assertEqual(degraded, routine_check.RadarFeed(later, RADAR_START, frozenset({("director/app", 9)}), previous.known, "basis"))
+        self.assertIsNone(routine_check.next_radar_feed(previous, later, None, radar_result(ok=False)))
 
-    def test_the_feed_state_round_trips_and_unreadable_state_means_a_full_read(self) -> None:
+    def test_the_feed_state_round_trips_and_a_cleared_or_unreadable_state_means_a_full_read(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "radar-feed.json"
-            feed = routine_check.RadarFeed(RADAR_START, RADAR_START, frozenset({("director/app", 4)}))
+            feed = radar_feed(frozenset({("director/app", 4)}), frozenset({("director/app", 4)}))
             routine_check.save_radar_feed(path, feed)
             self.assertEqual(routine_check.load_radar_feed(path), feed)
+            routine_check.save_radar_feed(path, None)
+            self.assertIsNone(routine_check.load_radar_feed(path))
             path.write_text("not json")
             self.assertIsNone(routine_check.load_radar_feed(path))
 

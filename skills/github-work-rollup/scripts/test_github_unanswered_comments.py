@@ -2575,15 +2575,23 @@ def test_a_read_scope_skips_only_unchanged_threads_in_the_owners_repositories(
     patch_radar(monkeypatch, "collect_thread", lambda repo, number, *rest: reads.append((repo, number)) or read_thread(repo, number, *rest))
     settings = thread_settings(thread=["example/named#7"], self_login=["cbusillo"], bot_login=["fixture-automation"],
                                people_index=people_index(tmp_path))
-    scope = github_unanswered_comments.ReadScope
+    first = github_unanswered_comments.collect_payload(settings, comment_hints=(outside,))
+    basis = first["coverage"]["read_basis"]
+    assert ["example/repo", 42] in [list(pointer) for pointer in basis["candidates"]]
+    known = frozenset({("example/repo", 42)})
 
-    settings["read_scope"] = scope(frozenset({"example"}), frozenset())
-    unchanged = github_unanswered_comments.collect_payload(settings, comment_hints=(outside,))
+    def read_with(read_scope: github_unanswered_comments.ReadScope) -> dict[str, Any]:
+        reads.clear()
+        settings["read_scope"] = read_scope
+        return github_unanswered_comments.collect_payload(settings, comment_hints=(outside,))
+
+    unchanged = read_with(github_unanswered_comments.ReadScope(frozenset({"example"}), frozenset(), known, basis["identity"]))
     assert reads == [("example/named", 7)]
     assert unchanged["coverage"]["unchanged_thread_count"] == 1
-
-    reads.clear()
-    settings["read_scope"] = scope(frozenset({"example"}), frozenset({("example/repo", 42)}))
-    changed = github_unanswered_comments.collect_payload(settings, comment_hints=(outside,))
-    assert sorted(reads) == [("example/named", 7), ("example/repo", 42)]
-    assert changed["coverage"]["unchanged_thread_count"] == 0
+    for scope in (
+        github_unanswered_comments.ReadScope(frozenset({"example"}), known, known, basis["identity"]),
+        github_unanswered_comments.ReadScope(frozenset({"example"}), frozenset(), frozenset(), basis["identity"]),
+        github_unanswered_comments.ReadScope(frozenset({"example"}), frozenset(), known, "another people index"),
+    ):
+        read_with(scope)
+        assert sorted(reads) == [("example/named", 7), ("example/repo", 42)]

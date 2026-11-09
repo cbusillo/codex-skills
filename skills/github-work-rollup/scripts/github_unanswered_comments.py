@@ -107,6 +107,8 @@ query($id: ID!, $after: String) {
 class ReadScope(NamedTuple):
     owners: frozenset[str]
     threads: frozenset[tuple[str, int]]
+    known: frozenset[tuple[str, int]]
+    identity: str
 
 
 @dataclass(frozen=True)
@@ -1722,16 +1724,22 @@ def outbound_states_for_thread(
     return results
 
 
-def unchanged_threads(candidate_ids: dict[tuple[str, int], set[Any]], settings: dict[str, Any]) -> set[tuple[str, int]]:
+def unchanged_threads(candidate_ids: dict[tuple[str, int], set[Any]], settings: dict[str, Any], identity: str) -> set[tuple[str, int]]:
     read_scope = settings.get("read_scope")
-    if read_scope is None:
+    if read_scope is None or read_scope.identity != identity:
         return set()
     owners = {owner.casefold() for owner in read_scope.owners}
     named = {(repo.casefold(), number) for repo, number in settings["threads"]}
     return {
         (repo, number) for repo, number in candidate_ids
-        if repo.split("/")[0].casefold() in owners and (repo.casefold(), number) not in named | read_scope.threads
+        if repo.split("/")[0].casefold() in owners and (repo.casefold(), number) in read_scope.known
+        and (repo.casefold(), number) not in named | read_scope.threads
     }
+
+
+def classification_identity(scan: str, people: dict[str, Any]) -> str:
+    basis = json.dumps([scan, people.get("address_names"), people.get("director_names")], sort_keys=True, default=str)
+    return hashlib.sha256(basis.encode()).hexdigest()
 
 
 def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, ...] = ()) -> dict[str, Any]:
@@ -1854,7 +1862,9 @@ def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, .
         repositories = rollup.unique([*repositories, *(repo for repo, _ in found)])
 
     candidate_count = len(candidate_ids)
-    unchanged = unchanged_threads(candidate_ids, settings)
+    read_basis = classification_identity(identity, people)
+    candidate_pointers = sorted({(repo.casefold(), number) for repo, number in candidate_ids})
+    unchanged = unchanged_threads(candidate_ids, settings, read_basis)
     for thread_key in unchanged:
         candidate_ids.pop(thread_key)
     collected_threads: list[tuple[dict[str, Any], list[Comment], set[tuple[str, int]]]] = []
@@ -1999,6 +2009,7 @@ def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, .
             "repository_count": len(repositories),
             "candidate_thread_count": candidate_count,
             "unchanged_thread_count": len(unchanged),
+            "read_basis": {"identity": read_basis, "candidates": candidate_pointers},
             "full_history_thread_count": len(full_history_threads),
             "scanned_thread_count": scanned_threads,
             "errors": coverage_errors,

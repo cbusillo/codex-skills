@@ -632,6 +632,8 @@ class RadarFeed(NamedTuple):
     last_look: datetime
     full_read_at: datetime
     recheck: frozenset[tuple[str, int]]
+    known: frozenset[tuple[str, int]]
+    identity: str
 
 
 def thread_pointer(repo: Any, number: Any) -> tuple[str, int]:
@@ -648,16 +650,19 @@ def load_radar_feed(path: Path | None) -> RadarFeed | None:
         data = json.loads(path.read_text()) if path is not None and path.exists() else {}
         last_look, full_read_at = recorded_time(data["last_look"]), recorded_time(data["full_read_at"])
         recheck = frozenset(thread_pointer(repo, number) for repo, number in data["recheck"])
+        known = frozenset(thread_pointer(repo, number) for repo, number in data["known"])
+        identity = str(data["identity"])
     except (OSError, ValueError, KeyError, TypeError):
         return None
-    return RadarFeed(last_look, full_read_at, recheck) if last_look and full_read_at else None
+    return RadarFeed(last_look, full_read_at, recheck, known, identity) if last_look and full_read_at else None
 
 
 def save_radar_feed(path: Path, feed: RadarFeed | None) -> None:
     if feed is None:
+        path.unlink(missing_ok=True)
         return
     path.write_text(json.dumps({"last_look": feed.last_look.isoformat(), "full_read_at": feed.full_read_at.isoformat(),
-                                "recheck": sorted([repo, number] for repo, number in feed.recheck)}) + "\n")
+                                "recheck": sorted(feed.recheck), "known": sorted(feed.known), "identity": feed.identity}) + "\n")
 
 
 def radar_read_scope(reader: github_read.GitHubReader, owner: str, previous: RadarFeed | None, started: datetime) -> Any:
@@ -667,16 +672,21 @@ def radar_read_scope(reader: github_read.GitHubReader, owner: str, previous: Rad
     if not feed.complete:
         return None
     changed = frozenset((thread.repository.casefold(), thread.number) for thread in feed.threads)
-    return radar.ReadScope(frozenset({owner}), changed | previous.recheck)
+    return radar.ReadScope(frozenset({owner}), changed | previous.recheck, previous.known, previous.identity)
 
 
 def next_radar_feed(previous: RadarFeed | None, started: datetime, scope: Any, result: dict) -> RadarFeed | None:
     attention = frozenset(thread_pointer(row["repo"], row["number"]) for row in result.get("attention", []))
+    basis = result.get("coverage", {}).get("read_basis") or {}
+    if not basis:
+        return None
+    candidates = frozenset(thread_pointer(repo, number) for repo, number in basis["candidates"])
     if result.get("ok"):
-        return RadarFeed(started, started if scope is None or previous is None else previous.full_read_at, attention)
+        full_read_at = started if scope is None or previous is None else previous.full_read_at
+        return RadarFeed(started, full_read_at, attention, candidates, basis["identity"])
     if scope is None or previous is None:
-        return previous
-    return RadarFeed(started, previous.full_read_at, attention | scope.threads)
+        return None
+    return RadarFeed(started, previous.full_read_at, attention | scope.threads, previous.known, previous.identity)
 
 
 def scan_state_path(args: argparse.Namespace) -> Path | None:
