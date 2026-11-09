@@ -254,9 +254,9 @@ def test_unproven_outcome_stays_unknown_and_keeps_the_key(readback: object) -> N
 
 
 @pytest.mark.parametrize("recorded", [saved_request(decision=OTHER_DECISION), saved_request(reason=OTHER_REASON)])
-@pytest.mark.parametrize("failure", [TimeoutError("lost"), http_error(409, "release_review_not_opened")])
-def test_readback_showing_a_different_request_is_a_conflict(recorded: dict[str, object], failure: BaseException) -> None:
-    code, payload, posts = invoke(request_args(), reviews=[review(), review(saved=recorded)], posts=[failure])
+@pytest.mark.parametrize("make_failure", [lambda: TimeoutError("lost"), lambda: http_error(409, "release_review_not_opened")])
+def test_readback_showing_a_different_request_is_a_conflict(recorded: dict[str, object], make_failure: Any) -> None:
+    code, payload, posts = invoke(request_args(), reviews=[review(), review(saved=recorded)], posts=[make_failure()])
     assert code == 1 and len(posts) == 1
     assert payload["status"] == "conflict"
     assert "request_id" not in payload.get("result", {})
