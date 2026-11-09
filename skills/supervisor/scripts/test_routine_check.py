@@ -921,9 +921,9 @@ def radar_result(*attention: tuple[str, int], ok: bool = True) -> dict:
 
 class RadarFeedTests(unittest.TestCase):
     def test_the_first_run_reads_every_thread_and_remembers_only_attention_pointers(self) -> None:
-        first = routine_check.radar_read_scope(Mock(), "director", routine_check.RadarFeed(), RADAR_START)
+        first = routine_check.radar_read_scope(Mock(), "director", None, RADAR_START)
         self.assertIsNone(first)
-        recorded = routine_check.next_radar_feed(routine_check.RadarFeed(), RADAR_START, first, radar_result(("Director/App", 4)))
+        recorded = routine_check.next_radar_feed(None, RADAR_START, first, radar_result(("Director/App", 4)))
         self.assertEqual(recorded, routine_check.RadarFeed(RADAR_START, RADAR_START, frozenset({("director/app", 4)})))
 
     def test_later_runs_read_changed_threads_and_last_runs_attention(self) -> None:
@@ -960,7 +960,7 @@ class RadarFeedTests(unittest.TestCase):
             routine_check.save_radar_feed(path, feed)
             self.assertEqual(routine_check.load_radar_feed(path), feed)
             path.write_text("not json")
-            self.assertEqual(routine_check.load_radar_feed(path), routine_check.RadarFeed())
+            self.assertIsNone(routine_check.load_radar_feed(path))
 
 
 class PrimaryReadTests(unittest.TestCase):

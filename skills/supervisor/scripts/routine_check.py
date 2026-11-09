@@ -629,9 +629,13 @@ def anchor_note(discussion: dict) -> str:
 
 
 class RadarFeed(NamedTuple):
-    last_look: datetime | None = None
-    full_read_at: datetime | None = None
-    recheck: frozenset[tuple[str, int]] = frozenset()
+    last_look: datetime
+    full_read_at: datetime
+    recheck: frozenset[tuple[str, int]]
+
+
+def thread_pointer(repo: Any, number: Any) -> tuple[str, int]:
+    return str(repo).casefold(), int(number)
 
 
 def radar_feed_path(args: argparse.Namespace) -> Path | None:
@@ -639,26 +643,25 @@ def radar_feed_path(args: argparse.Namespace) -> Path | None:
     return ledger.with_name(f"{ledger.stem}-radar-feed.json") if isinstance(ledger, Path) else None
 
 
-def load_radar_feed(path: Path | None) -> RadarFeed:
+def load_radar_feed(path: Path | None) -> RadarFeed | None:
     try:
         data = json.loads(path.read_text()) if path is not None and path.exists() else {}
-        return RadarFeed(recorded_time(data["last_look"]), recorded_time(data["full_read_at"]),
-                         frozenset((repo.casefold(), int(number)) for repo, number in data["recheck"]))
+        last_look, full_read_at = recorded_time(data["last_look"]), recorded_time(data["full_read_at"])
+        recheck = frozenset(thread_pointer(repo, number) for repo, number in data["recheck"])
     except (OSError, ValueError, KeyError, TypeError):
-        return RadarFeed()
+        return None
+    return RadarFeed(last_look, full_read_at, recheck) if last_look and full_read_at else None
 
 
-def save_radar_feed(path: Path, feed: RadarFeed) -> None:
-    if feed.last_look is None or feed.full_read_at is None:
+def save_radar_feed(path: Path, feed: RadarFeed | None) -> None:
+    if feed is None:
         return
     path.write_text(json.dumps({"last_look": feed.last_look.isoformat(), "full_read_at": feed.full_read_at.isoformat(),
                                 "recheck": sorted([repo, number] for repo, number in feed.recheck)}) + "\n")
 
 
-def radar_read_scope(reader: github_read.GitHubReader, owner: str, previous: RadarFeed, started: datetime) -> Any:
-    if previous.last_look is None or previous.full_read_at is None:
-        return None
-    if started - previous.full_read_at >= RADAR_FULL_READ_FOR_CHANGES_SEARCH_MISSES_EVERY:
+def radar_read_scope(reader: github_read.GitHubReader, owner: str, previous: RadarFeed | None, started: datetime) -> Any:
+    if previous is None or started - previous.full_read_at >= RADAR_FULL_READ_FOR_CHANGES_SEARCH_MISSES_EVERY:
         return None
     feed = github_change_feed.changed(reader, [owner], previous.last_look)
     if not feed.complete:
@@ -667,11 +670,11 @@ def radar_read_scope(reader: github_read.GitHubReader, owner: str, previous: Rad
     return radar.ReadScope(frozenset({owner}), changed | previous.recheck)
 
 
-def next_radar_feed(previous: RadarFeed, started: datetime, scope: Any, result: dict) -> RadarFeed:
-    attention = frozenset((row["repo"].casefold(), row["number"]) for row in result.get("attention", []))
+def next_radar_feed(previous: RadarFeed | None, started: datetime, scope: Any, result: dict) -> RadarFeed | None:
+    attention = frozenset(thread_pointer(row["repo"], row["number"]) for row in result.get("attention", []))
     if result.get("ok"):
-        return RadarFeed(started, started if scope is None else previous.full_read_at, attention)
-    if scope is None:
+        return RadarFeed(started, started if scope is None or previous is None else previous.full_read_at, attention)
+    if scope is None or previous is None:
         return previous
     return RadarFeed(started, previous.full_read_at, attention | scope.threads)
 
