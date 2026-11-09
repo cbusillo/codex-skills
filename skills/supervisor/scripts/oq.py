@@ -12,6 +12,7 @@ import subprocess
 import sys
 from collections import Counter
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
@@ -24,27 +25,37 @@ DECISION_HEADING = question_records.DECISION_HEADING
 questions = question_records.questions
 
 ITEM = re.compile(r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#([1-9][0-9]*)")
-def fetch(item):
+def read_item_discussion(reader: Any, item: str) -> dict[str, Any]:
     match = ITEM.fullmatch(item)
     if not match:
         raise ValueError("item must be OWNER/REPO#NUMBER")
-    from skills.github.scripts.github_read import (
-        GitHubReader,
-        GitHubReadError,
-        GitHubReadShapeError,
-        automation_only_gh_prefix_args,
-    )
+    from skills.github.scripts.github_read import GitHubReadError, GitHubReadShapeError, read_discussion
 
     try:
-        comments = GitHubReader(operation="github.question.read", strict_actor=True,
-                                gh_prefix_args=automation_only_gh_prefix_args()).paged_json(
-            f"/repos/{match[1]}/issues/{match[2]}/comments", step_prefix="question_comments"
-        )
+        return read_discussion(reader, match[1], int(match[2]))
     except (GitHubReadError, GitHubReadShapeError) as error:
         raise ValueError(f"issue discussion read is incomplete: {error}") from error
-    if not isinstance(comments, list) or not all(isinstance(c, dict) for c in comments):
-        raise ValueError("issue discussion comments are malformed")
-    return [{**comment, "author": (comment.get("user") or {}).get("login") or "", "url": comment["html_url"]} for comment in comments]
+
+
+def comment_rows(discussion: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": row["id"],
+            "url": row["html_url"],
+            "body": row["body"],
+            "author": row["user"]["login"],
+            "created_at": row["created_at"],
+            "updated_at": row.get("updated_at") or row["created_at"],
+        }
+        for row in discussion["comments"]
+    ]
+
+
+def fetch(item: str) -> list[dict[str, Any]]:
+    from skills.github.scripts.github_read import GitHubReader, automation_only_gh_prefix_args
+
+    reader = GitHubReader(operation="github.question.read", strict_actor=True, gh_prefix_args=automation_only_gh_prefix_args())
+    return comment_rows(read_item_discussion(reader, item))
 
 
 def default_decision_authors() -> list[str]:

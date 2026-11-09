@@ -23,6 +23,7 @@ os.environ["CODEX_SKILLS_ENV_FILE"] = "/missing/fixture.env"
 
 import question_record as record
 
+from skills.github.scripts import github_read
 from skills.github.scripts.github_fixture_support import api_success, with_call_stub
 
 
@@ -353,7 +354,11 @@ class QuestionRecordTests(unittest.TestCase):
             self.assertEqual(decided["queue_length"], 0)
             self.assertEqual([row["url"] for row in decided["questions"] if row.get("removed")], [first["url"]])
 
-        with patch.dict(os.environ, {"CODEX_SKILLS_ENV_FILE": "/missing/fixture.env"}):
+        def read_discussion(_reader: Any, repo: str, number: int) -> dict[str, Any]:
+            return {"comments": [dict(comment) for comment in threads[f"{repo}#{number}"]]}
+
+        with patch.dict(os.environ, {"CODEX_SKILLS_ENV_FILE": "/missing/fixture.env"}), \
+                patch.object(github_read, "read_discussion", side_effect=read_discussion):
             with_call_stub(api, run)
 
     def test_source_reads_need_no_local_counter_or_lock(self) -> None:
@@ -442,11 +447,14 @@ class QuestionRecordTests(unittest.TestCase):
 
 
 BOOTSTRAP = """
-import runpy, subprocess, sys
+import json, runpy, sys
+from pathlib import Path
 from unittest.mock import patch
 script = sys.argv.pop(1)
-response = subprocess.CompletedProcess([], 0, stdout=sys.stdin.buffer.read(), stderr=b'')
-with patch.object(subprocess, 'run', return_value=response):
+sys.path[:0] = [str(Path(script).resolve().parents[3]), str(Path(script).resolve().parents[2] / 'github/scripts')]
+from skills.github.scripts import github_read
+discussion = {'comments': json.load(sys.stdin)}
+with patch.object(github_read, 'read_discussion', return_value=discussion):
     runpy.run_path(script, run_name='__main__')
 """
 
@@ -472,7 +480,7 @@ class PublicReadTests(unittest.TestCase):
             {"id": 4, "html_url": source.replace("-1", "-4"), "user": {"login": "director"},
              "body": f"Not sure yet, what is the cost? {source}"},
         ]
-        response = "HTTP/2.0 200\ncontent-type: application/json\n\n" + json.dumps(comments)
+        response = json.dumps([{**comment, "created_at": "2026-10-29T16:00:00Z"} for comment in comments])
         with tempfile.TemporaryDirectory() as home:
             return subprocess.run(
                 [

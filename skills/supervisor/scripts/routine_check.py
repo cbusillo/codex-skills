@@ -496,21 +496,10 @@ def build_readers(args: argparse.Namespace, watch: dict) -> dict[str, Callable[[
             raise ValueError("question source must be OWNER/REPO#NUMBER")
         try:
             discussion = github_read.read_discussion(github_reader(), match[1], int(match[2]))
-            discussions[(match[1].casefold(), int(match[2]))] = discussion
-            source_comments = discussion["comments"]
         except (github_read.GitHubReadError, github_read.GitHubReadShapeError) as error:
             raise ValueError(str(error)) from error
-        return [
-            {
-                "id": row["id"],
-                "url": row["html_url"],
-                "body": row["body"],
-                "author": row["user"]["login"],
-                "created_at": row["created_at"],
-                "updated_at": row.get("updated_at") or row["created_at"],
-            }
-            for row in source_comments
-        ]
+        discussions[(match[1].casefold(), int(match[2]))] = discussion
+        return oq.comment_rows(discussion)
 
     def questions() -> dict:
         items = list(args.source)

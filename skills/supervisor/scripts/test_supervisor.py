@@ -1262,20 +1262,19 @@ class QuestionTests(unittest.TestCase):
     def test_complete_discussion_preserves_question_inventory(self) -> None:
         from skills.github.scripts import github_read
 
-        with patch.object(github_read.GitHubReader, "paged_json", side_effect=github_read.GitHubReadShapeError("missing page")), \
+        with patch.object(github_read, "read_discussion", side_effect=github_read.GitHubReadShapeError("missing page")), \
                 self.assertRaises(ValueError):
             oq.fetch("example/repo#1")
         with self.assertRaises(ValueError):
             oq.fetch("repo#1")
-        comments = [{"id": 1, "html_url": "question", "user": {"login": "bot"}, "body": "Owner question: proceed?"},
-                    {"id": 2, "html_url": "answer", "user": {"login": "owner"}, "body": "question yes"}]
-        with patch.object(github_read.GitHubReader, "paged_json", return_value=comments):
+        comments = [{"id": 1, "html_url": "question", "user": {"login": "bot"}, "body": "Owner question: proceed?",
+                     "created_at": "2026-10-01T00:00:00Z"},
+                    {"id": 2, "html_url": "answer", "user": {"login": "owner"}, "body": "question yes",
+                     "created_at": "2026-10-01T01:00:00Z"}]
+        with patch.object(github_read, "read_discussion", return_value={"comments": comments}):
             fetched = oq.fetch("example/repo#1")
         self.assertEqual([row["url"] for row in fetched], [row["html_url"] for row in comments])
         self.assertEqual(oq.questions(fetched, "owner", {"bot"})[0]["status"], "answered")
-        for malformed in ({}, [None]):
-            with patch.object(github_read.GitHubReader, "paged_json", return_value=malformed), self.assertRaises(ValueError):
-                oq.fetch("example/repo#1")
 
 
 NOW = datetime(2026, 10, 3, 16, tzinfo=UTC)
