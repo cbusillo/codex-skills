@@ -31,6 +31,12 @@ class ClientRelease:
     reason: str = ""
 
 
+@dataclass(frozen=True)
+class ProductionCommit:
+    commit: str = ""
+    reason: str = ""
+
+
 class UnsettledRead(Exception):
     pass
 
@@ -46,9 +52,9 @@ def repository_key(value: str) -> str:
     return raw.strip("/").casefold()
 
 
-def _read(settings: dict[str, Any], path: str) -> dict[str, Any]:
+def _read(settings: dict[str, Any], path: str, *, timeout: int = 10) -> dict[str, Any]:
     return operator.request_launchplane_read(
-        service_url=settings["service_url"], settings=settings, path=path, query={}, timeout=10,
+        service_url=settings["service_url"], settings=settings, path=path, query={}, timeout=timeout,
     )
 
 
@@ -116,18 +122,43 @@ def _settled_release(settings: dict[str, Any], target_key: str) -> str:
     return DIRECTOR_STANDING if profiles else NO_CLIENT
 
 
+def _settings() -> dict[str, Any]:
+    settings = operator.resolve_settings(operator.parse_args(["product-profile-read", "--product", "unused"]))
+    operator.validate_service_url(settings["service_url"])
+    if not settings["token"]:
+        raise UnsettledRead("no Launchplane operator token is configured")
+    return settings
+
+
 def read_client_release(repository: str) -> ClientRelease:
     target_key = repository_key(repository)
     if target_key.count("/") != 1:
         return ClientRelease(UNKNOWN, "the repository is not named as owner/name")
     try:
-        settings = operator.resolve_settings(operator.parse_args(["product-profile-read", "--product", "unused"]))
-        operator.validate_service_url(settings["service_url"])
-        if not settings["token"]:
-            return ClientRelease(UNKNOWN, "no Launchplane operator token is configured")
-        return ClientRelease(_settled_release(settings, target_key))
+        return ClientRelease(_settled_release(_settings(), target_key))
     except UnsettledRead as unsettled:
         return ClientRelease(UNKNOWN, str(unsettled))
     except READ_FAILURES:
         # Provider bodies, private config and exception text never reach GitHub.
         return ClientRelease(UNKNOWN, "the Launchplane read failed")
+
+
+def read_production_commit(repository: str) -> ProductionCommit:
+    target_key = repository_key(repository)
+    try:
+        settings = _settings()
+        matches = [entry for entry in _repository_entries(settings) if repository_key(entry["repository"]) == target_key]
+        if len(matches) != 1 or not matches[0].get("product"):
+            return ProductionCommit(reason="Launchplane maps no single product to this repository")
+        product = operator.public_identifier(matches[0]["product"])
+        path = operator.helper_command_path("product-promotion-status-read").format(product=product, environment="prod")
+        status = _read(settings, path, timeout=30).get("promotion_status")
+        destination = status.get("destination") if isinstance(status, dict) else None
+        commit = destination.get("source_git_ref") if isinstance(destination, dict) else None
+        if not isinstance(commit, str) or not commit:
+            return ProductionCommit(reason="Launchplane reports no deployed production commit")
+        return ProductionCommit(commit=commit)
+    except UnsettledRead as unsettled:
+        return ProductionCommit(reason=str(unsettled))
+    except READ_FAILURES:
+        return ProductionCommit(reason="the Launchplane read failed")

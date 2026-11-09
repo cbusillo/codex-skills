@@ -8,6 +8,7 @@ from functools import partial
 from contextlib import redirect_stdout
 from io import StringIO
 import importlib
+import importlib.util
 import json
 import os
 import subprocess
@@ -390,7 +391,7 @@ class RoutineCheckTests(unittest.TestCase):
             report = {"candidates": rows, "candidate_coverage": {"complete": True}}
             github_agent.filter_selection(report, family)
             output = routine_check.digest({"next": report})
-            self.assertEqual(len([line for line in output.splitlines() if line.startswith("NEXT ")]), len(rows))
+            self.assertEqual(len([line for line in output.splitlines() if line.startswith("SUPERVISOR_ACTION ")]), len(rows))
             for row in rows:
                 self.assertIn(row["url"], output)
 
@@ -892,6 +893,190 @@ class RoutineCheckTests(unittest.TestCase):
                 self.assertIn(entry["session_id"], str(refusal.exception))
                 reasons.append(str(refusal.exception))
             self.assertNotEqual(*reasons)
+
+
+def queue_row(number: int, actor: str, action: str, *, recorded: str | None = None, state: str = "available", record_type: str | None = None) -> dict[str, Any]:
+    return {"repo": "owner/repo", "number": number, "state": "OPEN", "url": f"https://github.com/owner/repo/issues/{number}",
+            **({"record_type": record_type} if record_type else {}),
+            "queue": {"state": state, "next_actor": actor, "next_action": action, "status_recorded_at": recorded, "reason": "agent_work"}}
+
+
+def client_wait(number: int, title: str = "Change") -> dict[str, Any]:
+    return {"repo": "owner/repo", "number": number, "record_type": "pull_request", "title": title, "reason": "current_head_client_wait",
+            "url": f"https://github.com/owner/repo/pull/{number}", "queue": {"reason": "current_head_client_wait"}}
+
+
+class PrimaryReadTests(unittest.TestCase):
+    now = datetime(2026, 11, 8, 19, 55, tzinfo=UTC)
+
+    def setUp(self) -> None:
+        self.enterContext(patch.object(routine_check, "clock", return_value=self.now))
+        for name in ("CODEX_SESSION_ID", "CLAUDE_CODE_SESSION_ID"):
+            self.enterContext(patch.dict(os.environ, {name: ""}))
+
+    @staticmethod
+    def run_digest(selection: dict[str, Any], sessions: list[dict[str, Any]] | None = None, **readers: Any) -> list[str]:
+        supplied = {"owner_review": Mock(return_value=None), "client_release": Mock(return_value=SimpleNamespace(state="client", reason="")),
+                    "production": Mock(return_value={"reason": "unmapped"}), "anchor_response": Mock(return_value="anchor_response=UNKNOWN"), **readers}
+        primary = routine_check.primary_reads(selection, sessions or [], **supplied)
+        return routine_check.digest({"next": selection, "primary": primary, "sessions": {"sessions": sessions or []}}).splitlines()
+
+    def test_supervisor_request_is_its_own_aged_row_that_repeats_until_the_record_changes(self) -> None:
+        request = queue_row(746, "agent:supervisor", "Restore the stopped runner\nwith details", recorded="2026-11-08T15:42:00+00:00")
+        other = queue_row(1, "agent", "Build the page", recorded="2026-11-08T19:50:00+00:00")
+        selection = {"candidates": [other, request], "needs_status": [request]}
+        for _ in range(2):
+            lines = self.run_digest(selection)
+            action = [line for line in lines if line.startswith("SUPERVISOR_ACTION")]
+            self.assertEqual(len(action), 1)
+            self.assertIn("age=4h13m: Restore the stopped runner", action[0])
+            self.assertNotIn("with details", action[0])
+            self.assertFalse([line for line in lines if line.startswith("NEXT") and "/746" in line])
+            self.assertLess(lines.index(action[0]), next(index for index, line in enumerate(lines) if line.startswith("NEXT")))
+            self.assertTrue([line for line in lines if line.startswith("ERROR supervisor_action") and "/746" in line])
+        settled = {**request, "queue": {**request["queue"], "next_actor": "agent:lead"}}
+        lines = self.run_digest({"candidates": [settled]})
+        self.assertFalse([line for line in lines if "SUPERVISOR_ACTION" in line or line.startswith("ERROR")])
+
+    def test_supervisor_action_inside_one_interval_is_not_an_error_and_unknown_age_is(self) -> None:
+        fresh = queue_row(2, "agent:Supervisor", "Route it", recorded="2026-11-08T19:40:00+00:00")
+        self.assertFalse([line for line in self.run_digest({"candidates": [fresh]}) if line.startswith("ERROR")])
+        undated = queue_row(3, "agent:supervisor", "Route it")
+        lines = self.run_digest({"candidates": [undated]})
+        self.assertTrue([line for line in lines if line.startswith("SUPERVISOR_ACTION") and "age=UNKNOWN" in line])
+        self.assertTrue([line for line in lines if line.startswith("ERROR supervisor_action")])
+
+    def test_either_harness_native_id_names_the_supervisor(self) -> None:
+        for variable in ("CODEX_SESSION_ID", "CLAUDE_CODE_SESSION_ID"):
+            with self.subTest(variable=variable), patch.dict(os.environ, {variable: "Native-1"}):
+                row = queue_row(4, "agent:native-1", "Route it", recorded="2026-11-08T19:40:00+00:00")
+                self.assertTrue([line for line in self.run_digest({"candidates": [row]}) if line.startswith("SUPERVISOR_ACTION")])
+
+    def test_both_harness_bindings_load_one_rule_source(self) -> None:
+        catalog = Path(__file__).resolve().parents[3]
+        spec = importlib.util.spec_from_file_location("reconcile_binding", catalog / "skills/github/scripts/reconcile-runtime-checkout.py")
+        assert spec is not None and spec.loader is not None
+        reconcile = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(reconcile)
+        with tempfile.TemporaryDirectory() as home:
+            codex, claude = Path(home, "code"), Path(home, "claude")
+            codex.mkdir()
+            (claude / "skills").mkdir(parents=True)
+            (codex / "skills").symlink_to(catalog / "skills")
+            (claude / "skills/shared").symlink_to(catalog)
+            with patch.dict(os.environ, {"CODE_HOME": str(codex), "CLAUDE_CONFIG_DIR": str(claude), "CODEX_HOME": ""}):
+                bindings = {label: path for path, label, _ in reconcile.runtime_skills_paths()}
+            rule = "supervisor/references/routine-check.md"
+            self.assertTrue((bindings["CODE_HOME"] / rule).samefile(bindings["CLAUDE_CONFIG_DIR/skills/shared"] / "skills" / rule))
+
+    def test_client_wait_prints_the_current_head_check_and_flags_a_wrong_wait(self) -> None:
+        cases = {
+            "preview failed": ("Preview failed: nothing for the Client to review yet", "client", True),
+            "healthy review": ("Preview ready for the Client's review", "client", False),
+            "director standing": ("Preview ready for the Client's review", "director_standing", True),
+        }
+        for name, (title, release, wrong) in cases.items():
+            with self.subTest(name):
+                lines = self.run_digest({"pr_followthrough": [client_wait(376)]},
+                                        owner_review=Mock(return_value={"status": "completed", "conclusion": "neutral", "title": title}),
+                                        client_release=Mock(return_value=SimpleNamespace(state=release, reason="")))
+                row = next(line for line in lines if line.startswith("CLIENT_WAIT"))
+                self.assertIn(f'owner-review=completed/neutral "{title}"', row)
+                self.assertEqual("WRONG_WAIT" in row, wrong)
+
+    def test_failed_owner_review_read_stays_unknown_and_reports_coverage(self) -> None:
+        lines = self.run_digest({"pr_followthrough": [client_wait(5)]}, owner_review=Mock(side_effect=RuntimeError("denied")),
+                                client_release=Mock(return_value=SimpleNamespace(state="unknown", reason="no token")))
+        row = next(line for line in lines if line.startswith("CLIENT_WAIT"))
+        self.assertIn("owner-review=UNKNOWN", row)
+        self.assertIn("client_release=UNKNOWN (no token)", row)
+        self.assertNotIn("WRONG_WAIT", row)
+        self.assertTrue([line for line in lines if line.startswith("ERROR primary")])
+
+    def test_owner_review_reads_the_pull_requests_current_head(self) -> None:
+        github = SimpleNamespace(get_json=Mock(side_effect=[{"head": {"sha": "new"}}, {"check_runs": [{"status": "completed", "conclusion": "failure", "output": {"title": "Preview failed"}}]}]))
+        args = argparse.Namespace()
+        with patch_attr(routine_check.github_read, "GitHubReader", return_value=github), patch_attr(routine_check.github_access, "reader_options", return_value={}):
+            read = routine_check.primary_readers(args)["owner_review"]("owner/repo", 7)
+        self.assertEqual(read["title"], "Preview failed")
+        self.assertIn("commits/new/check-runs", github.get_json.call_args_list[1].args[0])
+
+    def test_release_request_is_checked_against_production(self) -> None:
+        request = queue_row(403, "agent:supervisor", "Supervisor requests the gated release", recorded="2026-11-08T19:50:00+00:00")
+        contained = {"deployed": "e1521e55" + "0" * 32, "newest": "e1521e55" + "0" * 32, "contained": True, "behind": 0}
+        row = next(line for line in self.run_digest({"candidates": [request]}, production=Mock(return_value=contained)) if line.startswith("SUPERVISOR_ACTION"))
+        self.assertIn("production=e1521e55", row)
+        self.assertIn("NOTHING_TO_RELEASE", row)
+        pending = {**contained, "newest": "abcdef12" + "0" * 32, "contained": False, "behind": 3}
+        row = next(line for line in self.run_digest({"candidates": [request]}, production=Mock(return_value=pending)) if line.startswith("SUPERVISOR_ACTION"))
+        self.assertNotIn("NOTHING_TO_RELEASE", row)
+        self.assertIn("not_released=3", row)
+
+    def test_failed_production_read_is_unknown_never_a_release_need_or_healthy(self) -> None:
+        request = queue_row(9, "agent", "Run the promotion", recorded="2026-11-08T19:50:00+00:00")
+        lines = self.run_digest({"candidates": [request]}, production=Mock(side_effect=RuntimeError("down")))
+        row = next(line for line in lines if line.startswith("NEXT"))
+        self.assertIn("production=UNKNOWN", row)
+        self.assertNotIn("NOTHING_TO_RELEASE", row)
+        self.assertTrue([line for line in lines if line.startswith("ERROR primary")])
+
+    def test_production_contains_newest_landed_only_when_github_says_so(self) -> None:
+        deployed = "a" * 40
+        for status, contained in (("identical", True), ("ahead", True), ("behind", False), ("diverged", False)):
+            with self.subTest(status=status):
+                github = SimpleNamespace(get_json=Mock(side_effect=[{"default_branch": "main"}, {"sha": "b" * 40}, {"status": status, "behind_by": 2}]))
+                acceptance = SimpleNamespace(read_production_commit=Mock(return_value=SimpleNamespace(commit=deployed, reason="")))
+                with patch_attr(routine_check.github_read, "GitHubReader", return_value=github), patch_attr(routine_check.github_access, "reader_options", return_value={}), \
+                        patch.object(routine_check.importlib, "import_module", return_value=acceptance):
+                    self.assertEqual(routine_check.primary_readers(argparse.Namespace())["production"]("owner/repo")["contained"], contained)
+                self.assertIn(f"compare/{'b' * 40}...{deployed}", github.get_json.call_args_list[2].args[0])
+
+    def test_claim_release_wording_is_not_a_release_request(self) -> None:
+        row = queue_row(10, "agent", "Finish and release the claim", recorded="2026-11-08T19:50:00+00:00")
+        production = Mock(return_value={"reason": "unmapped"})
+        self.assertFalse([line for line in self.run_digest({"candidates": [row]}, production=production) if "production=" in line])
+        production.assert_not_called()
+
+    def test_setting_change_request_is_flagged_for_its_reason_and_acting_service(self) -> None:
+        row = queue_row(915, "agent", "Set onboot=1 on the guest so it restarts", recorded="2026-11-08T19:50:00+00:00")
+        line = next(line for line in self.run_digest({"candidates": [row]}) if line.startswith("NEXT"))
+        self.assertIn("SETTING_UNVERIFIED", line)
+        flag = queue_row(11, "agent", "Run the helper with --limit=5 and report", recorded="2026-11-08T19:50:00+00:00")
+        self.assertNotIn("SETTING_UNVERIFIED", next(line for line in self.run_digest({"candidates": [flag]}) if line.startswith("NEXT")))
+
+    def test_anchor_status_edit_counts_as_a_response_alongside_comments(self) -> None:
+        comment = {"created_at": "2026-11-08T10:00:00Z"}
+        edited = routine_check.anchor_note({"body": "## Current Status\nDone", "_graphql": {"lastEditedAt": "2026-11-08T12:00:00Z"}, "comments": [comment]})
+        self.assertIn("via=current_status", edited)
+        older = routine_check.anchor_note({"body": "## Current Status\nDone", "_graphql": {"lastEditedAt": "2026-11-08T09:00:00Z"}, "comments": [comment]})
+        self.assertIn("via=comment", older)
+        unrelated = routine_check.anchor_note({"body": "No status here", "_graphql": {"lastEditedAt": "2026-11-08T12:00:00Z"}, "comments": []})
+        self.assertEqual(unrelated, "anchor_response=UNKNOWN")
+        session = {"session_id": "lead", "action": "inspect_idle_session", "issue": "owner/repo#1"}
+        worker = next(line for line in self.run_digest({}, [session], anchor_response=Mock(return_value=edited)) if line.startswith("WORKER"))
+        self.assertIn("via=current_status", worker)
+
+    def test_ledger_issue_number_becomes_a_readable_anchor(self) -> None:
+        anchor = routine_check.compact_check.session_anchor({"issue": 3946, "repository": "owner/repo"})
+        self.assertEqual(anchor, "owner/repo#3946")
+        self.assertIsNone(routine_check.compact_check.session_anchor({"issue": 3946}))
+        github = SimpleNamespace(deadline_at=None)
+        with patch_attr(routine_check.github_read, "GitHubReader", return_value=github), patch_attr(routine_check.github_access, "reader_options", return_value={}), \
+                patch_attr(routine_check.github_read, "read_discussion", return_value={"comments": [], "body": ""}) as read:
+            routine_check.primary_readers(argparse.Namespace())["anchor_response"](anchor)
+        self.assertEqual(read.call_args.args[1:], ("owner/repo", 3946))
+
+    def test_digest_timestamp_comes_from_the_clock_and_names_its_zone(self) -> None:
+        header = routine_check.digest({}).splitlines()[0]
+        self.assertIn(routine_check.clock_label(self.now), header)
+        self.assertRegex(routine_check.clock_label(self.now), r"\d{1,2}:\d{2} [AP]M \S+$")
+
+    def test_stale_items_repeat_with_their_age_and_evidence(self) -> None:
+        stale = {"url": "https://github.com/owner/repo/issues/1", "evidence": [{"kind": "overdue_recheck", "recorded_at": "2026-11-04T00:00:00Z", "matched": "Waiting for proof"}]}
+        selection = {"stale_wait_report": {"items": [stale]}}
+        for _ in range(2):
+            row = next(line for line in self.run_digest(selection) if line.startswith("STALE"))
+            self.assertIn("overdue_recheck age=4d19h evidence=Waiting for proof", row)
 
 
 if __name__ == "__main__":

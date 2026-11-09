@@ -576,8 +576,8 @@ the verified unchanged active row. Reuse its evidence for interrupted retirement
 
 Post one full handoff comment on this Director's own handoff record under
 [Agent Comments](../references/talking-with-the-director.md#agent-comments).
-Link the current milestone sources and digest coverage, governing decisions, open ready
-PRs, running session identities and anchors, briefs and next actors, verified
+Link the current milestone sources and digest coverage, open `SUPERVISOR_ACTION`
+rows with their ages, governing decisions, open ready PRs, running session identities and anchors, briefs and next actors, verified
 watchers with scopes/state/deadlines, private file pointers and Director
 sessions to leave alone. Link new landed lessons or their tracking issues,
 the latest catalog-verification receipt, pending recovery actions and the
