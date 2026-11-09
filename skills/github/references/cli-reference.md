@@ -455,9 +455,12 @@ also include the shared `api_result` diagnostics envelope.
   An `in_progress` run settles from its latest jobs when every job has been
   completed for `WORKFLOW_SETTLEMENT_GRACE_SECONDS` with a known conclusion and the inventory matches
   the current run, head and attempt. Empty, running or uncertain inventories
-  still block; failed jobs remain failures. `summary.jobLevelSettlements`
-  names each affected run and explains the fallback. The ready handoff and
-  watcher merge-readiness read use this same evaluation.
+  still block; failed jobs remain failures. A passed check run GitHub leaves
+  `in_progress` under a completed run settles the same way when its own job
+  record agrees for the current head and attempt. `summary.jobLevelSettlements`
+  names each affected run, and check run where one settled, and explains the
+  fallback. The ready handoff and watcher merge-readiness read use this same
+  evaluation.
 - `scripts/gh-pr.py ready <pr> [--waiting-for-client] [--allow-no-checks]`: Read current-head
   checks and post the [ready handoff](#ready-handoffs) through automation auth.
 - `scripts/gh-pr.py update-branch <pr> [--wait-seconds 0..60] [--required-by REQUIREMENT]`:
