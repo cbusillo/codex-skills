@@ -677,8 +677,8 @@ def test_cmd_show_does_not_emit_success_for_an_incomplete_discussion() -> None:
             if page == "1":
                 return "automation-gh", [{"id": index, "body": "Earlier comment"} for index in range(100)]
             assert page == "2", path
-            assert kwargs["completed_steps"] == ["list_issue_comments_page_1"], kwargs
-            assert kwargs["failed_step"] == "list_issue_comments_page_2", kwargs
+            assert kwargs["completed_steps"] == ["planning_connection_page_1"], kwargs
+            assert kwargs["failed_step"] == "planning_connection_page_2", kwargs
             if failure == "unavailable":
                 raise plan.PlanError("Comment read unavailable")
             return "automation-gh", {} if failure == "malformed_page" else [None]
