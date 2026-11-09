@@ -76,7 +76,9 @@ Rules for this brief (every Supervisor brief carries them):
   hold ends. A brief that holds a PR names that wait in one line.
 - Briefs state the goal and observable finish line, not a mechanism to build.
   A named mechanism is a suggestion unless it records a Director decision.
-- Scope follows the [approved scope rule](https://github.com/cbusillo/codex-skills/issues/1043#issuecomment-6091977127).
+- Small fixes in the same file or area that share the change's reason go in
+  the same PR; different behavior, its own risk, security or access,
+  Client-visible, or large work gets a separate issue.
 - For issues and slices, follow
   [Create Or Update A Plan](../../github-plan/SKILL.md#create-or-update-a-plan)
   and [Close Or Hand Off](../../github-plan/SKILL.md#close-or-hand-off).
