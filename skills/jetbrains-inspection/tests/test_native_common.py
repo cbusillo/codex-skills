@@ -228,6 +228,38 @@ class NativeCommonTests(unittest.TestCase):
         self.assertEqual(receipt["unmatched_files"], ["README.md"])
         self.assertEqual(receipt["excluded_files"], [])
 
+    def test_explicit_inputs_that_are_not_files_stop_selection_and_are_all_named(self) -> None:
+        lanes = {"lanes": [{"id": "python", "ide": "PyCharm", "required": True, "include": ["**/*.py"]}]}
+        args = host.build_parser().parse_args(["agent-inspect", "--repo", str(self.repo), "--scope", "files", "--file", "src/a.py"])
+        for inspection in ({}, lanes):
+            self.declare_inspection(inspection)
+            for unavailable in (["src/missing.py"], ["src"], ["src/missing.py", "src"], [""], ["   "]):
+                with self.subTest(inspection=inspection, unavailable=unavailable):
+                    args.files = ["src/a.py", *unavailable]
+                    with self.assertRaises(host.InspectError) as refusal:
+                        common.scope_selection(args, host)
+                    self.assertEqual(refusal.exception.payload["error_reason"], host.EXPLICIT_INPUT_UNAVAILABLE)
+                    self.assertEqual(refusal.exception.payload["skipped_files"],
+                                     [{"file": (self.repo / name).resolve().relative_to(self.repo).as_posix(),
+                                       "reason": host.inspection_path_skip_reason(self.repo / name)} for name in unavailable])
+            args.files = ["src/a.py", "src/b.py"]
+            self.assertEqual(common.scope_selection(args, host)[3], {"src/a.py", "src/b.py"})
+
+    def test_changed_file_deleted_from_the_worktree_is_still_skipped(self) -> None:
+        subprocess.run(["git", "-C", str(self.repo), "add", "--all"], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                        "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "commit", "--quiet", "-m", "fixture"], check=True)
+        (self.repo / "src/a.py").write_text("print(staged)\n")
+        (self.repo / "src/b.py").write_text("print(staged)\n")
+        subprocess.run(["git", "-C", str(self.repo), "add", "--all"], check=True)
+        (self.repo / "src/a.py").unlink()
+        args = host.build_parser().parse_args(["agent-inspect", "--repo", str(self.repo), "--scope", "changed_files"])
+        args.include_unversioned = False
+        for inspection in ({}, {"lanes": [{"id": "python", "ide": "PyCharm", "required": True, "include": ["**/*.py"]}]}):
+            with self.subTest(inspection=inspection):
+                self.declare_inspection(inspection)
+                self.assertEqual(common.scope_selection(args, host)[3], {"src/b.py"})
+
 
 if __name__ == "__main__":
     unittest.main()

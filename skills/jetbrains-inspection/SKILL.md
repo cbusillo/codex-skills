@@ -170,7 +170,8 @@ of flags can reach the helper as one argument, especially in zsh.
 The compact result reports `selected_file_count` (null when unavailable).
 Selection counts describe the requested scope, not successful IDE execution;
 read the verdict and coverage too. A scope that resolves to zero files is
-UNKNOWN and supplies file-selection advice.
+UNKNOWN and supplies file-selection advice. A `--file` that is missing or not
+a file makes the assessment UNKNOWN before a worker starts and names each one.
 
 Start narrow while iterating: changed files, touched files, or touched directory.
 For final readiness, apply repository requirements and the whole-project
