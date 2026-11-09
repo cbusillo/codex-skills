@@ -2775,6 +2775,38 @@ approval. Inspect terminal outcomes before an intentional replacement; an expire
 source event for a replacement. The signed-in Director reviews
 and approves pending plans in the UI; no helper approval or apply path is added.
 
+## Release request for a Director-standing product
+
+`release-request --product P --plan` reads the current checklist and sends
+nothing. It reports `checklist_digest`, both lanes' source commits, whether each
+carries recorded runtime settings, the blocker count and the full `review_url`.
+Item text, settings, artifact ids, blocker prose and the saved reason and actor
+are never emitted.
+
+`release-request --product P --checklist-digest D --reason R --decision-reference
+URL --idempotency-key K` calls `POST /v1/release-review/requests` with that exact
+digest and returns `request_id` and `review_url`. `--decision-reference` is the
+recorded decision's GitHub comment URL. The reason and citation are hashed in the
+output. No new grant is involved: the service holds the Director-agent authority
+and records a request, never an acceptance or a promotion. Standing acceptance
+then starts the existing gated release; observe it and do not promote by hand.
+
+Both modes stop with `refused` and a `refusal_reason` unless the profile's
+`release_on_acceptance` is `director_standing`, a release review is required, the
+checklist is complete with no decision on it and a real candidate, and Client
+approval is its only blocker. The service keeps its own stricter gates, including
+that a standing product uses this route only for its first release carrying
+recorded production settings.
+
+`stale` means the checklist changed, before or during the call. Run `--plan` for
+a new current read and review it; neither a retry nor a new key bypasses this. A
+digest already recorded under this decision returns `ok` without sending again;
+under another decision it is `conflict`. After a lost response or a 5xx the helper
+reads back once: a matching saved request is `ok` with `verified_by_readback`,
+otherwise `outcome_unknown`. Keep the same digest, reason, decision reference and
+key, and rerun to read it back. An accepted response without this exact request
+is `accepted_unverified`.
+
 ## Pending Client review withdrawal
 
 `product-review-withdrawal-dry-run`, `product-review-withdrawal-apply` and
