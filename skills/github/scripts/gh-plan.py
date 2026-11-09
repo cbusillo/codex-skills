@@ -2275,9 +2275,8 @@ def cmd_show(args: argparse.Namespace) -> None:
         milestone_admission = None
         live_claims = github_plan_lease.uses_live_claims(issue["repo"])
         launch_status = derived["status"]
-        if live_claims and wait["state"] == "review" and derived["relationships_complete"]:
-            launch_status = github_plan_status.derive(
-                issue, relationships, github_plan_wait.reviewed(evidence="No wait is recorded"))["status"]
+        if live_claims and launch_status == "review" and wait["state"] == "review" and derived["relationships_complete"]:
+            launch_status = "blocked" if derived["blocked_by"] else "active"
         if not args.read_only:
             try:
                 validate_wait_resolution(args.wait_resolved, issue["repo"])

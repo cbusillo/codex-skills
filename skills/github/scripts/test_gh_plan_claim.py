@@ -445,8 +445,8 @@ class ClaimTests(unittest.TestCase):
         with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
             self.run_claim()
         self.assertEqual(caught.exception.code, "claim_conflict")
-        for comment in self.comments:
-            comment["created_at"] = "2026-10-01T00:00:00+00:00"
+        for posted in self.comments:
+            posted["created_at"] = "2026-10-01T00:00:00+00:00"
         LEASE.renew(OWNER["session"])
         self.assertNotIn(OWNER["session"], {holder["session"] for holder in CLAIM.live_claims(self.comments)})
 
