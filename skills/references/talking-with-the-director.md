@@ -244,8 +244,8 @@ When asking, follow [Director Questions](#director-questions).
   private destination when needed. When acting, quote the answer with its link.
 - Recording a Director decision and clearing the wait it ends are one step,
   using `gh-plan.py wait ISSUE --clear --evidence DECISION_LINK` before any
-  worker is launched on that issue. When the decision ends only part of a wait,
-  split a child issue rather than clearing it.
+  execution worker is launched on that issue. When the decision ends only part
+  of a wait, split a child issue rather than clearing it.
 - The configured trusted identity that posted a question withdraws it
   with `Q123 withdrawn by the Supervisor. REASON` as the first line, using its
   original Q ID. For an existing replacement, name its bare Q ID in the reason.
