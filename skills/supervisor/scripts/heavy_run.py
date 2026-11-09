@@ -423,10 +423,10 @@ class Docker:
         self.lower_digests: dict[Path, str] = {}
         self.overlay_volumes: dict[tuple[Path, str], str] = {}
         self.evidence = evidence.resolve() if evidence is not None else None
-        self.staging: dict | None = None
+        self.staging: dict = {}
 
     def save_staging(self) -> None:
-        assert self.evidence is not None and self.staging is not None
+        assert self.evidence is not None and self.staging
         pending = self.evidence / ".heavy-inputs.next"
         pending.write_text(json.dumps(self.staging, indent=2) + "\n")
         pending.replace(self.evidence / "heavy-inputs.json")
@@ -442,7 +442,7 @@ class Docker:
             raise ValueError("Stage an original outside this run's evidence directory")
         expected = input_hashes(source)
         root = self.evidence / ".staged-inputs"
-        if self.staging is None:
+        if not self.staging:
             if (self.evidence / "heavy-inputs.json").exists():
                 raise FileExistsError("Preserve existing staging metadata")
             root.mkdir(mode=0o700)
@@ -471,7 +471,8 @@ class Docker:
                     target.chflags(0)
             else:
                 with path.open("rb") as original, target.open("xb") as output:
-                    shutil.copyfileobj(original, output)
+                    while chunk := original.read(1024 * 1024):
+                        output.write(chunk)
             target.chmod(stat.S_IMODE(path.stat().st_mode))
         if input_hashes(destination) != expected:
             raise ValueError("Input bytes changed during staging; original remains untouched")
@@ -827,7 +828,7 @@ def run_in_slot(
                 signal.signal(signum, signal.SIG_IGN)
             try:
                 docker.cleanup(log)
-                if docker.staging is not None:
+                if docker.staging:
                     receipt["storage"] = {key: value for key, value in docker.staging.items() if key.startswith("observed_")}
                 receipt["cleanup_complete"] = True
                 custody.unlink()

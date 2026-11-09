@@ -21,6 +21,7 @@ import time
 import unittest
 from contextlib import AbstractContextManager
 from decimal import Decimal
+from functools import partial
 from multiprocessing.process import BaseProcess
 from pathlib import Path
 from unittest.mock import patch
@@ -62,6 +63,12 @@ class InputStagingTests(unittest.TestCase):
             self.assertEqual(payload.read_bytes(), expected)
 
     def test_prepare_failures_and_crash_recovery_collect_only_owned_staging(self) -> None:
+        def prepare(owner: heavy_run.Docker, original: Path, action: str, requested: dict) -> dict:
+            owner.stage_input(original)
+            if action == "canceled":
+                raise heavy_run.Canceled(signal.SIGTERM)
+            return requested
+
         for failure in ("unsupported", "canceled", "output", "crash"):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary).resolve()
@@ -69,14 +76,6 @@ class InputStagingTests(unittest.TestCase):
                 source.write_bytes(b"preserve original")
                 evidence = root / "evidence"
                 manifest = {"containers": [{"name": "job", "image": "fixture"}], "job": "job"}
-
-                def prepare(
-                    docker: heavy_run.Docker, original: Path = source, action: str = failure, run_manifest: dict = manifest
-                ) -> dict:
-                    docker.stage_input(original)
-                    if action == "canceled":
-                        raise heavy_run.Canceled(signal.SIGTERM)
-                    return run_manifest
 
                 clone = OSError(errno.ENOTSUP, "fixture lacks clones") if failure == "unsupported" else shutil.copyfile
                 with (
@@ -99,7 +98,16 @@ class InputStagingTests(unittest.TestCase):
                             self.assertFalse(custody.exists())
                         else:
                             with patch.object(heavy_run.Docker, "copy_outputs", side_effect=OSError("fixture missing output")):
-                                self.assertNotEqual(heavy_run.run({}, evidence, heavy_run.Settings(), root, prepare=prepare), 0)
+                                self.assertNotEqual(
+                                    heavy_run.run(
+                                        {},
+                                        evidence,
+                                        heavy_run.Settings(),
+                                        root,
+                                        prepare=partial(prepare, original=source, action=failure, requested=manifest),
+                                    ),
+                                    0,
+                                )
                             self.assertTrue(json.loads((evidence / "result.json").read_text())["cleanup_complete"])
                 self.assertFalse((evidence / ".staged-inputs").exists())
                 self.assertEqual(source.read_bytes(), b"preserve original")
@@ -267,8 +275,7 @@ class VolumeDocker(heavy_run.Docker):
                     (labels if value == "--label" else options)[key] = setting
             backing = self.root / "volumes" / name / "_data"
             backing.mkdir(parents=True)
-            self.volumes[name] = {"Name": name, "Driver": "local", "Options": options,
-                                  "Labels": labels, "Mountpoint": str(backing)}
+            self.volumes[name] = {"Name": name, "Driver": "local", "Options": options, "Labels": labels, "Mountpoint": str(backing)}
             return name
         if args[:2] == ("volume", "rm"):
             name = args[-1]
@@ -434,7 +441,9 @@ class OverlayTests(unittest.TestCase):
             inventory.write_text(json.dumps({"hashes": []}))
 
         def no_entries_for_this_input(_lower: Path, inventory: Path, recorded: dict[str, str]) -> None:
-            inventory.write_text(json.dumps({"hashes": {key: value for key, value in recorded.items() if key.startswith("images/")}}))
+            inventory.write_text(
+                json.dumps({"hashes": {key: value for key, value in recorded.items() if key.startswith("images/")}})
+            )
 
         def partial_inventory(_lower: Path, inventory: Path, recorded: dict[str, str]) -> None:
             del recorded["inputs/3/attachment"]
