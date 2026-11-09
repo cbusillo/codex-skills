@@ -24,9 +24,11 @@ import oq
 from question_delivery import run_queue, source_item
 
 if TYPE_CHECKING:
-    from skills.github.scripts import github_read
+    from skills.github.scripts import github_next_pr, github_read, ready_handoff
 else:
     github_read = importlib.import_module("github_read")
+    github_next_pr = importlib.import_module("github_next_pr")
+    ready_handoff = importlib.import_module("ready_handoff")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github-work-rollup/scripts"))
 radar = importlib.import_module("github_unanswered_comments")
@@ -251,8 +253,12 @@ def request_text(row: dict) -> str:
 
 def primary_reads(selection: dict, sessions: list[dict], *, owner_review: Callable[[str, int], dict | None],
                   client_release: Callable[[str], Any], production: Callable[[str], dict],
-                  anchor_response: Callable[[str], str]) -> dict:
+                  anchor_response: Callable[[str], str], checks: Callable[[str, int], dict]) -> dict:
     errors: list[dict] = []
+    followthrough = selection.get("pr_followthrough", [])
+    errors.extend({"read": f"handoff {pointer(row)}", "error": str(row.get("reason"))} for row in followthrough
+                  if row.get("state") == "unknown" and row.get("reason") != "client_acceptance_unavailable")
+    unhanded = [row for row in followthrough if github_next_pr.lacks_handoff(row)]
     client_waits = {pointer(row) for row in client_wait_rows(selection)}
     rows = [*(row for _, row in queue_rows(selection)), *client_wait_rows(selection), *milestone_waits(selection)]
 
@@ -271,6 +277,24 @@ def primary_reads(selection: dict, sessions: list[dict], *, owner_review: Callab
         reviews = dict(zip(pull_rows, pool.map(lambda key: attempt(f"owner-review {key[0]}#{key[1]}", lambda: (owner_review(*key),)), pull_rows), strict=True))
         releases = dict(zip(client_repos, pool.map(lambda repo: attempt(f"client release {repo}", lambda: client_release(repo)), client_repos), strict=True))
         productions = dict(zip(release_repos, pool.map(lambda repo: attempt(f"production {repo}", lambda: production(repo)), release_repos), strict=True))
+        check_reads = list(pool.map(lambda row: attempt(f"checks {row['repo']}#{row['number']}", lambda: checks(row["repo"], row["number"])), unhanded))
+
+    def green_since(row: dict, read: dict) -> tuple[bool, datetime | None]:
+        summary = read["summary"]
+        if summary.get("countsComplete") is not True or summary.get("unavailableComponents") or read.get("headSha") != row.get("head_sha"):
+            errors.append({"read": f"checks {row['repo']}#{row['number']}",
+                           "error": "check evidence incomplete" if read.get("headSha") == row.get("head_sha") else "head moved since the handoff read"})
+            return False, None
+        client = sum(run.get("name") == OWNER_REVIEW_CHECK and run.get("status") != "completed" for run in read["checkRuns"])
+        if ready_handoff.checks_unsettled(summary, client):
+            return False, None
+        finished = [recorded_time(value) for value in [*(run.get("completedAt") for run in read["checkRuns"]),
+                                                       *(status.get("updatedAt") for status in read["statuses"])] if value]
+        return True, max(filter(None, finished), default=recorded_time(row.get("created_at")))
+
+    no_handoff = [{"url": pointer(row), "title": row.get("title"), "since": since}
+                  for row, read in zip(unhanded, check_reads, strict=True) if read is not None
+                  for green, since in [green_since(row, read)] if green]
 
     def owner_review_note(row: dict) -> str:
         if row.get("record_type") != "pull_request":
@@ -314,7 +338,7 @@ def primary_reads(selection: dict, sessions: list[dict], *, owner_review: Callab
             annotations[pointer(row)] = " | ".join(notes)
     anchors = {row["session_id"]: attempt(f"anchor {row['issue']}", lambda issue=row["issue"]: anchor_response(issue)) or "anchor_response=UNKNOWN"
                for row in sessions if row.get("action") == "inspect_idle_session" and row.get("issue")}
-    return {"annotations": annotations, "anchors": anchors, "errors": errors, "coverage": {"complete": not errors}}
+    return {"annotations": annotations, "anchors": anchors, "no_handoff": no_handoff, "errors": errors, "coverage": {"complete": not errors}}
 
 
 def ask_note(row: dict) -> str:
@@ -379,6 +403,9 @@ def digest(sources: dict[str, dict], *, full: bool = False) -> str:
                          "set another actor, record a wait or claim it on the issue")
     for row in client_wait_rows(selection):
         lines.append(noted(f"CLIENT_WAIT {pointer(row)}: {row.get('title') or row.get('next_action') or ''}", row))
+    for row in sorted(primary.get("no_handoff", []), key=lambda entry: entry["since"] or now):
+        lines.append(f"NO_HANDOFF {row['url']} age={age_text(now - row['since']) if row['since'] else 'UNKNOWN'}: "
+                     f"{' '.join(str(row.get('title') or '').split())[:120]} (ready it, state its hold or make it draft)")
     for kind, row in rows:
         queue = row.get("queue", {})
         if kind == "CONFLICT":
@@ -579,7 +606,8 @@ def primary_readers(args: argparse.Namespace) -> dict[str, Callable]:
         return anchor_note(discussion)
 
     return {"owner_review": owner_review, "client_release": lambda repo: acceptance().read_client_release(repo),
-            "production": production, "anchor_response": anchor_response}
+            "production": production, "anchor_response": anchor_response,
+            "checks": lambda repo, number: github_read.pull_request_checks(reader(), repo, number)}
 
 
 def anchor_note(discussion: dict) -> str:

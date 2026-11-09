@@ -295,7 +295,7 @@ def timestamp(value):
     return parsed.timestamp()
 
 
-def latest_ready(pr, comments, trusted, *, include_client_wait: bool = False) -> bool:
+def latest_handoff(comments, trusted):
     handoffs = []
     for comment in comments:
         if (comment.get("user") or {}).get("login", "").casefold() not in trusted:
@@ -303,21 +303,32 @@ def latest_ready(pr, comments, trusted, *, include_client_wait: bool = False) ->
         body = comment.get("body") or ""
         first = handoff_line(body.splitlines()[0]) if body.splitlines() else ""
         if first == READY or first.startswith(WAITING):
-            handoffs.append(comment)
+            handoffs.append((comment, first))
     if not handoffs:
-        return False
-    latest = max(
+        return None, ""
+    return max(
         handoffs,
         key=lambda item: (
-            timestamp(item.get("updated_at") or item["created_at"]),
-            item["id"],
+            timestamp(item[0].get("updated_at") or item[0]["created_at"]),
+            item[0]["id"],
         ),
     )
-    body = latest["body"]
-    first = handoff_line(body.splitlines()[0])
-    return (first == READY or include_client_wait and first == CLIENT_WAIT) and [
-        match.group("sha") for match in HEAD.finditer(body)
+
+
+def latest_ready(pr, comments, trusted, *, include_client_wait: bool = False) -> bool:
+    latest, first = latest_handoff(comments, trusted)
+    return latest is not None and (first == READY or include_client_wait and first == CLIENT_WAIT) and [
+        match.group("sha") for match in HEAD.finditer(latest["body"])
     ] == [pr["head"]["sha"]]
+
+
+def stated_hold(comments, trusted) -> bool:
+    _, first = latest_handoff(comments, trusted)
+    return first.startswith(WAITING) and first != CLIENT_WAIT and bool(first.removeprefix(WAITING).strip())
+
+
+def checks_unsettled(summary, pending_client: int) -> bool:
+    return bool(summary["failingCount"] or summary["pendingCount"] > pending_client or summary["unfinishedWorkflowRunCount"])
 
 
 def review_result_body(body, head):
