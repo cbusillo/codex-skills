@@ -26,6 +26,8 @@ SHA256_RE = re.compile(r"[a-f0-9]{64}")
 COMMIT_RE = re.compile(r"[a-f0-9]{40}")
 DECISION_RE = re.compile(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/(?:issues|pull)/[1-9][0-9]*#issuecomment-[1-9][0-9]*")
 
+CHECKLIST_CHANGED_DIAGNOSTICS: dict[str, object] = {"error_code": "release_checklist_changed"}
+
 REFUSAL_ADVICE = {
     "not_director_standing": "This product's release needs its Client's acceptance; this command only serves Director-standing products.",
     "release_review_not_required": "Launchplane requires no release review for this product now.",
@@ -106,15 +108,27 @@ def _intent(h: Any, args: argparse.Namespace) -> Intent:
     return Intent(product, args.checklist_digest, reason, reference, key, request)
 
 
+def _require_mapping(h: Any, value: object) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise h.LaunchplaneSafetyError("invalid_response")
+    return value
+
+
+def _require_known_fields(h: Any, operation: str, response: dict[str, Any], required: frozenset[str] = frozenset()) -> None:
+    # noinspection PyProtectedMember
+    h._require_read_fields(operation, response, required=required)
+
+
 def _read_acceptance(h: Any, settings: dict[str, str], product: str, timeout: float) -> str:
     response = h.request_launchplane_read(
         service_url=settings["service_url"],
-        path=h._product_read_path(PROFILE_READ, product=product),
+        path=h.helper_command_path(PROFILE_READ).format(product=urllib.parse.quote(product, safe="")),
         settings=settings,
         query={},
         timeout=timeout,
     )
-    h._require_read_fields(PROFILE_READ, response)
+    _require_known_fields(h, PROFILE_READ, response)
+    # noinspection PyProtectedMember
     profile = h._project_product_profile(response.get("profile"))
     if response.get("status") != "ok" or profile["product"] != product:
         raise h.LaunchplaneSafetyError("invalid_response")
@@ -122,7 +136,7 @@ def _read_acceptance(h: Any, settings: dict[str, str], product: str, timeout: fl
 
 
 def _project_version(h: Any, value: object) -> dict[str, object]:
-    version = h._require_dict(value)
+    version = _require_mapping(h, value)
     commit = version.get("source_commit")
     if not isinstance(commit, str) or not COMMIT_RE.fullmatch(commit):
         raise h.LaunchplaneSafetyError("invalid_response")
@@ -132,7 +146,7 @@ def _project_version(h: Any, value: object) -> dict[str, object]:
 def _project_saved_request(h: Any, value: object) -> dict[str, Any] | None:
     if value is None:
         return None
-    saved = h._require_dict(value)
+    saved = _require_mapping(h, value)
     for field, pattern in (("record_id", SHA256_RE), ("checklist_digest", SHA256_RE)):
         if not isinstance(saved.get(field), str) or not pattern.fullmatch(saved[field]):
             raise h.LaunchplaneSafetyError("invalid_response")
@@ -142,7 +156,8 @@ def _project_saved_request(h: Any, value: object) -> dict[str, Any] | None:
 
 
 def _refusal(status: dict[str, Any], checklist: dict[str, Any] | None, blockers: list[str], *, hotfix: bool) -> str:
-    if status.get("required") is not True:
+    review_required = status.get("required") is True
+    if not review_required:
         return "release_review_not_required"
     if status.get("unavailable_reason") is not None or checklist is None:
         return "checklist_unavailable"
@@ -156,21 +171,27 @@ def _refusal(status: dict[str, Any], checklist: dict[str, Any] | None, blockers:
     return next((code for code, failed in checks if failed), "")
 
 
+def _project_versions(h: Any, checklist: dict[str, Any] | None) -> tuple[dict[str, object] | None, dict[str, object] | None]:
+    if checklist is None:
+        return None, None
+    return _project_version(h, checklist.get("production")), _project_version(h, checklist.get("candidate"))
+
+
 def _project_review(h: Any, response: dict[str, Any], product: str) -> ReviewState:
-    h._require_read_fields(REVIEW_READ, response, required=frozenset({"product", "review"}))
+    _require_known_fields(h, REVIEW_READ, response, frozenset({"product", "review"}))
     if response.get("product") != product:
         raise h.LaunchplaneSafetyError("invalid_response")
-    status = h._require_dict(response.get("review"))
-    raw_checklist = status.get("checklist")
-    checklist = None if raw_checklist is None else h._require_dict(raw_checklist)
+    status = _require_mapping(h, response.get("review"))
+    checklist = None if status.get("checklist") is None else _require_mapping(h, status.get("checklist"))
     digest = status.get("checklist_digest") or ""
     blockers = status.get("blockers") or []
     if not isinstance(digest, str) or (digest and not SHA256_RE.fullmatch(digest)) or not isinstance(blockers, list):
         raise h.LaunchplaneSafetyError("invalid_response")
+    production, candidate = _project_versions(h, checklist)
     return ReviewState(
         digest=digest,
-        production=_project_version(h, checklist.get("production")) if checklist else None,
-        candidate=_project_version(h, checklist.get("candidate")) if checklist else None,
+        production=production,
+        candidate=candidate,
         blocker_count=len(blockers),
         refusal=_refusal(status, checklist, blockers, hotfix=response.get("reviewing_temporary_hotfix") is True),
         saved=_project_saved_request(h, response.get("release_request")),
@@ -196,7 +217,8 @@ def _matching_request(state: ReviewState, intent: Intent) -> dict[str, Any] | No
 
 
 def _recorded_under_other_decision(state: ReviewState, intent: Intent) -> bool:
-    return state.saved is not None and state.saved["checklist_digest"] == intent.digest and _matching_request(state, intent) is None
+    saved = state.saved
+    return saved is not None and saved["checklist_digest"] == intent.digest and saved["decision_reference"] != intent.decision_reference
 
 
 def _result(h: Any, settings: dict[str, str], intent: Intent, state: ReviewState, acceptance: str) -> dict[str, object]:
@@ -227,12 +249,15 @@ def _finish(
         summary["idempotency_key"] = intent.key
     if refusal:
         summary["refusal_reason"] = refusal
-    summary["recommendation"] = recommendation or REFUSAL_ADVICE.get(refusal) or RECOVERY.get(status) or summary.get("recommendation", "Inspect the service refusal before retrying.")
+    service_advice = summary.get("recommendation")
+    advice = recommendation or REFUSAL_ADVICE.get(refusal) or RECOVERY.get(status) or (service_advice if isinstance(service_advice, str) else "Inspect the service refusal before retrying.")
+    summary["recommendation"] = advice
     output["summary"] = summary
     if result is not None:
         output["result"] = result
     if status != "ok":
-        output["warnings"] = [h.warning(str(summary.get("error_code", refusal or status)), str(summary["recommendation"]))]
+        error_code = summary.get("error_code")
+        output["warnings"] = [h.warning(error_code if isinstance(error_code, str) else refusal or status, advice)]
     for value in output.values():
         h.assert_public_safe_shape(value)
     h.emit(output)
@@ -284,8 +309,8 @@ def _submit(h: Any, settings: dict[str, str], intent: Intent, acceptance: str, t
         finally:
             error.close()
     except (ValueError, OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException) as error:
-        diagnostics = h.service_response_diagnostics(error)
-        return _settle_uncertain_post(h, settings, intent, acceptance, timeout, status="outcome_unknown", diagnostics={"error_code": "release_request_unverified", **diagnostics})
+        diagnostics: dict[str, object] = {"error_code": "release_request_unverified", **h.service_response_diagnostics(error)}
+        return _settle_uncertain_post(h, settings, intent, acceptance, timeout, status="outcome_unknown", diagnostics=diagnostics)
     if (saved := _matching_request(state, intent)) is not None:
         return _finish_recorded(h, settings, intent, state, acceptance, saved)
     status = "conflict" if _recorded_under_other_decision(state, intent) else "accepted_unverified"
@@ -293,6 +318,7 @@ def _submit(h: Any, settings: dict[str, str], intent: Intent, acceptance: str, t
 
 
 def _finish_refused_post(h: Any, settings: dict[str, str], intent: Intent, acceptance: str, timeout: float, error: urllib.error.HTTPError) -> int:
+    # noinspection PyProtectedMember
     provider = h._error_payload_from_http(error)
     projected = h.summarize_http_error(operation=COMMAND, request=intent.request, exc=error, provider_payload=provider)
     diagnostics = projected["summary"]
@@ -340,7 +366,7 @@ def execute(h: Any, args: argparse.Namespace) -> int:
     if _recorded_under_other_decision(state, intent):
         return _finish(h, intent, "conflict")
     if state.digest and state.digest != intent.digest:
-        return _finish(h, intent, "stale", diagnostics={"error_code": "release_checklist_changed"})
+        return _finish(h, intent, "stale", diagnostics=CHECKLIST_CHANGED_DIAGNOSTICS)
     if state.refusal:
         return _finish(h, intent, "refused", refusal=state.refusal)
     return _submit(h, settings, intent, acceptance, args.timeout)
@@ -348,8 +374,9 @@ def execute(h: Any, args: argparse.Namespace) -> int:
 
 def _finish_plan(h: Any, settings: dict[str, str], intent: Intent, state: ReviewState, acceptance: str) -> int:
     result = _result(h, settings, intent, state, acceptance)
-    if state.saved is not None and state.saved["checklist_digest"] == state.digest:
-        result.update(request_id=state.saved["record_id"], request_recorded=True)
+    saved = state.saved
+    if saved is not None and saved["checklist_digest"] == state.digest:
+        result.update(request_id=saved["record_id"], request_recorded=True)
     if state.refusal:
         return _finish(h, intent, "refused", result=result, refusal=state.refusal)
     return _finish(h, intent, "ok", result=result, recommendation=RECOVERY["plan"])

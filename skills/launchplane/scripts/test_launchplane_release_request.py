@@ -27,6 +27,10 @@ CLIENT_APPROVAL = "Client approval of this release is required."
 SERVICE_URL = "https://plane.example.invalid"
 
 
+def patch_attr(name: str, *args: Any, **kwargs: Any) -> Any:
+    return patch.object(h, name, *args, **kwargs)
+
+
 def plan_args() -> list[str]:
     return ["release-request", "--product", "site", "--plan"]
 
@@ -36,7 +40,7 @@ def request_args(digest: str = DIGEST, decision: str = DECISION, key: str = OPER
 
 
 def profile(acceptance: str = "director_standing") -> dict[str, Any]:
-    body = copy.deepcopy(_product_profile_response())
+    body: dict[str, Any] = copy.deepcopy(_product_profile_response())
     body["profile"]["product"] = "site"
     body["profile"]["release_on_acceptance"] = acceptance
     return body
@@ -106,9 +110,9 @@ def invoke(
     output = io.StringIO()
     settings = {"service_url": SERVICE_URL, "token": "unused"}
     with (
-        patch.object(h, "prepare_operator_settings", return_value=settings),
-        patch.object(h, "request_launchplane_read", side_effect=read),
-        patch.object(h, "request_launchplane", side_effect=posts or []) as post,
+        patch_attr("prepare_operator_settings", return_value=settings),
+        patch_attr("request_launchplane_read", side_effect=read),
+        patch_attr("request_launchplane", side_effect=posts or []) as post,
         redirect_stdout(output),
     ):
         code = h.main(args)
@@ -279,7 +283,7 @@ def test_malformed_review_fails_closed_before_any_request(mutate: Any) -> None:
     ],
 )
 def test_incomplete_requests_stop_before_any_network(args: list[str]) -> None:
-    with patch.object(h, "prepare_operator_settings") as settings:
+    with patch_attr("prepare_operator_settings") as settings:
         output = io.StringIO()
         with redirect_stdout(output):
             code = h.main(args)
