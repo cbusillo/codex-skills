@@ -123,7 +123,7 @@ class ClientRuleTests(unittest.TestCase):
         self.assertIn("Client test notes are missing", self.verdict("No notes section."))
 
     def test_directors_product_held_for_production_skips_acceptance_unless_held_for_review(self):
-        self.launchplane.product(REPO, "tool", client="director", release="held", driver="odoo", director=True)
+        self.launchplane.product(REPO, "tool", client="director", driver="odoo", director=True)
         self.assertEqual(self.verdict(CLIENT_NOTES), "")
         self.assertTrue(self.verdict(CLIENT_NOTES, labels=("owner-review",)))
         self.assertIn("Client test notes are missing", self.verdict("No notes section."))
