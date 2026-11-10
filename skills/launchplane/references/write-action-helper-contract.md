@@ -960,18 +960,10 @@ installed local helper bindings.
   schema defaults or `null`. A service without this view cannot satisfy the
   opt-in. No native evidence is accepted on the default request.
 
-  Each retained item preserves source, availability, binding and coverage.
-  `missing`, `null`, `unavailable`, `unsupported`, `unbound` and `not_retained`
-  remain distinct; none establishes absent effects. A mismatched item remains
-  explicitly mismatched. Probe verification, retained time, route exclusion
-  markers and persisted publication/retirement/rollback intent booleans are
-  observations only. They do not establish current selection, physical rollback,
-  cleanup or executor exclusion. An inverse may overwrite the failed candidate
-  observation; candidate private readiness is not a terminal public-health cause.
-  `needed_copies=retain_all` and the separate existing recovery projection remain
-  unchanged. This flag adds no raw mode, new caller, grant, provider/log IO,
-  retry, mutation or recovery eligibility. Example (substitute an already known
-  operation id):
+  The producer's pinned [wire and coverage contract](https://github.com/cbusillo/launchplane/blob/dbda589bd6872f5a68337e68b18ae1b692272d74/docs/service-boundary.md)
+  owns evidence meanings and retention limits. The view changes no recovery
+  eligibility, needed-copy protection, caller, grant or provider/log IO.
+  Example (substitute an already known operation id):
 
   ```sh
   uv run skills/launchplane/scripts/launchplane-write-action.py \

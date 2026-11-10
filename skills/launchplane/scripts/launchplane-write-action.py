@@ -13167,7 +13167,7 @@ def main(argv: list[str]) -> int:
             return execute_target_replacement_plan_read(args=args)
         if args.command == "target-replacement-operation-read":
             path = _product_read_path(args.command, operation_id=args.operation_id)
-            request = {
+            request: dict[str, object] = {
                 "operation_id": _request_identifier(args.operation_id),
                 "payload_source": "operator_argument",
             }

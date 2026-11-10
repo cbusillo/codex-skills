@@ -12209,7 +12209,9 @@ def test_native_evidence_preserves_availability_binding_and_recovery_with_one_ge
     assert calls[0]["query"] == {"include_native_evidence": "true"}
     item = payload["result"]["native_evidence"]["reservation"]
     assert (item["availability"], item["binding"], item["attempt"], item["verified"]) == (availability, "mismatched", 7, False)
-    assert payload["result"]["native_evidence"]["terminal_probe"]["verified"] is None
+    unknown = payload["result"]["native_evidence"]["terminal_probe"]
+    assert (unknown["availability"], unknown["binding"], unknown["coverage"]) == ("unsupported", "unverified", "not_read")
+    assert unknown["verified"] is None
     assert payload["result"]["native_evidence"]["rollback_started"] is None
     assert payload["result"]["recovery"]["safe_to_release"] is False
     assert payload["result"]["recovery"]["provider_effects"] == response["recovery"]["provider_effects"]
