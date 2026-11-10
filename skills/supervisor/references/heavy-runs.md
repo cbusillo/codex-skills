@@ -310,20 +310,10 @@ another filesystem, or one whose filesystem cannot clone,
 is transferred and counted instead. Other clone errors preserve evidence and
 fail collection. Without a reference, the adapter keeps its full-transfer path.
 
-The private executor resolves a matching input in the original manifest as the
-reference automatically. An output can instead name an absolute local
-`reference` path at submission, such as a prior collected result. Recollection
-uses that original manifest and prefers the same job's existing collection when
-available, so retrying need not allocate changed bytes again. The adapter sends receipts and other evidence
-before reference deltas; outputs containing links keep the ordinary tar path.
-The verified result has identical file content, while usable ordinary modes are applied
-after verification; this does not preserve the full tar path's timestamps or links.
-Its existing runbook owns
-that adapter's adoption and matching guest artifact installation. Source landing
-does not update a guest or change an existing run. Collection reports
-`cloned_files`, `transferred_files`, `transferred_bytes` and
-`observed_bytes_added`; the last is an observed filesystem free-space difference,
-which neighboring writes can affect. No per-run deduplication script is needed.
+The adapter's runbook owns reference selection, transport, publication and
+installation. Collection reports `cloned_files`, `transferred_files`,
+`transferred_bytes` and `observed_bytes_added`; the last is an observed filesystem
+free-space difference that neighboring writes can affect.
 
 The executor setting routes every heavy run from that OS account on the host,
 including non-Odoo repositories; verify its consumers before a cut-over.
