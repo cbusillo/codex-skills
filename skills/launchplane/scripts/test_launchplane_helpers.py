@@ -50,6 +50,7 @@ def load_module(filename: str, name: str) -> types.ModuleType:
 
 contract: Any = load_module("launchplane_contract.py", "launchplane_contract")
 safety: Any = load_module("launchplane_safety.py", "launchplane_safety")
+native_evidence: Any = load_module("launchplane_native_evidence.py", "launchplane_native_evidence")
 write_action: Any = load_module("launchplane-write-action.py", "launchplane_write_action")
 context_helper: Any = load_module("launchplane-context.py", "launchplane_context")
 owner_review: Any = load_module("launchplane-owner-review.py", "launchplane_owner_review")
@@ -12174,3 +12175,118 @@ def test_product_status_read_selects_future_deadline_and_rejects_reordered_trans
     status_source["transitions"].append({**status_source["transitions"][0], "after": status_source["evaluated_at"]})
     status, payload, _ = _run_product_read(["product-status-read"], response)
     assert status == 1 and not payload["result"]
+
+
+def _native_evidence_response() -> dict[str, Any]:
+    response = _deployed_recovery_operation_response()
+    sources = {
+        "reservation": "native_reservation", "original_intent": "native_original_intent",
+        "checkpoint": "native_checkpoint", "terminal_probe": "checkpoint_probe",
+        "candidate_preparation": "checkpoint_preparation", "candidate_readiness": "checkpoint_private_readiness",
+        "deployment": "deployment_record", "forward_route": "forward_route_receipt",
+        "inverse_route": "inverse_route_receipt", "selection": "publication_receipt",
+    }
+    response["native_evidence"] = {
+        "operation_attempt": response["operation"]["attempt"],
+        **{name: {"source": source} for name, source in sources.items()},
+    }
+    return response
+
+
+def _read_native_response(response: dict[str, Any]) -> tuple[int, dict[str, Any], list[dict[str, Any]]]:
+    return _run_product_read(
+        ["target-replacement-operation-read", "--operation-id", response["operation"]["operation_id"], "--include-native-evidence"],
+        response,
+    )
+
+
+@pytest.mark.parametrize("availability", ["present", "missing", "null", "unavailable", "unsupported", "unbound", "not_retained"])
+def test_native_evidence_preserves_availability_binding_and_recovery_with_one_get(availability: str) -> None:
+    response = _native_evidence_response()
+    response["native_evidence"]["reservation"].update(availability=availability, binding="mismatched", attempt=7, verified=False)
+    status, payload, calls = _read_native_response(response)
+    assert status == 0 and len(calls) == 1
+    assert calls[0]["query"] == {"include_native_evidence": "true"}
+    item = payload["result"]["native_evidence"]["reservation"]
+    assert (item["availability"], item["binding"], item["attempt"], item["verified"]) == (availability, "mismatched", 7, False)
+    assert payload["result"]["native_evidence"]["terminal_probe"]["verified"] is None
+    assert payload["result"]["native_evidence"]["rollback_started"] is None
+    assert payload["result"]["recovery"]["safe_to_release"] is False
+    assert payload["result"]["recovery"]["provider_effects"] == response["recovery"]["provider_effects"]
+
+
+@pytest.mark.parametrize("field,value", [
+    ("source", "private-host"), ("availability", "absent"), ("binding", "yes"), ("coverage", "full"),
+    ("state", "private-state"), ("observed_at", "https://private.example/receipt"),
+    ("attempt", True), ("attempt", 0), ("verified", 1), ("runtime_identity_matches", "true"),
+    ("effect_checkpoint_recorded", {}), ("not_dispatched", 0), ("route_write_not_started", "yes"),
+    ("raw", {"secret": "planted-private-value"}),
+])
+def test_native_evidence_refuses_unsafe_item_without_exposing_values(field: str, value: object) -> None:
+    response = _native_evidence_response()
+    response["native_evidence"]["reservation"][field] = value
+    status, payload, calls = _read_native_response(response)
+    assert status == 1 and len(calls) == 1 and not payload["result"]
+    assert "planted-private-value" not in json.dumps(payload)
+    assert "private-host" not in json.dumps(payload)
+
+
+def test_native_evidence_refuses_incomplete_or_misaligned_view() -> None:
+    original = _native_evidence_response()
+    for field in list(original["native_evidence"]):
+        broken = copy.deepcopy(original)
+        del broken["native_evidence"][field]
+        status, payload, _ = _read_native_response(broken)
+        assert status == 1 and not payload["result"]
+    original["native_evidence"]["operation_attempt"] += 1
+    status, payload, _ = _read_native_response(original)
+    assert status == 1 and not payload["result"]
+
+
+@pytest.mark.parametrize("field,value", [
+    ("schema_version", True), ("schema_version", 2), ("operation_attempt", -1),
+    ("operation_attempt", True), ("publication_started", 1), ("retirement_started", "false"),
+    ("rollback_started", []), ("needed_copies", "release"), ("predecessor_snapshot", "current"),
+    ("raw", "planted-private-value"), ("reservation", None),
+])
+def test_native_evidence_refuses_unsafe_view(field: str, value: object) -> None:
+    response = _native_evidence_response()
+    response["native_evidence"][field] = value
+    status, payload, calls = _read_native_response(response)
+    assert status == 1 and len(calls) == 1 and not payload["result"]
+    assert "planted-private-value" not in json.dumps(payload)
+
+
+def test_native_evidence_requires_requested_view_and_original_operation() -> None:
+    response = _native_evidence_response()
+    argv = ["target-replacement-operation-read", "--operation-id", response["operation"]["operation_id"]]
+    status, payload, calls = _run_product_read(argv, response)
+    assert status == 1 and len(calls) == 1 and not payload["result"]
+    status, payload, calls = _run_product_read([*argv, "--include-native-evidence", "--operation-id", "foreign-operation"], response)
+    assert status == 1 and len(calls) == 1 and not payload["result"]
+    for evidence in (None, {}):
+        response["native_evidence"] = evidence
+        status, payload, _ = _read_native_response(response)
+        assert status == 1 and not payload["result"]
+    del response["native_evidence"]
+    status, payload, _ = _read_native_response(response)
+    assert status == 1 and not payload["result"]
+
+
+def test_native_evidence_preserves_retained_probe_route_and_intent_observations() -> None:
+    response = _native_evidence_response()
+    evidence = response["native_evidence"]
+    evidence.update(publication_started=False, retirement_started=True, rollback_started=True, predecessor_snapshot="stopped")
+    evidence["terminal_probe"].update(
+        availability="present", binding="matched", coverage="checkpoint_probe_only", state="pass",
+        observed_at="2026-11-01T12:00:00+00:00", verified=True, runtime_identity_matches=False,
+    )
+    evidence["forward_route"].update(effect_checkpoint_recorded=False, not_dispatched=True, route_write_not_started=True)
+    status, payload, calls = _read_native_response(response)
+    assert status == 0 and len(calls) == 1
+    projected = payload["result"]["native_evidence"]
+    for name, value in evidence.items():
+        if isinstance(value, dict):
+            assert {key: projected[name][key] for key in value} == value
+        else:
+            assert projected[name] == value

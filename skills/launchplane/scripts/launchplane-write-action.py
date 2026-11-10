@@ -30,6 +30,7 @@ from launchplane_contract import BOUNDED_READ_RESPONSE_FIELDS  # noqa: E402
 from launchplane_contract import helper_command_path  # noqa: E402
 from launchplane_contract import internal_helper_path  # noqa: E402
 from launchplane_inventory import project_inventory  # noqa: E402
+from launchplane_native_evidence import project_native_evidence  # noqa: E402
 from launchplane_reply_schema import ReplySchemaError  # noqa: E402
 from launchplane_reply_schema import check_controller_reply  # noqa: E402
 from launchplane_safety import (  # noqa: E402
@@ -6532,6 +6533,13 @@ def summarize_target_replacement_operation_read(
     result = _project_target_replacement_operation(provider_payload)
     if "recovery" in provider_payload:
         result["recovery"] = _project_target_replacement_recovery(provider_payload["recovery"])
+    if request.get("include_native_evidence"):
+        result["native_evidence"] = project_native_evidence(
+            provider_payload.get("native_evidence"), operation=_require_dict(provider_payload.get("operation")),
+            operation_id=request.get("operation_id"),
+        )
+    elif "native_evidence" in provider_payload:
+        raise LaunchplaneSafetyError("unsafe_response_shape")
     payload["result"] = result
     payload["summary"] = {
         "launchplane_status": status,
@@ -12179,6 +12187,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         ),
     )
     target_replacement_operation_read.add_argument("--operation-id", required=True)
+    target_replacement_operation_read.add_argument("--include-native-evidence", action="store_true")
 
     target_replacement_plan_read = subparsers.add_parser(
         "target-replacement-plan-read",
@@ -13162,8 +13171,12 @@ def main(argv: list[str]) -> int:
                 "operation_id": _request_identifier(args.operation_id),
                 "payload_source": "operator_argument",
             }
+            query = {}
+            if args.include_native_evidence:
+                query["include_native_evidence"] = "true"
+                request["include_native_evidence"] = True
             return execute_product_read(
-                args=args, operation=args.command, request=request, path=path
+                args=args, operation=args.command, request=request, path=path, query=query
             )
         if args.command == "preview-history-read":
             preview_id = _preview_history_selector(args)

@@ -916,8 +916,10 @@ installed local helper bindings.
   admission receipt. Do not choose a new key or replay a denied action. The
   helper does not retry, poll automatically, rotate secrets or retire storage.
 - `target-replacement-operation-read --operation-id` calls
-  `GET /v1/drivers/odoo/target-replacement/operations/{operation_id}` with no
-  query. The service authorizes it as `operations.read` on product
+  `GET /v1/drivers/odoo/target-replacement/operations/{operation_id}`. By default
+  it sends no query and preserves the existing response and native-store reads.
+  Add `--include-native-evidence` to send `include_native_evidence=true` on
+  that same authenticated GET. The service authorizes it as `operations.read` on product
   `launchplane` for the operation's context and instance, or as
   `odoo_target_replacement_apply.execute` on the operation's product, context
   and instance. The read grant returns a structured view without the request
@@ -949,6 +951,32 @@ installed local helper bindings.
   target names are also dropped. Each dropped non-empty field is listed in
   `dropped_field_paths`; an unknown field is listed as
   `<unlisted field>`. A secret-looking value in a kept field fails the read.
+  With the opt-in, `result.native_evidence` validates the producer-owned closed
+  [NativeTestingRebuildEvidence](https://github.com/cbusillo/launchplane/blob/dbda589bd6872f5a68337e68b18ae1b692272d74/control_plane/contracts/native_testing_rebuild_evidence.py)
+  schema. The response operation id and evidence operation attempt must agree
+  with this request and its operation view. Provider reservation attempts remain
+  independent. Unknown fields, uncontrolled text, malformed types and missing
+  required evidence fail the read; omitted optional values normalize to their
+  schema defaults or `null`. A service without this view cannot satisfy the
+  opt-in. No native evidence is accepted on the default request.
+
+  Each retained item preserves source, availability, binding and coverage.
+  `missing`, `null`, `unavailable`, `unsupported`, `unbound` and `not_retained`
+  remain distinct; none establishes absent effects. A mismatched item remains
+  explicitly mismatched. Probe verification, retained time, route exclusion
+  markers and persisted publication/retirement/rollback intent booleans are
+  observations only. They do not establish current selection, physical rollback,
+  cleanup or executor exclusion. An inverse may overwrite the failed candidate
+  observation; candidate private readiness is not a terminal public-health cause.
+  `needed_copies=retain_all` and the separate existing recovery projection remain
+  unchanged. This flag adds no raw mode, new caller, grant, provider/log IO,
+  retry, mutation or recovery eligibility. Example (substitute an already known
+  operation id):
+
+  ```sh
+  uv run skills/launchplane/scripts/launchplane-write-action.py \
+    target-replacement-operation-read --operation-id OPERATION_ID --include-native-evidence
+  ```
 - `target-replacement-plan-read --product --instance` calls
   `POST /v1/drivers/odoo/target-replacement-plan` with
   `{"schema_version": 1, "product": P, "replacement": {"product": P, "instance": I}}`
