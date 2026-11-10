@@ -118,7 +118,7 @@ def result_inventory(root: Path) -> dict[str, dict]:
     inventory: dict[str, dict] = {}
     for path in input_entries(root):
         before = path.stat()
-        entry: dict[str, int | str] = {"mode": stat.S_IMODE(before.st_mode)}
+        entry: dict[str, int | str] = {"mode": stat.S_IMODE(before.st_mode) & 0o777}
         if path.is_file():
             with path.open("rb") as stream:
                 entry.update(size=before.st_size, sha256=hashlib.file_digest(stream, "sha256").hexdigest())
@@ -199,10 +199,11 @@ def receive_result(stream: BinaryIO, requests: BinaryIO, destination: Path, refe
     if destination.parent.resolve(strict=True) != destination.parent:
         raise ValueError("Result parent must be an original directory")
     if reference is not None:
-        if reference.resolve(strict=True) != reference:
-            raise ValueError("Result reference must be an original path")
-        for _path in input_entries(reference):
-            continue
+        try:
+            if reference.resolve(strict=True) != reference:
+                raise ValueError("Result reference is aliased")
+        except (OSError, ValueError, RuntimeError):
+            reference = None
     free_before = shutil.disk_usage(destination.parent).free
     report = {"cloned_files": 0, "transferred_files": 0, "transferred_bytes": 0}
     selected = []
@@ -212,18 +213,28 @@ def receive_result(stream: BinaryIO, requests: BinaryIO, destination: Path, refe
             target.mkdir(mode=0o700)
             continue
         candidate = (reference if name == "." else reference / name) if reference is not None else None
-        if candidate is not None and candidate.is_file() and candidate.stat().st_dev == destination.parent.stat().st_dev:
-            with candidate.open("rb") as source:
-                if hashlib.file_digest(source, "sha256").hexdigest() == entry["sha256"]:
-                    try:
-                        clone_input(candidate, target)
-                    except OSError as error:
-                        if error.errno not in (errno.EXDEV, errno.ENOTSUP, errno.ENOTTY, errno.ENOSYS) or target.exists():
-                            raise
-                    else:
-                        target.chmod(0o600)
-                        report["cloned_files"] += 1
-                        continue
+        matches = False
+        try:
+            if (
+                candidate is not None
+                and candidate.is_file()
+                and candidate.resolve(strict=True) == candidate
+                and candidate.stat().st_dev == destination.parent.stat().st_dev
+            ):
+                with candidate.open("rb") as source:
+                    matches = hashlib.file_digest(source, "sha256").hexdigest() == entry["sha256"]
+        except (OSError, RuntimeError):
+            matches = False
+        if matches and candidate is not None:
+            try:
+                clone_input(candidate, target)
+            except OSError as error:
+                if error.errno not in (errno.EXDEV, errno.ENOTSUP, errno.ENOTTY, errno.ENOSYS) or target.exists():
+                    raise
+            else:
+                target.chmod(0o600)
+                report["cloned_files"] += 1
+                continue
         selected.append(name)
     requests.write(json.dumps(selected).encode() + b"\n")
     requests.flush()
@@ -238,7 +249,7 @@ def receive_result(stream: BinaryIO, requests: BinaryIO, destination: Path, refe
     }:
         raise ValueError("Collected result hashes differ; preserve all evidence")
     for name, entry in reversed(sorted(inventory.items())):
-        (destination if name == "." else destination / name).chmod(entry["mode"])
+        (destination if name == "." else destination / name).chmod(entry["mode"] | (0o600 if "sha256" in entry else 0o700))
     report["observed_bytes_added"] = free_before - shutil.disk_usage(destination.parent).free
     return report
 

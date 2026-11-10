@@ -28,12 +28,47 @@ from decimal import Decimal
 from functools import partial
 from multiprocessing.process import BaseProcess
 from pathlib import Path
+from typing import Any, BinaryIO
 from unittest.mock import patch
 
 import heavy_run
 
 
 class ResultCollectionTests(unittest.TestCase):
+    def test_missing_linked_and_unreadable_references_transfer_guest_bytes(self) -> None:
+        original_digest = hashlib.file_digest
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            guest = root / "guest"
+            guest.mkdir()
+            (guest / "file").write_bytes(b"result")
+            inventory = heavy_run.result_inventory(guest)
+            for case in ("missing", "linked", "unreadable", "loop"):
+                reference = root / f"reference-{case}"
+                if case == "loop":
+                    reference.symlink_to(reference)
+                elif case != "missing":
+                    reference.mkdir()
+                    if case == "linked":
+                        (reference / "file").symlink_to(guest / "file")
+                    else:
+                        (reference / "file").write_bytes(b"result")
+
+                def digest(
+                    stream: BinaryIO, algorithm: str, *, blocked: Path | None = reference / "file" if case == "unreadable" else None
+                ) -> Any:
+                    if blocked is not None and stream.name == str(blocked):
+                        raise PermissionError("fixture reference read failure")
+                    return original_digest(stream, algorithm)
+
+                destination = root / case
+                stream = io.BytesIO(json.dumps(inventory).encode() + b"\nresult")
+                with patch.object(hashlib, "file_digest", side_effect=digest):
+                    report = heavy_run.receive_result(stream, io.BytesIO(), destination, reference)
+                self.assertEqual((destination / "file").read_bytes(), b"result")
+                self.assertEqual(report["cloned_files"], 0)
+                self.assertEqual(report["transferred_bytes"], len(b"result"))
+
     def test_collection_clones_unchanged_files_and_transfers_only_changes_with_full_verification(self) -> None:
         with patch.object(heavy_run, "clone_input", side_effect=shutil.copyfile):
             self.check_delta_and_full_collection()
@@ -56,6 +91,7 @@ class ResultCollectionTests(unittest.TestCase):
             (guest / "added").write_bytes(b"added")
             (guest / "removed").unlink()
             (guest / "empty").mkdir()
+            guest.chmod(0o1777)
             (guest / "same").chmod(0o444)
             expected = heavy_run.result_inventory(guest)
             for local_reference in (reference, None):
@@ -74,12 +110,19 @@ class ResultCollectionTests(unittest.TestCase):
                             sent = pool.submit(heavy_run.send_result, guest, remote_stream, remote_requests)
                             result = heavy_run.receive_result(local_stream, local_requests, destination, local_reference)
                             sent.result(timeout=5)
-                    self.assertEqual(heavy_run.result_inventory(destination), expected)
+                    self.assertEqual(
+                        {
+                            name: {key: value for key, value in entry.items() if key != "mode"}
+                            for name, entry in heavy_run.result_inventory(destination).items()
+                        },
+                        {name: {key: value for key, value in entry.items() if key != "mode"} for name, entry in expected.items()},
+                    )
                     expected_bytes = sum((guest / name).stat().st_size for name in ("changed", "added"))
                     if local_reference is None:
                         expected_bytes += (guest / "same").stat().st_size
                     self.assertEqual(result["transferred_bytes"], expected_bytes)
                     self.assertEqual(result["cloned_files"], int(local_reference is not None))
+            self.assertEqual(heavy_run.result_inventory(root / "delta"), heavy_run.result_inventory(root / "full"))
             (root / "delta/same").chmod(0o600)
             (root / "delta/same").write_bytes(b"independent")
             self.assertEqual((reference / "same").read_bytes(), (guest / "same").read_bytes())
