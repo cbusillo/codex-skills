@@ -1059,6 +1059,170 @@ def test_revalidation_readers_do_not_hold_cache_lock_during_transport_wait() -> 
             assert "If-None-Match" not in remote.call_args.kwargs["extra_headers"]
 
 
+def test_shared_queries_reuse_success_but_keep_same_producer_and_failed_refresh_live() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        reader = github_read.GitHubReader(gh_cmd="fake-gh", expected_actor="fixture-automation", actor="fixture-automation",
+                                         operation="github.comment_radar", strict_actor=True)
+        query = "query($number:Int!) { repository(owner:\"owner\",name:\"repo\") { issue(number:$number) { title } } rateLimit { cost } }"
+        response = process(include_output({"data": {"repository": {"issue": {"title": "work"}}, "rateLimit": {"cost": 1}}},
+                                          headers={"x-ratelimit-resource": "graphql"}), stderr="acting as fixture-automation")
+        with patch("subprocess.run", return_value=response) as remote:
+            for producer in ("first", "second", "third"):
+                with github_read.shared_query_reads(root, "scope", producer):
+                    result = reader.graphql_json(query, {"number": 1}, step="discussion")
+                    assert result.ok, result.as_dict()
+            assert remote.call_count == 1
+            with github_read.shared_query_reads(root, "scope", "first"):
+                assert reader.graphql_json(query, {"number": 1}, step="again").ok
+            assert remote.call_count == 2
+        denied = process(include_output({"message": "denied"}, status=403, headers={"x-ratelimit-resource": "graphql"}), returncode=1)
+        with patch("subprocess.run", return_value=denied) as remote:
+            with github_read.shared_query_reads(root, "scope", "second", fresh=True):
+                assert not reader.graphql_json(query, {"number": 1}, step="forced").ok
+            with github_read.shared_query_reads(root, "scope", "third"):
+                assert not reader.graphql_json(query, {"number": 1}, step="after_failure").ok
+            assert remote.call_count == 2
+
+
+def test_shared_queries_separate_identity_variables_scope_and_expire_without_entering_retry() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        now = [1000.0]
+        reader = github_read.GitHubReader(gh_cmd="fake-gh", expected_actor="fixture-automation", actor="fixture-automation",
+                                         operation="github.comment_radar", strict_actor=True)
+        other = github_read.GitHubReader(gh_cmd="fake-gh", expected_actor="another", actor="another",
+                                        operation="github.comment_radar", strict_actor=True)
+        query = "query($number:Int!) { node(id:$number) { id } rateLimit { cost remaining } }"
+        response = process(include_output({"data": {"node": {"id": "work"}, "rateLimit": {"cost": 1, "remaining": 50}}},
+                                          headers={"x-ratelimit-resource": "graphql"}), stderr="acting as fixture-automation")
+        with patch.object(github_read.time, "time", lambda: now[0]), patch("subprocess.run", return_value=response) as remote:
+            with github_read.shared_query_reads(root, "scope", "first"):
+                first = reader.graphql_json(query, {"number": 1}, step="first")
+            with github_read.shared_query_reads(root, "scope", "second"), patch.object(
+                github_read.github_api_core, "call_gh_with_retry", side_effect=AssertionError("reuse entered transport or cooldown")
+            ):
+                reused = reader.graphql_json(query, {"number": 1}, step="second")
+            assert reused.body["data"]["node"] == first.body["data"]["node"]
+            assert reused.body["data"]["rateLimit"] == {"cost": 0}
+            assert reused.request_id is None and reused.rate_limit is None
+            with github_read.shared_query_reads(root, "scope", "second"):
+                reader.graphql_json(query, {"number": 2}, step="different_variables")
+                other.graphql_json(query, {"number": 1}, step="different_identity")
+            with github_read.shared_query_reads(root, "other_scope", "second"):
+                reader.graphql_json(query, {"number": 1}, step="different_scope")
+            assert remote.call_count == 4
+            now[0] += github_read.SHARED_QUERY_WINDOW
+            with github_read.shared_query_reads(root, "scope", "third"):
+                reader.graphql_json(query, {"number": 1}, step="expired")
+            assert remote.call_count == 5
+
+
+def test_shared_queries_do_not_cache_partial_errors_or_delivery_reads_and_storage_failure_never_repeats_transport() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        reader = github_read.GitHubReader(gh_cmd="fake-gh", expected_actor="fixture-automation", actor="fixture-automation",
+                                         operation="github.comment_radar", strict_actor=True)
+        delivery = github_read.GitHubReader(gh_cmd="fake-gh", expected_actor="fixture-automation", actor="fixture-automation",
+                                           operation="github.supervisor.routine_check", strict_actor=True)
+        query = "query { node(id:1) { id } }"
+        partial = {"data": {"node": None}, "errors": [{"message": "unavailable", "path": ["node"]}]}
+        response = process(include_output(partial, headers={"x-ratelimit-resource": "graphql"}), stderr="acting as fixture-automation")
+        with patch("subprocess.run", return_value=response) as remote:
+            for producer in ("first", "second"):
+                with github_read.shared_query_reads(root, "scope", producer):
+                    reader.graphql_json(query, {}, step="partial")
+            assert remote.call_count == 2
+        response = process(include_output({"data": {"node": {"id": "work"}}}, headers={"x-ratelimit-resource": "graphql"}),
+                           stderr="acting as fixture-automation")
+        with patch("subprocess.run", return_value=response) as remote:
+            with github_read.shared_query_reads(root, "scope", "first"):
+                reader.graphql_json(query, {}, step="populate")
+            with github_read.shared_query_reads(root, "scope", "second"):
+                delivery.graphql_json(query, {}, step="delivery_precondition")
+            assert remote.call_count == 2
+        with patch("subprocess.run", return_value=response) as remote, patch.object(
+            github_read.github_http_cache, "publish", side_effect=OSError("disk full")
+        ), github_read.shared_query_reads(root, "scope", "first", fresh=True):
+            assert reader.graphql_json(query, {}, step="storage_failure").ok
+            assert remote.call_count == 1
+
+
+def test_shared_queries_keep_unobserved_actor_unknown() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        reader = github_read.GitHubReader(gh_cmd="fake-gh", expected_actor="fixture-automation", operation="github.comment_radar", strict_actor=True)
+        query = "query { repository(owner:\"owner\",name:\"repo\") { name } }"
+        response = process(include_output({"data": {"repository": {"name": "repo"}}}, headers={"x-ratelimit-resource": "graphql"}))
+        with patch("subprocess.run", return_value=response) as remote:
+            for producer in ("first", "second"):
+                with github_read.shared_query_reads(root, "scope", producer):
+                    result = reader.graphql_json(query, {}, step="unobserved_actor")
+                    assert result.ok and result.actor is None and reader.actor is None
+            assert remote.call_count == 1
+
+
+def test_failed_force_refresh_fences_an_older_inflight_response() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        reader = github_read.GitHubReader(gh_cmd="fake-gh", expected_actor="fixture-automation", actor="fixture-automation",
+                                         operation="github.comment_radar", strict_actor=True)
+        query = "query { repository(owner:\"owner\",name:\"repo\") { name } }"
+        entered, release = threading.Event(), threading.Event()
+        success = github_read.github_api_core.ApiResult(ok=True, status=200, body={"data": {"repository": {"name": "older"}}},
+                                                        actor="fixture-automation", expected_actor=reader.expected_actor)
+        failed = github_read.github_api_core.ApiResult(ok=False, status=503, body=None, expected_actor=reader.expected_actor)
+
+        def delayed(*_args: Any, **_kwargs: Any) -> github_read.github_api_core.ApiResult:
+            entered.set()
+            assert release.wait(3)
+            return success
+
+        with github_read.shared_query_reads(root, "scope", "older", fresh=True), patch.object(reader, "_transport_request", side_effect=delayed):
+            worker = threading.Thread(target=lambda: reader.graphql_json(query, {}, step="older_inflight"))
+            worker.start()
+            try:
+                assert entered.wait(1)
+                with github_read.shared_query_reads(root, "scope", "forced", fresh=True), patch.object(
+                    reader, "_transport_request", return_value=failed
+                ):
+                    assert not reader.graphql_json(query, {}, step="failed_force").ok
+            finally:
+                release.set()
+                worker.join(timeout=3)
+            assert not worker.is_alive()
+        with github_read.shared_query_reads(root, "scope", "third"), patch.object(reader, "_transport_request", return_value=failed) as remote:
+            assert not reader.graphql_json(query, {}, step="after_older_success").ok
+            assert remote.call_count == 1
+
+
+def test_busy_metadata_does_not_leave_an_earlier_success_after_failed_fresh_read() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        reader = github_read.GitHubReader(gh_cmd="fake-gh", expected_actor="fixture-automation", actor="fixture-automation",
+                                         operation="github.comment_radar", strict_actor=True)
+        query = "query { repository(owner:\"owner\",name:\"repo\") { name } }"
+        success = github_read.github_api_core.ApiResult(ok=True, status=200, body={"data": {"repository": {"name": "earlier"}}},
+                                                        actor=reader.actor, expected_actor=reader.expected_actor)
+        failed = github_read.github_api_core.ApiResult(ok=False, status=503, body=None, expected_actor=reader.expected_actor)
+        with github_read.shared_query_reads(root, "scope", "first"), patch.object(reader, "_transport_request", return_value=success):
+            assert reader.graphql_json(query, {}, step="populate").ok
+        original = github_read.fcntl.flock
+
+        def busy_nonblocking(descriptor: int, operation: int) -> None:
+            if operation & github_read.fcntl.LOCK_NB:
+                raise BlockingIOError("busy metadata")
+            original(descriptor, operation)
+
+        with (github_read.shared_query_reads(root, "scope", "second", fresh=True),
+              patch.object(github_read.fcntl, "flock", side_effect=busy_nonblocking),
+              patch.object(reader, "_transport_request", return_value=failed)):
+            assert not reader.graphql_json(query, {}, step="failed_force").ok
+        with github_read.shared_query_reads(root, "scope", "third"), patch.object(reader, "_transport_request", return_value=failed) as remote:
+            assert not reader.graphql_json(query, {}, step="after_failure").ok
+            assert remote.call_count == 1
+
+
 def main() -> None:
     tests = [test for name, test in globals().items() if name.startswith("test_") and callable(test)]
     failed: list[str] = []

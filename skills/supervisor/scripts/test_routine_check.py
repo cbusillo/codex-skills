@@ -53,6 +53,51 @@ class RoutineCheckTests(unittest.TestCase):
         self.enterContext(patch_attr(routine_check.radar.github_identity, "configured_bot_logins", return_value=["agent[bot]"]))
         self.enterContext(patch.object(session_closeout.closure, "source_records", return_value={}))
 
+    def test_seats_recompute_incomplete_reports_while_sharing_successful_queries(self) -> None:
+        root = Path(os.environ["CODE_HOME"])
+        watch = root / "watch.jsonl"
+        watch.write_text(json.dumps({"notices": [], "errors": [], "coverage_gaps": []}))
+        argv = ["routine_check.py", "--owner", "owner", "--queue", "owner/direction#1", "--ledger", str(root / "ledger.json"),
+                "--foreign-log", str(watch)]
+        reader = routine_check.github_read.GitHubReader(gh_cmd="fake-gh", operation="github.comment_radar",
+                                                       actor="agent[bot]", expected_actor="agent[bot]")
+
+        def next_report() -> dict:
+            result = reader.graphql_json("query { repository(owner:\"owner\",name:\"repo\") { name } }", {}, step="source")
+            return {"candidate_coverage": {"complete": result.ok and result.body["data"]["repository"] is not None}}
+
+        response = ApiResult(ok=True, status=200, body={"data": {"repository": None}}, actor="agent[bot]", expected_actor="agent[bot]")
+        with (patch_attr(routine_check.github_read.github_api_core, "call_gh_with_retry", return_value=response) as remote,
+              patch.object(routine_check.github_access, "identity_context", return_value=({"CODEX_SKILLS_ENV_FILE": str(root / "env")}, True)),
+              patch.object(routine_check, "build_readers", return_value={"next": next_report, "sessions": lambda: {"sessions": []}}),
+              patch.object(routine_check, "primary_reads", return_value={"coverage": {"complete": True}})):
+            errors = []
+            for producer in ("first", "second", "third"):
+                command = list(argv)
+                if producer == "third":
+                    alias = root / "alias.json"
+                    alias.symlink_to(root / "ledger.json")
+                    command[command.index("--ledger") + 1] = str(alias)
+                    command.extend(("--foreign-state", str(root / "state"), "--notify-config", str(root / "services"),
+                                    "--miss-issue", "owner/repo#1"))
+                with (patch("sys.argv", command), patch.dict(os.environ, {"CODEX_SESSION_ID": producer, "CLAUDE_CODE_SESSION_ID": ""}),
+                      redirect_stdout(StringIO()) as output):
+                    self.assertEqual(routine_check.main(), 1)
+                errors.append([line for line in output.getvalue().splitlines() if line.startswith("ERROR next")])
+            self.assertTrue(errors[0])
+            self.assertEqual(errors, [errors[0]] * len(errors))
+            self.assertEqual(remote.call_count, 1)
+            with (patch("sys.argv", argv), patch.dict(os.environ, {"CODEX_SESSION_ID": "first", "CLAUDE_CODE_SESSION_ID": ""}),
+                  redirect_stdout(StringIO())):
+                routine_check.main()
+            self.assertEqual(remote.call_count, 2)
+            remote.return_value = ApiResult(ok=False, status=503, body=None, expected_actor="agent[bot]")
+            for producer, extra in (("second", ["--fresh"]), ("third", [])):
+                with (patch("sys.argv", argv + extra), patch.dict(os.environ, {"CODEX_SESSION_ID": producer, "CLAUDE_CODE_SESSION_ID": ""}),
+                      redirect_stdout(StringIO())):
+                    self.assertEqual(routine_check.main(), 1)
+            self.assertEqual(remote.call_count, 4)
+
     def test_digest_keeps_every_track_decision_wait_and_unread_source(self) -> None:
         roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second"),
                  track("someone/direction", 3, "First")]
