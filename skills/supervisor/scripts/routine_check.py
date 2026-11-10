@@ -13,8 +13,8 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
-from contextlib import ExitStack
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -41,7 +41,6 @@ director_waits = importlib.import_module("director_waits")
 
 READS_AFTER = {"comments": "questions"}
 ROUTINE_INTERVAL = timedelta(minutes=30)
-SHARED_READ_WINDOW = timedelta(minutes=5)
 OWNER_REVIEW_CHECK = "launchplane/owner-review"
 CLIENT_WAIT = re.compile(r"waiting (?:for|on) (?:the |this )?client|client(?:'s)? acceptance", re.I)
 NOTHING_REVIEWABLE = re.compile(r"preview failed|nothing\b[^.]*\b(?:reviewable|to review)", re.I)
@@ -498,11 +497,12 @@ def digest(sources: dict[str, dict], *, full: bool = False, roles: tuple[str, ..
 def build_readers(args: argparse.Namespace, watch: dict) -> dict[str, Callable[[], dict]]:
     discussions: dict[tuple[str, int], dict[str, Any]] = {}
 
-    def github_reader(deadline_seconds: float = 120) -> github_read.GitHubReader:
+    def github_reader(deadline_seconds: float = 120, *, shared_queries: bool = True) -> github_read.GitHubReader:
         return github_read.GitHubReader(
             operation="github.supervisor.routine_check",
             **github_access.reader_options(getattr(args, "github_cli_login", None)),
             deadline_at=time.time() + deadline_seconds,
+            shared_queries=shared_queries,
         )
 
     radar_args = argparse.Namespace(
@@ -590,13 +590,14 @@ def build_readers(args: argparse.Namespace, watch: dict) -> dict[str, Callable[[
         result["coverage"]["errors"].extend(errors)
         result["ok"] = result["ok"] and not errors
         if getattr(args, "foreign_state", None):
-            foreign_watch.route_report(args, result, github_reader(), [*settings["self_logins"], *github_read.github_identity.configured_bot_logins()])
+            foreign_watch.route_report(args, result, github_reader(shared_queries=False), [*settings["self_logins"], *github_read.github_identity.configured_bot_logins()])
             result["coverage"]["errors"].extend(result.get("routing_errors", []))
             result["ok"] = result["ok"] and not result.get("routing_errors")
         return result
 
     return {
         "next": lambda: staffing(args.owner),
+        "sessions": lambda: compact_check.report(args.ledger, args.capacity_state),
         "questions": questions,
         "waits": waits,
         "comments": comments,
@@ -607,6 +608,7 @@ def primary_readers(args: argparse.Namespace) -> dict[str, Callable]:
     def reader() -> github_read.GitHubReader:
         return github_read.GitHubReader(operation="github.supervisor.routine_check",
                                         **github_access.reader_options(getattr(args, "github_cli_login", None)),
+                                        shared_queries=False,
                                         deadline_at=time.time() + 60)
 
     def acceptance() -> Any:
@@ -681,97 +683,6 @@ def comment_hint(notice: dict) -> Any:
     )
 
 
-def fresh_sources(args: argparse.Namespace, sources: dict[str, dict]) -> dict[str, dict]:
-    readers = build_readers(args, sources["watch"])
-    sources.update(collect(readers))
-    sources["primary"] = read_source(lambda: primary_reads(sources["next"], sources["sessions"].get("sessions", []),
-                                                         **primary_readers(args)), None)
-    return sources
-
-
-def read_scope(args: argparse.Namespace) -> str:
-    options = {key: str(value.resolve()) if isinstance(value, Path) else value for key, value in vars(args).items()
-               if key not in {"role", "full", "fresh", "foreign_log", "service_log", "capacity_state"}}
-    environment, _ = github_access.identity_context()
-    environment = {key: value for key, value in environment.items() if not key.endswith("TOKEN_CACHE_DIR")}
-    inputs = [args.radar_config, Path(environment["CODEX_SKILLS_ENV_FILE"])]
-    files = {str(path.resolve()): (path.stat().st_mtime_ns, path.stat().st_size) if path.exists() else None for path in inputs}
-    revision = subprocess.run(["git", "-C", str(Path(__file__).resolve().parents[3]), "rev-parse", "HEAD"],
-                              capture_output=True, text=True, check=True, timeout=5).stdout.strip()
-    scope = [options, environment, files, revision, str(Path(__file__).resolve())]
-    return hashlib.sha256(json.dumps(scope, sort_keys=True, default=str).encode()).hexdigest()
-
-
-def shared_read_path(ledger: Path, scope: str) -> Path:
-    return ledger.with_name(f"{ledger.stem}-routine-read-{scope}.json")
-
-
-def local_read_inputs(sources: dict[str, dict]) -> list:
-    anchors = [(row["session_id"], row.get("issue")) for row in sources["sessions"].get("sessions", [])
-               if row.get("action") == "inspect_idle_session"]
-    return [sources["watch"].get("history"), [list(anchor) for anchor in anchors]]
-
-
-def primary_targets(selection: dict) -> list[str]:
-    return sorted(pointer(row) for _, row in queue_rows(selection)
-                  if CLIENT_WAIT.search(request_text(row)) or RELEASE_REQUEST.search(request_text(row)) or SETTING_CHANGE.search(request_text(row)))
-
-
-def complete_sources(sources: dict[str, dict]) -> bool:
-    return isinstance(sources, dict) and all(isinstance(report, dict) and not source_errors(name, report)
-                                            for name, report in sources.items())
-
-
-def shared_sources(args: argparse.Namespace, sources: dict[str, dict]) -> tuple[dict[str, dict], str | None]:
-    consumer = [os.environ.get("CODEX_SESSION_ID"), os.environ.get("CLAUDE_CODE_SESSION_ID")]
-    if not any(consumer):
-        consumer = sorted(set(args.role))
-    if not consumer:
-        return fresh_sources(args, sources), None
-    collected = False
-    try:
-        scope = read_scope(args)
-        path = shared_read_path(args.ledger, scope)
-        deadline = time.monotonic() + SHARED_READ_WINDOW.total_seconds()
-        with ExitStack() as locks:
-            while True:
-                try:
-                    locks.enter_context(foreign_watch.watch_lock(path))
-                    break
-                except ValueError:
-                    if time.monotonic() >= deadline:
-                        raise TimeoutError("shared read wait exceeded its reuse window") from None
-                    time.sleep(0.1)
-            now = clock()
-            try:
-                cached = json.loads(path.read_text())
-                age = now - datetime.fromisoformat(cached["started_at"])
-                reusable = (not args.fresh and cached["scope"] == scope and cached["consumer"] != consumer
-                            and cached["local_inputs"] == local_read_inputs(sources)
-                            and cached["primary_targets"] == primary_targets(cached["sources"]["next"])
-                            and timedelta() <= age < SHARED_READ_WINDOW and complete_sources(cached["sources"]))
-                if reusable:
-                    for row in cached["sources"]["primary"].get("no_handoff", []):
-                        row["since"] = recorded_time(row["since"])
-                    sources.update(cached["sources"])
-                    return sources, f"REUSED GitHub reads age={int(age.total_seconds())}s; --fresh reads again"
-            except (OSError, ValueError, TypeError, KeyError):
-                cached = None
-            path.unlink(missing_ok=True)
-            local = set(sources)
-            sources = fresh_sources(args, sources)
-            collected = True
-            remote = {key: report for key, report in sources.items() if key not in local}
-            if complete_sources(remote) and clock() - now < SHARED_READ_WINDOW:
-                cached = {"scope": scope, "consumer": consumer, "started_at": now.isoformat(),
-                          "local_inputs": local_read_inputs(sources), "primary_targets": primary_targets(sources["next"]),
-                          "sources": remote}
-                foreign_watch.atomic_text(path, json.dumps(cached, default=str) + "\n")
-            return sources, None
-    except (OSError, ValueError, TypeError, subprocess.SubprocessError) as error:
-        return (sources if collected else fresh_sources(args, sources)), f"SHARING_UNAVAILABLE {error}; collected fresh reads"
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Print the existing Supervisor digest; optional routing delivers message pointers, never launches or closes."
@@ -779,7 +690,7 @@ def main() -> int:
     parser.add_argument("--github-cli-login", help="retain the plain install login selected by supervisor.py start")
     parser.add_argument("--full", action="store_true", help="include acknowledged questions")
     parser.add_argument("--role", action="append", choices=SUPERVISOR_ROLES, default=[], help="held seat; repeat for multiple roles, omit for all")
-    parser.add_argument("--fresh", action="store_true", help="ignore and invalidate shared reads before collecting fresh sources")
+    parser.add_argument("--fresh", action="store_true", help="invalidate requested shared query responses and read GitHub again")
     parser.add_argument("--owner", required=True)
     parser.add_argument("--queue", required=True)
     parser.add_argument("--ledger", type=Path, required=True)
@@ -809,12 +720,36 @@ def main() -> int:
         return watch_report(args.foreign_log, window=str(config.get("comment_window") or radar.DEFAULT_WINDOW))
 
     service_readers = {f"service {path}": lambda path=path: watch_report(path, service=True) for path in args.service_log}
-    sources = collect({"watch": read_watch, **service_readers,
-                       "sessions": lambda: compact_check.report(args.ledger, args.capacity_state)})
-    sources, reused = shared_sources(args, sources)
-    output = digest(sources, full=args.full, roles=tuple(args.role))
-    if reused:
-        output = f"{reused}\n{output}"
+    context = nullcontext()
+    unavailable = None
+    producer = os.environ.get("CODEX_SESSION_ID") or os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if producer or args.fresh:
+        try:
+            options = {key: str(value.resolve()) if isinstance(value, Path) else value for key, value in vars(args).items()
+                       if key not in {"role", "full", "fresh", "foreign_log", "service_log", "capacity_state"}}
+            environment, _ = github_access.identity_context()
+            environment = {key: value for key, value in environment.items() if not key.endswith("TOKEN_CACHE_DIR")}
+            env_file = Path(environment["CODEX_SKILLS_ENV_FILE"])
+            stamp = env_file.stat().st_mtime_ns if env_file.exists() else None
+            scope = hashlib.sha256(json.dumps([options, environment, stamp], sort_keys=True).encode()).hexdigest()
+            context = github_read.shared_query_reads(args.ledger.resolve().with_name(f"{args.ledger.stem}-github-reads"),
+                                                     scope, producer or f"manual-{os.getpid()}", fresh=args.fresh)
+        except (OSError, ValueError) as error:
+            unavailable = str(error)
+    with context:
+        sources = collect({"watch": read_watch, **service_readers})
+        sources.update(collect(build_readers(args, sources["watch"])))
+        sources["primary"] = read_source(lambda: primary_reads(sources["next"], sources["sessions"].get("sessions", []), **primary_readers(args)), None)
+        output = digest(sources, full=args.full, roles=tuple(args.role))
+        if producer or args.fresh:
+            usage = github_read.shared_query_usage() if unavailable is None else {"reused": 0, "oldest_age_seconds": 0, "unavailable": 1}
+            child_usage = sources.get("next", {}).get("performance", {}).get("shared_queries", {})
+            reused = usage["reused"] + child_usage.get("reused", 0)
+            age = max(usage["oldest_age_seconds"], child_usage.get("oldest_age_seconds", 0))
+            if reused:
+                output = f"REUSED {reused} successful GitHub query responses; oldest age={age:.1f}s; --fresh reads again\n{output}"
+            if usage["unavailable"] or child_usage.get("unavailable") or unavailable:
+                output = f"SHARING_UNAVAILABLE {unavailable or 'cache storage unavailable'}; affected queries read live\n{output}"
     print(output)
     return int(any(line.startswith("ERROR ") for line in output.splitlines()))
 

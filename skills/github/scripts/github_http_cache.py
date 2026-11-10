@@ -104,7 +104,7 @@ def _cache_entry(path: pathlib.Path) -> dict[str, Any] | None:
 
 
 def publish(root: pathlib.Path, path: pathlib.Path, item: dict[str, Any], *,
-             max_age_seconds: float | None = None) -> None:
+             max_age_seconds: float | None = None, prune_after: bool = True) -> None:
     now = time.time()
     age = MAX_AGE_SECONDS if max_age_seconds is None else max_age_seconds
     item = {**item, "expires_at": now + age}
@@ -120,38 +120,42 @@ def publish(root: pathlib.Path, path: pathlib.Path, item: dict[str, Any], *,
             os.fchmod(stream.fileno(), 0o600)
             stream.write(data)
         os.replace(name, path)
-        entries = []
-        for entry in root.glob('*.json'):
-            try:
-                if not re.fullmatch(r"[a-f0-9]{64}\.json", entry.name) or not _owned(entry):
-                    continue
-                info = entry.stat()
-                # The common path needs only stats. Decode a body only when
-                # considering its removal, then prove it belongs to this cache.
-                if now - info.st_mtime > min(MAX_AGE_SECONDS, age):
-                    cached = _cache_entry(entry)
-                    if cached is None:
-                        continue
-                    expiry = cached.get("expires_at")
-                    same_format = (cached.get("schema") == 1) == (item.get("schema") == 1)
-                    expired = now >= expiry if isinstance(expiry, (int, float)) else (
-                        same_format and now - info.st_mtime > age
-                    )
-                    if expired:
-                        entry.unlink(missing_ok=True)
-                        continue
-                entries.append((info.st_mtime, info.st_size, entry))
-            except FileNotFoundError:
-                continue
-        total = sum(size for _, size, _ in entries)
-        entries.sort(key=lambda record: record[0])
-        while entries and (len(entries) > MAX_ENTRIES or total > MAX_TOTAL_BYTES):
-            _, size, old = entries.pop(0)
-            if _cache_entry(old) is not None:
-                old.unlink(missing_ok=True)
-            total -= size
+        if prune_after:
+            prune(root, max_age_seconds=age, schema=item.get("schema"))
     finally:
         pathlib.Path(name).unlink(missing_ok=True)
+
+
+def prune(root: pathlib.Path, *, max_age_seconds: float = MAX_AGE_SECONDS, schema: int | None = None,
+          max_entries: int | None = None, max_total_bytes: int | None = None) -> None:
+    now = time.time()
+    entries = []
+    for entry in root.glob('*.json'):
+        try:
+            if not re.fullmatch(r"[a-f0-9]{64}\.json", entry.name) or not _owned(entry):
+                continue
+            info = entry.stat()
+            if now - info.st_mtime > min(MAX_AGE_SECONDS, max_age_seconds):
+                cached = _cache_entry(entry)
+                if cached is None:
+                    continue
+                expiry = cached.get("expires_at")
+                same_format = (cached.get("schema") == 1) == (schema == 1)
+                expired = now >= expiry if isinstance(expiry, (int, float)) else same_format and now - info.st_mtime > max_age_seconds
+                if expired:
+                    entry.unlink(missing_ok=True)
+                    continue
+            entries.append((info.st_mtime, info.st_size, entry))
+        except FileNotFoundError:
+            continue
+    total = sum(size for _, size, _ in entries)
+    entries.sort(key=lambda record: record[0])
+    while entries and (len(entries) > (MAX_ENTRIES if max_entries is None else max_entries)
+                      or total > (MAX_TOTAL_BYTES if max_total_bytes is None else max_total_bytes)):
+        _, size, old = entries.pop(0)
+        if _cache_entry(old) is not None:
+            old.unlink(missing_ok=True)
+        total -= size
 
 
 def request(

@@ -57,23 +57,24 @@ within the held roles; with no role they all apply.
    appear as one count with a source link, not as queue entries. Watch history
    seeds full-history radar threads and question sources; fresh source
    readers decide what is still unanswered. Questions and radar share their
-   collected discussions and metadata within a run. Other Supervisor sessions
-   using the same owner, queue, resolved ledger, identity, code and read options
-   can reuse a complete run's GitHub reads for five minutes from its start.
-   The digest says REUSED and gives its age; roles and `--full` are applied again.
-   Repeating the check in the producing session still reads fresh, including
-   single-Supervisor commands without `--role`. Add `--fresh` to invalidate the
-   shared reads and force a new run; use it to verify an action just taken.
-   Failed or incomplete GitHub reads leave nothing reusable, even when a previous
-   run succeeded. Local sessions, watch and service
-   logs are read on every invocation. Different watch paths with the same history
-   can share; changed history or idle-worker anchors require a fresh run.
-   Private receipts beside the ledger are separated by read scope. Their existing
-   file locks wait at most the reuse window, then continue with fresh reads;
-   sharing setup or storage errors also keep the fresh digest and explain why.
-   These receipts need
-   no service or seat registry. They are short-lived read evidence, never
-   authority to claim, close or merge; open the linked source before acting.
+   collected discussions and metadata within a run. On one host, other Supervisor
+   sessions using the same owner, queue, resolved ledger, identity and read options
+   reuse successful GraphQL query responses for five minutes. The digest says
+   how many were reused and the oldest response's age; roles and `--full` are
+   applied after every source is evaluated again. A repeat by the producing
+   session still reads fresh, including commands without `--role`. Use `--fresh`
+   to invalidate the requested responses and verify an action just taken.
+   Failed requests and responses with GraphQL errors are never reused. A failed
+   fresh request cannot fall back to an earlier success. Incomplete source reports
+   are recomputed, so their errors remain visible even when successful query
+   responses were shared. Sessions, watch/service logs, routing preconditions and
+   primary release/acceptance reads remain fresh. There is no whole-digest cache,
+   lock wait, daemon or registry of seats. Private query bodies use the existing
+   reader cache and publisher beside the ledger, with cleanup at each check.
+   Reused results carry no previous request ID or current quota claim.
+   Checks outside the reuse window still read GitHub; align the seats' normal
+   checks within that window to get the saving. Open the linked source before
+   claiming, merging, closing or acting on a candidate.
    The other readers run at the same time. The radar's repository
    comment scan keeps a watermark beside the ledger (`<ledger>-radar-scan.json`)
    and reads only comments changed since it; a missing, unreadable or

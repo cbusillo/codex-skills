@@ -19,6 +19,7 @@ from concurrent.futures import FIRST_COMPLETED, CancelledError, Future, ThreadPo
 from typing import Any, Callable, TypeVar
 
 import github_api
+import github_read
 
 T = TypeVar("T")
 R = TypeVar("R")
@@ -216,7 +217,8 @@ class NextReads:
         self.pool.shutdown(wait=True, cancel_futures=True)
 
     def receipt(self) -> dict[str, Any]:
-        return {"elapsed_seconds": round(time.monotonic() - self.started, 3),
+        return {**({"shared_queries": github_read.shared_query_usage()} if github_read.query_reuse_context() else {}),
+                "elapsed_seconds": round(time.monotonic() - self.started, 3),
                 "time_budget_seconds": self.seconds, "deadline_exhausted": self.expired,
                 "workers": self.workers, "reads": self.requests, "reused_reads": self.reused,
                 "reused_failures": self.reused_failures, "budget_stops": self.budget_stops,
