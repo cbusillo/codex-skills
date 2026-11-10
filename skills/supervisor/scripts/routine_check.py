@@ -497,12 +497,11 @@ def digest(sources: dict[str, dict], *, full: bool = False, roles: tuple[str, ..
 def build_readers(args: argparse.Namespace, watch: dict) -> dict[str, Callable[[], dict]]:
     discussions: dict[tuple[str, int], dict[str, Any]] = {}
 
-    def github_reader(deadline_seconds: float = 120, *, shared_queries: bool = True) -> github_read.GitHubReader:
+    def github_reader(deadline_seconds: float = 120) -> github_read.GitHubReader:
         return github_read.GitHubReader(
             operation="github.supervisor.routine_check",
             **github_access.reader_options(getattr(args, "github_cli_login", None)),
             deadline_at=time.time() + deadline_seconds,
-            shared_queries=shared_queries,
         )
 
     radar_args = argparse.Namespace(
@@ -590,7 +589,7 @@ def build_readers(args: argparse.Namespace, watch: dict) -> dict[str, Callable[[
         result["coverage"]["errors"].extend(errors)
         result["ok"] = result["ok"] and not errors
         if getattr(args, "foreign_state", None):
-            foreign_watch.route_report(args, result, github_reader(shared_queries=False), [*settings["self_logins"], *github_read.github_identity.configured_bot_logins()])
+            foreign_watch.route_report(args, result, github_reader(), [*settings["self_logins"], *github_read.github_identity.configured_bot_logins()])
             result["coverage"]["errors"].extend(result.get("routing_errors", []))
             result["ok"] = result["ok"] and not result.get("routing_errors")
         return result
@@ -608,7 +607,6 @@ def primary_readers(args: argparse.Namespace) -> dict[str, Callable]:
     def reader() -> github_read.GitHubReader:
         return github_read.GitHubReader(operation="github.supervisor.routine_check",
                                         **github_access.reader_options(getattr(args, "github_cli_login", None)),
-                                        shared_queries=False,
                                         deadline_at=time.time() + 60)
 
     def acceptance() -> Any:
@@ -722,17 +720,17 @@ def main() -> int:
     service_readers = {f"service {path}": lambda path=path: watch_report(path, service=True) for path in args.service_log}
     context = nullcontext()
     unavailable = None
-    producer = os.environ.get("CODEX_SESSION_ID") or os.environ.get("CLAUDE_CODE_SESSION_ID")
+    producer = os.environ.get("CODEX_SESSION_ID") or os.environ.get("CODEX_THREAD_ID") or os.environ.get("CLAUDE_CODE_SESSION_ID")
     if producer or args.fresh:
         try:
-            options = {key: str(value.resolve()) if isinstance(value, Path) else value for key, value in vars(args).items()
-                       if key not in {"role", "full", "fresh", "foreign_log", "service_log", "capacity_state"}}
             environment, _ = github_access.identity_context()
-            environment = {key: value for key, value in environment.items() if not key.endswith("TOKEN_CACHE_DIR")}
+            environment = {key: value for key, value in environment.items() if key != "CODE_HOME" and not key.endswith("TOKEN_CACHE_DIR")}
             env_file = Path(environment["CODEX_SKILLS_ENV_FILE"])
             stamp = env_file.stat().st_mtime_ns if env_file.exists() else None
-            scope = hashlib.sha256(json.dumps([options, environment, stamp], sort_keys=True).encode()).hexdigest()
-            context = github_read.shared_query_reads(args.ledger.resolve().with_name(f"{args.ledger.stem}-github-reads"),
+            scope = hashlib.sha256(json.dumps([args.owner.casefold(), args.queue, args.github_cli_login, environment, stamp],
+                                              sort_keys=True).encode()).hexdigest()
+            ledger = args.ledger.resolve()
+            context = github_read.shared_query_reads(ledger.with_name(f"{ledger.stem}-github-reads"),
                                                      scope, producer or f"manual-{os.getpid()}", fresh=args.fresh)
         except (OSError, ValueError) as error:
             unavailable = str(error)

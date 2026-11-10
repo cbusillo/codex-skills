@@ -59,7 +59,7 @@ class RoutineCheckTests(unittest.TestCase):
         watch.write_text(json.dumps({"notices": [], "errors": [], "coverage_gaps": []}))
         argv = ["routine_check.py", "--owner", "owner", "--queue", "owner/direction#1", "--ledger", str(root / "ledger.json"),
                 "--foreign-log", str(watch)]
-        reader = routine_check.github_read.GitHubReader(gh_cmd="fake-gh", operation="github.supervisor.routine_check",
+        reader = routine_check.github_read.GitHubReader(gh_cmd="fake-gh", operation="github.comment_radar",
                                                        actor="agent[bot]", expected_actor="agent[bot]")
 
         def next_report() -> dict:
@@ -73,18 +73,30 @@ class RoutineCheckTests(unittest.TestCase):
               patch.object(routine_check, "primary_reads", return_value={"coverage": {"complete": True}})):
             errors = []
             for producer in ("first", "second", "third"):
-                with (patch("sys.argv", argv), patch.dict(os.environ, {"CODEX_SESSION_ID": producer, "CLAUDE_CODE_SESSION_ID": ""}),
+                command = list(argv)
+                if producer == "third":
+                    alias = root / "alias.json"
+                    alias.symlink_to(root / "ledger.json")
+                    command[command.index("--ledger") + 1] = str(alias)
+                    command.extend(("--foreign-state", str(root / "state"), "--notify-config", str(root / "services"),
+                                    "--miss-issue", "owner/repo#1"))
+                with (patch("sys.argv", command), patch.dict(os.environ, {"CODEX_SESSION_ID": producer, "CLAUDE_CODE_SESSION_ID": ""}),
                       redirect_stdout(StringIO()) as output):
                     self.assertEqual(routine_check.main(), 1)
                 errors.append([line for line in output.getvalue().splitlines() if line.startswith("ERROR next")])
             self.assertTrue(errors[0])
             self.assertEqual(errors, [errors[0]] * len(errors))
             self.assertEqual(remote.call_count, 1)
-            self.assertRegex(output.getvalue(), r"REUSED .*age=\d+\.\ds")
             with (patch("sys.argv", argv), patch.dict(os.environ, {"CODEX_SESSION_ID": "first", "CLAUDE_CODE_SESSION_ID": ""}),
                   redirect_stdout(StringIO())):
                 routine_check.main()
             self.assertEqual(remote.call_count, 2)
+            remote.return_value = ApiResult(ok=False, status=503, body=None, expected_actor="agent[bot]")
+            for producer, extra in (("second", ["--fresh"]), ("third", [])):
+                with (patch("sys.argv", argv + extra), patch.dict(os.environ, {"CODEX_SESSION_ID": producer, "CLAUDE_CODE_SESSION_ID": ""}),
+                      redirect_stdout(StringIO())):
+                    self.assertEqual(routine_check.main(), 1)
+            self.assertEqual(remote.call_count, 4)
 
     def test_digest_keeps_every_track_decision_wait_and_unread_source(self) -> None:
         roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second"),

@@ -58,20 +58,17 @@ within the held roles; with no role they all apply.
    seeds full-history radar threads and question sources; fresh source
    readers decide what is still unanswered. Questions and radar share their
    collected discussions and metadata within a run. On one host, other Supervisor
-   sessions using the same owner, queue, resolved ledger, identity and read options
+   sessions using the same owner, queue, resolved ledger and identity
    reuse successful GraphQL query responses for five minutes. The digest says
    how many were reused and the oldest response's age; roles and `--full` are
    applied after every source is evaluated again. A repeat by the producing
    session still reads fresh, including commands without `--role`. Use `--fresh`
    to invalidate the requested responses and verify an action just taken.
-   Failed requests and responses with GraphQL errors are never reused. A failed
-   fresh request cannot fall back to an earlier success. Incomplete source reports
-   are recomputed, so their errors remain visible even when successful query
-   responses were shared. Sessions, watch/service logs, routing preconditions and
-   primary release/acceptance reads remain fresh. There is no whole-digest cache,
-   lock wait, daemon or registry of seats. Private query bodies use the existing
-   reader cache and publisher beside the ledger, with cleanup at each check.
-   Reused results carry no previous request ID or current quota claim.
+   Failed requests stay live; a failed refresh leaves no earlier success reusable.
+   All reports and errors are recomputed. Local state, routing preconditions and
+   primary release/acceptance reads stay fresh. There is no whole-digest cache,
+   daemon or seat registry; private query bodies use the existing reader cache
+   and publisher beside the ledger, with cleanup at each check.
    Checks outside the reuse window still read GitHub; align the seats' normal
    checks within that window to get the saving. Open the linked source before
    claiming, merging, closing or acting on a candidate.

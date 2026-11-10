@@ -2,11 +2,7 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Invocation-local, bounded parallel observations for global next.
-
-Every first observation still uses the maintained authenticated reader. Nothing
-here supplies an offline body, retries a failed read, or changes its identity.
-"""
+"""Invocation-local, bounded parallel observations for global next."""
 from __future__ import annotations
 
 import copy
