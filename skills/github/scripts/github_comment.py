@@ -42,7 +42,6 @@ OPERATION_MARKER_LINE_RE = re.compile(
 )
 MENTION_RE = re.compile(r"(?<!\w)@(?P<login>[A-Za-z0-9](?:-?[A-Za-z0-9]){0,38}(?:/[A-Za-z0-9_-]+)?)")
 QUIET_MENTION_OPEN, QUIET_MENTION_CLOSE = "<code>", "</code>"
-# GitHub links mentions only in rendered prose: code blocks, code spans and tag attributes never notify anyone.
 RENDERED_NON_PROSE = re.compile(r"<(pre|code)\b[^>]*>.*?</\1>|<[^>]*>", re.DOTALL | re.IGNORECASE)
 ATTACHMENT_OWNER = "cbusillo"
 AGENT_POSTED_LINE = "Posted by an agent."
