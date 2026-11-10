@@ -3820,6 +3820,7 @@ def test_pr_create_as_own_user_says_the_change_used_ai_assistance() -> None:
 
     pr.run_pr_write = record_write
     pr.github_identity = types.SimpleNamespace(acts_as_own_user=lambda repository: repository == "director/catalog")
+    pr.cmd_view = lambda *_args, **_kwargs: {"pr": {"state": "open", "draft": False, "baseRefName": "main", "baseDefaultBranch": "main"}}
     with tempfile.TemporaryDirectory() as tmp:
         plain = Path(tmp) / "plain.md"
         plain.write_text("## Why\n\nA fix.\n", encoding="utf-8")

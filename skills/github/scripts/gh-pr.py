@@ -500,6 +500,23 @@ def cmd_create(args: argparse.Namespace) -> dict[str, Any]:
             pathlib.Path(body_file).unlink(missing_ok=True)
     stdout = proc.stdout.strip()
     result = {"ok": True, "operation": "create", "repo": repo, "url": extract_url(stdout), "stdout": stdout}
+    if not args.dry_run:
+        try:
+            if not result["url"]:
+                raise HelperError("Created PR URL unavailable")
+            created = cmd_view(argparse.Namespace(repo=repo, pr=result["url"]), cache_enabled=False, include_body=True)
+            result.update(report_base_feedback(created["pr"]))
+        except HelperError:
+            result["baseFeedbackUnavailable"] = True
+            print("PR created; base feedback unavailable. Read the created PR; do not repeat create.", file=sys.stderr)
+        finally:
+            CURRENT_RETRY_FIELDS.update(
+                {
+                    "retry_eligible": False,
+                    "outcome_certainty": "confirmed",
+                    "recommended_next_action": "none",
+                }
+            )
     if own_user:
         result["identity"] = "own_user"
         result["aiAssistanceSentenceAdded"] = ai_sentence_added
@@ -624,8 +641,43 @@ def cmd_comment(args: argparse.Namespace) -> dict[str, Any]:
 
 def cmd_ready(args: argparse.Namespace) -> dict[str, Any]:
     repo, number = resolve_pr(args.repo, args.pr)
+    feedback: dict[str, Any] = {}
+    try:
+        checks = cmd_checks(argparse.Namespace(repo=repo, pr=str(number)))
+        feedback = report_base_feedback(checks["pr"])
+        return post_ready(args, repo, number, checks, feedback)
+    except PrHelperError as exc:
+        if not feedback and isinstance(exc.payload.get("pr"), dict):
+            feedback = report_base_feedback(exc.payload["pr"])
+        exc.payload.update(feedback)
+        raise
+
+
+def report_base_feedback(pr: dict[str, Any]) -> dict[str, Any]:
+    base, default = pr.get("baseRefName"), pr.get("baseDefaultBranch")
+    if pr.get("state") != "open" or pr.get("draft") is not False or not base or not default or base == default:
+        return {}
+    remedies = {
+        "retarget": f"If accidental and authorized for this task's destination, retarget to {default!r}.",
+        "held_draft": "If this is a held stack child, keep it draft under the existing stacked-PR rule.",
+    }
+    message = (
+        f"Non-draft PR base {base!r} differs from GitHub's repository default {default!r}. "
+        f"{remedies['retarget']} {remedies['held_draft']} "
+        "Keep an approved non-default destination or ready stack child on its existing landing route."
+    )
+    print(message, file=sys.stderr)
+    return {"baseFeedback": {"base": base, "default": default, "remedies": remedies, "message": message}}
+
+
+def post_ready(
+    args: argparse.Namespace,
+    repo: str,
+    number: int,
+    checks: dict[str, Any],
+    feedback: dict[str, Any],
+) -> dict[str, Any]:
     target = argparse.Namespace(repo=repo, pr=str(number))
-    checks = cmd_checks(target)
     pr = checks["pr"]
     summary = checks["summary"]
     validate_ready_pr(pr, repo=repo, number=number)
@@ -636,6 +688,9 @@ def cmd_ready(args: argparse.Namespace) -> dict[str, Any]:
     ):
         raise PrHelperError("PR check evidence is incomplete", repo=repo, pr=number)
     current = cmd_view(target, cache_enabled=False, include_body=True)["pr"]
+    if (current.get("baseRefName"), current.get("baseDefaultBranch")) != (pr.get("baseRefName"), pr.get("baseDefaultBranch")):
+        feedback.clear()
+        feedback.update(report_base_feedback(current))
     validate_ready_pr(current, repo=repo, number=number)
     if current["headRefOid"] != checks["headSha"] or current["labels"] != pr["labels"]:
         raise PrHelperError("PR head or labels changed during readiness checks; read it again", repo=repo, pr=number)
@@ -661,7 +716,7 @@ def cmd_ready(args: argparse.Namespace) -> dict[str, Any]:
     except ValueError as exc:
         raise PrHelperError(str(exc), repo=repo, pr=number) from exc
     result = shared_comment("pr", repo, number, body, operation=CURRENT_OPERATION)
-    return {**result, "headSha": checks["headSha"], "body": body, "summary": summary}
+    return {**result, "headSha": checks["headSha"], "body": body, "summary": summary, **feedback}
 
 
 def ready_review_gap(repo: str, number: int, pr: dict[str, Any]) -> str:
@@ -1389,36 +1444,11 @@ def merge_failure_hint(message: str, *, cause: Optional[str] = None) -> str:
 
 
 def normalize_pr(pr: dict[str, Any]) -> dict[str, Any]:
+    normalized = github_read_core.normalize_pull_request(pr)
     labels = pr.get("labels")
-    if not isinstance(labels, list):
-        labels = []
-    mergeable_state = pr.get("mergeable_state")
-    merged = pr.get("merged")
-    if merged is None and pr.get("merged_at"):
-        merged = True
-    normalized = {
-        "number": pr.get("number"),
-        "title": pr.get("title"),
-        "state": pr.get("state"),
-        "draft": pr.get("draft"),
-        "isDraft": pr.get("draft"),
-        "merged": merged,
-        "mergedAt": pr.get("merged_at"),
-        "mergeCommitOid": pr.get("merge_commit_sha"),
-        "mergeable": pr.get("mergeable"),
-        "mergeable_state": mergeable_state,
-        "mergeStateStatus": MERGE_STATE_STATUS.get(str(mergeable_state), str(mergeable_state).upper()) if mergeable_state else None,
-        "statusCheckRollup": pr.get("statusCheckRollup"),
-        "labels": labels,
-        "url": pr.get("html_url"),
-        "baseRefName": (pr.get("base") or {}).get("ref"),
-        "headRefName": (pr.get("head") or {}).get("ref"),
-        "headRefOid": (pr.get("head") or {}).get("sha"),
-        "headRepository": ((pr.get("head") or {}).get("repo") or {}).get("full_name"),
-        "baseRepository": ((pr.get("base") or {}).get("repo") or {}).get("full_name"),
-    }
-    if pr.get("reviewDecision") is not None:
-        normalized["reviewDecision"] = pr.get("reviewDecision")
+    normalized["labels"] = labels if isinstance(labels, list) else []
+    if pr.get("reviewDecision") is None:
+        normalized.pop("reviewDecision", None)
     return normalized
 
 
