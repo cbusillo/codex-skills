@@ -209,6 +209,44 @@ class GitHubComments:
         return {**result["comment"], "issue": f"https://github.com/{match[1]}/issues/{match[2]}"}
 
 
+def validate_revision(
+    comments: list[dict[str, Any]], related: list[dict[str, Any]], args: argparse.Namespace, view: dict[str, Any], trusted: set[str]
+) -> None:
+    reader = delivery.oq.question_records
+    question = next(
+        (
+            q
+            for q in reader.questions(comments, args.owner, args.decision_author, related, include_edit_requests=True)
+            if q["url"] == args.url
+        ),
+        None,
+    )
+    withdrawn = reader.supervisor_settled_questions([*comments, *related], trusted, asker_only=True)
+    if question is None or args.url in withdrawn:
+        raise ValueError("question is unavailable, answered or withdrawn; do not revise it")
+    options = {option["answer"].strip().casefold() for option in view["record"]["options"]}
+    edit_urls = {
+        comment["url"]
+        for comment in [*comments, *related]
+        if comment["url"] in question["answers"] and (reader.edit_option(comment["body"]) or "").casefold() in options
+    }
+    if set(question["answers"]) - edit_urls:
+        raise ValueError("question has a final answer or no matching recorded Edit option; do not revise it")
+    position = next(i for i, comment in enumerate(comments) if comment["url"] == args.url)
+    replies = [
+        *comments[position + 1 :],
+        *(
+            comment
+            for comment in related
+            if args.url in comment.get("body", "") or re.search(rf"\b{view['question_id']}\b", comment.get("body", ""))
+        ),
+    ]
+    if any(
+        (comment.get("author") or "").casefold() == args.owner.casefold() and comment["url"] not in edit_urls for comment in replies
+    ):
+        raise ValueError("Director replied after this question; confirm the answer before revising")
+
+
 def update(record: Any, args: argparse.Namespace, storage: QuestionStorage, fetch: DiscussionReader) -> dict[str, Any]:
     errors = validation_errors(record)
     if errors:
@@ -229,16 +267,7 @@ def update(record: Any, args: argparse.Namespace, storage: QuestionStorage, fetc
         related = []
         if queue and queue != item:
             related = fetch(queue)
-        question = next((q for q in delivery.oq.questions(comments, args.owner, args.decision_author, related)
-                         if q["url"] == args.url), None)
-        withdrawn = delivery.oq.question_records.supervisor_settled_questions(
-            [*comments, *related], trusted, asker_only=True,
-        )
-        if question is None or question["answers"] or args.url in withdrawn:
-            raise ValueError("question is unavailable, answered or withdrawn; do not revise it")
-        position = next(i for i, comment in enumerate(comments) if comment["url"] == args.url)
-        if any((comment.get("author") or "").casefold() == args.owner.casefold() for comment in comments[position + 1:]):
-            raise ValueError("Director replied after this question; confirm the answer before revising")
+        validate_revision(comments, related, args, view, trusted)
         body = question_id.number_heading(render(record, legacy=True), view["question_id"])
         repo = item.split("#", 1)[0]
         github_comment.validate_question_mentions(body, repo)
@@ -248,6 +277,10 @@ def update(record: Any, args: argparse.Namespace, storage: QuestionStorage, fetc
         saved = read_record(storage.update(args.url, body, source["body"], args.expected_updated_at))
         if saved["record"] != record or saved["question_id"] != view["question_id"] or saved["url"] != args.url:
             raise ValueError(f"Question update at {args.url} disagrees with the requested record")
+        try:
+            validate_revision(fetch(item), fetch(queue) if queue and queue != item else [], args, view, trusted)
+        except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+            raise ValueError(f"Question saved at {args.url}; decision readback needs reconciliation; do not replay update: {error}") from error
         return {**saved, "registration": "unchanged"}
 
 

@@ -42,17 +42,31 @@ def decision_parts(body: str, decision: re.Match[str]) -> tuple[str | None, str]
 
 
 def deferred(content: str) -> bool:
-    paragraph = re.split(r"\r?\n(?:[ \t]*\r?\n|[ \t]*(?:Question:|<!--))", content, 1)[0]
+    paragraph = re.split(r"\r?\n(?:[ \t]*\r?\n|[ \t]*(?:Question:|<!--))", content, maxsplit=1)[0]
     return re.fullmatch(r"(?i)[\"'“”]*(?:later|not now|not yet|waiting|pending)[\"'“”\s.;!—-]*", paragraph) is not None
+
+
+def edit_option(body: str) -> str | None:
+    decision = recorded_decision(body)
+    if decision is None:
+        return None
+    content = decision_parts(body, decision)[1].partition("\n")[0]
+    if len(re.findall(r'\boption ["“]', content, re.I)) != 1:
+        return None
+    selection = re.match(
+        r'(?:\(Q[1-9][0-9]*\),?\s*)?option ["“](Edit(?: the (?:message|question|draft))?)["”]\.(?:\s|$)', content, re.I
+    )
+    return selection[1] if selection else None
 
 
 def substantive_decision(body: str) -> bool:
     decision = recorded_decision(body)
-    return decision is not None and not deferred(decision_parts(body, decision)[1])
+    return decision is not None and not deferred(decision_parts(body, decision)[1]) and edit_option(body) is None
 
 
 def questions(comments: list[dict[str, Any]], owner: str, decision_authors: Iterable[str],
-              related_comments: Iterable[dict[str, Any]] = (), *, recorded_decisions_only: bool = False) -> list[dict[str, Any]]:
+              related_comments: Iterable[dict[str, Any]] = (), *, recorded_decisions_only: bool = False,
+              include_edit_requests: bool = False) -> list[dict[str, Any]]:
     owner = owner.casefold()
     decision_authors = {author.casefold() for author in decision_authors}
     numbers = Counter(heading_id(comment.get("body", "")) for comment in comments)
@@ -79,6 +93,8 @@ def questions(comments: list[dict[str, Any]], owner: str, decision_authors: Iter
             leading_number, content = decision_parts(answer.get("body", ""), decision) if decision else (None, "")
             decision_number = heading_number or leading_number
             if recorded and deferred(content):
+                continue
+            if not include_edit_requests and edit_option(answer.get("body", "")) is not None:
                 continue
             numbered = (
                 recorded and number is not None and numbers[number] == 1
