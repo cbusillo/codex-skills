@@ -143,6 +143,7 @@
     "trace_id"
   ],
   "target-replacement-operation-read": [
+    "native_evidence",
     "operation",
     "recovery",
     "result",
