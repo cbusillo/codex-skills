@@ -235,7 +235,7 @@ class ConditionalResponseCache:
     @contextmanager
     def query_metadata(self, path: pathlib.Path) -> Iterator[None]:
         with (self.root / f"metadata-{path.stem[:2]}.lock").open("a+") as lock:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
             try:
                 yield
             finally:
@@ -253,7 +253,7 @@ class ConditionalResponseCache:
                 cached = self._read(path)
                 age = time.time() - float((cached or {}).get("validated_at") or 0)
                 if (cached and isinstance(cached.get("generation"), str) and cached.get("producer") != context["producer"] and not context["fresh"]
-                        and 0 <= age < self.max_age_seconds and isinstance(cached["body"], dict)
+                        and 0 <= age < self.max_age_seconds and isinstance(cached.get("body"), dict)
                         and isinstance(cached["body"].get("data"), dict) and not cached["body"].get("errors")):
                     content = copy.deepcopy(cached["body"])
                     if "rateLimit" in content["data"]:

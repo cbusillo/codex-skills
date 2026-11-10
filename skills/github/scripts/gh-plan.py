@@ -969,8 +969,6 @@ def api_json_uncached(
         graphql_operation=resolved_graphql_operation,
     )
     resolved_bucket = bucket or ("graphql" if github_api_core.is_graphql_path(path) else "rest_core")
-    # Planning observations must contact GitHub even immediately after another
-    # process read them. Reuse a body only after its validator receives a 304.
     # Mutation preflights/readbacks and explicitly selected active-auth routes
     # retain their existing uncached transport.
     if (

@@ -1196,6 +1196,33 @@ def test_failed_force_refresh_fences_an_older_inflight_response() -> None:
             assert remote.call_count == 1
 
 
+def test_busy_metadata_does_not_leave_an_earlier_success_after_failed_fresh_read() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        reader = github_read.GitHubReader(gh_cmd="fake-gh", expected_actor="fixture-automation", actor="fixture-automation",
+                                         operation="github.comment_radar", strict_actor=True)
+        query = "query { repository(owner:\"owner\",name:\"repo\") { name } }"
+        success = github_read.github_api_core.ApiResult(ok=True, status=200, body={"data": {"repository": {"name": "earlier"}}},
+                                                        actor=reader.actor, expected_actor=reader.expected_actor)
+        failed = github_read.github_api_core.ApiResult(ok=False, status=503, body=None, expected_actor=reader.expected_actor)
+        with github_read.shared_query_reads(root, "scope", "first"), patch.object(reader, "_transport_request", return_value=success):
+            assert reader.graphql_json(query, {}, step="populate").ok
+        original = github_read.fcntl.flock
+
+        def busy_nonblocking(descriptor: int, operation: int) -> None:
+            if operation & github_read.fcntl.LOCK_NB:
+                raise BlockingIOError("busy metadata")
+            original(descriptor, operation)
+
+        with (github_read.shared_query_reads(root, "scope", "second", fresh=True),
+              patch.object(github_read.fcntl, "flock", side_effect=busy_nonblocking),
+              patch.object(reader, "_transport_request", return_value=failed)):
+            assert not reader.graphql_json(query, {}, step="failed_force").ok
+        with github_read.shared_query_reads(root, "scope", "third"), patch.object(reader, "_transport_request", return_value=failed) as remote:
+            assert not reader.graphql_json(query, {}, step="after_failure").ok
+            assert remote.call_count == 1
+
+
 def main() -> None:
     tests = [test for name, test in globals().items() if name.startswith("test_") and callable(test)]
     failed: list[str] = []

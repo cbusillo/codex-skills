@@ -69,8 +69,8 @@ within the held roles; with no role they all apply.
    primary release/acceptance reads stay fresh. There is no whole-digest cache,
    daemon or seat registry; private query bodies use the existing reader cache
    and publisher beside the ledger, with cleanup at each check.
-   Checks outside the reuse window still read GitHub; align the seats' normal
-   checks within that window to get the saving. Open the linked source before
+   Checks outside the reuse window still read GitHub; run one check before the
+   other seats check within that window to get the saving. Open the source before
    claiming, merging, closing or acting on a candidate.
    The other readers run at the same time. The radar's repository
    comment scan keeps a watermark beside the ledger (`<ledger>-radar-scan.json`)
