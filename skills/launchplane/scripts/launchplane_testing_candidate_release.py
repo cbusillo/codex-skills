@@ -60,15 +60,11 @@ def add_parser(subparsers: Any) -> None:
             for flag in ("--expected-plan-digest", "--idempotency-key"):
                 parser.add_argument(flag, required=True)
         if mode == "apply":
-            parser.add_argument(
-                "--reviewed-dry-run", required=True, action="store_true"
-            )
+            parser.add_argument("--reviewed-dry-run", required=True, action="store_true")
             parser.add_argument("--dry-run-evidence-file", required=True)
 
 
-def intent(
-    h: Any, args: argparse.Namespace
-) -> tuple[dict[str, str], dict[str, object]]:
+def intent(h: Any, args: argparse.Namespace) -> tuple[dict[str, str], dict[str, object]]:
     mode = args.command.removeprefix(PREFIX)
     request = {
         "product": h.public_identifier(args.product),
@@ -99,9 +95,7 @@ def integer(value: object, *, signed: bool = False) -> int:
 
 
 def digest_field(value: object, *, allow_empty: bool = False) -> str:
-    if not isinstance(value, str) or not (
-        DIGEST_RE.fullmatch(value) or allow_empty and value == ""
-    ):
+    if not isinstance(value, str) or not (DIGEST_RE.fullmatch(value) or allow_empty and value == ""):
         raise ValueError("invalid_response")
     return value
 
@@ -142,21 +136,17 @@ def project_physical(h: Any, value: object) -> dict[str, object]:
         row = h._require_dict(measurement)
         readings[digest_field(identity)] = (
             {"reason": "backing_readback_unknown"}
-            if row.get("reason") == "backing_readback_unknown"
+            if not row or row.get("reason") == "backing_readback_unknown"
             else {
                 "before_bytes": integer(row.get("before_bytes")),
                 "after_bytes": integer(row.get("after_bytes")),
-                "observed_change_bytes": integer(
-                    row.get("observed_change_bytes"), signed=True
-                ),
+                "observed_change_bytes": integer(row.get("observed_change_bytes"), signed=True),
             }
         )
     return readings
 
 
-def project_candidate(
-    h: Any, value: object, request: dict[str, str]
-) -> dict[str, object]:
+def project_candidate(h: Any, value: object, request: dict[str, str]) -> dict[str, object]:
     row = h._require_dict(value)
     selected = row.get("selected")
     if (
@@ -171,7 +161,6 @@ def project_candidate(
         "product",
         "context",
         "instance",
-        "target_id",
     )
     digests = (
         "ownership_sha256",
@@ -182,15 +171,12 @@ def project_candidate(
     return {
         **{key: h.public_identifier(row.get(key)) for key in identities},
         **{key: digest_field(row.get(key, ""), allow_empty=True) for key in digests},
+        "target_id": optional_identifier(h, row.get("target_id")),
         "selected": selected,
         "status": row_status(row.get("status")),
-        "reasons": [
-            h.public_identifier(reason) for reason in array(row.get("reasons"))
-        ],
+        "reasons": [h.public_identifier(reason) for reason in array(row.get("reasons"))],
         "container_count": integer(row.get("container_count", 0)),
-        "resources": [
-            project_resource(h, item) for item in array(row.get("resources", []))
-        ],
+        "resources": [project_resource(h, item) for item in array(row.get("resources", []))],
         "physical_readback": project_physical(h, row.get("physical_readback", {})),
     }
 
@@ -234,17 +220,11 @@ def project(h: Any, response: object, request: dict[str, str]) -> dict[str, obje
     if source.get("replayed") is True:
         projected["replayed"] = True
     if "candidates" in source:
-        projected["candidates"] = [
-            project_candidate(h, item, request) for item in array(source["candidates"])
-        ]
+        projected["candidates"] = [project_candidate(h, item, request) for item in array(source["candidates"])]
     if "capacity" in source:
-        projected["capacity"] = [
-            project_capacity(h, item) for item in array(source["capacity"])
-        ]
+        projected["capacity"] = [project_capacity(h, item) for item in array(source["capacity"])]
     if "capacity_refusal" in source:
-        projected["capacity_refusal"] = optional_identifier(
-            h, source["capacity_refusal"]
-        )
+        projected["capacity_refusal"] = optional_identifier(h, source["capacity_refusal"])
     h.assert_public_safe_shape(projected)
     return projected
 
@@ -256,10 +236,7 @@ def reviewed(evidence_file: str, request: dict[str, str]) -> bool:
         return (
             evidence.get("status") == "ok"
             and evidence.get("operation") == PREFIX + "dry-run"
-            and all(
-                evidence["request"].get(key) == request.get(key)
-                for key in TARGET_FIELDS
-            )
+            and all(evidence["request"].get(key) == request.get(key) for key in TARGET_FIELDS)
             and result.get("status") == "eligible"
             and result.get("plan_sha256") == request["reviewed_plan_sha256"]
         )
@@ -277,22 +254,14 @@ def finish(
     diagnostics: dict[str, object] | None = None,
 ) -> int:
     output = h.base_payload(status=status, operation=operation, request=request)
-    summary = {
-        key: value
-        for key, value in (diagnostics or {}).items()
-        if key != "error_reason"
-    }
+    summary = {key: value for key, value in (diagnostics or {}).items() if key != "error_reason"}
     summary["recommendation"] = RECOVERY[status]
     output["summary"] = summary
     if result is not None:
         output["result"] = result
     if status != "ok":
         error_code = summary.get("error_code")
-        output["warnings"] = [
-            h.warning(
-                error_code if isinstance(error_code, str) else status, RECOVERY[status]
-            )
-        ]
+        output["warnings"] = [h.warning(error_code if isinstance(error_code, str) else status, RECOVERY[status])]
     for value in output.values():
         h.assert_public_safe_shape(value)
     h.emit(output)
@@ -311,9 +280,7 @@ def execute(h: Any, args: argparse.Namespace) -> int:
             status="invalid",
             diagnostics={"error_code": "candidate_release_review_evidence_mismatch"},
         )
-    settings = h.prepare_operator_settings(
-        args=args, operation=operation, request=request
-    )
+    settings = h.prepare_operator_settings(args=args, operation=operation, request=request)
     if settings is None:
         return 2
     path = h.helper_command_path(operation).format(

@@ -61,9 +61,7 @@ def failure(code: str, status: int = 409) -> urllib.error.HTTPError:
     )
 
 
-def invoke(
-    args: list[str], reply: object = None
-) -> tuple[int, dict[str, Any], list[dict[str, Any]]]:
+def invoke(args: list[str], reply: object = None) -> tuple[int, dict[str, Any], list[dict[str, Any]]]:
     code, output, posts, _ = _run_main(args, post=reply)
     return code, output, posts
 
@@ -71,10 +69,7 @@ def invoke(
 def reviewed_evidence(tmp_path: Path) -> str:
     code, dry, calls = invoke(argv(), response())
     assert code == 0 and calls[0]["body"] == {"mode": "dry-run"}
-    assert (
-        calls[0]["path"]
-        == f"/v1/products/opw/testing-rebuild/{OPERATION}/candidate-release"
-    )
+    assert calls[0]["path"] == f"/v1/products/opw/testing-rebuild/{OPERATION}/candidate-release"
     assert dry["result"]["reclaimable_bytes"] == 3500
     return _write_json(tmp_path, "dry.json", dry)
 
@@ -116,9 +111,7 @@ def test_apply_without_matching_review_never_reaches_the_service(
         (urllib.error.URLError("dropped"), "outcome_unknown"),
     ],
 )
-def test_apply_outcomes_map_to_their_recovery(
-    tmp_path: Path, error: Exception, expected: str
-) -> None:
+def test_apply_outcomes_map_to_their_recovery(tmp_path: Path, error: Exception, expected: str) -> None:
     code, result, _ = invoke(argv("apply", reviewed_evidence(tmp_path)), error)
     assert code != 0 and result["status"] == expected
     assert "PRIVATE_SENTINEL" not in json.dumps(result)
@@ -134,7 +127,7 @@ def test_response_for_another_operation_or_plan_is_not_success(tmp_path: Path) -
     for reply in (
         response("released", operation_id="other"),
         response("released", plan_sha256="c" * 64),
-        response("eligible"),
+        response(),
     ):
         code, result, _ = invoke(argv("apply", evidence), reply)
         assert code != 0 and result["status"] == "outcome_unknown"
@@ -182,9 +175,7 @@ def test_held_plan_surfaces_evidence_and_cannot_apply(tmp_path: Path) -> None:
         "lifecycle_snapshot_sha256": digest,
         "container_count": 1,
         "resources": [resource],
-        "physical_readback": {
-            digest: {"before_bytes": 12, "after_bytes": 10, "observed_change_bytes": -2}
-        },
+        "physical_readback": {digest: {"before_bytes": 12, "after_bytes": 10, "observed_change_bytes": -2}},
     }
     capacity = {
         "backing_sha256": digest,
@@ -193,9 +184,17 @@ def test_held_plan_surfaces_evidence_and_cannot_apply(tmp_path: Path) -> None:
         "reserve_bytes": 3,
         "deficit_bytes": 7,
     }
+    unallocated = {
+        **candidate,
+        "operation_id": "another-original",
+        "target_id": "",
+        "selected": False,
+        "resources": [],
+        "physical_readback": {},
+    }
     reply = response(
         "held",
-        candidates=[candidate],
+        candidates=[candidate, unallocated],
         capacity=[capacity],
         capacity_refusal="receiver_candidate_unavailable",
         reclaimable_bytes=None,
@@ -206,12 +205,17 @@ def test_held_plan_surfaces_evidence_and_cannot_apply(tmp_path: Path) -> None:
     assert projected["reclaimable_bytes"] is None
     assert projected["capacity"] == [capacity]
     assert projected["capacity_refusal"] == "receiver_candidate_unavailable"
-    candidate.pop("resources")
     assert projected["candidates"][0] == {
         **candidate,
         "resources": [
             {key: value for key, value in resource.items() if key != "private_path"},
         ],
+    }
+    assert projected["candidates"][1] == unallocated
+    candidate["physical_readback"] = {digest: {}}
+    dry_unknown = invoke(argv(), reply)[1]
+    assert dry_unknown["result"]["candidates"][0]["physical_readback"] == {
+        digest: {"reason": "backing_readback_unknown"},
     }
     saved = _write_json(tmp_path, "held.json", dry)
     code, _, calls = invoke(argv("apply", saved))
