@@ -28,7 +28,6 @@ from decimal import Decimal
 from functools import partial
 from multiprocessing.process import BaseProcess
 from pathlib import Path
-from typing import BinaryIO, cast
 from unittest.mock import patch
 
 import heavy_run
@@ -58,14 +57,14 @@ class ResultCollectionTests(unittest.TestCase):
                     with (
                         sender,
                         receiver,
-                        sender.makefile("rwb") as remote,
-                        receiver.makefile("rwb") as local,
+                        sender.makefile("rb") as remote_requests,
+                        sender.makefile("wb") as remote_stream,
+                        receiver.makefile("rb") as local_stream,
+                        receiver.makefile("wb") as local_requests,
                     ):
-                        remote_stream = cast(BinaryIO, remote)
-                        local_stream = cast(BinaryIO, local)
                         with ThreadPoolExecutor(max_workers=1) as pool:
-                            sent = pool.submit(heavy_run.send_result, guest, remote_stream, remote_stream)
-                            result = heavy_run.receive_result(local_stream, local_stream, destination, local_reference)
+                            sent = pool.submit(heavy_run.send_result, guest, remote_stream, remote_requests)
+                            result = heavy_run.receive_result(local_stream, local_requests, destination, local_reference)
                             sent.result(timeout=5)
                     self.assertEqual(heavy_run.result_inventory(destination), expected)
                     expected_bytes = sum((guest / name).stat().st_size for name in ("changed", "added"))
