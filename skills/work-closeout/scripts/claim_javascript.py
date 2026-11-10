@@ -869,6 +869,7 @@ def native_capabilities(root: Node) -> None:
     nodes = []
     pending = [root]
     bound = set()
+    typed_members = False
     while pending:
         node = pending.pop()
         nodes.append(node)
@@ -956,7 +957,10 @@ def native_capabilities(root: Node) -> None:
         if kind == "subscript_expression":
             key = node.child_by_field_name("index")
             if key.type != "number" and not (key.type == "string" and property_name(key)):
-                raise ValueError("computed member")
+                if not typed_members:
+                    checker = JavascriptData()
+                    checker.statement(root, checker.environment)
+                    typed_members = True
         if kind == "new_expression" and source(node.child_by_field_name("constructor")) not in {"Date", "RegExp"}:
             raise ValueError("constructor")
         if kind == "call_expression":
