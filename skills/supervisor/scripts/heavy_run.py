@@ -902,11 +902,12 @@ def run_in_slot(
                         receipt["exit_code"] = receipt["exit_code"] or 1
                 finally:
                     custody.unlink()
-                if docker.storage:
-                    receipt["storage"] = docker.storage
             except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
                 receipt["cleanup_error"] = str(error)
                 receipt["exit_code"] = receipt["exit_code"] or 1
+            finally:
+                if docker.storage:
+                    receipt["storage"] = docker.storage
     except Canceled as error:
         receipt["exit_code"] = 128 + error.signum
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:

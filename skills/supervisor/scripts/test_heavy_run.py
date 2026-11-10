@@ -61,6 +61,9 @@ class InputStagingTests(unittest.TestCase):
             os.chflags(payload, stat.UF_IMMUTABLE)
             original_metadata = payload.stat()
             try:
+                direct = Path(temporary) / "direct-clone"
+                heavy_run.clone_input(Path(temporary) / "original" / "payload", direct)
+                self.assertEqual(direct.read_bytes(), expected)
                 owner = self.docker(evidence)
                 staged = owner.stage_input(source)
                 image = owner.stage_input(payload)
@@ -108,8 +111,8 @@ class InputStagingTests(unittest.TestCase):
             metadata = source.stat()
             foreign_metadata = os.stat_result((*metadata[:2], metadata.st_dev + 1, *metadata[3:]))
 
-            def other_device(path: Path, *args: object, **kwargs: object) -> os.stat_result:
-                return foreign_metadata if path == source else original_stat(path, *args, **kwargs)
+            def other_device(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+                return foreign_metadata if path == source else original_stat(path, follow_symlinks=follow_symlinks)
 
             other = self.docker(evidence)
             with (
@@ -233,6 +236,35 @@ class InputStagingTests(unittest.TestCase):
             self.assertIsNotNone(owner.finish_staging(recovery=True))
             self.assertEqual(source.read_bytes(), b"keep original")
             self.assertTrue((held / retained[0].name).exists())
+
+    def test_runtime_cleanup_failure_keeps_staging_and_reports_its_storage_cost(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source = root / "original"
+            source.write_bytes(b"preserve original")
+            evidence = root / "evidence"
+            manifest = {"containers": [{"name": "job", "image": "fixture"}], "job": "job"}
+
+            def prepare(owner: heavy_run.Docker) -> dict:
+                owner.stage_input(source)
+                return manifest
+
+            with (
+                patch.object(heavy_run, "clone_input", side_effect=shutil.copyfile),
+                patch.object(heavy_run, "recover"),
+                patch.object(heavy_run, "local_endpoint", return_value="unix:///fixture"),
+            ):
+                with (
+                    patch.object(heavy_run.Docker, "run", return_value=(0, {})),
+                    patch.object(heavy_run.Docker, "cleanup", side_effect=RuntimeError("fixture cleanup failure")),
+                ):
+                    self.assertNotEqual(heavy_run.run({}, evidence, heavy_run.Settings(), root, prepare=prepare), 0)
+            receipt = json.loads((evidence / "result.json").read_text())
+            self.assertFalse(receipt["cleanup_complete"])
+            self.assertEqual(receipt["storage"]["cloned_files"], 1)
+            self.assertTrue(list((root / heavy_run.STATE_PATH).glob("custody-*")))
+            self.assertTrue([path for path in root.iterdir() if path.name.startswith(heavy_run.STAGING_PREFIX)])
+            self.assertEqual(source.read_bytes(), b"preserve original")
 
     def test_stream_only_run_does_not_require_read_access_to_staging_parent(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -397,8 +429,7 @@ class VolumeDocker(heavy_run.Docker):
                     (labels if value == "--label" else options)[key] = setting
             backing = self.root / "volumes" / name / "_data"
             backing.mkdir(parents=True)
-            self.volumes[name] = {"Name": name, "Driver": "local", "Options": options,
-                                  "Labels": labels, "Mountpoint": str(backing)}
+            self.volumes[name] = {"Name": name, "Driver": "local", "Options": options, "Labels": labels, "Mountpoint": str(backing)}
             return name
         if args[:2] == ("volume", "rm"):
             name = args[-1]
@@ -564,7 +595,9 @@ class OverlayTests(unittest.TestCase):
             inventory.write_text(json.dumps({"hashes": []}))
 
         def no_entries_for_this_input(_lower: Path, inventory: Path, recorded: dict[str, str]) -> None:
-            inventory.write_text(json.dumps({"hashes": {key: value for key, value in recorded.items() if key.startswith("images/")}}))
+            inventory.write_text(
+                json.dumps({"hashes": {key: value for key, value in recorded.items() if key.startswith("images/")}})
+            )
 
         def partial_inventory(_lower: Path, inventory: Path, recorded: dict[str, str]) -> None:
             del recorded["inputs/3/attachment"]
