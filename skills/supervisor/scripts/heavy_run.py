@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
+import errno
 import fcntl
 import hashlib
 import json
@@ -13,9 +15,11 @@ import math
 import os
 import pwd
 import re
+import shutil
 import signal
 import stat
 import subprocess
+import sys
 import tarfile
 import time
 import uuid
@@ -34,6 +38,12 @@ CONFIG_PATH = Path(".config/codex-skills/heavy-run.json")
 STATE_PATH = Path(".local/state/codex-skills/heavy-run")
 MIN_NANO_CPUS = 10**7
 MIN_MEMORY = 6 * 1024**2
+STAGING_PREFIX = ".heavy-inputs-"
+CLONE_NOFOLLOW = 1
+CLONE_NOOWNERCOPY = 2
+CLONE_NOFOLLOW_ANY = 8
+USER_FLAGS = getattr(stat, "UF_IMMUTABLE", 0) | getattr(stat, "UF_APPEND", 0)
+SYSTEM_FLAGS = getattr(stat, "SF_IMMUTABLE", 0) | getattr(stat, "SF_APPEND", 0)
 CANCEL_SIGNALS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
 WORKLOAD_ENTRYPOINT = """import signal, subprocess, sys
 canceled = 0
@@ -50,6 +60,58 @@ except (OSError, ValueError):
     sys.exit(255)
 sys.exit(128 + canceled if canceled else 128 - status if status < 0 else status if status < 128 else 127)
 """
+
+
+def clear_staged_flags(descriptor: int) -> None:
+    metadata = os.fstat(descriptor)
+    if sys.platform != "darwin" or not metadata.st_flags & USER_FLAGS:
+        return
+    if stat.S_ISREG(metadata.st_mode) and metadata.st_nlink != 1:
+        raise RuntimeError("Linked staging cannot change an original's flags")
+    change = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True).fchflags
+    change.argtypes = [ctypes.c_int, ctypes.c_uint]
+    change.restype = ctypes.c_int
+    if change(descriptor, metadata.st_flags & ~USER_FLAGS):
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code))
+
+
+def clone_input(source: Path, destination: Path) -> None:
+    if source.is_symlink() or not source.is_file():
+        raise ValueError("Clone an original regular file; use manifest references for links")
+    source = source.resolve(strict=True)
+    destination = destination.parent.resolve(strict=True) / destination.name
+    if sys.platform == "darwin":
+        if source.stat().st_flags & SYSTEM_FLAGS:
+            raise OSError(errno.ENOTSUP, "Stream system-locked originals through the manifest instead")
+        clone = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True).clonefile
+        clone.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int]
+        clone.restype = ctypes.c_int
+        if clone(os.fsencode(source), os.fsencode(destination), CLONE_NOFOLLOW | CLONE_NOOWNERCOPY | CLONE_NOFOLLOW_ANY):
+            code = ctypes.get_errno()
+            raise OSError(code, os.strerror(code), str(destination))
+        descriptor = os.open(destination, os.O_EVTONLY | os.O_NOFOLLOW)
+        try:
+            clear_staged_flags(descriptor)
+        finally:
+            os.close(descriptor)
+        return
+    if sys.platform == "linux":
+        with source.open("rb") as original, destination.open("xb") as target:
+            try:
+                fcntl.ioctl(target.fileno(), fcntl.FICLONE, original.fileno())
+            except OSError:
+                destination.unlink()
+                raise
+        return
+    raise OSError(errno.ENOTSUP, "Use the original manifest source for read-only streaming on this host")
+
+
+def input_entries(root: Path) -> Generator[Path, None, None]:
+    for path in [root, *sorted(root.rglob("*"))] if root.is_dir() else [root]:
+        if not stat.S_ISDIR(path.lstat().st_mode) and not stat.S_ISREG(path.lstat().st_mode):
+            raise ValueError("Inputs must contain only ordinary files and directories")
+        yield path
 
 
 def locked_file(path: Path) -> BinaryIO:
@@ -288,10 +350,8 @@ def overlay_lower_digest(root: Path, hashes: dict[str, str] | None = None) -> st
     if not re.fullmatch(r"/[A-Za-z0-9_./-]+", str(root)) or root.resolve(strict=True) != root or not root.is_dir():
         raise ValueError("Overlay lower must be an unaliased local directory without mount option delimiters")
     digest = hashlib.sha256()
-    for path in [root, *sorted(root.rglob("*"))]:
+    for path in input_entries(root):
         metadata = path.lstat()
-        if not stat.S_ISDIR(metadata.st_mode) and not stat.S_ISREG(metadata.st_mode):
-            raise ValueError("Overlay inputs cannot contain links or special files")
         required_mode = 0o007 if path.is_dir() else 0o006
         if metadata.st_mode & required_mode != required_mode:
             raise ValueError("Overlay lower must already have container-copy permissions; prepare a compatible frozen input")
@@ -373,7 +433,7 @@ def legacy_lower_proven(lower: Path) -> bool:
 
 
 class Docker:
-    def __init__(self, slot: Slot, log: TextIO, endpoint: str) -> None:
+    def __init__(self, slot: Slot, log: TextIO, endpoint: str, evidence: Path | None = None, staging: str | None = None) -> None:
         if not endpoint.startswith("unix://"):
             raise ValueError("Heavy runs require a local Unix Docker socket")
         self.slot = slot
@@ -384,6 +444,127 @@ class Docker:
         self.prefix = ["docker", "--host", endpoint]
         self.lower_digests: dict[Path, str] = {}
         self.overlay_volumes: dict[tuple[Path, str], str] = {}
+        self.evidence = evidence.resolve() if evidence is not None else None
+        self.staging = staging
+        self.staging_created = False
+        self.storage: dict[str, int] = {}
+        self.free_before = 0
+
+    def staging_root(self) -> Path:
+        if self.evidence is None or self.staging is None:
+            raise ValueError("Stage inputs only inside the queued prepare callback")
+        if not isinstance(self.staging, str) or not re.fullmatch(re.escape(STAGING_PREFIX) + r"[0-9a-f]{32}", self.staging):
+            raise RuntimeError("Invalid staging ownership; preserve files")
+        return self.evidence.parent / self.staging
+
+    def stage_input(self, source: Path) -> Path:
+        root = self.staging_root()
+        if source.is_symlink():
+            raise ValueError("Use a manifest reference to stream a symlinked original")
+        source = source.resolve(strict=True)
+        if source.is_relative_to(root) or source in root.parents:
+            raise ValueError("The original must be separate from owned staging")
+        paths = list(input_entries(source))
+        if not self.staging_created:
+            root.mkdir(mode=0o700)
+            with (root / ".owner").open("x") as marker:
+                marker.write(self.label)
+                marker.flush()
+                os.fsync(marker.fileno())
+            self.staging_created = True
+            self.free_before = shutil.disk_usage(root).free
+            self.storage.update(cloned_files=0, copied_files=0, copied_bytes=0)
+        destination = root / str(len(list(root.iterdir())) - 1)
+        for path in paths:
+            target = destination / path.relative_to(source)
+            if path.is_dir():
+                target.mkdir(mode=0o700)
+                continue
+            if path.stat().st_dev == root.stat().st_dev:
+                clone_input(path, target)
+                self.storage["cloned_files"] += 1
+            else:
+                with path.open("rb") as original, target.open("xb") as output:
+                    while chunk := original.read(1024 * 1024):
+                        self.storage["copied_bytes"] += output.write(chunk)
+                self.storage["copied_files"] += 1
+            target.chmod(stat.S_IMODE(path.stat().st_mode))
+        self.storage["observed_bytes_added"] = self.free_before - shutil.disk_usage(root).free
+        return destination
+
+    @staticmethod
+    def prepare_staging_removal(descriptor: int) -> None:
+        clear_staged_flags(descriptor)
+        os.fchmod(descriptor, 0o700)
+        for _, directories, files, current in os.fwalk(dir_fd=descriptor):
+            for name in directories + files:
+                metadata = os.stat(name, dir_fd=current, follow_symlinks=False)
+                directory = stat.S_ISDIR(metadata.st_mode)
+                if not directory and (not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1):
+                    continue
+                if not directory and sys.platform != "darwin":
+                    continue
+                child = os.open(name, getattr(os, "O_EVTONLY", os.O_RDONLY) | os.O_NOFOLLOW, dir_fd=current)
+                try:
+                    opened = os.fstat(child)
+                    if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
+                        raise RuntimeError("Staging changed during normalization; preserve files")
+                    clear_staged_flags(child)
+                    if directory:
+                        os.fchmod(child, 0o700)
+                finally:
+                    os.close(child)
+
+    def collect_staged_inputs(self) -> None:
+        if self.staging is None or self.evidence is None:
+            return
+        root = self.staging_root()
+        parent = os.open(root.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            try:
+                descriptor = os.open(root.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            except FileNotFoundError:
+                return
+            try:
+                marker = os.open(".owner", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=descriptor)
+                try:
+                    metadata = os.fstat(marker)
+                    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1 or os.read(marker, 1024) != self.label.encode():
+                        raise RuntimeError("Foreign staging ownership; preserve files")
+                finally:
+                    os.close(marker)
+                if not shutil.rmtree.avoids_symlink_attacks:
+                    raise RuntimeError("Symlink-resistant collection is unavailable; preserve files")
+                free_before = shutil.disk_usage(root.parent).free
+                self.prepare_staging_removal(descriptor)
+                current = os.stat(root.name, dir_fd=parent, follow_symlinks=False)
+                opened = os.fstat(descriptor)
+                if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
+                    raise RuntimeError("Staging changed during collection; preserve files")
+                shutil.rmtree(root.name, dir_fd=parent)
+                self.storage["observed_bytes_reclaimed"] = shutil.disk_usage(root.parent).free - free_before
+            finally:
+                os.close(descriptor)
+        finally:
+            os.close(parent)
+
+    def finish_staging(self, *, recovery: bool = False) -> str | None:
+        if not self.staging_created and not recovery:
+            return None
+        try:
+            self.collect_staged_inputs()
+        except (OSError, ValueError, RuntimeError, NotImplementedError) as error:
+            message = f"Staging collection failed; preserved {self.staging!r} beside {self.evidence}: {error}"
+            self.log.write(message + "\n")
+            if self.evidence is not None and self.evidence.is_dir():
+                try:
+                    (self.evidence / "staging-error.json").write_text(
+                        json.dumps({"error": message, "directory": self.staging, "owner": self.label}) + "\n"
+                    )
+                except OSError as report_error:
+                    self.log.write(f"Staging report unavailable; original directory is named above: {report_error}\n")
+            return message
+        return None
 
     def call(self, *args: str, timeout: int | None = 60) -> str:
         result = subprocess.run(
@@ -427,11 +608,7 @@ class Docker:
     def stage_overlay_input(root: Path) -> None:
         if root.resolve(strict=True) != root or not root.is_dir():
             raise ValueError("Stage only a new unaliased overlay input directory")
-        paths = [root, *root.rglob("*")]
-        for path in paths:
-            mode = path.lstat().st_mode
-            if not stat.S_ISDIR(mode) and not stat.S_ISREG(mode):
-                raise ValueError("Overlay input staging refuses links and special files")
+        paths = list(input_entries(root))
         for path in paths:
             path.chmod(container_input_mode(path.stat().st_mode, directory=path.is_dir()))
 
@@ -646,16 +823,25 @@ def cancel(signum: int, _frame: object) -> None:
 class Custody:
     endpoint: str
     evidence: Path
+    staging: str | None = None
 
     @classmethod
     def load(cls, path: Path) -> Custody:
         data = json.loads(path.read_text())
-        return cls(data["endpoint"], Path(data["evidence"]))
+        return cls(data["endpoint"], Path(data["evidence"]), data.get("staging"))
 
     def save(self, path: Path) -> None:
         pending = path.with_suffix(".next")
-        pending.write_text(json.dumps({"endpoint": self.endpoint, "evidence": str(self.evidence.resolve())}))
+        with pending.open("w") as stream:
+            json.dump({"endpoint": self.endpoint, "evidence": str(self.evidence.resolve()), "staging": self.staging}, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
         pending.replace(path)
+        descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
 
 
 def recover(slot: Slot, custody: Path, log: TextIO, endpoint: str) -> None:
@@ -666,9 +852,13 @@ def recover(slot: Slot, custody: Path, log: TextIO, endpoint: str) -> None:
     recovered = previous.evidence / "recovered.log"
     if recovered.is_absolute() and recovered.parent.is_dir():
         with recovered.open("a") as previous_log:
-            Docker(slot, previous_log, previous.endpoint).cleanup(previous_log)
+            docker = Docker(slot, previous_log, previous.endpoint, previous.evidence, previous.staging)
+            docker.cleanup(previous_log)
+            docker.finish_staging(recovery=True)
     else:
-        Docker(slot, log, previous.endpoint).cleanup(None)
+        docker = Docker(slot, log, previous.endpoint, previous.evidence, previous.staging)
+        docker.cleanup(None)
+        docker.finish_staging(recovery=True)
     if previous.evidence.is_absolute() and previous.evidence.is_dir():
         for env_file in previous.evidence.glob("*.env"):
             env_file.unlink()
@@ -689,8 +879,9 @@ def run_in_slot(
     try:
         endpoint = local_endpoint(home, log)
         recover(slot, custody, log, endpoint)
-        docker = Docker(slot, log, endpoint)
-        Custody(endpoint, evidence).save(custody)
+        staging = STAGING_PREFIX + uuid.uuid4().hex
+        docker = Docker(slot, log, endpoint, evidence, staging)
+        Custody(endpoint, evidence, staging).save(custody)
         receipt["cleanup_complete"] = False
         try:
             if prepare is not None:
@@ -705,10 +896,18 @@ def run_in_slot(
             try:
                 docker.cleanup(log)
                 receipt["cleanup_complete"] = True
-                custody.unlink()
-            except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+                try:
+                    if error := docker.finish_staging():
+                        receipt["staging_cleanup_error"] = error
+                        receipt["exit_code"] = receipt["exit_code"] or 1
+                finally:
+                    custody.unlink()
+            except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
                 receipt["cleanup_error"] = str(error)
                 receipt["exit_code"] = receipt["exit_code"] or 1
+            finally:
+                if docker.storage:
+                    receipt["storage"] = docker.storage
     except Canceled as error:
         receipt["exit_code"] = 128 + error.signum
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
