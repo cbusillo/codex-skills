@@ -952,12 +952,16 @@ installed local helper bindings.
   `dropped_field_paths`; an unknown field is listed as
   `<unlisted field>`. A secret-looking value in a kept field fails the read.
   With the opt-in, `result.native_evidence` validates the producer-owned closed
-  [NativeTestingRebuildEvidence](https://github.com/cbusillo/launchplane/blob/dbda589bd6872f5a68337e68b18ae1b692272d74/control_plane/contracts/native_testing_rebuild_evidence.py)
+  [NativeTestingRebuildEvidence](https://github.com/cbusillo/launchplane/blob/9e3a5ad982d162a7d149ba68ba60702cce24c64e/control_plane/contracts/native_testing_rebuild_evidence.py)
   schema. The response operation id and evidence operation attempt must agree
   with this request and its operation view. Provider reservation attempts remain
   independent. Unknown fields, uncontrolled text, malformed types and missing
-  required evidence fail the read; omitted optional values normalize to their
-  schema defaults or `null`. A service without this view cannot satisfy the
+  required evidence fail the read. On `terminal_probe`, optional `http_status`
+  accepts only `null` or a strict integer from 100 through 599; `failure_kind`
+  accepts only `null`, `connection`, `tls`, `timeout`, `invalid_response` or
+  `redirect`. These two fields preserve absence and explicit `null`; other
+  omitted optional values normalize to their schema defaults or `null`.
+  A service without this view cannot satisfy the
   opt-in. No native evidence is accepted on the default request.
 
   The producer's pinned [wire and coverage contract](https://github.com/cbusillo/launchplane/blob/dbda589bd6872f5a68337e68b18ae1b692272d74/docs/service-boundary.md)
