@@ -2959,20 +2959,34 @@ keep the operation record, failure receipts and evidence. See Launchplane's
 [testing candidate storage](https://github.com/cbusillo/launchplane/blob/main/docs/testing-candidate-release.md)
 for what the service refuses and why.
 
-Save the dry-run JSON outside the checkout. It reports `status` (`eligible` or
-`absent`), `plan_sha256`, `reclaimable_bytes` and the operation's
-`failure_code`. Apply requires `--reviewed-dry-run --dry-run-evidence-file
-/private/dry.json`, `--expected-plan-digest` from that output and
-`--idempotency-key`; evidence for another product, operation, digest or a
-non-`eligible` plan is refused before any request. Readback takes the same
-digest and key.
+Save the dry-run JSON outside the checkout. It reports `eligible`, `held` or
+`absent`, with the plan digest and failure code. Apply requires an eligible
+plan, `--reviewed-dry-run --dry-run-evidence-file /private/dry.json`,
+`--expected-plan-digest` from `result.plan_sha256`, and `--idempotency-key`.
+The optional `--receiver-operation-id` assesses the migrated receiver's backing
+capacity. Supply the same receiver or omit it consistently for dry run,
+apply and readback. Apply checks the saved product, candidate, receiver and
+digest before calling the service.
 
-A refusal (`refused`, `stale_plan`, `conflict`, `not_started`) or
-`candidate_release_unavailable` released nothing. On apply or readback, any
-other HTTP error, transport loss or `mutation_reconciliation_required` is
-`outcome_unknown`, and so is an `eligible` result: keep the digest and key, read back, and if it is still
-unsettled apply again with the same digest and key to finish it. Never start
-over with a new key, and never remove containers or volumes by hand.
+Candidate results report the selected original and other candidates in the same
+context, with custody reasons and resource evidence. To review a different
+candidate, dry-run its own original operation. `capacity` reports free bytes,
+required additional bytes, reserve and deficit for each assessed backing.
+A `capacity_refusal` leaves capacity unresolved. `reclaimable_bytes` is an
+estimate when present. Physical readback reports observed free-space change by
+volume identity, which can include concurrent activity. A `released` result
+means the reviewed eligible resources are absent. Protected source volumes
+can remain.
+
+On `held`, inspect the candidate and resource reasons. Any further attempt
+requires a fresh eligible plan and a new key if the previous key was used.
+On `outcome_unknown`, preserve the original request, evidence, digest and key
+and use `testing-candidate-release-readback` with those arguments. On the
+converged producer, an apply with the same key after uncertain effects
+observes the original receipt until its effects are known. A new key is for
+a new eligible plan after settlement. A stale plan requires a fresh review,
+a reused key belongs to its original request, and a missing receipt means
+no release was recorded for that key.
 
 ## Governance projection read
 

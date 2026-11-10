@@ -12879,8 +12879,8 @@ def main(argv: list[str]) -> int:
         from launchplane_review_withdrawal import COMMANDS as review_withdrawal_commands, execute as execute_review_withdrawal
         if args.command in review_withdrawal_commands:
             return execute_review_withdrawal(sys.modules[__name__], args)
-        from launchplane_testing_candidate_release import COMMANDS as candidate_release_commands, execute as execute_candidate_release
-        if args.command in candidate_release_commands:
+        from launchplane_testing_candidate_release import COMMANDS as CANDIDATE_RELEASE_COMMANDS, execute as execute_candidate_release
+        if args.command in CANDIDATE_RELEASE_COMMANDS:
             return execute_candidate_release(sys.modules[__name__], args)
         from launchplane_release_request import COMMANDS as RELEASE_REQUEST_COMMANDS, execute as execute_release_request
         if args.command in RELEASE_REQUEST_COMMANDS:

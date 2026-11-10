@@ -2,8 +2,6 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Release a failed native testing candidate's storage after a reviewed dry run."""
-
 from __future__ import annotations
 
 import argparse
@@ -18,7 +16,13 @@ from typing import Any
 PREFIX = "testing-candidate-release-"
 COMMANDS = frozenset(PREFIX + mode for mode in ("dry-run", "apply", "readback"))
 DIGEST_RE = re.compile(r"[a-f0-9]{64}")
-STATUSES = {"eligible", "absent", "released"}
+RESULT_STATUSES = {
+    "dry-run": {"eligible", "absent", "held"},
+    "apply": {"released", "absent", "held"},
+    "readback": {"released", "absent", "held"},
+}
+RESOURCE_STATUSES = {"eligible", "held", "removed", "absent", "unknown"}
+TARGET_FIELDS = ("product", "operation_id", "receiver_operation_id")
 
 REFUSAL_STATUS = {
     "candidate_release_plan_changed": "stale_plan",
@@ -28,40 +32,56 @@ REFUSAL_STATUS = {
 }
 
 RECOVERY = {
-    "ok": "The operation record, failure receipts and evidence are kept. Measure free space before another restore.",
+    "ok": "Keep the operation record, failure receipts and evidence. Check measured free space before another restore.",
+    "held": "Review the candidate and resource reasons. Apply requires a new eligible plan and, if a key was used, a new key.",
     "refused": "Nothing was released. The refusal names what protects the candidate; resolve that, then plan a new dry run. Do not remove containers or volumes by hand.",
     "stale_plan": "Nothing was released. Save and review a new dry run before apply.",
     "conflict": "This request was not dispatched. The key belongs to a different release request; use the request it was made for.",
     "not_started": "No release exists for this key. Apply the reviewed dry run with this key first.",
-    "outcome_unknown": "The release may have started. Keep the reviewed digest and key. Run testing-candidate-release-readback; if it is still unsettled, apply again with the same digest and key to finish it. Do not start over with a new key.",
+    "outcome_unknown": "The release may have started. Keep the original request, reviewed evidence, digest and key. Use testing-candidate-release-readback with those original arguments until the receipts establish the outcome.",
     "unavailable": "The service could not plan the release; nothing was released. Inspect the trace and retry the dry run.",
     "invalid": "This request was not dispatched. Save and review a dry run of this exact request before apply.",
 }
 
 
 def add_parser(subparsers: Any) -> None:
-    for command in sorted(COMMANDS):
+    for mode in RESULT_STATUSES:
         parser = subparsers.add_parser(
-            command, help="Release a failed native testing candidate's containers and volumes."
+            PREFIX + mode,
+            help="Release a failed native testing candidate's containers and volumes.",
         )
         parser.add_argument("--product", required=True)
         parser.add_argument("--operation-id", required=True)
-        if not command.endswith("-dry-run"):
-            parser.add_argument("--expected-plan-digest", required=True)
-            parser.add_argument("--idempotency-key", required=True)
-        if command.endswith("-apply"):
-            parser.add_argument("--reviewed-dry-run", required=True, action="store_true")
+        parser.add_argument(
+            "--receiver-operation-id",
+            help="Original receiver operation to assess for capacity.",
+        )
+        if mode != "dry-run":
+            for flag in ("--expected-plan-digest", "--idempotency-key"):
+                parser.add_argument(flag, required=True)
+        if mode == "apply":
+            parser.add_argument(
+                "--reviewed-dry-run", required=True, action="store_true"
+            )
             parser.add_argument("--dry-run-evidence-file", required=True)
 
 
-def intent(h: Any, args: argparse.Namespace) -> tuple[dict[str, object], dict[str, object]]:
+def intent(
+    h: Any, args: argparse.Namespace
+) -> tuple[dict[str, str], dict[str, object]]:
     mode = args.command.removeprefix(PREFIX)
-    request: dict[str, object] = {
+    request = {
         "product": h.public_identifier(args.product),
         "operation_id": h.public_identifier(args.operation_id),
         "mode": mode,
     }
     body: dict[str, object] = {"mode": mode}
+    if args.receiver_operation_id is not None:
+        receiver = h.public_identifier(args.receiver_operation_id)
+        if receiver != args.receiver_operation_id or len(receiver) > 200:
+            raise ValueError("invalid_receiver_operation_id")
+        request["receiver_operation_id"] = receiver
+        body["receiver_operation_id"] = receiver
     if mode != "dry-run":
         if not DIGEST_RE.fullmatch(args.expected_plan_digest):
             raise ValueError("invalid_candidate_release_review")
@@ -72,43 +92,174 @@ def intent(h: Any, args: argparse.Namespace) -> tuple[dict[str, object], dict[st
     return request, body
 
 
-def project(h: Any, response: object, request: dict[str, object]) -> dict[str, object]:
-    source = h._require_dict(response)
-    digest, status, size = (source.get(key) for key in ("plan_sha256", "status", "reclaimable_bytes"))
+def integer(value: object, *, signed: bool = False) -> int:
+    if type(value) is not int or (not signed and value < 0):
+        raise ValueError("invalid_response")
+    return value
+
+
+def digest_field(value: object, *, allow_empty: bool = False) -> str:
+    if not isinstance(value, str) or not (
+        DIGEST_RE.fullmatch(value) or allow_empty and value == ""
+    ):
+        raise ValueError("invalid_response")
+    return value
+
+
+def array(value: object) -> list[Any]:
+    if not isinstance(value, list):
+        raise ValueError("invalid_response")
+    return value
+
+
+def row_status(value: object) -> str:
+    if not isinstance(value, str) or value not in RESOURCE_STATUSES:
+        raise ValueError("invalid_response")
+    return value
+
+
+def optional_identifier(h: Any, value: object) -> str:
+    return "" if value == "" else h.public_identifier(value)
+
+
+def project_resource(h: Any, value: object) -> dict[str, object]:
+    row = h._require_dict(value)
+    result: dict[str, object] = {
+        "role": h.public_identifier(row.get("role")),
+        "volume_identity_sha256": digest_field(row.get("volume_identity_sha256")),
+        "status": row_status(row.get("status")),
+        "reason": optional_identifier(h, row.get("reason")),
+        "backing_sha256": digest_field(row.get("backing_sha256", ""), allow_empty=True),
+    }
+    if row.get("free_bytes") is not None:
+        result["free_bytes"] = integer(row["free_bytes"])
+    return result
+
+
+def project_physical(h: Any, value: object) -> dict[str, object]:
+    readings = {}
+    for identity, measurement in h._require_dict(value).items():
+        row = h._require_dict(measurement)
+        readings[digest_field(identity)] = (
+            {"reason": "backing_readback_unknown"}
+            if row.get("reason") == "backing_readback_unknown"
+            else {
+                "before_bytes": integer(row.get("before_bytes")),
+                "after_bytes": integer(row.get("after_bytes")),
+                "observed_change_bytes": integer(
+                    row.get("observed_change_bytes"), signed=True
+                ),
+            }
+        )
+    return readings
+
+
+def project_candidate(
+    h: Any, value: object, request: dict[str, str]
+) -> dict[str, object]:
+    row = h._require_dict(value)
+    selected = row.get("selected")
     if (
-        not isinstance(digest, str)
-        or not DIGEST_RE.fullmatch(digest)
-        or status not in STATUSES
-        or (size is not None and (type(size) is not int or size < 0))
+        row.get("instance") != "testing"
+        or row.get("product") != request["product"]
+        or selected is not (row.get("operation_id") == request["operation_id"])
+    ):
+        raise ValueError("invalid_response")
+    identities = (
+        "namespace",
+        "operation_id",
+        "product",
+        "context",
+        "instance",
+        "target_id",
+    )
+    digests = (
+        "ownership_sha256",
+        "source_evidence_sha256",
+        "provider_evidence_sha256",
+        "lifecycle_snapshot_sha256",
+    )
+    return {
+        **{key: h.public_identifier(row.get(key)) for key in identities},
+        **{key: digest_field(row.get(key, ""), allow_empty=True) for key in digests},
+        "selected": selected,
+        "status": row_status(row.get("status")),
+        "reasons": [
+            h.public_identifier(reason) for reason in array(row.get("reasons"))
+        ],
+        "container_count": integer(row.get("container_count", 0)),
+        "resources": [
+            project_resource(h, item) for item in array(row.get("resources", []))
+        ],
+        "physical_readback": project_physical(h, row.get("physical_readback", {})),
+    }
+
+
+def project_capacity(h: Any, value: object) -> dict[str, object]:
+    row = h._require_dict(value)
+    return {
+        "backing_sha256": digest_field(row.get("backing_sha256")),
+        **{
+            key: integer(row.get(key))
+            for key in (
+                "free_bytes",
+                "required_additional_bytes",
+                "reserve_bytes",
+                "deficit_bytes",
+            )
+        },
+    }
+
+
+def project(h: Any, response: object, request: dict[str, str]) -> dict[str, object]:
+    source = h._require_dict(response)
+    digest = digest_field(source.get("plan_sha256"))
+    status, size = source.get("status"), source.get("reclaimable_bytes")
+    mode = request["mode"]
+    if (
+        not isinstance(status, str)
+        or status not in RESULT_STATUSES[mode]
         or source.get("product") != request["product"]
         or source.get("operation_id") != request["operation_id"]
-        or not isinstance(source.get("error_code"), str)
-        or request["mode"] == "dry-run" and status == "released"
-        or request["mode"] != "dry-run" and status == "eligible"
-        or request["mode"] != "dry-run" and digest != request["reviewed_plan_sha256"]
+        or mode != "dry-run"
+        and digest != request["reviewed_plan_sha256"]
     ):
-        raise h.LaunchplaneSafetyError("invalid_response")
-    projected = {
+        raise ValueError("invalid_response")
+    projected: dict[str, object] = {
         "status": status,
         "plan_sha256": digest,
-        "reclaimable_bytes": size,
-        "failure_code": h.public_identifier(source["error_code"]),
+        "reclaimable_bytes": None if size is None else integer(size),
+        "failure_code": optional_identifier(h, source.get("error_code")),
     }
     if source.get("replayed") is True:
         projected["replayed"] = True
+    if "candidates" in source:
+        projected["candidates"] = [
+            project_candidate(h, item, request) for item in array(source["candidates"])
+        ]
+    if "capacity" in source:
+        projected["capacity"] = [
+            project_capacity(h, item) for item in array(source["capacity"])
+        ]
+    if "capacity_refusal" in source:
+        projected["capacity_refusal"] = optional_identifier(
+            h, source["capacity_refusal"]
+        )
     h.assert_public_safe_shape(projected)
     return projected
 
 
-def reviewed(evidence_file: str, request: dict[str, object]) -> bool:
+def reviewed(evidence_file: str, request: dict[str, str]) -> bool:
     try:
         evidence = json.loads(Path(evidence_file).read_text())
         result = evidence["result"]
         return (
             evidence.get("status") == "ok"
             and evidence.get("operation") == PREFIX + "dry-run"
-            and {key: evidence["request"].get(key) for key in ("product", "operation_id")}
-            == {key: request[key] for key in ("product", "operation_id")}
+            and all(
+                evidence["request"].get(key) == request.get(key)
+                for key in TARGET_FIELDS
+            )
             and result.get("status") == "eligible"
             and result.get("plan_sha256") == request["reviewed_plan_sha256"]
         )
@@ -116,16 +267,32 @@ def reviewed(evidence_file: str, request: dict[str, object]) -> bool:
         return False
 
 
-def finish(h: Any, *, operation: str, request: dict[str, object], status: str,
-           result: dict[str, object] | None = None, diagnostics: dict[str, object] | None = None) -> int:
+def finish(
+    h: Any,
+    *,
+    operation: str,
+    request: dict[str, str],
+    status: str,
+    result: dict[str, object] | None = None,
+    diagnostics: dict[str, object] | None = None,
+) -> int:
     output = h.base_payload(status=status, operation=operation, request=request)
-    summary = {key: value for key, value in (diagnostics or {}).items() if key != "error_reason"}
+    summary = {
+        key: value
+        for key, value in (diagnostics or {}).items()
+        if key != "error_reason"
+    }
     summary["recommendation"] = RECOVERY[status]
     output["summary"] = summary
     if result is not None:
         output["result"] = result
     if status != "ok":
-        output["warnings"] = [h.warning(str(summary.get("error_code", status)), RECOVERY[status])]
+        error_code = summary.get("error_code")
+        output["warnings"] = [
+            h.warning(
+                error_code if isinstance(error_code, str) else status, RECOVERY[status]
+            )
+        ]
     for value in output.values():
         h.assert_public_safe_shape(value)
     h.emit(output)
@@ -137,27 +304,49 @@ def execute(h: Any, args: argparse.Namespace) -> int:
     request, body = intent(h, args)
     mode = request["mode"]
     if mode == "apply" and not reviewed(args.dry_run_evidence_file, request):
-        return finish(h, operation=operation, request=request, status="invalid",
-                      diagnostics={"error_code": "candidate_release_review_evidence_mismatch"})
-    settings = h.prepare_operator_settings(args=args, operation=operation, request=request)
+        return finish(
+            h,
+            operation=operation,
+            request=request,
+            status="invalid",
+            diagnostics={"error_code": "candidate_release_review_evidence_mismatch"},
+        )
+    settings = h.prepare_operator_settings(
+        args=args, operation=operation, request=request
+    )
     if settings is None:
         return 2
     path = h.helper_command_path(operation).format(
-        product=urllib.parse.quote(str(request["product"]), safe=""),
-        operation_id=urllib.parse.quote(str(request["operation_id"]), safe=""),
+        product=urllib.parse.quote(request["product"], safe=""),
+        operation_id=urllib.parse.quote(request["operation_id"], safe=""),
     )
     try:
         response = h.request_launchplane(
-            service_url=settings["service_url"], path=path, settings=settings, body=body,
-            timeout=getattr(args, "timeout", 600), idempotency_key=getattr(args, "idempotency_key", ""),
+            service_url=settings["service_url"],
+            path=path,
+            settings=settings,
+            body=body,
+            timeout=args.timeout,
+            idempotency_key=getattr(args, "idempotency_key", ""),
         )
-        return finish(h, operation=operation, request=request, status="ok",
-                      result=project(h, response, request), diagnostics=h.service_response_diagnostics(response))
+        result = project(h, response, request)
+        status = "held" if result["status"] == "held" else "ok"
+        return finish(
+            h,
+            operation=operation,
+            request=request,
+            status=status,
+            result=result,
+            diagnostics=h.service_response_diagnostics(response),
+        )
     except urllib.error.HTTPError as error:
         try:
             payload = h._error_payload_from_http(error)
             diagnostics = h.summarize_http_error(
-                operation=operation, request=request, exc=error, provider_payload=payload
+                operation=operation,
+                request=request,
+                exc=error,
+                provider_payload=payload,
             ).get("summary", {})
             code = str(diagnostics.get("error_code", ""))
             if code in REFUSAL_STATUS:
@@ -168,10 +357,21 @@ def execute(h: Any, args: argparse.Namespace) -> int:
                 status = "refused"
             else:
                 status = "unavailable" if mode == "dry-run" else "outcome_unknown"
-            return finish(h, operation=operation, request=request, status=status, diagnostics=diagnostics)
+            return finish(
+                h,
+                operation=operation,
+                request=request,
+                status=status,
+                diagnostics=diagnostics,
+            )
         finally:
             error.close()
-    except (ValueError, OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException, h.ServiceResponseError):
+    except (ValueError, OSError, http.client.HTTPException, h.ServiceResponseError):
         status = "unavailable" if mode == "dry-run" else "outcome_unknown"
-        return finish(h, operation=operation, request=request, status=status,
-                      diagnostics={"error_code": "candidate_release_unverified"})
+        return finish(
+            h,
+            operation=operation,
+            request=request,
+            status=status,
+            diagnostics={"error_code": "candidate_release_unverified"},
+        )
