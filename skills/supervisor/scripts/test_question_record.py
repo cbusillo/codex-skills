@@ -11,7 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from typing import Any
@@ -439,6 +439,293 @@ class QuestionRecordTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             record.update(revised, self.args, self.storage, self.fetch)
         self.storage.update.assert_not_called()
+
+    def edit_fixture(self) -> tuple[dict, dict]:
+        value = question()
+        value["options"].append({"answer": "Edit the draft", "changes": "Revise it", "cost": 0, "next": "Present it for approval"})
+        self.source.update(
+            id=17,
+            user={"login": AUTHOR},
+            html_url=self.source["url"],
+            issue_url="https://api.github.com/repos/example/product/issues/3",
+            created_at="2026-11-03T12:00:00Z",
+            body=record.question_id.number_heading(record.render(value, legacy=True), "Q5"),
+        )
+        choice = value["options"][-1]["answer"]
+        decision = {
+            "id": 18,
+            "url": value["issue"] + "#issuecomment-18",
+            "author": AUTHOR,
+            "created_at": "2026-11-03T14:00:00Z",
+            "updated_at": "2026-11-03T14:00:00Z",
+            "body": f'Director decision: {self.source["url"]} (Q5), option "{choice}". Director, in a recorded session.\n\nRevise before approval.',
+        }
+        self.args.url = self.source["url"]
+        self.args.expected_updated_at = self.source["updated_at"]
+        return value, decision
+
+    def test_recorded_edit_uses_supported_update_and_requires_a_new_final_decision(self) -> None:
+        value, decision = self.edit_fixture()
+        revised = value | {"basis": "The draft now includes another requested detail."}
+        source_before = dict(self.source)
+        queue = "example/direction#9"
+        registration = {
+            "author": AUTHOR,
+            "url": "https://github.com/example/direction/issues/9#issuecomment-20",
+            "body": record.delivery.marker_body("registered", self.source["url"]),
+        }
+        receipt = {
+            "author": AUTHOR,
+            "url": "https://github.com/example/direction/issues/9#issuecomment-21",
+            "body": record.delivery.marker_body(
+                "delivered", self.source["url"], "https://discord.com/channels/1/2/3", source_updated_at=self.source["updated_at"]
+            ),
+        }
+        rows = [self.source, decision]
+        self.fetch.side_effect = lambda item: rows if item != queue else [registration, receipt]
+        self.assertFalse(record.delivery.oq.question_records.substantive_decision(decision["body"]))
+        counter = record.question_id.counter_path()
+        record.question_id.update(counter, seed=(4, ["fixture"]), allocate=False)
+        record.question_id.update(counter, question_url=self.source["url"])
+        counter_before = counter.read_bytes()
+        path = Path(self.temporary.name) / "revision.json"
+        path.write_text(json.dumps(revised))
+
+        def api(method: str, _endpoint: str, body: Any, **_kwargs: Any) -> Any:
+            if method == "PATCH":
+                self.source.update(body=body["body"], updated_at="2026-11-03T15:00:00Z")
+            return api_success(dict(self.source), operation="test.edit")
+
+        def run(calls: list[dict]) -> None:
+            with (
+                patch.object(record.delivery.oq, "fetch", self.fetch),
+                patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "oq.py",
+                        "update",
+                        self.source["url"],
+                        "--record-file",
+                        str(path),
+                        "--expected-updated-at",
+                        source_before["updated_at"],
+                        "--owner",
+                        self.args.owner,
+                    ],
+                ),
+                redirect_stdout(StringIO()),
+                redirect_stderr(StringIO()),
+            ):
+                self.assertEqual(record.delivery.oq.main(), 0)
+            self.assertEqual([call["method"] for call in calls], ["GET", "PATCH"])
+            self.assertEqual(counter.read_bytes(), counter_before)
+            saved = record.read_record(self.source)
+            self.assertEqual(saved["record"], revised)
+            self.assertEqual(
+                (saved["url"], saved["question_id"]), (source_before["url"], record.read_record(source_before)["question_id"])
+            )
+            pending = record.delivery.inventory(rows, [registration, receipt], self.args.owner, self.args.decision_author)
+            self.assertEqual(len(pending["questions"]), 1)
+            row = pending["questions"][0]
+            self.assertEqual(row["registration_url"], registration["url"])
+            self.assertTrue(row["resurface"])
+            self.assertFalse(row["answers"])
+            self.assertFalse(record.delivery.settled(self.source["url"], [decision], self.args.owner, self.args.decision_author))
+            self.assertEqual(rows[1], decision)
+            settlement = {
+                **decision,
+                "created_at": "2026-11-03T16:00:00Z",
+                "url": value["issue"] + "#issuecomment-23",
+                "body": f"Supervisor answer to Q5 from the record: yes. {decision['url']}",
+            }
+            self.assertNotIn(
+                self.source["url"],
+                record.delivery.oq.question_records.supervisor_settled_questions(
+                    [*rows, settlement], {self.args.owner, AUTHOR}, asker_only=True
+                ),
+            )
+            final = {
+                **decision,
+                "url": value["issue"] + "#issuecomment-22",
+                "body": "Director decision Q5: approve the revised draft.",
+            }
+            rows.append(final)
+            self.assertEqual(
+                record.delivery.inventory(rows, [registration], self.args.owner, self.args.decision_author)["questions"], []
+            )
+            self.args.expected_updated_at = self.source["updated_at"]
+            with self.assertRaises(ValueError):
+                record.update(revised, self.args, record.GitHubComments(self.fetch), self.fetch)
+            self.assertEqual([call["method"] for call in calls], ["GET", "PATCH"])
+
+        with_call_stub(api, run)
+
+    def test_edit_exception_refuses_final_withdrawn_ambiguous_stale_and_foreign_sources(self) -> None:
+        value, decision = self.edit_fixture()
+        revised = value | {"basis": "Another detail."}
+        final = {**decision, "body": "Director decision Q5: approve the draft; Edit was another option."}
+        for case in (
+            "final",
+            "withdrawn",
+            "unknown_option",
+            "multiple_options",
+            "multiple_sentences",
+            "edit_action",
+            "unrecorded",
+            "wrong_decision_author",
+            "wrong_source_author",
+            "stale",
+            "changed_text",
+            "unrelated_director",
+            "queue_director",
+            "final_then_cosmetic_edit",
+            "unreadable_queue",
+        ):
+            with self.subTest(case=case):
+                source, answer = dict(self.source), dict(decision)
+                extra = []
+                if case in {"final", "final_then_cosmetic_edit"}:
+                    answer = final
+                if case == "final_then_cosmetic_edit":
+                    source["updated_at"] = "2026-11-03T16:00:00Z"
+                if case == "withdrawn":
+                    extra = [{**decision, "body": "Q5 withdrawn by the Supervisor. Premise corrected."}]
+                if case == "unknown_option":
+                    answer["body"] = answer["body"].replace(value["options"][-1]["answer"], "Edit another thing")
+                if case == "multiple_options":
+                    answer["body"] = (
+                        f'Director decision Q5: option "{value["options"][-1]["answer"]}" and option "{value["options"][0]["answer"]}".'
+                    )
+                if case == "multiple_sentences":
+                    answer["body"] = (
+                        f'Director decision Q5: option "{value["options"][-1]["answer"]}". Also option "{value["options"][0]["answer"]}".'
+                    )
+                if case == "edit_action":
+                    action = value | {
+                        "options": [
+                            *value["options"],
+                            {"answer": "Edit the runner", "changes": "Change the job", "cost": 0, "next": "Implement"},
+                        ]
+                    }
+                    source["body"] = record.question_id.number_heading(record.render(action, legacy=True), "Q5")
+                    answer["body"] = f'Director decision Q5: option "{action["options"][-1]["answer"]}".'
+                if case == "unrecorded":
+                    answer.update(author=self.args.owner, body=f"Please edit {source['url']}")
+                if case == "wrong_decision_author":
+                    answer.update(author="outsider")
+                    extra = [{**decision, "author": self.args.owner, "body": "Still thinking about this."}]
+                if case == "wrong_source_author":
+                    source["author"] = "outsider"
+                if case == "changed_text":
+                    source["body"] = source["body"].replace(value["basis"], "Unapproved change", 1)
+                if case == "unrelated_director":
+                    extra = [
+                        {
+                            **decision,
+                            "url": value["issue"] + "#issuecomment-19",
+                            "author": self.args.owner,
+                            "body": "Wait, explain the cost.",
+                        }
+                    ]
+                self.args.expected_updated_at = "stale" if case == "stale" else source["updated_at"]
+                self.fetch.side_effect = None
+                self.fetch.return_value = [source, answer, *extra]
+                if case == "unreadable_queue":
+                    self.fetch.side_effect = [self.fetch.return_value, ValueError("incomplete discussion")]
+                if case == "queue_director":
+                    self.fetch.side_effect = [
+                        self.fetch.return_value,
+                        [{**decision, "url": "https://github.com/example/direction/issues/9#issuecomment-19",
+                          "author": self.args.owner, "body": "Q5: Wait, explain the cost."}],
+                    ]
+                with patch.object(
+                    record.question_id,
+                    "configured_queue",
+                    return_value="example/direction#9" if case in {"unreadable_queue", "queue_director"} else None,
+                ):
+                    with self.assertRaises(ValueError):
+                        record.update(revised, self.args, self.storage, self.fetch)
+                self.storage.update.assert_not_called()
+
+    def test_edit_writer_conflicts_and_late_decisions_never_replay_the_update(self) -> None:
+        value, decision = self.edit_fixture()
+        original = dict(self.source)
+        revised = value | {"basis": "The revised draft."}
+        path = Path(self.temporary.name) / "revision.json"
+        path.write_text(json.dumps(revised))
+        record.question_id.update(record.question_id.counter_path(), seed=(4, ["fixture"]), allocate=False)
+        record.question_id.update(record.question_id.counter_path(), question_url=self.source["url"])
+
+        def exercise(mode: str) -> None:
+            self.source.update(original)
+            rows = [self.source, dict(decision)]
+            saved = False
+
+            def fetch(_item: str) -> list[dict]:
+                if saved and mode == "unreadable_after_save":
+                    raise ValueError("incomplete source")
+                return rows
+
+            def api(method: str, _endpoint: str, body: Any, **_kwargs: Any) -> Any:
+                nonlocal saved
+                if method == "GET":
+                    current = dict(self.source)
+                    if mode == "cas":
+                        current["updated_at"] = "2026-11-03T14:30:00Z"
+                    if mode == "actor":
+                        current["user"] = {"login": "another-writer"}
+                    return api_success(current, operation="test.read")
+                self.assertEqual(method, "PATCH")
+                saved = True
+                self.source.update(body=body["body"], updated_at="2026-11-03T15:00:00Z")
+                if mode == "late_final":
+                    rows.append(
+                        {
+                            **decision,
+                            "url": value["issue"] + "#issuecomment-22",
+                            "body": "Director decision Q5: Approve the original draft.",
+                            "created_at": self.source["updated_at"],
+                        }
+                    )
+                return api_success(dict(self.source), operation="test.edit")
+
+            def run(calls: list[dict]) -> None:
+                error = StringIO()
+                with (
+                    patch.object(record.delivery.oq, "fetch", side_effect=fetch),
+                    patch.object(
+                        sys,
+                        "argv",
+                        [
+                            "oq.py",
+                            "update",
+                            self.source["url"],
+                            "--record-file",
+                            str(path),
+                            "--expected-updated-at",
+                            original["updated_at"],
+                            "--owner",
+                            self.args.owner,
+                        ],
+                    ),
+                    redirect_stdout(StringIO()),
+                    redirect_stderr(error),
+                ):
+                    self.assertEqual(record.delivery.oq.main(), 1)
+                self.assertEqual([call["method"] for call in calls], ["GET", "PATCH"] if saved else ["GET"])
+                if saved:
+                    self.assertIn(self.source["url"], error.getvalue())
+                    self.assertEqual(record.read_record(self.source)["record"], revised)
+                    self.assertEqual(rows[1], decision)
+                else:
+                    self.assertEqual(json.loads(error.getvalue())["write_outcome"], "not_started")
+
+            with_call_stub(api, run)
+
+        for failure_mode in ("cas", "actor", "late_final", "unreadable_after_save"):
+            with self.subTest(mode=failure_mode):
+                exercise(failure_mode)
 
 
 BOOTSTRAP = """

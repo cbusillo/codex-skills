@@ -158,11 +158,18 @@ hook checks it against successful helper output in the local transcript; it
 does not read GitHub. Re-read an existing question with `--chat` before presenting
 it. Historical prose questions print their full original body and link without
 rewriting the source or allocating a new number.
-Revise an unanswered question in place instead of creating a replacement Q ID, with
+Revise an unanswered question, or one whose recorded decision explicitly selects
+its Edit option, in place instead of creating a replacement Q ID, with
 `oq.py update ORIGINAL_URL --record-file FILE --expected-updated-at TIMESTAMP --owner OWNER`, using `show-question`'s timestamp.
 The update keeps the number, URL and queue registration,
-and refuses an answered question or a changed source. If the options changed
-meaning, confirm which version the Director answered before recording the decision.
+and refuses a final answer, withdrawal or changed source. Record an Edit selection
+as `Director decision Q####: option "Edit the message".` using the source's exact
+option label. Edit permits revision, never sending; revised text needs its own
+approval. The revision choices are `Edit`, `Edit the message`, `Edit the question`
+or `Edit the draft`; choosing to edit an implementation is a final decision.
+Final decisions and answer history stay intact. A failed decision
+readback after saving requires reconciliation, never blind replay. If the options
+changed meaning, confirm which version the Director answered before recording it.
 Older presentation receipts become stale after an edit, so the queue resurfaces the revision.
 Keep the number hook until the Discord card adopts this source too. Existing
 queue and acknowledgement commands remain available.
