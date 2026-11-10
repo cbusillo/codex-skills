@@ -84,6 +84,7 @@ def project(h: Any, response: object, request: dict[str, object]) -> dict[str, o
         or source.get("operation_id") != request["operation_id"]
         or not isinstance(source.get("error_code"), str)
         or request["mode"] == "dry-run" and status == "released"
+        or request["mode"] != "dry-run" and status == "eligible"
         or request["mode"] != "dry-run" and digest != request["reviewed_plan_sha256"]
     ):
         raise h.LaunchplaneSafetyError("invalid_response")
@@ -159,14 +160,14 @@ def execute(h: Any, args: argparse.Namespace) -> int:
                 operation=operation, request=request, exc=error, provider_payload=payload
             ).get("summary", {})
             code = str(diagnostics.get("error_code", ""))
-            if mode == "apply" and error.code >= 500:
-                status = "outcome_unknown"
-            elif code in REFUSAL_STATUS:
+            if code in REFUSAL_STATUS:
                 status = REFUSAL_STATUS[code]
             elif code == "candidate_release_unavailable":
                 status = "unavailable"
+            elif error.code in {403, 409}:
+                status = "refused"
             else:
-                status = "refused" if error.code in {403, 409} else "unavailable"
+                status = "unavailable" if mode == "dry-run" else "outcome_unknown"
             return finish(h, operation=operation, request=request, status=status, diagnostics=diagnostics)
         finally:
             error.close()

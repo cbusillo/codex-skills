@@ -95,6 +95,8 @@ def test_apply_without_matching_review_never_reaches_the_service(tmp_path: Path)
         (failure("idempotency_key_reused"), "conflict"),
         (failure("mutation_reconciliation_required"), "outcome_unknown"),
         (failure("internal", 502), "outcome_unknown"),
+        (failure("timeout", 408), "outcome_unknown"),
+        (failure("candidate_release_unavailable"), "unavailable"),
         (urllib.error.URLError("dropped"), "outcome_unknown"),
     ],
 )
@@ -104,8 +106,17 @@ def test_apply_outcomes_map_to_their_recovery(tmp_path: Path, error: Exception, 
     assert "PRIVATE_SENTINEL" not in json.dumps(result)
 
 
+def test_readback_gateway_failure_is_unknown() -> None:
+    code, result, _ = invoke(argv("readback"), [failure("bad_gateway", 502)])
+    assert code != 0 and result["status"] == "outcome_unknown"
+
+
 def test_response_for_another_operation_or_plan_is_not_success(tmp_path: Path) -> None:
     evidence = reviewed_evidence(tmp_path)
-    for reply in (response("released", operation_id="other"), response("released", plan_sha256="c" * 64)):
+    for reply in (
+        response("released", operation_id="other"),
+        response("released", plan_sha256="c" * 64),
+        response("eligible"),
+    ):
         code, result, _ = invoke(argv("apply", evidence), [reply])
         assert code != 0 and result["status"] == "outcome_unknown"

@@ -2967,9 +2967,10 @@ Save the dry-run JSON outside the checkout. It reports `status` (`eligible` or
 non-`eligible` plan is refused before any request. Readback takes the same
 digest and key.
 
-A refusal (`refused`, `stale_plan`, `conflict`, `not_started`) released nothing.
-Transport loss, HTTP 5xx or `mutation_reconciliation_required` on apply is
-`outcome_unknown`: keep the digest and key, read back, and if it is still
+A refusal (`refused`, `stale_plan`, `conflict`, `not_started`) or
+`candidate_release_unavailable` released nothing. On apply or readback, any
+other HTTP error, transport loss or `mutation_reconciliation_required` is
+`outcome_unknown`, and so is an `eligible` result: keep the digest and key, read back, and if it is still
 unsettled apply again with the same digest and key to finish it. Never start
 over with a new key, and never remove containers or volumes by hand.
 
