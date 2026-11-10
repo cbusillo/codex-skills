@@ -963,6 +963,7 @@ def native_effects_complete(
             return False
         expected = Counter()
         known = Counter()
+        bounded_counts = None
         reader = claim_javascript.LiteralCommands(LITERAL_SHELL_VALUE, LITERAL_LOOP_VALUES, LITERAL_EXPANSION_BYTES)
         for arguments, _ in sites:
             method = claim_javascript.shell_method(arguments)
@@ -980,6 +981,18 @@ def native_effects_complete(
                     "class_body",
                 }:
                     return False
+                if ancestor.type in {
+                    "arrow_function",
+                    "function_expression",
+                    "for_in_statement",
+                    "for_statement",
+                    "while_statement",
+                    "do_statement",
+                }:
+                    if bounded_counts is None:
+                        bounded_counts = claim_javascript.analyse(text)[0]
+                    if not bounded_counts:
+                        return False
                 ancestor = ancestor.parent
             count = len(reader.environments(arguments, strict=True))
             expected["FileChange" if method == "apply_patch" else "CommandExecution"] += count

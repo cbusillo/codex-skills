@@ -191,6 +191,11 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
         )
         self.assertFalse(check_claims.history.literal_targets(rows, SESSION)["unresolved_invocations"])
 
+    def test_mutating_iteration_data_cannot_hide_a_running_claim(self) -> None:
+        rows = self.recorded_display(computed=True)
+        rows[0]["payload"]["input"] = "const jobs=[1];jobs.push(2);for(const n of jobs){" + rows[0]["payload"]["input"] + "}"
+        self.assertTrue(check_claims.history.literal_targets(rows, SESSION)["unresolved_invocations"])
+
     def test_same_cell_stored_commands_preserve_every_claim_effect(self) -> None:
         for verb in ("show", "claim"):
             source = (
