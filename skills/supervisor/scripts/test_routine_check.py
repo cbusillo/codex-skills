@@ -4,6 +4,7 @@
 # dependencies = ["aiohttp==3.14.5", "PyYAML==6.0.3", "tree-sitter==0.26.0", "tree-sitter-bash==0.25.1", "tree-sitter-javascript==0.25.0"]
 # ///
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from contextlib import redirect_stdout
 from io import StringIO
@@ -41,6 +42,144 @@ from skills.github.scripts.test_github_next_queue import classify, item
 
 def patch_attr(target: Any, name: str, *args: Any, **kwargs: Any) -> Any:
     return patch.object(target, name, *args, **kwargs)
+
+
+class SharedReadTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.watch = self.root / "watch.jsonl"
+        self.watch.write_text(json.dumps({"notices": [], "errors": [], "coverage_gaps": []}))
+        self.read = Mock(return_value={"coverage": {"complete": True}})
+        self.sessions = {"sessions": [], "coverage": {"complete": True}}
+        self.enterContext(patch.object(routine_check, "build_readers", return_value={"next": self.read, "sessions": lambda: self.sessions}))
+        self.enterContext(patch.object(routine_check.compact_check, "report", side_effect=lambda *_args: self.sessions))
+        self.enterContext(patch.object(routine_check, "primary_reads", return_value={"coverage": {"complete": True}}))
+
+    def check(self, *roles: str, extra: tuple[str, ...] = (), session: str | None = None) -> tuple[int, str]:
+        argv = ["routine_check.py", "--owner", "owner", "--queue", "owner/direction#1",
+                "--ledger", str(self.root / "ledger.json"), "--foreign-log", str(self.watch), *extra]
+        for role in roles:
+            argv.extend(("--role", role))
+        session = session or f"test-{roles[0] if roles else routine_check.SUPERVISOR_ROLES[0]}"
+        with (patch("sys.argv", argv), patch.dict(os.environ, {"CODEX_SESSION_ID": session, "CLAUDE_CODE_SESSION_ID": ""}),
+              redirect_stdout(StringIO()) as output):
+            status = routine_check.main()
+        return status, output.getvalue()
+
+    def test_three_seats_share_reads_but_same_seat_and_legacy_stay_fresh(self) -> None:
+        for role in routine_check.SUPERVISOR_ROLES:
+            status, output = self.check(role)
+            self.assertEqual(status, 0, output)
+            self.assertIn(f"SEAT {role}:", output)
+        self.assertEqual(self.read.call_count, 1)
+        self.assertIn("REUSED", output)
+        self.check(routine_check.SUPERVISOR_ROLES[0])
+        self.assertEqual(self.read.call_count, 2)
+        for _ in range(2):
+            _, output = self.check()
+            self.assertNotIn("REUSED", output)
+        self.assertEqual(self.read.call_count, 4)
+
+    def test_failed_forced_read_invalidates_previous_success_for_every_seat(self) -> None:
+        first, second, third = routine_check.SUPERVISOR_ROLES
+        self.check(first)
+        self.read.return_value = {"error": "GitHub unavailable", "coverage": {"complete": False}}
+        status, output = self.check(second, extra=("--fresh",))
+        self.assertEqual(status, 1, output)
+        self.assertIn("GitHub unavailable", output)
+        status, output = self.check(third)
+        self.assertEqual(status, 1, output)
+        self.assertNotIn("REUSED", output)
+        self.assertEqual(self.read.call_count, 3)
+
+    def test_reuse_keeps_current_local_failures_visible(self) -> None:
+        first, second, _ = routine_check.SUPERVISOR_ROLES
+        self.check(first)
+        self.sessions = {"error": "ledger unreadable", "coverage": {"complete": False}}
+        status, output = self.check(second)
+        self.assertEqual(status, 1, output)
+        self.assertIn("ledger unreadable", output)
+
+    def test_separate_sessions_share_unchanged_command_lines_and_equivalent_watch_paths(self) -> None:
+        self.check(session="first")
+        other_watch = self.root / "other-watch.jsonl"
+        other_watch.write_bytes(self.watch.read_bytes())
+        _, output = self.check(extra=("--foreign-log", str(other_watch)), session="second")
+        self.assertIn("REUSED", output)
+        _, output = self.check(session="third")
+        self.assertIn("REUSED", output)
+        self.assertEqual(self.read.call_count, 1)
+
+    def test_expired_corrupt_and_changed_scope_reads_are_collected_again(self) -> None:
+        first, second, _ = routine_check.SUPERVISOR_ROLES
+        for extra in (("--queue", "owner/direction#2"), ("--repo", "owner/product"), ("--source", "owner/product#1")):
+            with self.subTest(extra=extra):
+                self.check(first, extra=("--fresh",))
+                count = self.read.call_count
+                self.check(second, extra=extra)
+                self.assertEqual(self.read.call_count, count + 1)
+        self.check(first, extra=("--fresh",))
+        with patch.object(routine_check, "clock", return_value=routine_check.clock() + routine_check.SHARED_READ_WINDOW):
+            _, output = self.check(second)
+        self.assertNotIn("REUSED", output)
+        (self.root / "ledger-routine-read.json").write_text("{")
+        _, output = self.check(first)
+        self.assertNotIn("REUSED", output)
+
+    def test_partial_secondary_coverage_is_never_reused(self) -> None:
+        self.read.return_value = {"coverage": {"complete": True}, "queue_context": {"complete": False}}
+        for role in routine_check.SUPERVISOR_ROLES:
+            status, output = self.check(role)
+            self.assertEqual(status, 1, output)
+            self.assertNotIn("REUSED", output)
+        self.assertEqual(self.read.call_count, len(routine_check.SUPERVISOR_ROLES))
+
+    def test_simultaneous_seats_wait_for_one_complete_read(self) -> None:
+        first, second, _ = routine_check.SUPERVISOR_ROLES
+        with patch.object(routine_check, "shared_sources", wraps=routine_check.shared_sources) as shared:
+            self.check(first)
+        args = shared.call_args.args[0]
+        (self.root / "ledger-routine-read.json").unlink()
+        self.read.reset_mock()
+        entered = threading.Event()
+        released = threading.Event()
+
+        def read() -> dict:
+            entered.set()
+            if not released.wait(10):
+                raise TimeoutError("second seat did not start")
+            return {"coverage": {"complete": True}}
+
+        def run(role: str) -> tuple[dict, str | None]:
+            local = {"watch": routine_check.watch_report(self.watch), "sessions": self.sessions}
+            return routine_check.shared_sources(argparse.Namespace(**{**vars(args), "role": [role]}), local)
+
+        self.read.side_effect = read
+        with patch.dict(os.environ, {"CODEX_SESSION_ID": "", "CLAUDE_CODE_SESSION_ID": ""}), ThreadPoolExecutor(max_workers=2) as pool:
+            producing = pool.submit(run, first)
+            self.assertTrue(entered.wait(10))
+            following = pool.submit(run, second)
+            released.set()
+            self.assertIsNone(producing.result()[1])
+            self.assertIsNotNone(following.result()[1])
+        self.assertEqual(self.read.call_count, 1)
+
+    def test_reused_primary_times_and_full_question_view_survive_serialization(self) -> None:
+        since = routine_check.clock() - routine_check.ROUTINE_INTERVAL
+        primary = {"no_handoff": [{"url": "https://github.com/owner/product/pull/2", "since": since}],
+                   "coverage": {"complete": True}}
+        questions = {"questions": [{"url": "https://github.com/owner/product/issues/1#issuecomment-2",
+                                    "registration_url": "registered", "delivery": "acknowledged"}]}
+        with (patch.object(routine_check, "primary_reads", return_value=primary),
+              patch.object(routine_check, "build_readers", return_value={"next": self.read, "questions": lambda: questions})):
+            self.check(session="first")
+            _, output = self.check(extra=("--full",), session="second")
+        self.assertIn("REUSED", output)
+        self.assertIn("NO_HANDOFF https://github.com/owner/product/pull/2", output)
+        self.assertIn("QUESTION https://github.com/owner/product/issues/1#issuecomment-2", output)
+        self.assertEqual(self.read.call_count, 1)
 
 
 class RoutineCheckTests(unittest.TestCase):

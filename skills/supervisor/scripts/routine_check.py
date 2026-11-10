@@ -4,6 +4,7 @@
 # dependencies = ["PyYAML==6.0.3"]
 # ///
 import argparse
+import hashlib
 import importlib
 import json
 import os
@@ -39,6 +40,7 @@ director_waits = importlib.import_module("director_waits")
 
 READS_AFTER = {"comments": "questions"}
 ROUTINE_INTERVAL = timedelta(minutes=30)
+SHARED_READ_WINDOW = timedelta(minutes=5)
 OWNER_REVIEW_CHECK = "launchplane/owner-review"
 CLIENT_WAIT = re.compile(r"waiting (?:for|on) (?:the |this )?client|client(?:'s)? acceptance", re.I)
 NOTHING_REVIEWABLE = re.compile(r"preview failed|nothing\b[^.]*\b(?:reviewable|to review)", re.I)
@@ -679,6 +681,71 @@ def comment_hint(notice: dict) -> Any:
     )
 
 
+def fresh_sources(args: argparse.Namespace, sources: dict[str, dict]) -> dict[str, dict]:
+    readers = build_readers(args, sources["watch"])
+    readers.pop("sessions", None)
+    sources.update(collect(readers))
+    sources["primary"] = read_source(lambda: primary_reads(sources["next"], sources["sessions"].get("sessions", []),
+                                                         **primary_readers(args)), None)
+    return sources
+
+
+def read_scope(args: argparse.Namespace, sources: dict[str, dict]) -> str:
+    options = {key: str(value.resolve()) if isinstance(value, Path) else value for key, value in vars(args).items()
+               if key not in {"role", "full", "fresh", "foreign_log", "service_log", "capacity_state"}}
+    environment, _ = github_access.identity_context()
+    environment = {key: value for key, value in environment.items() if not key.endswith("TOKEN_CACHE_DIR")}
+    inputs = [args.radar_config, Path(environment["CODEX_SKILLS_ENV_FILE"])]
+    files = {str(path.resolve()): (path.stat().st_mtime_ns, path.stat().st_size) if path.exists() else None for path in inputs}
+    revision = subprocess.run(["git", "-C", str(Path(__file__).resolve().parents[3]), "rev-parse", "HEAD"],
+                              capture_output=True, text=True, check=True, timeout=5).stdout.strip()
+    anchors = [(row["session_id"], row.get("issue")) for row in sources["sessions"].get("sessions", [])
+               if row.get("action") == "inspect_idle_session"]
+    scope = [options, environment, files, revision, str(Path(__file__).resolve()), sources["watch"].get("history"), anchors]
+    return hashlib.sha256(json.dumps(scope, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def complete_sources(sources: dict[str, dict]) -> bool:
+    return isinstance(sources, dict) and all(isinstance(report, dict) and not source_errors(name, report)
+                                            and not coverage_errors(report, name) for name, report in sources.items())
+
+
+def shared_sources(args: argparse.Namespace, sources: dict[str, dict]) -> tuple[dict[str, dict], str | None]:
+    consumer = [os.environ.get("CODEX_SESSION_ID"), os.environ.get("CLAUDE_CODE_SESSION_ID")]
+    if not any(consumer):
+        consumer = sorted(set(args.role))
+    if not consumer:
+        return fresh_sources(args, sources), None
+    path = args.ledger.with_name(f"{args.ledger.stem}-routine-read.json")
+    try:
+        with foreign_watch.watch_lock(path, wait=True):
+            scope = read_scope(args, sources)
+            now = clock()
+            try:
+                cached = json.loads(path.read_text())
+                age = now - datetime.fromisoformat(cached["started_at"])
+                reusable = (not args.fresh and cached["scope"] == scope and cached["consumer"] != consumer
+                            and timedelta() <= age < SHARED_READ_WINDOW and complete_sources(cached["sources"]))
+                if reusable and complete_sources(sources):
+                    for row in cached["sources"]["primary"].get("no_handoff", []):
+                        row["since"] = recorded_time(row["since"])
+                    sources.update(cached["sources"])
+                    return sources, f"REUSED GitHub reads age={int(age.total_seconds())}s; --fresh reads again"
+            except (OSError, ValueError, TypeError, KeyError):
+                cached = None
+            path.unlink(missing_ok=True)
+            local = set(sources)
+            sources = fresh_sources(args, sources)
+            if complete_sources(sources):
+                cached = {"scope": scope, "consumer": consumer, "started_at": now.isoformat(),
+                          "sources": {key: report for key, report in sources.items() if key not in local}}
+                foreign_watch.atomic_text(path, json.dumps(cached, default=str) + "\n")
+            return sources, None
+    except OSError as error:
+        sources["reuse"] = {"error": str(error), "coverage": {"complete": False}}
+        return fresh_sources(args, sources), None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Print the existing Supervisor digest; optional routing delivers message pointers, never launches or closes."
@@ -686,6 +753,7 @@ def main() -> int:
     parser.add_argument("--github-cli-login", help="retain the plain install login selected by supervisor.py start")
     parser.add_argument("--full", action="store_true", help="include acknowledged questions")
     parser.add_argument("--role", action="append", choices=SUPERVISOR_ROLES, default=[], help="held seat; repeat for multiple roles, omit for all")
+    parser.add_argument("--fresh", action="store_true", help="ignore and invalidate shared reads before collecting fresh sources")
     parser.add_argument("--owner", required=True)
     parser.add_argument("--queue", required=True)
     parser.add_argument("--ledger", type=Path, required=True)
@@ -715,10 +783,12 @@ def main() -> int:
         return watch_report(args.foreign_log, window=str(config.get("comment_window") or radar.DEFAULT_WINDOW))
 
     service_readers = {f"service {path}": lambda path=path: watch_report(path, service=True) for path in args.service_log}
-    sources = collect({"watch": read_watch, **service_readers})
-    sources.update(collect(build_readers(args, sources["watch"])))
-    sources["primary"] = read_source(lambda: primary_reads(sources["next"], sources["sessions"].get("sessions", []), **primary_readers(args)), None)
+    sources = collect({"watch": read_watch, **service_readers,
+                       "sessions": lambda: compact_check.report(args.ledger, args.capacity_state)})
+    sources, reused = shared_sources(args, sources)
     output = digest(sources, full=args.full, roles=tuple(args.role))
+    if reused:
+        output = f"{reused}\n{output}"
     print(output)
     return int(any(line.startswith("ERROR ") for line in output.splitlines()))
 

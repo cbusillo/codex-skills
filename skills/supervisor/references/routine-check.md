@@ -57,8 +57,20 @@ within the held roles; with no role they all apply.
    appear as one count with a source link, not as queue entries. Watch history
    seeds full-history radar threads and question sources; fresh source
    readers decide what is still unanswered. Questions and radar share their
-   collected discussions and metadata within a run; each new run reads fresh
-   sources. The other readers run at the same time. The radar's repository
+   collected discussions and metadata within a run. Other Supervisor sessions
+   using the same owner, queue, resolved ledger, identity, code and read options
+   can reuse a complete run's GitHub reads for five minutes from its start.
+   The digest says REUSED and gives its age; roles and `--full` are applied again.
+   Repeating the check in the producing session still reads fresh, including
+   single-Supervisor commands without `--role`. Add `--fresh` to invalidate the
+   shared reads and force a new run. A failed or incomplete run leaves nothing
+   reusable, even when a previous run succeeded. Local sessions, watch and service
+   logs are read on every invocation. Different watch paths with the same history
+   can share; changed history or idle-worker anchors require a fresh run.
+   The private `<ledger>-routine-read.json` receipt and existing file lock need
+   no service or seat registry. They are short-lived read evidence, never
+   authority to claim, close or merge; open the linked source before acting.
+   The other readers run at the same time. The radar's repository
    comment scan keeps a watermark beside the ledger (`<ledger>-radar-scan.json`)
    and reads only comments changed since it; a missing, unreadable or
    other-identity watermark, or one that no longer covers the window, rereads
