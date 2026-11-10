@@ -88,7 +88,6 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
             "yielded",
             "overlap",
             "count",
-            "duration",
             "source",
         ):
             with self.subTest(kind=kind):
@@ -114,8 +113,6 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
                     rows.insert(1, {"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "other", "input": "text(1)"}})
                 elif kind == "count":
                     rows[0]["payload"]["input"] = "for(const n of [1,2]){" + rows[0]["payload"]["input"] + "}"
-                elif kind == "duration":
-                    event["item"]["duration"]["secs"] += 5
                 elif kind == "source":
                     event["item"]["source"] = "unknown"
                 report = check_claims.history.literal_targets(rows, SESSION)
@@ -165,7 +162,6 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
                 rows = self.recorded_display(COMMAND, computed=True)
                 event = rows.pop(1)
                 event["payload"]["completed_at_ms"] += 5000
-                event["payload"]["item"]["duration"]["secs"] += 5
                 if recorded:
                     rows[-1]["payload"]["output"].append({"type": "input_text", "text": '[{"value":{"session_id":123}}]'})
                 rows.append(event)
@@ -195,6 +191,33 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
         rows = self.recorded_display(computed=True)
         rows[0]["payload"]["input"] = "const jobs=[1];jobs.push(2);for(const n of jobs){" + rows[0]["payload"]["input"] + "}"
         self.assertTrue(check_claims.history.literal_targets(rows, SESSION)["unresolved_invocations"])
+
+    def test_native_effects_reuse_the_existing_numeric_member_proof(self) -> None:
+        for display, clears in (
+            ("for(let i=0;i<results.length;i++)text(results[i]);", True),
+            ('const k=load("index");text(results[k]);', False),
+        ):
+            with self.subTest(display=display):
+                rows = self.recorded_display(computed=True)
+                rows[0]["payload"]["input"] = 'const r=await tools.exec_command({cmd:load("command")});const results=[r];' + display
+                report = check_claims.history.literal_targets(rows, SESSION)
+                self.assertEqual(not report["unresolved_invocations"], clears)
+
+    def test_displayed_yield_text_does_not_turn_a_completed_cell_into_an_overlap(self) -> None:
+        for running in (False, True):
+            with self.subTest(running=running):
+                header = "Script running with cell ID 9\n" if running else "Script completed\nWall time 0.5 seconds\nOutput:\n"
+                earlier = invocation(
+                    'text(await tools.exec_command({cmd:"cat source.js"}));',
+                    [
+                        {"type": "input_text", "text": header},
+                        {"type": "input_text", "text": "The source contains Script running with cell ID 9"},
+                    ],
+                )
+                for row in earlier:
+                    row["payload"]["call_id"] = "display"
+                report = check_claims.history.literal_targets([*earlier, *self.recorded_display(computed=True)], SESSION)
+                self.assertEqual(bool(report["unresolved_invocations"]), running)
 
     def test_same_cell_stored_commands_preserve_every_claim_effect(self) -> None:
         for verb in ("show", "claim"):
