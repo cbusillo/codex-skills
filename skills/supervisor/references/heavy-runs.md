@@ -305,12 +305,18 @@ requests only changed or added files, then verifies every result file against
 that inventory before applying the recorded modes. Removed reference files
 are absent from the new result. References and earlier collections are never
 modified or deleted; interrupted or mismatched results stay available as partial
-evidence. A same-filesystem clone failure is explicit, with no full-copy fallback.
-Without a reference, the adapter keeps its full-transfer path.
+evidence. A file on another filesystem, or one whose filesystem cannot clone,
+is transferred and counted instead. Other clone errors preserve evidence and
+fail collection. Without a reference, the adapter keeps its full-transfer path.
 
 The private executor resolves a matching input in the original manifest as the
 reference automatically. An output can instead name an absolute local
-`reference` path, such as a prior collected result. Its existing runbook owns
+`reference` path at submission, such as a prior collected result. Recollection
+uses that original manifest. The adapter sends receipts and other evidence
+before reference deltas; outputs containing links keep the ordinary tar path.
+The verified result has identical file content, while ordinary modes are applied
+after verification; this does not preserve the full tar path's timestamps or links.
+Its existing runbook owns
 that adapter's adoption and matching guest artifact installation. Source landing
 does not update a guest or change an existing run. Collection reports
 `cloned_files`, `transferred_files`, `transferred_bytes` and

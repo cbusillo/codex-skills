@@ -212,13 +212,18 @@ def receive_result(stream: BinaryIO, requests: BinaryIO, destination: Path, refe
             target.mkdir(mode=0o700)
             continue
         candidate = (reference if name == "." else reference / name) if reference is not None else None
-        if candidate is not None and candidate.is_file():
+        if candidate is not None and candidate.is_file() and candidate.stat().st_dev == destination.parent.stat().st_dev:
             with candidate.open("rb") as source:
                 if hashlib.file_digest(source, "sha256").hexdigest() == entry["sha256"]:
-                    clone_input(candidate, target)
-                    target.chmod(0o600)
-                    report["cloned_files"] += 1
-                    continue
+                    try:
+                        clone_input(candidate, target)
+                    except OSError as error:
+                        if error.errno not in (errno.EXDEV, errno.ENOTSUP, errno.ENOTTY, errno.ENOSYS) or target.exists():
+                            raise
+                    else:
+                        target.chmod(0o600)
+                        report["cloned_files"] += 1
+                        continue
         selected.append(name)
     requests.write(json.dumps(selected).encode() + b"\n")
     requests.flush()

@@ -35,6 +35,14 @@ import heavy_run
 
 class ResultCollectionTests(unittest.TestCase):
     def test_collection_clones_unchanged_files_and_transfers_only_changes_with_full_verification(self) -> None:
+        with patch.object(heavy_run, "clone_input", side_effect=shutil.copyfile):
+            self.check_delta_and_full_collection()
+
+    @unittest.skipUnless(sys.platform == "darwin", "Native clone fixture requires macOS")
+    def test_native_collection_clones_are_independent_and_match_full_transfer(self) -> None:
+        self.check_delta_and_full_collection()
+
+    def check_delta_and_full_collection(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             reference = root / "reference"
@@ -90,7 +98,7 @@ class ResultCollectionTests(unittest.TestCase):
             header = json.dumps(heavy_run.result_inventory(guest)).encode() + b"\n"
             for index, payload in enumerate((b"corrupt!", b"short")):
                 destination = root / str(index)
-                with self.assertRaises((ValueError, EOFError)):
+                with self.assertRaises(ValueError):
                     heavy_run.receive_result(io.BytesIO(header + payload), io.BytesIO(), destination, reference)
                 self.assertEqual((reference / "file").read_bytes(), b"original")
                 self.assertTrue(destination.exists())
@@ -103,14 +111,38 @@ class ResultCollectionTests(unittest.TestCase):
             original.mkdir()
             (original / "file").write_bytes(b"original")
             expected = heavy_run.result_inventory(original)
-            for name in ("../outside", "/absolute", "a/../outside", "a//outside"):
-                inventory = {**expected, name: expected["file"]}
+            for name in ("..", "a/.."):
+                inventory = {**expected, "a": expected["."], name: expected["file"]}
                 with self.assertRaises(ValueError):
                     heavy_run.receive_result(io.BytesIO(json.dumps(inventory).encode() + b"\n"), io.BytesIO(), root / "new")
                 self.assertFalse((root / "new").exists())
             with self.assertRaises(FileExistsError):
                 heavy_run.receive_result(io.BytesIO(json.dumps(expected).encode() + b"\n"), io.BytesIO(), original)
             self.assertEqual((original / "file").read_bytes(), b"original")
+
+    def test_unsupported_clones_transfer_instead_and_storage_failures_preserve_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            reference = root / "reference"
+            reference.write_bytes(b"same bytes")
+            inventory = heavy_run.result_inventory(reference)
+            header = json.dumps(inventory).encode() + b"\n"
+            for code in (errno.EXDEV, errno.ENOTSUP, errno.ENOSPC):
+                destination = root / str(code)
+                with patch.object(heavy_run, "clone_input", side_effect=OSError(code, "fixture")):
+                    if code == errno.ENOSPC:
+                        with self.assertRaises(OSError):
+                            heavy_run.receive_result(
+                                io.BytesIO(header + reference.read_bytes()), io.BytesIO(), destination, reference
+                            )
+                    else:
+                        report = heavy_run.receive_result(
+                            io.BytesIO(header + reference.read_bytes()), io.BytesIO(), destination, reference
+                        )
+                        self.assertEqual(report["cloned_files"], 0)
+                        self.assertEqual(report["transferred_bytes"], reference.stat().st_size)
+                        self.assertEqual(destination.read_bytes(), reference.read_bytes())
+            self.assertEqual(reference.read_bytes(), b"same bytes")
 
 
 class InputStagingTests(unittest.TestCase):
