@@ -209,6 +209,13 @@ UNKNOWN.
 
 ## Result Policy
 
+For code changes, run inspection before Ready. Fix caller errors and real findings,
+including findings retained alongside UNKNOWN. Record a terminal tool or environment
+UNKNOWN's reason and `next_action`, then continue through the remaining gates;
+UNKNOWN alone does not hold a PR in draft or block Ready. It never proves clean.
+Licensing, custody, source ownership and other readiness requirements still apply.
+This is the [Q1333 decision](https://github.com/cbusillo/direction/issues/98#issuecomment-6744544086).
+
 - `GREEN`: inspection worked and found no actionable findings for the selected
   scope/filter. Native `changed_files` and `files` runs count only findings on
   lines the change adds or modifies since the default branch's merge base, and
@@ -233,9 +240,9 @@ UNKNOWN.
 - `UNKNOWN`: inspection did not prove green or red. Do not summarize this as
   "no problems found"; report the verdict reason and `next_action`, because the
   worker, its configuration, the selection, or the environment needs attention
-  first. Native runs are not retried automatically and `retry_policy.retry` is
-  false; resolve the reported prerequisite before one fresh assessment, and do
-  not add a retry loop.
+  under the readiness rule above. Native runs are not retried automatically and
+  `retry_policy.retry` is false; a fresh assessment follows a corrected prerequisite,
+  never a retry loop.
   When inspection evidence is used to qualify changes to this helper or another
   installed runtime-bound skill, compare the recorded helper/source revision
   with the intended landed revision or a fresh runtime-reconciliation receipt.
