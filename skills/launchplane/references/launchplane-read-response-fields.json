@@ -144,6 +144,7 @@
   ],
   "target-replacement-operation-read": [
     "native_evidence",
+    "native_execution_binding",
     "operation",
     "recovery",
     "result",
