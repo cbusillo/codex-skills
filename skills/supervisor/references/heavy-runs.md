@@ -76,34 +76,39 @@ Existing frozen input and evidence requirements still apply.
 
 ## Input staging and collection
 
-Every repository runner uses manifest references for read-only inputs and the
-shared `docker.stage_input(source, group="inputs")` when it needs an independent
-writable workspace. Call it inside the existing queued `prepare(docker)` callback;
-`group="images"` stages an image archive through the same path. Bind the returned
-path in the prepared manifest. Plain manifest copies still stream directly from
-the original, including across volumes; staging never adds a copy to that path.
+Every repository runner uses manifest references for read-only inputs. They stream
+directly, including across volumes. When preparation needs an independent writable
+host workspace, call `docker.stage_input(source)` inside the queued `prepare`
+callback and bind its returned path in the prepared manifest. Image archives use
+the same method. No ordinary manifest input gets an extra host copy.
 
 Writable staging uses APFS `clonefile` or Linux `FICLONE` on one filesystem and
-copies only across filesystems. Unsupported cloning fails; use the original
-manifest reference when only read-only streaming is needed. `clone_input` is
-also available to repository code that already owns its own output-retention
-lifecycle. Hard links are not staging: writes and permission changes through one
-name affect the original. Clones and cross-volume copies have independent writes;
-the streaming route never changes or deletes its source.
+copies only across filesystems. Unsupported cloning fails: use the original
+manifest reference for a writable container copy, or the existing Linux overlay
+route when its lower is compatible. `clone_input` is also available to repository
+code that already owns its output-retention lifecycle. No hard links are used:
+clones and cross-volume copies have independent writes, permissions and flags;
+streaming never changes or deletes its original. Existing frozen manifests and
+hash inventories stay authoritative and are not copied into another control file.
 
-After containers, overlays and networks are removed, the same cleanup path removes
-only the helper's owned `.staged-inputs` tree, including staged images. This also
-runs on failure and during predecessor recovery. A replaced staging directory
-retains custody. The caller's manifest, collected outputs, logs and `heavy-inputs.json`
-remain; the latter keeps source hashes and routes, never environment values.
-`result.json` reports observed volume bytes added at staging and after collection.
-These free-space observations include concurrent activity and filesystem metadata;
-logical sizes and APFS per-file block counts are not unique physical cost.
+The existing custody record binds a fresh random staging name before preparation.
+Only that new directory, beside this run's evidence, is collected, after runtime
+resources are removed. Recovery uses the same path. Ownership tokens and
+no-follow descriptor-relative removal protect originals; persisted device numbers
+are not used. Locked clones and read-only staging directories are normalized
+only inside the owned workspace. Caller manifests, hashes, collected outputs and
+logs stay. System-locked originals use the read-only manifest route.
 
-Repository runners replace their own working-copy code with this shared path.
-Keep existing frozen-input checks, resumable transport and executor-owned original
-or retained-overlay retirement boundaries. Stage only new disposable copies;
-never adopt an existing original, retained lower or older run's images as staging.
+An uncertain staging directory is preserved and reported in `staging-error.json`.
+Once runtime absence is proved, it does not hold the slot: the next normal request
+can proceed. Runtime cleanup failures still retain custody. Results report cloned
+and copied file counts, copied bytes and observed volume bytes added/reclaimed;
+the free-space observations include concurrent activity and filesystem metadata.
+
+Repository runners replace their own temporary working-copy code with this path.
+Keep existing frozen-input checks, resumable transport and original/retained-overlay
+retirement rules. Never retain an overlay with a temporary staged lower; export any
+needed successor input through the existing output and retention path.
 
 ## Native Docker lifecycle qualification
 
