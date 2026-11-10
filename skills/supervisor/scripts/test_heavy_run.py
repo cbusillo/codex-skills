@@ -126,7 +126,6 @@ class ResultCollectionTests(unittest.TestCase):
                     self.assertEqual(result["transferred_bytes"], expected_bytes)
                     self.assertEqual(result["cloned_files"], int(local_reference is not None))
             self.assertEqual(heavy_run.result_inventory(root / "delta"), heavy_run.result_inventory(root / "full"))
-            (root / "delta/same").chmod(0o600)
             (root / "delta/same").write_bytes(b"independent")
             self.assertEqual((reference / "same").read_bytes(), (guest / "same").read_bytes())
             self.assertEqual((reference / "changed").read_bytes(), b"old bytes")
