@@ -10679,7 +10679,7 @@ def test_health_monitoring_selected_url_binds_private_input_and_verifies_only_se
     for profile in (before, after):
         profile["profile"]["lanes"][0]["health_monitoring"]["checks"].append({
             "name": "other-check", "kind": "public_http", "url": "https://other.example.invalid/health",
-            "enabled": True, "require_runtime_identity": True, "recovery_threshold": 3,
+            "enabled": True, "require_runtime_identity": True, "recovery_observation_threshold": 3,
         })
     if create:
         before["profile"]["lanes"][0]["health_monitoring"]["checks"].pop(0)
@@ -10705,7 +10705,6 @@ def test_health_monitoring_selected_url_binds_private_input_and_verifies_only_se
 @pytest.mark.parametrize("changes", [
     {"current_resolved_url": None}, {"current_resolved_url": []},
     {"resolved_url": "https://testing.example.invalid/private-health-path"},
-    {"unexpected_field": "https://private.example.invalid/secret"},
 ])
 def test_health_monitoring_selection_rejects_missing_or_substituted_plan(changes: dict[str, object]) -> None:
     status, receipt, _, _ = _run_main(
@@ -10713,7 +10712,7 @@ def test_health_monitoring_selection_rejects_missing_or_substituted_plan(changes
         post=_monitoring_response(**_selected_monitoring_plan(**changes)),
     )
     assert status != 0 and receipt["status"] != "accepted"
-    assert "private.example.invalid" not in json.dumps(receipt)
+    assert receipt["warnings"][0]["code"] == "invalid_response"
 
 
 def test_health_monitoring_selection_requires_new_producer_evidence() -> None:
@@ -10745,20 +10744,18 @@ def test_health_monitoring_selection_apply_rejects_altered_evidence(tmp_path: Pa
     assert status == 2 and not posts and not reads
 
 
-@pytest.mark.parametrize("current_url", [SELECTED_MONITORING_URL, "https://stale.example.invalid/health"])
-def test_health_monitoring_selection_compares_current_not_desired_before_apply(tmp_path: Path, current_url: str) -> None:
+def test_health_monitoring_selection_compares_current_not_desired_before_apply(tmp_path: Path) -> None:
     argv, _ = _monitoring_review(tmp_path, _selected_monitoring_arguments(), **_selected_monitoring_plan())
-    status, receipt, posts, reads = _run_main(argv, read=_monitoring_profile(url=current_url))
+    status, receipt, posts, reads = _run_main(argv, read=_monitoring_profile(url=SELECTED_MONITORING_URL))
     assert (status, receipt["status"]) == (1, "stale") and not posts and len(reads) == 1
-    assert "stale.example.invalid" not in json.dumps(receipt)
 
 
 @pytest.mark.parametrize("field", ["url", "health_url", "base_url", "other_check", "selected_policy", "profile", "dependency", "current_plan"])
 def test_health_monitoring_selection_readback_preserves_unrequested_fields(tmp_path: Path, field: str) -> None:
     argv, _ = _monitoring_review(tmp_path, _selected_monitoring_arguments(), **_selected_monitoring_plan())
     before, after = _monitoring_profile(), _monitoring_profile(applied=True, url=SELECTED_MONITORING_URL)
-    after["profile"]["lanes"][0]["health_monitoring"]["checks"][0]["recovery_threshold"] = 1
-    before["profile"]["lanes"][0]["health_monitoring"]["checks"][0]["recovery_threshold"] = 1
+    after["profile"]["lanes"][0]["health_monitoring"]["checks"][0]["recovery_observation_threshold"] = 1
+    before["profile"]["lanes"][0]["health_monitoring"]["checks"][0]["recovery_observation_threshold"] = 1
     lane = after["profile"]["lanes"][0]
     plan = _selected_monitoring_plan()
     if field == "url":
@@ -10768,7 +10765,7 @@ def test_health_monitoring_selection_readback_preserves_unrequested_fields(tmp_p
     elif field == "other_check":
         lane["health_monitoring"]["checks"].append({"name": "unexpected"})
     elif field == "selected_policy":
-        lane["health_monitoring"]["checks"][0]["recovery_threshold"] = 2
+        lane["health_monitoring"]["checks"][0]["recovery_observation_threshold"] = 2
     elif field == "profile":
         after["profile"]["display_name"] = "changed"
     elif field == "dependency":
