@@ -12275,7 +12275,12 @@ def test_native_evidence_requires_requested_view_and_original_operation() -> Non
     assert status == 1 and not payload["result"]
 
 
-def test_native_evidence_preserves_retained_probe_route_and_intent_observations() -> None:
+@pytest.mark.parametrize("metadata", [
+    {}, {"http_status": None, "failure_kind": None},
+    {"http_status": 100}, {"http_status": 599}, {"http_status": 503},
+    *({"failure_kind": kind} for kind in ("connection", "tls", "timeout", "invalid_response", "redirect")),
+])
+def test_native_evidence_preserves_retained_probe_route_and_intent_observations(metadata: dict[str, object]) -> None:
     response = _native_evidence_response()
     evidence = response["native_evidence"]
     evidence.update(publication_started=False, retirement_started=True, rollback_started=True, predecessor_snapshot="stopped")
@@ -12283,12 +12288,41 @@ def test_native_evidence_preserves_retained_probe_route_and_intent_observations(
         availability="present", binding="matched", coverage="checkpoint_probe_only", state="pass",
         observed_at="2026-11-01T12:00:00+00:00", verified=True, runtime_identity_matches=False,
     )
+    evidence["terminal_probe"].update(metadata)
     evidence["forward_route"].update(effect_checkpoint_recorded=False, not_dispatched=True, route_write_not_started=True)
     status, payload, calls = _read_native_response(response)
     assert status == 0 and len(calls) == 1
     projected = payload["result"]["native_evidence"]
+    assert {key: projected["terminal_probe"][key] for key in ("http_status", "failure_kind") if key in projected["terminal_probe"]} == metadata
+    assert payload["result"]["recovery"]["safe_to_release"] is False
     for name, value in evidence.items():
         if isinstance(value, dict):
             assert {key: projected[name][key] for key in value} == value
         else:
             assert projected[name] == value
+
+
+@pytest.mark.parametrize("field,value", [
+    ("http_status", True), ("http_status", False), ("http_status", "503"), ("http_status", 503.0),
+    ("http_status", 99), ("http_status", 600), ("http_status", {}), ("http_status", []),
+    ("failure_kind", True), ("failure_kind", 503), ("failure_kind", {}), ("failure_kind", []),
+    ("failure_kind", "TIMEOUT"), ("failure_kind", ""), ("failure_kind", "https://planted-private-value.invalid"),
+])
+def test_native_evidence_refuses_unsafe_probe_metadata_without_exposing_values(field: str, value: object) -> None:
+    response = _native_evidence_response()
+    response["native_evidence"]["terminal_probe"][field] = value
+    status, payload, calls = _read_native_response(response)
+    assert status == 1 and len(calls) == 1 and not payload["result"]
+    assert "planted-private-value" not in json.dumps(payload)
+
+
+@pytest.mark.parametrize("field,value", [("http_status", 503), ("failure_kind", "timeout")])
+def test_native_evidence_rejects_probe_metadata_on_other_items(field: str, value: object) -> None:
+    response = _native_evidence_response()
+    for name in response["native_evidence"]:
+        if name in {"terminal_probe", "operation_attempt"}:
+            continue
+        broken = copy.deepcopy(response)
+        broken["native_evidence"][name][field] = value
+        status, payload, _ = _read_native_response(broken)
+        assert status == 1 and not payload["result"]

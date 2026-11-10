@@ -8,7 +8,7 @@ from typing import Any
 
 from launchplane_safety import LaunchplaneSafetyError
 
-# https://github.com/cbusillo/launchplane/blob/dbda589bd6872f5a68337e68b18ae1b692272d74/control_plane/contracts/native_testing_rebuild_evidence.py
+# https://github.com/cbusillo/launchplane/blob/9e3a5ad982d162a7d149ba68ba60702cce24c64e/control_plane/contracts/native_testing_rebuild_evidence.py
 ITEM_SOURCES = {
     "reservation": "native_reservation",
     "original_intent": "native_original_intent",
@@ -83,8 +83,9 @@ def _nullable_booleans(source: dict[str, Any], names: set[str]) -> dict[str, obj
     return {name: source.get(name) for name in names}
 
 
-def _project_item(value: object) -> dict[str, object]:
-    source = _closed_object(value, {"source"}, {*ITEM_CODES, *ITEM_BOOLEANS, "observed_at", "attempt"})
+def _project_item(value: object, *, name: str) -> dict[str, object]:
+    probe_fields = {"http_status", "failure_kind"} if name == "terminal_probe" else set()
+    source = _closed_object(value, {"source"}, {*ITEM_CODES, *ITEM_BOOLEANS, "observed_at", "attempt", *probe_fields})
     projected = {
         "source": _code(source["source"], ITEM_CODES["source"]),
         **{
@@ -108,6 +109,16 @@ def _project_item(value: object) -> dict[str, object]:
         except ValueError:
             raise LaunchplaneSafetyError("invalid_response") from None
     projected["observed_at"] = observed
+    if "http_status" in source:
+        status = source["http_status"]
+        if status is not None and (type(status) is not int or not 100 <= status <= 599):
+            raise LaunchplaneSafetyError("invalid_response")
+        projected["http_status"] = status
+    if "failure_kind" in source:
+        failure = source["failure_kind"]
+        projected["failure_kind"] = None if failure is None else _code(
+            failure, {"connection", "tls", "timeout", "invalid_response", "redirect"}
+        )
     return projected
 
 
@@ -129,7 +140,7 @@ def project_native_evidence(value: object, *, operation: dict[str, Any], operati
     return {
         "schema_version": version,
         "operation_attempt": attempt,
-        **{name: _project_item(source[name]) for name in ITEM_SOURCES},
+        **{name: _project_item(source[name], name=name) for name in ITEM_SOURCES},
         "predecessor_snapshot": predecessor,
         **_nullable_booleans(source, VIEW_BOOLEANS),
         "needed_copies": _code(source.get("needed_copies", "retain_all"), {"retain_all"}),
