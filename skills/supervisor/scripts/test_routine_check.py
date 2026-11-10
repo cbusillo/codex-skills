@@ -5,6 +5,7 @@
 # ///
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack, contextmanager
 from functools import partial
 from contextlib import redirect_stdout
 from io import StringIO
@@ -53,7 +54,11 @@ class SharedReadTests(unittest.TestCase):
         self.watch.write_text(json.dumps({"notices": [], "errors": [], "coverage_gaps": []}))
         self.read = Mock(return_value={"coverage": {"complete": True}})
         self.sessions = {"sessions": [], "coverage": {"complete": True}}
-        self.enterContext(patch.object(routine_check, "build_readers", return_value={"next": self.read, "sessions": lambda: self.sessions}))
+        self.enterContext(patch.object(routine_check, "build_readers", return_value={"next": self.read}))
+        self.identity = self.enterContext(patch.object(routine_check.github_access, "identity_context",
+                                                       return_value=({"CODEX_SKILLS_ENV_FILE": str(self.root / "local.env")}, True)))
+        self.revision = self.enterContext(patch.object(routine_check.subprocess, "run",
+                                                       return_value=subprocess.CompletedProcess([], 0, stdout="fixture-revision")))
         self.enterContext(patch.object(routine_check.compact_check, "report", side_effect=lambda *_args: self.sessions))
         self.enterContext(patch.object(routine_check, "primary_reads", return_value={"coverage": {"complete": True}}))
 
@@ -67,6 +72,12 @@ class SharedReadTests(unittest.TestCase):
               redirect_stdout(StringIO()) as output):
             status = routine_check.main()
         return status, output.getvalue()
+
+    def receipt(self) -> Path:
+        with patch.object(routine_check, "shared_sources", wraps=routine_check.shared_sources) as shared:
+            self.check(session="receipt-lookup")
+        args, _ = shared.call_args.args
+        return routine_check.shared_read_path(args.ledger, routine_check.read_scope(args))
 
     def test_three_seats_share_reads_but_same_seat_and_legacy_stay_fresh(self) -> None:
         for role in routine_check.SUPERVISOR_ROLES:
@@ -124,7 +135,7 @@ class SharedReadTests(unittest.TestCase):
         with patch.object(routine_check, "clock", return_value=routine_check.clock() + routine_check.SHARED_READ_WINDOW):
             _, output = self.check(second)
         self.assertNotIn("REUSED", output)
-        (self.root / "ledger-routine-read.json").write_text("{")
+        self.receipt().write_text("{")
         _, output = self.check(first)
         self.assertNotIn("REUSED", output)
 
@@ -141,15 +152,26 @@ class SharedReadTests(unittest.TestCase):
         with patch.object(routine_check, "shared_sources", wraps=routine_check.shared_sources) as shared:
             self.check(first)
         args = shared.call_args.args[0]
-        (self.root / "ledger-routine-read.json").unlink()
+        self.receipt().unlink()
         self.read.reset_mock()
         entered = threading.Event()
-        released = threading.Event()
+        contended = threading.Event()
+        original_lock = routine_check.foreign_watch.watch_lock
+
+        @contextmanager
+        def observed_lock(path: Path) -> Any:
+            with ExitStack() as locks:
+                try:
+                    locks.enter_context(original_lock(path))
+                except ValueError:
+                    contended.set()
+                    raise
+                yield
 
         def read() -> dict:
             entered.set()
-            if not released.wait(10):
-                raise TimeoutError("second seat did not start")
+            if not contended.wait(5):
+                raise TimeoutError("second seat did not contend for the lock")
             return {"coverage": {"complete": True}}
 
         def run(role: str) -> tuple[dict, str | None]:
@@ -157,14 +179,62 @@ class SharedReadTests(unittest.TestCase):
             return routine_check.shared_sources(argparse.Namespace(**{**vars(args), "role": [role]}), local)
 
         self.read.side_effect = read
-        with patch.dict(os.environ, {"CODEX_SESSION_ID": "", "CLAUDE_CODE_SESSION_ID": ""}), ThreadPoolExecutor(max_workers=2) as pool:
+        with (patch.dict(os.environ, {"CODEX_SESSION_ID": "", "CLAUDE_CODE_SESSION_ID": ""}),
+              patch.object(routine_check.foreign_watch, "watch_lock", side_effect=observed_lock), ThreadPoolExecutor(max_workers=2) as pool):
             producing = pool.submit(run, first)
             self.assertTrue(entered.wait(10))
             following = pool.submit(run, second)
-            released.set()
             self.assertIsNone(producing.result()[1])
             self.assertIsNotNone(following.result()[1])
         self.assertEqual(self.read.call_count, 1)
+
+    def test_scope_and_publication_failures_keep_the_digest_and_never_repeat_reads(self) -> None:
+        failures = ((self.revision, subprocess.TimeoutExpired("git", 5)),
+                    (self.identity, ValueError("identity configuration unavailable")))
+        for dependency, error in failures:
+            with self.subTest(error=error):
+                dependency.side_effect = error
+                before = self.read.call_count
+                status, output = self.check(session="first")
+                self.assertEqual(status, 0, output)
+                self.assertIn("SHARING_UNAVAILABLE", output)
+                self.assertEqual(self.read.call_count, before + 1)
+                dependency.side_effect = None
+        with patch.object(routine_check.foreign_watch, "atomic_text", side_effect=OSError("disk full")):
+            before = self.read.call_count
+            status, output = self.check(session="first", extra=("--fresh",))
+        self.assertEqual(status, 0, output)
+        self.assertIn("disk full", output)
+        self.assertEqual(self.read.call_count, before + 1)
+
+    def test_lock_deadline_falls_back_to_one_fresh_read(self) -> None:
+        with (patch.object(routine_check.foreign_watch, "watch_lock", side_effect=ValueError("busy")),
+              patch.object(routine_check.time, "monotonic", side_effect=[0, routine_check.SHARED_READ_WINDOW.total_seconds()])):
+            status, output = self.check(session="first")
+        self.assertEqual(status, 0, output)
+        self.assertIn("SHARING_UNAVAILABLE", output)
+        self.assertEqual(self.read.call_count, 1)
+
+    def test_identity_watch_history_and_idle_anchor_changes_require_new_reads(self) -> None:
+        self.check(session="first")
+        self.identity.return_value = ({"CODEX_SKILLS_ENV_FILE": str(self.root / "another.env")}, True)
+        self.check(session="second")
+        self.assertEqual(self.read.call_count, 2)
+        self.watch.write_text(json.dumps({"notices": [{"kind": "foreign", "url": "new", "updated_at": "2026-11-09T00:00:00Z"}],
+                                          "errors": [], "coverage_gaps": []}))
+        self.check(session="third")
+        self.assertEqual(self.read.call_count, 3)
+        self.sessions["sessions"] = [{"session_id": "idle", "action": "inspect_idle_session", "issue": "owner/product#2"}]
+        self.check(session="fourth")
+        self.assertEqual(self.read.call_count, 4)
+
+    def test_native_action_needs_its_own_primary_reads(self) -> None:
+        row = {"url": "https://github.com/owner/product/pull/2", "state": "open", "repo": "owner/product", "number": 2,
+               "record_type": "pull_request", "queue": {"state": "available", "next_actor": "agent:second", "next_action": "release"}}
+        self.read.return_value = {"candidates": [row], "coverage": {"complete": True}}
+        self.check(session="first")
+        self.check(session="second")
+        self.assertEqual(self.read.call_count, 2)
 
     def test_reused_primary_times_and_full_question_view_survive_serialization(self) -> None:
         since = routine_check.clock() - routine_check.ROUTINE_INTERVAL
@@ -187,6 +257,7 @@ class RoutineCheckTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.enterContext(patch.dict(os.environ, {"CODE_HOME": temporary.name}))
+        self.enterContext(patch.dict(os.environ, {"CODEX_SESSION_ID": "", "CLAUDE_CODE_SESSION_ID": ""}))
         self.enterContext(patch.object(routine_check.oq, "default_decision_authors", return_value=["agent[bot]"]))
         self.enterContext(patch_attr(routine_check.radar.github_identity, "automation_login", return_value="agent[bot]"))
         self.enterContext(patch_attr(routine_check.radar.github_identity, "configured_bot_logins", return_value=["agent[bot]"]))

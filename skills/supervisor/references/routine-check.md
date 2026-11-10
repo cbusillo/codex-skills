@@ -63,11 +63,15 @@ within the held roles; with no role they all apply.
    The digest says REUSED and gives its age; roles and `--full` are applied again.
    Repeating the check in the producing session still reads fresh, including
    single-Supervisor commands without `--role`. Add `--fresh` to invalidate the
-   shared reads and force a new run. A failed or incomplete run leaves nothing
-   reusable, even when a previous run succeeded. Local sessions, watch and service
+   shared reads and force a new run; use it to verify an action just taken.
+   Failed or incomplete GitHub reads leave nothing reusable, even when a previous
+   run succeeded. Local sessions, watch and service
    logs are read on every invocation. Different watch paths with the same history
    can share; changed history or idle-worker anchors require a fresh run.
-   The private `<ledger>-routine-read.json` receipt and existing file lock need
+   Private receipts beside the ledger are separated by read scope. Their existing
+   file locks wait at most the reuse window, then continue with fresh reads;
+   sharing setup or storage errors also keep the fresh digest and explain why.
+   These receipts need
    no service or seat registry. They are short-lived read evidence, never
    authority to claim, close or merge; open the linked source before acting.
    The other readers run at the same time. The radar's repository

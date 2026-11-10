@@ -13,6 +13,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
+from contextlib import ExitStack
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -596,7 +597,6 @@ def build_readers(args: argparse.Namespace, watch: dict) -> dict[str, Callable[[
 
     return {
         "next": lambda: staffing(args.owner),
-        "sessions": lambda: compact_check.report(args.ledger, args.capacity_state),
         "questions": questions,
         "waits": waits,
         "comments": comments,
@@ -683,14 +683,13 @@ def comment_hint(notice: dict) -> Any:
 
 def fresh_sources(args: argparse.Namespace, sources: dict[str, dict]) -> dict[str, dict]:
     readers = build_readers(args, sources["watch"])
-    readers.pop("sessions", None)
     sources.update(collect(readers))
     sources["primary"] = read_source(lambda: primary_reads(sources["next"], sources["sessions"].get("sessions", []),
                                                          **primary_readers(args)), None)
     return sources
 
 
-def read_scope(args: argparse.Namespace, sources: dict[str, dict]) -> str:
+def read_scope(args: argparse.Namespace) -> str:
     options = {key: str(value.resolve()) if isinstance(value, Path) else value for key, value in vars(args).items()
                if key not in {"role", "full", "fresh", "foreign_log", "service_log", "capacity_state"}}
     environment, _ = github_access.identity_context()
@@ -699,15 +698,28 @@ def read_scope(args: argparse.Namespace, sources: dict[str, dict]) -> str:
     files = {str(path.resolve()): (path.stat().st_mtime_ns, path.stat().st_size) if path.exists() else None for path in inputs}
     revision = subprocess.run(["git", "-C", str(Path(__file__).resolve().parents[3]), "rev-parse", "HEAD"],
                               capture_output=True, text=True, check=True, timeout=5).stdout.strip()
+    scope = [options, environment, files, revision, str(Path(__file__).resolve())]
+    return hashlib.sha256(json.dumps(scope, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def shared_read_path(ledger: Path, scope: str) -> Path:
+    return ledger.with_name(f"{ledger.stem}-routine-read-{scope}.json")
+
+
+def local_read_inputs(sources: dict[str, dict]) -> list:
     anchors = [(row["session_id"], row.get("issue")) for row in sources["sessions"].get("sessions", [])
                if row.get("action") == "inspect_idle_session"]
-    scope = [options, environment, files, revision, str(Path(__file__).resolve()), sources["watch"].get("history"), anchors]
-    return hashlib.sha256(json.dumps(scope, sort_keys=True, default=str).encode()).hexdigest()
+    return [sources["watch"].get("history"), [list(anchor) for anchor in anchors]]
+
+
+def primary_targets(selection: dict) -> list[str]:
+    return sorted(pointer(row) for _, row in queue_rows(selection)
+                  if CLIENT_WAIT.search(request_text(row)) or RELEASE_REQUEST.search(request_text(row)) or SETTING_CHANGE.search(request_text(row)))
 
 
 def complete_sources(sources: dict[str, dict]) -> bool:
     return isinstance(sources, dict) and all(isinstance(report, dict) and not source_errors(name, report)
-                                            and not coverage_errors(report, name) for name, report in sources.items())
+                                            for name, report in sources.items())
 
 
 def shared_sources(args: argparse.Namespace, sources: dict[str, dict]) -> tuple[dict[str, dict], str | None]:
@@ -716,17 +728,29 @@ def shared_sources(args: argparse.Namespace, sources: dict[str, dict]) -> tuple[
         consumer = sorted(set(args.role))
     if not consumer:
         return fresh_sources(args, sources), None
-    path = args.ledger.with_name(f"{args.ledger.stem}-routine-read.json")
+    collected = False
     try:
-        with foreign_watch.watch_lock(path, wait=True):
-            scope = read_scope(args, sources)
+        scope = read_scope(args)
+        path = shared_read_path(args.ledger, scope)
+        deadline = time.monotonic() + SHARED_READ_WINDOW.total_seconds()
+        with ExitStack() as locks:
+            while True:
+                try:
+                    locks.enter_context(foreign_watch.watch_lock(path))
+                    break
+                except ValueError:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("shared read wait exceeded its reuse window") from None
+                    time.sleep(0.1)
             now = clock()
             try:
                 cached = json.loads(path.read_text())
                 age = now - datetime.fromisoformat(cached["started_at"])
                 reusable = (not args.fresh and cached["scope"] == scope and cached["consumer"] != consumer
+                            and cached["local_inputs"] == local_read_inputs(sources)
+                            and cached["primary_targets"] == primary_targets(cached["sources"]["next"])
                             and timedelta() <= age < SHARED_READ_WINDOW and complete_sources(cached["sources"]))
-                if reusable and complete_sources(sources):
+                if reusable:
                     for row in cached["sources"]["primary"].get("no_handoff", []):
                         row["since"] = recorded_time(row["since"])
                     sources.update(cached["sources"])
@@ -736,14 +760,16 @@ def shared_sources(args: argparse.Namespace, sources: dict[str, dict]) -> tuple[
             path.unlink(missing_ok=True)
             local = set(sources)
             sources = fresh_sources(args, sources)
-            if complete_sources(sources):
+            collected = True
+            remote = {key: report for key, report in sources.items() if key not in local}
+            if complete_sources(remote) and clock() - now < SHARED_READ_WINDOW:
                 cached = {"scope": scope, "consumer": consumer, "started_at": now.isoformat(),
-                          "sources": {key: report for key, report in sources.items() if key not in local}}
+                          "local_inputs": local_read_inputs(sources), "primary_targets": primary_targets(sources["next"]),
+                          "sources": remote}
                 foreign_watch.atomic_text(path, json.dumps(cached, default=str) + "\n")
             return sources, None
-    except OSError as error:
-        sources["reuse"] = {"error": str(error), "coverage": {"complete": False}}
-        return fresh_sources(args, sources), None
+    except (OSError, ValueError, TypeError, subprocess.SubprocessError) as error:
+        return (sources if collected else fresh_sources(args, sources)), f"SHARING_UNAVAILABLE {error}; collected fresh reads"
 
 
 def main() -> int:
