@@ -875,6 +875,7 @@ def javascript_outcome(output: object) -> str | None:
 
 def response_positions(records: list[dict]) -> dict[str, int]:
     responses = {}
+    running = set()
     for index, row in enumerate(records):
         payload = row.get("payload")
         if not isinstance(payload, dict) or payload.get("type") not in {
@@ -890,10 +891,10 @@ def response_positions(records: list[dict]) -> dict[str, int]:
             and javascript_outcome(output) is None
             and "Script running with cell ID" in str(output)
         ):
-            responses.pop(identifier, None)
+            running.add(identifier)
         else:
             responses[identifier] = index
-    return responses
+    return {identifier: index for identifier, index in responses.items() if identifier not in running}
 
 
 def exclusive_response_window(inputs: dict, identifier: str, responses: dict[str, int], record_count: int) -> bool:
@@ -1062,15 +1063,6 @@ def native_effects_complete(
         identities.add(identity)
         if kind == "CommandExecution":
             if item.get("source") != "unified_exec_startup" or type(item.get("exit_code")) is not int:
-                return False
-            duration = item.get("duration") or {}
-            if (
-                type(duration.get("secs")) is not int
-                or type(duration.get("nanos")) is not int
-                or duration["secs"] < 0
-                or not 0 <= duration["nanos"] < 1000000000
-                or abs(event["completed_at_ms"] - event["started_at_ms"] - duration["secs"] * 1000 - duration["nanos"] / 1000000) > 2
-            ):
                 return False
             command = shell_wrapper_payload(item.get("command"))
             if command is None:

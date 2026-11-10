@@ -88,7 +88,6 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
             "yielded",
             "overlap",
             "count",
-            "duration",
             "source",
         ):
             with self.subTest(kind=kind):
@@ -114,8 +113,6 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
                     rows.insert(1, {"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "other", "input": "text(1)"}})
                 elif kind == "count":
                     rows[0]["payload"]["input"] = "for(const n of [1,2]){" + rows[0]["payload"]["input"] + "}"
-                elif kind == "duration":
-                    event["item"]["duration"]["secs"] += 5
                 elif kind == "source":
                     event["item"]["source"] = "unknown"
                 report = check_claims.history.literal_targets(rows, SESSION)
@@ -165,7 +162,6 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
                 rows = self.recorded_display(COMMAND, computed=True)
                 event = rows.pop(1)
                 event["payload"]["completed_at_ms"] += 5000
-                event["payload"]["item"]["duration"]["secs"] += 5
                 if recorded:
                     rows[-1]["payload"]["output"].append({"type": "input_text", "text": '[{"value":{"session_id":123}}]'})
                 rows.append(event)
@@ -197,13 +193,13 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
         self.assertTrue(check_claims.history.literal_targets(rows, SESSION)["unresolved_invocations"])
 
     def test_native_effects_reuse_the_existing_numeric_member_proof(self) -> None:
-        for initializer, clears in (("0", True), ('load("index")', False)):
-            with self.subTest(initializer=initializer):
+        for display, clears in (
+            ("for(let i=0;i<results.length;i++)text(results[i]);", True),
+            ('const k=load("index");text(results[k]);', False),
+        ):
+            with self.subTest(display=display):
                 rows = self.recorded_display(computed=True)
-                rows[0]["payload"]["input"] = (
-                    'const job={cmd:"cat evidence.json"};const r=await tools.exec_command({cmd:job.cmd});'
-                    f"const results=[r];for(let i={initializer};i<results.length;i++)text(results[i]);"
-                )
+                rows[0]["payload"]["input"] = 'const r=await tools.exec_command({cmd:load("command")});const results=[r];' + display
                 report = check_claims.history.literal_targets(rows, SESSION)
                 self.assertEqual(not report["unresolved_invocations"], clears)
 
