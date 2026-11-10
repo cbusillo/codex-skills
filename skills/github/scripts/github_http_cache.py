@@ -57,7 +57,7 @@ def _root() -> pathlib.Path:
     return pathlib.Path(os.environ.get('GITHUB_HTTP_CACHE_DIR') or state / 'http-cache').expanduser()
 
 
-def _owned(path: pathlib.Path, *, directory: bool = False) -> bool:
+def owned(path: pathlib.Path, *, directory: bool = False) -> bool:
     info = path.lstat()
     return info.st_uid == os.getuid() and (stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode))
 
@@ -72,7 +72,7 @@ def _sensitive(value: Any) -> bool:
 
 def _read(path: pathlib.Path, key: str) -> dict[str, Any] | None:
     try:
-        if not _owned(path) or path.stat().st_size > MAX_ENTRY_BYTES:
+        if not owned(path) or path.stat().st_size > MAX_ENTRY_BYTES:
             return None
         item = json.loads(path.read_text(encoding='utf-8'))
         if (not isinstance(item, dict) or item.get('key') != key or 'body' not in item
@@ -121,7 +121,8 @@ def publish(root: pathlib.Path, path: pathlib.Path, item: dict[str, Any], *,
             stream.write(data)
         os.replace(name, path)
         if prune_after:
-            prune(root, max_age_seconds=age, schema=item.get("schema"))
+            schema = item.get("schema")
+            prune(root, max_age_seconds=age, schema=schema if isinstance(schema, int) else None)
     finally:
         pathlib.Path(name).unlink(missing_ok=True)
 
@@ -132,7 +133,7 @@ def prune(root: pathlib.Path, *, max_age_seconds: float = MAX_AGE_SECONDS, schem
     entries = []
     for entry in root.glob('*.json'):
         try:
-            if not re.fullmatch(r"[a-f0-9]{64}\.json", entry.name) or not _owned(entry):
+            if not re.fullmatch(r"[a-f0-9]{64}\.json", entry.name) or not owned(entry):
                 continue
             info = entry.stat()
             if now - info.st_mtime > min(MAX_AGE_SECONDS, max_age_seconds):
@@ -182,7 +183,7 @@ def request(
     entry = root / f'{key}.json'
     try:
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
-        if not _owned(root, directory=True):
+        if not owned(root, directory=True):
             raise OSError('Cache directory is not owned')
         root.chmod(0o700)
         cached = _read(entry, key)

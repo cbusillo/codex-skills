@@ -220,7 +220,7 @@ class ConditionalResponseCache:
 
     @classmethod
     def for_query(cls, reader: "GitHubReader", operation: str, context: dict[str, Any]) -> Self | None:
-        if (reader._identity_error is not None or not reader.expected_actor
+        if (not reader.expected_actor
                 or reader.actor and reader.actor.casefold() != reader.expected_actor.casefold()
                 or operation not in SHARED_QUERY_OPERATIONS):
             return None
@@ -243,10 +243,13 @@ class ConditionalResponseCache:
 
     def query(self, reader: "GitHubReader", body: dict[str, Any], context: dict[str, Any],
               read: Callable[[], github_api_core.ApiResult]) -> github_api_core.ApiResult:
+        expected_actor = reader.expected_actor
+        if not expected_actor:
+            return read()
         path, _ = self._paths(json.dumps(body, sort_keys=True), {})
         try:
             self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
-            if not github_http_cache._owned(self.root, directory=True):
+            if not github_http_cache.owned(self.root, directory=True):
                 raise OSError("shared query directory is not owned")
             self.root.chmod(0o700)
             with self.query_metadata(path):
@@ -277,8 +280,8 @@ class ConditionalResponseCache:
         result = read()
         content = result.body
         if (result.ok and result.status == 200 and result.failure is None
-                and result.expected_actor and result.expected_actor.casefold() == reader.expected_actor.casefold()
-                and (not result.actor or result.actor.casefold() == reader.expected_actor.casefold())
+                and result.expected_actor and result.expected_actor.casefold() == expected_actor.casefold()
+                and (not result.actor or result.actor.casefold() == expected_actor.casefold())
                 and isinstance(content, dict) and isinstance(content.get("data"), dict) and not content.get("errors")):
             try:
                 with self.query_metadata(path):
@@ -480,7 +483,7 @@ class GitHubReader:
         deadline = deadline_at if deadline_at is not None else self.deadline_at
         within_deadline = deadline is None or time.time() < deadline
         running = self.retry_runtime is None or not self.retry_runtime.cancelled()
-        cache = ConditionalResponseCache.for_query(self, operation or self.operation, context) if context and pure and within_deadline and running else None
+        cache = ConditionalResponseCache.for_query(self, operation or self.operation, context) if context and pure and within_deadline and running and self._identity_error is None else None
         result = cache.query(self, body, context, read) if cache is not None and context is not None else read()
         if result.headers.get("x-codex-cache") == "coalesced" and operation:
             result.operation = operation
