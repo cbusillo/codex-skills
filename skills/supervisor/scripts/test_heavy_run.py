@@ -13,6 +13,7 @@ import multiprocessing
 import os
 import shutil
 import signal
+import socket
 import stat
 import subprocess
 import sys
@@ -21,14 +22,172 @@ import tempfile
 import time
 import unittest
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractContextManager
 from decimal import Decimal
 from functools import partial
 from multiprocessing.process import BaseProcess
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import heavy_run
+
+
+class ResultCollectionTests(unittest.TestCase):
+    def test_missing_linked_and_unreadable_references_transfer_guest_bytes(self) -> None:
+        original_digest = hashlib.file_digest
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            guest = root / "guest"
+            guest.mkdir()
+            (guest / "file").write_bytes(b"result")
+            inventory = heavy_run.result_inventory(guest)
+            for case in ("missing", "linked", "unreadable", "loop"):
+                reference = root / f"reference-{case}"
+                if case == "loop":
+                    reference.symlink_to(reference)
+                elif case != "missing":
+                    reference.mkdir()
+                    if case == "linked":
+                        (reference / "file").symlink_to(guest / "file")
+                    else:
+                        (reference / "file").write_bytes(b"result")
+
+                def digest(
+                    source_stream: Any,
+                    algorithm: str,
+                    *,
+                    blocked: Path | None = reference / "file" if case == "unreadable" else None,
+                ) -> Any:
+                    if blocked is not None and source_stream.name == str(blocked):
+                        raise PermissionError("fixture reference read failure")
+                    return original_digest(source_stream, algorithm)
+
+                destination = root / case
+                stream = io.BytesIO(json.dumps(inventory).encode() + b"\nresult")
+                with patch.object(hashlib, "file_digest", side_effect=digest):
+                    report = heavy_run.receive_result(stream, io.BytesIO(), destination, reference)
+                self.assertEqual((destination / "file").read_bytes(), b"result")
+                self.assertEqual(report["cloned_files"], 0)
+                self.assertEqual(report["transferred_bytes"], len(b"result"))
+
+    def test_collection_clones_unchanged_files_and_transfers_only_changes_with_full_verification(self) -> None:
+        with patch.object(heavy_run, "clone_input", side_effect=shutil.copyfile):
+            self.check_delta_and_full_collection()
+
+    @unittest.skipUnless(sys.platform == "darwin", "Native clone fixture requires macOS")
+    def test_native_collection_clones_are_independent_and_match_full_transfer(self) -> None:
+        self.check_delta_and_full_collection()
+
+    def check_delta_and_full_collection(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            reference = root / "reference"
+            reference.mkdir()
+            (reference / "same").write_bytes(b"unchanged" * 4096)
+            (reference / "changed").write_bytes(b"old bytes")
+            (reference / "removed").write_bytes(b"removed")
+            guest = root / "guest"
+            shutil.copytree(reference, guest)
+            (guest / "changed").write_bytes(b"new bytes")
+            (guest / "added").write_bytes(b"added")
+            (guest / "removed").unlink()
+            (guest / "empty").mkdir()
+            guest.chmod(0o1777)
+            (guest / "same").chmod(0o444)
+            expected = heavy_run.result_inventory(guest)
+            for local_reference in (reference, None):
+                with self.subTest(reference=local_reference):
+                    destination = root / ("delta" if local_reference else "full")
+                    sender, receiver = socket.socketpair()
+                    with (
+                        sender,
+                        receiver,
+                        sender.makefile("rb") as remote_requests,
+                        sender.makefile("wb") as remote_stream,
+                        receiver.makefile("rb") as local_stream,
+                        receiver.makefile("wb") as local_requests,
+                    ):
+                        with ThreadPoolExecutor(max_workers=1) as pool:
+                            sent = pool.submit(heavy_run.send_result, guest, remote_stream, remote_requests)
+                            result = heavy_run.receive_result(local_stream, local_requests, destination, local_reference)
+                            sent.result(timeout=5)
+                    self.assertEqual(
+                        {
+                            name: {key: value for key, value in entry.items() if key != "mode"}
+                            for name, entry in heavy_run.result_inventory(destination).items()
+                        },
+                        {name: {key: value for key, value in entry.items() if key != "mode"} for name, entry in expected.items()},
+                    )
+                    expected_bytes = sum((guest / name).stat().st_size for name in ("changed", "added"))
+                    if local_reference is None:
+                        expected_bytes += (guest / "same").stat().st_size
+                    self.assertEqual(result["transferred_bytes"], expected_bytes)
+                    self.assertEqual(result["cloned_files"], int(local_reference is not None))
+            self.assertEqual(heavy_run.result_inventory(root / "delta"), heavy_run.result_inventory(root / "full"))
+            (root / "delta/same").write_bytes(b"independent")
+            self.assertEqual((reference / "same").read_bytes(), (guest / "same").read_bytes())
+            self.assertEqual((reference / "changed").read_bytes(), b"old bytes")
+            self.assertTrue((reference / "removed").exists())
+
+    def test_corruption_and_truncation_preserve_reference_and_partial_result(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            reference = root / "reference"
+            reference.mkdir()
+            (reference / "file").write_bytes(b"original")
+            guest = root / "guest"
+            guest.mkdir()
+            (guest / "file").write_bytes(b"expected")
+            header = json.dumps(heavy_run.result_inventory(guest)).encode() + b"\n"
+            for index, payload in enumerate((b"corrupt!", b"short")):
+                destination = root / str(index)
+                with self.assertRaises(ValueError):
+                    heavy_run.receive_result(io.BytesIO(header + payload), io.BytesIO(), destination, reference)
+                self.assertEqual((reference / "file").read_bytes(), b"original")
+                self.assertTrue(destination.exists())
+                self.assertTrue((destination / "file").exists())
+
+    def test_collection_rejects_escaping_inventory_and_existing_destination_before_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            original = root / "original"
+            original.mkdir()
+            (original / "file").write_bytes(b"original")
+            expected = heavy_run.result_inventory(original)
+            for name in ("..", "a/.."):
+                inventory = {**expected, "a": expected["."], name: expected["file"]}
+                with self.assertRaises(ValueError):
+                    heavy_run.receive_result(io.BytesIO(json.dumps(inventory).encode() + b"\n"), io.BytesIO(), root / "new")
+                self.assertFalse((root / "new").exists())
+            with self.assertRaises(FileExistsError):
+                heavy_run.receive_result(io.BytesIO(json.dumps(expected).encode() + b"\n"), io.BytesIO(), original)
+            self.assertEqual((original / "file").read_bytes(), b"original")
+
+    def test_unsupported_clones_transfer_instead_and_storage_failures_preserve_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            reference = root / "reference"
+            reference.write_bytes(b"same bytes")
+            inventory = heavy_run.result_inventory(reference)
+            header = json.dumps(inventory).encode() + b"\n"
+            for code in (errno.EXDEV, errno.ENOTSUP, errno.ENOSPC):
+                destination = root / str(code)
+                with patch.object(heavy_run, "clone_input", side_effect=OSError(code, "fixture")):
+                    if code == errno.ENOSPC:
+                        with self.assertRaises(OSError):
+                            heavy_run.receive_result(
+                                io.BytesIO(header + reference.read_bytes()), io.BytesIO(), destination, reference
+                            )
+                    else:
+                        report = heavy_run.receive_result(
+                            io.BytesIO(header + reference.read_bytes()), io.BytesIO(), destination, reference
+                        )
+                        self.assertEqual(report["cloned_files"], 0)
+                        self.assertEqual(report["transferred_bytes"], reference.stat().st_size)
+                        self.assertEqual(destination.read_bytes(), reference.read_bytes())
+            self.assertEqual(reference.read_bytes(), b"same bytes")
 
 
 class InputStagingTests(unittest.TestCase):
