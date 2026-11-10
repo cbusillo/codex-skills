@@ -40,7 +40,8 @@ MIN_NANO_CPUS = 10**7
 MIN_MEMORY = 6 * 1024**2
 STAGING_PREFIX = ".heavy-inputs-"
 CLONE_NOFOLLOW = 1
-CLONE_NOOWNERCOPY = 8
+CLONE_NOOWNERCOPY = 2
+CLONE_NOFOLLOW_ANY = 8
 FICLONE = 0x40049409
 USER_FLAGS = getattr(stat, "UF_IMMUTABLE", 0) | getattr(stat, "UF_APPEND", 0)
 SYSTEM_FLAGS = getattr(stat, "SF_IMMUTABLE", 0) | getattr(stat, "SF_APPEND", 0)
@@ -83,7 +84,7 @@ def clone_input(source: Path, destination: Path) -> None:
         clone = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True).clonefile
         clone.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int]
         clone.restype = ctypes.c_int
-        if clone(os.fsencode(source), os.fsencode(destination), CLONE_NOFOLLOW | CLONE_NOOWNERCOPY):
+        if clone(os.fsencode(source), os.fsencode(destination), CLONE_NOFOLLOW | CLONE_NOOWNERCOPY | CLONE_NOFOLLOW_ANY):
             code = ctypes.get_errno()
             raise OSError(code, os.strerror(code), str(destination))
         descriptor = os.open(destination, os.O_EVTONLY | os.O_NOFOLLOW)
