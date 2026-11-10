@@ -42,7 +42,6 @@ STAGING_PREFIX = ".heavy-inputs-"
 CLONE_NOFOLLOW = 1
 CLONE_NOOWNERCOPY = 2
 CLONE_NOFOLLOW_ANY = 8
-FICLONE = 0x40049409
 USER_FLAGS = getattr(stat, "UF_IMMUTABLE", 0) | getattr(stat, "UF_APPEND", 0)
 SYSTEM_FLAGS = getattr(stat, "SF_IMMUTABLE", 0) | getattr(stat, "SF_APPEND", 0)
 CANCEL_SIGNALS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
@@ -78,6 +77,10 @@ def clear_staged_flags(descriptor: int) -> None:
 
 
 def clone_input(source: Path, destination: Path) -> None:
+    if source.is_symlink() or not source.is_file():
+        raise ValueError("Clone an original regular file; use manifest references for links")
+    source = source.resolve(strict=True)
+    destination = destination.parent.resolve(strict=True) / destination.name
     if sys.platform == "darwin":
         if source.stat().st_flags & SYSTEM_FLAGS:
             raise OSError(errno.ENOTSUP, "Stream system-locked originals through the manifest instead")
@@ -96,7 +99,7 @@ def clone_input(source: Path, destination: Path) -> None:
     if sys.platform == "linux":
         with source.open("rb") as original, destination.open("xb") as target:
             try:
-                fcntl.ioctl(target.fileno(), FICLONE, original.fileno())
+                fcntl.ioctl(target.fileno(), fcntl.FICLONE, original.fileno())
             except OSError:
                 destination.unlink()
                 raise
@@ -491,8 +494,9 @@ class Docker:
 
     @staticmethod
     def prepare_staging_removal(descriptor: int) -> None:
+        clear_staged_flags(descriptor)
+        os.fchmod(descriptor, 0o700)
         for _, directories, files, current in os.fwalk(dir_fd=descriptor):
-            os.fchmod(current, 0o700)
             for name in directories + files:
                 metadata = os.stat(name, dir_fd=current, follow_symlinks=False)
                 directory = stat.S_ISDIR(metadata.st_mode)
@@ -544,14 +548,21 @@ class Docker:
         finally:
             os.close(parent)
 
-    def finish_staging(self) -> str | None:
+    def finish_staging(self, *, recovery: bool = False) -> str | None:
+        if not self.staging_created and not recovery:
+            return None
         try:
             self.collect_staged_inputs()
         except (OSError, ValueError, RuntimeError, NotImplementedError) as error:
-            message = f"Staging collection failed; files preserved: {error}"
+            message = f"Staging collection failed; preserved {self.staging!r} beside {self.evidence}: {error}"
             self.log.write(message + "\n")
             if self.evidence is not None and self.evidence.is_dir():
-                (self.evidence / "staging-error.json").write_text(json.dumps({"error": message, "directory": self.staging}) + "\n")
+                try:
+                    (self.evidence / "staging-error.json").write_text(
+                        json.dumps({"error": message, "directory": self.staging, "owner": self.label}) + "\n"
+                    )
+                except OSError as report_error:
+                    self.log.write(f"Staging report unavailable; original directory is named above: {report_error}\n")
             return message
         return None
 
@@ -597,11 +608,7 @@ class Docker:
     def stage_overlay_input(root: Path) -> None:
         if root.resolve(strict=True) != root or not root.is_dir():
             raise ValueError("Stage only a new unaliased overlay input directory")
-        paths = [root, *root.rglob("*")]
-        for path in paths:
-            mode = path.lstat().st_mode
-            if not stat.S_ISDIR(mode) and not stat.S_ISREG(mode):
-                raise ValueError("Overlay input staging refuses links and special files")
+        paths = list(input_entries(root))
         for path in paths:
             path.chmod(container_input_mode(path.stat().st_mode, directory=path.is_dir()))
 
@@ -847,11 +854,11 @@ def recover(slot: Slot, custody: Path, log: TextIO, endpoint: str) -> None:
         with recovered.open("a") as previous_log:
             docker = Docker(slot, previous_log, previous.endpoint, previous.evidence, previous.staging)
             docker.cleanup(previous_log)
-            docker.finish_staging()
+            docker.finish_staging(recovery=True)
     else:
         docker = Docker(slot, log, previous.endpoint, previous.evidence, previous.staging)
         docker.cleanup(None)
-        docker.finish_staging()
+        docker.finish_staging(recovery=True)
     if previous.evidence.is_absolute() and previous.evidence.is_dir():
         for env_file in previous.evidence.glob("*.env"):
             env_file.unlink()

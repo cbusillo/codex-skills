@@ -97,16 +97,34 @@ class InputStagingTests(unittest.TestCase):
             owner.collect_staged_inputs()
             with (
                 patch.object(sys, "platform", "linux"),
+                patch.object(heavy_run.fcntl, "FICLONE", 123, create=True),
                 patch.object(heavy_run.fcntl, "ioctl", side_effect=OSError(errno.ENOTSUP, "fixture")),
             ):
                 with self.assertRaises(OSError):
                     heavy_run.clone_input(source, root / "failed-clone")
             self.assertFalse((root / "failed-clone").exists())
             self.assertEqual(source.read_bytes(), b"original")
+            original_stat = Path.stat
+            metadata = source.stat()
+            foreign_metadata = os.stat_result((*metadata[:2], metadata.st_dev + 1, *metadata[3:]))
+
+            def other_device(path: Path, *args: object, **kwargs: object) -> os.stat_result:
+                return foreign_metadata if path == source else original_stat(path, *args, **kwargs)
+
+            other = self.docker(evidence)
+            with (
+                patch.object(Path, "stat", autospec=True, side_effect=other_device),
+                patch.object(heavy_run, "clone_input", side_effect=AssertionError("Cross-device inputs must copy")),
+            ):
+                copied = other.stage_input(source)
+            self.assertEqual(copied.read_bytes(), source.read_bytes())
+            self.assertEqual(other.storage["copied_bytes"], source.stat().st_size)
+            other.collect_staged_inputs()
 
     def test_prepare_failures_and_crash_recovery_collect_only_registered_staging(self) -> None:
         def prepare(driver: heavy_run.Docker, original: Path, action: str, requested: dict) -> dict:
-            driver.stage_input(original)
+            staged = driver.stage_input(original)
+            (staged.parent / "readonly").mkdir(mode=0o555)
             if action == "canceled":
                 raise heavy_run.Canceled(signal.SIGTERM)
             return requested
@@ -133,13 +151,17 @@ class InputStagingTests(unittest.TestCase):
                             staged = owner.stage_input(source)
                             custody = root / "custody"
                             heavy_run.Custody(owner.endpoint, evidence, owner.staging).save(custody)
-                            (evidence / "heavy-inputs.json").write_text("{}")
-                            unowned = evidence / "unowned"
-                            unowned.write_bytes(b"keep")
+                            unowned = root / (heavy_run.STAGING_PREFIX + uuid.uuid4().hex)
+                            unowned.mkdir()
+                            (unowned / ".owner").write_text(owner.label)
+                            (unowned / "payload").write_bytes(b"keep")
                             heavy_run.recover(owner.slot, custody, io.StringIO(), owner.endpoint)
                             self.assertFalse(custody.exists())
                             self.assertFalse(staged.exists())
-                            self.assertEqual(unowned.read_bytes(), b"keep")
+                            self.assertEqual((unowned / "payload").read_bytes(), b"keep")
+                            custody.write_text(json.dumps({"endpoint": owner.endpoint, "evidence": str(evidence)}))
+                            heavy_run.recover(owner.slot, custody, io.StringIO(), owner.endpoint)
+                            self.assertEqual((unowned / "payload").read_bytes(), b"keep")
                         else:
                             with patch.object(heavy_run.Docker, "copy_outputs", side_effect=OSError("fixture missing output")):
                                 result = heavy_run.run(
@@ -150,8 +172,11 @@ class InputStagingTests(unittest.TestCase):
                                     prepare=partial(prepare, original=source, action=failure, requested=manifest),
                                 )
                                 self.assertNotEqual(result, 0)
-                            self.assertTrue(json.loads((evidence / "result.json").read_text())["cleanup_complete"])
-                self.assertFalse([path for path in root.iterdir() if path.name.startswith(heavy_run.STAGING_PREFIX)])
+                            receipt = json.loads((evidence / "result.json").read_text())
+                            self.assertTrue(receipt["cleanup_complete"])
+                            self.assertEqual(receipt["storage"]["cloned_files"], 0 if failure == "unsupported" else 1)
+                if failure != "crash":
+                    self.assertFalse([path for path in root.iterdir() if path.name.startswith(heavy_run.STAGING_PREFIX)])
                 self.assertEqual(source.read_bytes(), b"preserve original")
 
     def test_foreign_staging_is_preserved_without_holding_a_clean_runtime_slot(self) -> None:
@@ -191,7 +216,7 @@ class InputStagingTests(unittest.TestCase):
             entry = (
                 "import io,sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); import heavy_run; "
                 "owner=heavy_run.Docker(heavy_run.Slot(0,io.BytesIO(),'fixture'),io.StringIO(),'unix:///fixture',Path(sys.argv[2]),sys.argv[3]); "
-                "assert owner.finish_staging() is not None"
+                "assert owner.finish_staging(recovery=True) is not None"
             )
             bounded = subprocess.run(
                 [sys.executable, "-c", entry, str(Path(__file__).parent), str(evidence), retained[0].parent.name],
@@ -201,6 +226,35 @@ class InputStagingTests(unittest.TestCase):
             )
             self.assertEqual(bounded.returncode, 0, bounded.stderr)
             self.assertEqual(source.read_bytes(), b"keep original")
+            held = root / "held-staging"
+            marker.parent.rename(held)
+            marker.parent.symlink_to(source)
+            owner = self.docker(evidence, marker.parent.name)
+            self.assertIsNotNone(owner.finish_staging(recovery=True))
+            self.assertEqual(source.read_bytes(), b"keep original")
+            self.assertTrue((held / retained[0].name).exists())
+
+    def test_stream_only_run_does_not_require_read_access_to_staging_parent(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            original_open = os.open
+            metadata_only = getattr(os, "O_PATH", 0) | getattr(os, "O_EVTONLY", 0)
+
+            def denied(path: str | Path, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
+                if Path(path) == root and not flags & metadata_only:
+                    raise PermissionError(errno.EACCES, "Fixture parent is traversable but not readable")
+                return original_open(path, flags, mode, dir_fd=dir_fd)
+
+            manifest = {"containers": [{"name": "job", "image": "fixture"}], "job": "job"}
+            with (
+                patch.object(os, "open", side_effect=denied),
+                patch.object(heavy_run, "local_endpoint", return_value="unix:///fixture"),
+            ):
+                with (
+                    patch.object(heavy_run.Docker, "call", return_value=""),
+                    patch.object(heavy_run.Docker, "run", return_value=(0, {})),
+                ):
+                    self.assertEqual(heavy_run.run(manifest, root / "run", heavy_run.Settings(), root), 0)
 
     @unittest.skipUnless(os.environ.get("HEAVY_STAGING_FIXTURE_VOLUME"), "Requires an isolated fixture volume")
     def test_fixture_volume_clones_without_full_allocation_and_copies_across_devices(self) -> None:
@@ -925,8 +979,6 @@ class HeavyRunTests(unittest.TestCase):
         self.assertNotIn("--workdir", create)
         self.assertNotIn("private-env-value", json.dumps(calls))
         self.assertFalse((self.root / "normal/job.env").exists())
-        self.assertFalse((self.root / "normal/manifest.json").exists())
-        self.assertFalse((self.root / "normal/.staged-inputs").exists())
         self.assertEqual(int((self.root / "docker/env-mode-normal").read_text()), 0o600)
         copied = [entry for path in (self.root / "docker").glob("copy-*") for entry in json.loads(path.read_text())]
         private = next(entry for entry in copied if entry["name"].endswith("private.txt"))

@@ -83,10 +83,12 @@ callback and bind its returned path in the prepared manifest. Image archives use
 the same method. No ordinary manifest input gets an extra host copy.
 
 Writable staging uses APFS `clonefile` or Linux `FICLONE` on one filesystem and
-copies only across filesystems. Unsupported cloning fails: use the original
+copies only across filesystems. Cross-volume writable staging allocates the input
+bytes; prefer manifest references when a host workspace is unnecessary. Unsupported cloning fails: use the original
 manifest reference for a writable container copy, or the existing Linux overlay
 route when its lower is compatible. `clone_input` is also available to repository
-code that already owns its output-retention lifecycle. No hard links are used:
+code that already owns its output-retention lifecycle; it accepts regular files
+and resolves parent paths before cloning. No hard links are used:
 clones and cross-volume copies have independent writes, permissions and flags;
 streaming never changes or deletes its original. Existing frozen manifests and
 hash inventories stay authoritative and are not copied into another control file.
@@ -99,13 +101,15 @@ are not used. Locked clones and read-only staging directories are normalized
 only inside the owned workspace. Caller manifests, hashes, collected outputs and
 logs stay. System-locked originals use the read-only manifest route.
 
-An uncertain staging directory is preserved and reported in `staging-error.json`.
-Once runtime absence is proved, it does not hold the slot: the next normal request
+An uncertain staging directory is preserved and named in the run log and, when
+evidence is writable, `staging-error.json`. Restore the volume or ownership proof
+and retry collection with the original registered name; until then the owning
+task keeps the files. Once runtime absence is proved, it does not hold the slot: the next normal request
 can proceed. Runtime cleanup failures still retain custody. Results report cloned
 and copied file counts, copied bytes and observed volume bytes added/reclaimed;
 the free-space observations include concurrent activity and filesystem metadata.
 
-Repository runners replace their own temporary working-copy code with this path.
+Repository runners should use this path for new temporary working copies.
 Keep existing frozen-input checks, resumable transport and original/retained-overlay
 retirement rules. Never retain an overlay with a temporary staged lower; export any
 needed successor input through the existing output and retention path.
