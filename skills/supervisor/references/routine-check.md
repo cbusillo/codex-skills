@@ -58,7 +58,7 @@ within the held roles; with no role they all apply.
    seeds full-history radar threads and question sources; fresh source
    readers decide what is still unanswered. Questions and radar share their
    collected discussions and metadata within a run. On one host, other Supervisor
-   sessions using the same owner, queue, resolved ledger and identity
+   sessions using the same `--owner`, queue, resolved ledger and identity
    reuse successful GraphQL query responses for five minutes. The digest says
    how many were reused and the oldest response's age; roles and `--full` are
    applied after every source is evaluated again. A repeat by the producing
