@@ -987,6 +987,45 @@ class PrimaryReadTests(unittest.TestCase):
                 row = queue_row(4, "agent:native-1", "Route it", recorded="2026-11-08T19:40:00+00:00")
                 self.assertTrue([line for line in self.run_digest({"candidates": [row]}) if line.startswith("SUPERVISOR_ACTION")])
 
+    def test_seat_rows_reach_only_their_roles_until_two_checks_have_passed(self) -> None:
+        fallback_age: timedelta = routine_check.ROUTINE_INTERVAL * 2
+        for role in routine_check.SUPERVISOR_ROLES:
+            row = queue_row(4031, f"agent:supervisor-{role}", "Take this row", recorded=self.now.isoformat())
+            for held in ((), (role,), ("milestone", "tooling"), ("cleanup",)):
+                with self.subTest(role=role, held=held):
+                    output = routine_check.digest({"next": {"candidates": [row]}}, roles=held)
+                    self.assertEqual(row["url"] in output, not held or role in held)
+                    if not held or role in held:
+                        self.assertIn("SUPERVISOR_ACTION " + row["url"], output)
+            for age in (fallback_age, fallback_age + timedelta(seconds=1)):
+                row["queue"]["status_recorded_at"] = (self.now - age).isoformat()
+                for held in routine_check.SUPERVISOR_ROLES:
+                    with self.subTest(role=role, held=held, age=age):
+                        output = routine_check.digest({"next": {"needs_status": [row]}}, roles=(held,))
+                        self.assertEqual(row["url"] in output, held == role or age > fallback_age)
+            row["queue"]["status_recorded_at"] = self.now.isoformat()
+            output = routine_check.digest({"next": {"candidates": [row]}}, roles=(role,))
+            self.assertNotIn("FALLBACK", output)
+
+    def test_unrouted_and_undated_seat_rows_are_visible_without_inventing_age(self) -> None:
+        for actor in ("agent:supervisor", "agent:supervisor-tooling"):
+            row = queue_row(4031, actor, "Take this row")
+            for role in routine_check.SUPERVISOR_ROLES:
+                with self.subTest(actor=actor, role=role):
+                    output = routine_check.digest({"next": {"candidates": [row]}}, roles=(role,))
+                    self.assertIn("SUPERVISOR_ACTION " + row["url"], output)
+                    self.assertIn("UNROUTED" if actor == "agent:supervisor" else "age=UNKNOWN", output)
+                    if actor != "agent:supervisor" and role != "tooling":
+                        self.assertIn("FALLBACK", output)
+
+    def test_role_prompts_cover_each_seat_and_ignore_unrelated_tables(self) -> None:
+        text = (Path(__file__).resolve().parents[1] / "references/routine-check.md").read_text()
+        with patch.object(Path, "read_text", return_value=text + "\n| Other | Table |\n"):
+            for role in routine_check.SUPERVISOR_ROLES:
+                self.assertEqual(len(routine_check.role_prompt((role,))), 1)
+        with patch.object(Path, "read_text", side_effect=AssertionError("The old command must not read the role table")):
+            routine_check.digest({})
+
     def test_both_harness_bindings_load_one_rule_source(self) -> None:
         catalog = Path(__file__).resolve().parents[3]
         spec = importlib.util.spec_from_file_location("reconcile_binding", catalog / "skills/github/scripts/reconcile-runtime-checkout.py")

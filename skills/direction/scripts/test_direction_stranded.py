@@ -547,9 +547,10 @@ class OverdueTriggerTests(unittest.TestCase):
 
     def test_supervisor_routing_uses_the_current_actor_instead_of_action_wording(self) -> None:
         for action in ("Route the reviewed change.", "Fix skills/supervisor/scripts/tool.py."):
-            body = f"## Current Status\nNext actor: agent:supervisor\nNext action: {action}"
-            self.assertEqual(sweep.supervisor_next_action(body), action)
-            self.assertIsNone(sweep.supervisor_next_action(body.replace("agent:supervisor", "agent")))
+            for actor in sweep.next_actor.SUPERVISOR_ACTORS:
+                body = f"## Current Status\nNext actor: {actor}\nNext action: {action}"
+                self.assertEqual(sweep.supervisor_next_action(body), action)
+                self.assertIsNone(sweep.supervisor_next_action(body.replace(actor, "agent")))
 
     def test_status_fields_stay_on_their_own_line(self):
         """codex-skills#2096: an empty field never reads the next field as its value."""

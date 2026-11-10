@@ -70,7 +70,7 @@ def supervisor_next_action(body: str | None) -> str | None:
         actor = next_actor.read(status)
     except ValueError:
         return None
-    return status_field(status, "Next action") if actor == "agent:supervisor" else None
+    return status_field(status, "Next action") if actor in next_actor.SUPERVISOR_ACTORS else None
 
 
 def register_entries(text: str) -> list[dict]:
