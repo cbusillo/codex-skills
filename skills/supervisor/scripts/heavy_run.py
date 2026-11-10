@@ -490,7 +490,7 @@ class Docker:
 
     @staticmethod
     def prepare_staging_removal(descriptor: int) -> None:
-        for _, directories, files, current in os.fwalk(".", dir_fd=descriptor, follow_symlinks=False):
+        for _, directories, files, current in os.fwalk(dir_fd=descriptor):
             os.fchmod(current, 0o700)
             for name in directories + files:
                 metadata = os.stat(name, dir_fd=current, follow_symlinks=False)

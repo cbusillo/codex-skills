@@ -105,8 +105,8 @@ class InputStagingTests(unittest.TestCase):
             self.assertEqual(source.read_bytes(), b"original")
 
     def test_prepare_failures_and_crash_recovery_collect_only_registered_staging(self) -> None:
-        def prepare(owner: heavy_run.Docker, original: Path, action: str, requested: dict) -> dict:
-            owner.stage_input(original)
+        def prepare(driver: heavy_run.Docker, original: Path, action: str, requested: dict) -> dict:
+            driver.stage_input(original)
             if action == "canceled":
                 raise heavy_run.Canceled(signal.SIGTERM)
             return requested
