@@ -21,6 +21,7 @@ import compact_check
 import foreign_watch
 import github_access
 import oq
+from github_plan_status.next_actor import SUPERVISOR_ACTORS, SUPERVISOR_ROLES
 from question_delivery import run_queue, source_item
 
 if TYPE_CHECKING:
@@ -73,7 +74,34 @@ def recorded_time(value: Any) -> datetime | None:
 
 def supervisor_actors() -> set[str]:
     native = (os.environ.get(name) for name in ("CODEX_SESSION_ID", "CLAUDE_CODE_SESSION_ID"))
-    return {"agent:supervisor", *(f"agent:{value}".casefold() for value in native if value)}
+    return {*SUPERVISOR_ACTORS, *(f"agent:{value}".casefold() for value in native if value)}
+
+
+def role_prompt(roles: tuple[str, ...]) -> list[str]:
+    table = Path(__file__).resolve().parents[1] / "references/routine-check.md"
+    prompts = []
+    for line in table.read_text().splitlines():
+        row = [cell.strip() for cell in line.strip("|").split("|")]
+        if len(row) != 4 or row[0] not in roles:
+            continue
+        role, first, lane, kinds = row
+        prompts.append(f"SEAT {role}: First read: {first}. Lane: {lane}. Takes: {kinds}.")
+    return prompts
+
+
+def seat_note(row: dict, roles: tuple[str, ...], now: datetime) -> str | None:
+    if not roles:
+        return ""
+    actor = (row.get("queue", {}).get("next_actor") or "").casefold()
+    if actor == "agent:supervisor":
+        return " | UNROUTED"
+    role = actor.removeprefix("agent:supervisor-")
+    if role not in SUPERVISOR_ROLES or role in roles:
+        return ""
+    recorded = recorded_time(row["queue"].get("status_recorded_at"))
+    if recorded is None or now - recorded > 2 * ROUTINE_INTERVAL:
+        return f" | FALLBACK from {role} (claim or route at source)"
+    return None
 
 
 def read_source(read: Callable[[], dict], prerequisite: Future | None) -> dict:
@@ -360,9 +388,12 @@ def stale_row(row: dict, now: datetime) -> str:
     return f"STALE {pointer(row)}: {kinds} age={age_text(now - recorded) if recorded else 'UNKNOWN'} evidence={' '.join(str(detail).split())[:180]}"
 
 
-def digest(sources: dict[str, dict], *, full: bool = False) -> str:
+def digest(sources: dict[str, dict], *, full: bool = False, roles: tuple[str, ...] = ()) -> str:
     now = clock()
     lines = [f"Routine check at {clock_label(now)} (source candidates; routing receipts are delivery evidence only)"]
+    if roles:
+        lines.extend(role_prompt(roles))
+        lines.append("Director questions are presented by the seat that owns their source work.")
     for name, report in sources.items():
         lines.extend(source_errors(name, report))
     primary = sources.get("primary", {})
@@ -391,13 +422,16 @@ def digest(sources: dict[str, dict], *, full: bool = False) -> str:
                      key=lambda pair: recorded_time(pair[1]["queue"].get("status_recorded_at")) or datetime.min.replace(tzinfo=UTC))
     supervisors = supervisor_actors()
     for kind, row in actions:
+        routing = seat_note(row, roles, now)
+        if routing is None:
+            continue
         recorded = recorded_time(row["queue"].get("status_recorded_at"))
         age = now - recorded if recorded else None
         request = (row["queue"].get("next_action") or row["queue"].get("reason") or "").splitlines()[0:1]
         detail = ''.join(request)[:180]
         if kind == "PRODUCTION_READ_REFUSED":
             detail = f"read=\"{refused_read(row)[:400]}\" next_actor={row['queue']['next_actor']} route={REFUSED_READ_ROUTE}"
-        lines.append(noted(f"{kind} {pointer(row)} age={age_text(age) if age else 'UNKNOWN'}: {detail}", row))
+        lines.append(noted(f"{kind} {pointer(row)} age={age_text(age) if age else 'UNKNOWN'}: {detail}{routing}", row))
         if (age is None or age > ROUTINE_INTERVAL) and (kind == "SUPERVISOR_ACTION" or row["queue"]["next_actor"].casefold() in supervisors):
             lines.append(f"ERROR supervisor_action {pointer(row)}: open {age_text(age) if age else 'for an UNKNOWN time'} with no disposition; "
                          "set another actor, record a wait or claim it on the issue")
@@ -651,6 +685,7 @@ def main() -> int:
     )
     parser.add_argument("--github-cli-login", help="retain the plain install login selected by supervisor.py start")
     parser.add_argument("--full", action="store_true", help="include acknowledged questions")
+    parser.add_argument("--role", action="append", choices=SUPERVISOR_ROLES, default=[], help="held seat; repeat for multiple roles, omit for all")
     parser.add_argument("--owner", required=True)
     parser.add_argument("--queue", required=True)
     parser.add_argument("--ledger", type=Path, required=True)
@@ -683,7 +718,7 @@ def main() -> int:
     sources = collect({"watch": read_watch, **service_readers})
     sources.update(collect(build_readers(args, sources["watch"])))
     sources["primary"] = read_source(lambda: primary_reads(sources["next"], sources["sessions"].get("sessions", []), **primary_readers(args)), None)
-    output = digest(sources, full=args.full)
+    output = digest(sources, full=args.full, roles=tuple(args.role))
     print(output)
     return int(any(line.startswith("ERROR ") for line in output.splitlines()))
 

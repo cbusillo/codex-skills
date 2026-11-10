@@ -1360,8 +1360,9 @@ def read_issue_brief(issue: str, header: str, lead_session_id: str | None = None
     if managed is not True:
         raise ValueError(f"{issue} needs a managed Current Status written through gh-plan.py update-section")
     actor = "agent:" + (lead_session_id or "supervisor")
+    actors = {actor} if lead_session_id else next_actor.SUPERVISOR_ACTORS
     brief = next_actor.launch_brief(status)
-    if brief is None or next_actor.read(status) != actor:
+    if brief is None or next_actor.read(status) not in actors:
         raise ValueError(f"{issue} needs Next actor: {actor} and a fenced Brief: in Current Status; use ###, not ##, inside briefs")
     if wait_resolved:
         source = launch_resume_source(header)

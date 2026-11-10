@@ -7,6 +7,27 @@ Keep absolute pointers to the private ledger and one recovery note,
 handoff and question queue. Keep no copied rules,
 decisions, statuses or narrative; open linked records for action.
 
+For separate seats, use this table as the scheduled check prompt: read the
+seat's first source, run the command below with its `--role`, then take its row
+kinds within its lane. Repeat `--role` to hold multiple roles; omit it to keep
+the existing single-Supervisor check unchanged. The role digest prints this
+table's instructions. No running-seat inventory is kept or read.
+
+| Seat | First read | Lane rule | Row kinds it takes |
+| --- | --- | --- | --- |
+| milestone | Current milestone blockers at source in DIRECTION order | Never fixes tools or closes records | Milestone work, lead coordination, Client waits and its Director questions |
+| tooling | Current tool stops on the queue, then digest | Never redirects a milestone lead or edits a milestone issue status | Tool defects, refusals, Renovate, train, catalog verification, our helpers and services, and its Director questions |
+| cleanup | Stale, ask-link, closed-dependency, finished-session and watcher rows, then issue trial | Never launches product work; fits none: cleanup sorts it | Record reconciliation, finished sessions, watcher recovery and its Director questions |
+
+Address a seat with `Next actor: agent:supervisor-milestone`,
+`agent:supervisor-tooling` or `agent:supervisor-cleanup`. Plain
+`agent:supervisor` reaches every seat as UNROUTED; route it using the table.
+Another seat's row becomes
+visible to all after two check intervals without a new status disposition;
+an unknown timestamp stays visible with unknown age. Claim or route at source
+before acting, preserving existing claims and waits. The steps below apply
+within the held roles; with no role they all apply.
+
 1. Read the recovery note and reconcile pending local actions at their source.
 2. Run the digest in the foreground from the catalog:
 
