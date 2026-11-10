@@ -10507,12 +10507,14 @@ def test_health_monitoring_dry_run_and_verified_apply_preserve_endpoint(tmp_path
     assert status == 0 and not reads
     assert posts[0]["path"] == contract.helper_command_path("health-monitoring-dry-run")
     assert posts[0]["body"]["mode"] == "dry-run"
-    assert not ({"url", "domain", "profile", "provider", "reviewed_plan_sha256"} & posts[0]["body"].keys())
+    assert not ({"public_url", "url", "domain", "profile", "provider", "reviewed_plan_sha256"} & posts[0]["body"].keys())
     argv, saved = _monitoring_review(tmp_path)
     profiles = iter([_monitoring_profile(), _monitoring_profile(applied=True)])
     status, receipt, posts, reads = _run_main(argv, post=_monitoring_response("apply"), read=lambda _: next(profiles))
     assert status == 0, receipt
     assert posts[0]["body"]["reviewed_plan_sha256"] == saved["result"]["plan_sha256"]
+    assert "public_url" not in posts[0]["body"]
+    assert "public_url_sha256" not in evidence["request"] and "current_endpoint_sha256" not in evidence["result"]
     assert posts[0]["idempotency_key"] == "apply-1"
     assert len(reads) == 2
     assert all(call["path"] == contract.helper_command_path("product-profile-read").format(product="example-product") for call in reads)
@@ -10625,15 +10627,19 @@ def test_health_monitoring_disabled_and_unchanged_plans_are_supported(tmp_path: 
     assert posts[0]["body"]["enabled"] is False
 
 
-@pytest.mark.parametrize("change", ["public_key", "disabled_identity", "private_missing_key"])
+@pytest.mark.parametrize("change", ["public_key", "disabled_identity", "private_missing_key", "private_selection", "empty_selection"])
 def test_health_monitoring_invalid_request_sends_nothing(change: str) -> None:
     arguments = _monitoring_arguments()
     if change == "public_key":
         arguments += ["--private-endpoint-key", "private-key"]
     elif change == "disabled_identity":
         arguments[arguments.index("--enabled")] = "--no-enabled"
+    elif change == "empty_selection":
+        arguments += ["--public-url", "  "]
     else:
         arguments[arguments.index("--check-kind") + 1] = "private_http"
+        if change == "private_selection":
+            arguments += ["--private-endpoint-key", "registered-key", "--public-url", SELECTED_MONITORING_URL]
     status, _receipt, posts, reads = _run_main(["health-monitoring-dry-run", *arguments])
     assert status == 2 and not posts and not reads
 
@@ -10649,6 +10655,129 @@ def test_health_monitoring_malformed_plan_is_rejected(changes: dict[str, object]
     assert status != 0
     assert receipt["status"] != "accepted"
     assert "unexpected-private-data" not in json.dumps(receipt)
+
+
+SELECTED_MONITORING_URL = "https://business.example.invalid/reviewed-health?site=selected"
+
+
+def _selected_monitoring_arguments() -> list[str]:
+    return [*_monitoring_arguments(), "--public-url", "  " + SELECTED_MONITORING_URL + "  "]
+
+
+def _selected_monitoring_plan(**changes: object) -> dict[str, object]:
+    return {"resolved_url": SELECTED_MONITORING_URL,
+            "current_resolved_url": _monitoring_response()["result"]["resolved_url"], **changes}
+
+
+@pytest.mark.parametrize("create", [False, True])
+def test_health_monitoring_selected_url_binds_private_input_and_verifies_only_selected_edit(tmp_path: Path, create: bool) -> None:
+    plan = _selected_monitoring_plan()
+    if create:
+        plan.update(operation="create", current_check_kind=None, current_enabled=None, current_require_runtime_identity=None)
+    argv, evidence = _monitoring_review(tmp_path, _selected_monitoring_arguments(), **plan)
+    before, after = _monitoring_profile(), _monitoring_profile(applied=True, url=SELECTED_MONITORING_URL)
+    for profile in (before, after):
+        profile["profile"]["lanes"][0]["health_monitoring"]["checks"].append({
+            "name": "other-check", "kind": "public_http", "url": "https://other.example.invalid/health",
+            "enabled": True, "require_runtime_identity": True, "recovery_threshold": 3,
+        })
+    if create:
+        before["profile"]["lanes"][0]["health_monitoring"]["checks"].pop(0)
+    after["profile"].update(updated_at="2026-11-10T19:00:00Z", source="service:product-health-monitoring")
+    profiles = iter([before, after])
+    status, receipt, posts, reads = _run_main(argv, post=_monitoring_response("apply", **plan), read=lambda _: next(profiles))
+    assert status == 0, receipt
+    assert len(posts) == 1 and len(reads) == 2
+    assert posts[0]["body"]["public_url"] == SELECTED_MONITORING_URL
+    assert evidence["request"]["public_url_sha256"] == write_action._canonical_sha256(SELECTED_MONITORING_URL)
+    assert evidence["result"]["endpoint_sha256"] == evidence["request"]["public_url_sha256"]
+    assert evidence["result"]["current_endpoint_sha256"] == write_action._canonical_sha256(plan["current_resolved_url"])
+    assert receipt["result"]["read_back_matches"] is True
+    for output in (evidence, receipt):
+        printed = json.dumps(output)
+        assert all(value not in printed for value in ("business.example.invalid", "reviewed-health", "testing.example.invalid", "site=selected"))
+    changed = list(argv)
+    changed[changed.index("--public-url") + 1] = SELECTED_MONITORING_URL + "&changed=1"
+    status, _, posts, reads = _run_main(changed)
+    assert status == 2 and not posts and not reads
+
+
+@pytest.mark.parametrize("changes", [
+    {"current_resolved_url": None}, {"current_resolved_url": []},
+    {"resolved_url": "https://testing.example.invalid/private-health-path"},
+    {"unexpected_field": "https://private.example.invalid/secret"},
+])
+def test_health_monitoring_selection_rejects_missing_or_substituted_plan(changes: dict[str, object]) -> None:
+    status, receipt, _, _ = _run_main(
+        ["health-monitoring-dry-run", *_selected_monitoring_arguments()],
+        post=_monitoring_response(**_selected_monitoring_plan(**changes)),
+    )
+    assert status != 0 and receipt["status"] != "accepted"
+    assert "private.example.invalid" not in json.dumps(receipt)
+
+
+def test_health_monitoring_selection_requires_new_producer_evidence() -> None:
+    status, receipt, _, _ = _run_main(
+        ["health-monitoring-dry-run", *_selected_monitoring_arguments()], post=_monitoring_response(),
+    )
+    assert status != 0 and receipt["status"] != "accepted"
+    status, receipt, _, _ = _run_main(
+        ["health-monitoring-dry-run", *_monitoring_arguments()],
+        post=_monitoring_response(**_selected_monitoring_plan()),
+    )
+    assert status != 0 and receipt["status"] != "accepted"
+
+
+@pytest.mark.parametrize("tamper", ["desired_hash", "missing_current_hash", "bad_current_hash", "added_selection"])
+def test_health_monitoring_selection_apply_rejects_altered_evidence(tmp_path: Path, tamper: str) -> None:
+    argv, evidence = _monitoring_review(tmp_path, _selected_monitoring_arguments(), **_selected_monitoring_plan())
+    if tamper == "desired_hash":
+        evidence["result"]["endpoint_sha256"] = evidence["result"]["current_endpoint_sha256"]
+    elif tamper == "missing_current_hash":
+        evidence["result"].pop("current_endpoint_sha256")
+    elif tamper == "bad_current_hash":
+        evidence["result"]["current_endpoint_sha256"] = "invalid"
+    else:
+        argv, evidence = _monitoring_review(tmp_path)
+        evidence["result"]["current_endpoint_sha256"] = evidence["result"]["endpoint_sha256"]
+    _write_json(str(tmp_path), "monitoring-review.json", evidence)
+    status, _, posts, reads = _run_main(argv)
+    assert status == 2 and not posts and not reads
+
+
+@pytest.mark.parametrize("current_url", [SELECTED_MONITORING_URL, "https://stale.example.invalid/health"])
+def test_health_monitoring_selection_compares_current_not_desired_before_apply(tmp_path: Path, current_url: str) -> None:
+    argv, _ = _monitoring_review(tmp_path, _selected_monitoring_arguments(), **_selected_monitoring_plan())
+    status, receipt, posts, reads = _run_main(argv, read=_monitoring_profile(url=current_url))
+    assert (status, receipt["status"]) == (1, "stale") and not posts and len(reads) == 1
+    assert "stale.example.invalid" not in json.dumps(receipt)
+
+
+@pytest.mark.parametrize("field", ["url", "health_url", "base_url", "other_check", "selected_policy", "profile", "dependency", "current_plan"])
+def test_health_monitoring_selection_readback_preserves_unrequested_fields(tmp_path: Path, field: str) -> None:
+    argv, _ = _monitoring_review(tmp_path, _selected_monitoring_arguments(), **_selected_monitoring_plan())
+    before, after = _monitoring_profile(), _monitoring_profile(applied=True, url=SELECTED_MONITORING_URL)
+    after["profile"]["lanes"][0]["health_monitoring"]["checks"][0]["recovery_threshold"] = 1
+    before["profile"]["lanes"][0]["health_monitoring"]["checks"][0]["recovery_threshold"] = 1
+    lane = after["profile"]["lanes"][0]
+    plan = _selected_monitoring_plan()
+    if field == "url":
+        lane["health_monitoring"]["checks"][0]["url"] += "changed"
+    elif field in {"health_url", "base_url"}:
+        lane[field] += "changed"
+    elif field == "other_check":
+        lane["health_monitoring"]["checks"].append({"name": "unexpected"})
+    elif field == "selected_policy":
+        lane["health_monitoring"]["checks"][0]["recovery_threshold"] = 2
+    elif field == "profile":
+        after["profile"]["display_name"] = "changed"
+    elif field == "dependency":
+        lane["health_monitoring"]["dependency_health"] = {"mode": "required", "override": None}
+    else:
+        plan["current_resolved_url"] = SELECTED_MONITORING_URL
+    profiles = iter([before, after])
+    status, receipt, posts, _ = _run_main(argv, post=_monitoring_response("apply", **plan), read=lambda _: next(profiles))
+    assert (status, receipt["status"]) == (1, "accepted_unverified") and len(posts) == 1
 
 
 OVERRIDE_REASON = "Private dependency override reason."
