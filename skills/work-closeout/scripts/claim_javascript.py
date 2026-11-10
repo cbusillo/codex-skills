@@ -16,6 +16,7 @@ LITERAL_LOOP_VALUES = 64
 NATIVE_NAMES = {"tools", "text", "store", "load", "exit", "Promise", "JSON", "Object", "String", "ALL_TOOLS", "undefined"}
 SHELL_TOOLS = {"exec_command", "shell_command", "shell", "write_stdin"}
 GITHUB_READ_TOOL = re.compile(r"mcp__codex_apps__github_(?:fetch|get|list|search|compare|download)(?:_[a-z0-9_]+)?")
+READ_TOOLS = {"clock__curr_time", "web__run", "view_image", "codex_tui__list_threads", "codex_tui__read_thread"}
 PROTOTYPE_NAMES = {
     "constructor",
     "prototype",
@@ -87,7 +88,7 @@ def property_name(node: Node) -> str:
     if node.type == "string":
         value = literal_string(node)
     elif (
-        node.type not in {"identifier", "property_identifier", "shorthand_property_identifier"}
+        node.type not in {"identifier", "property_identifier", "shorthand_property_identifier", "shorthand_property_identifier_pattern"}
         or re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", value) is None
     ):
         raise ValueError(value)
@@ -289,8 +290,7 @@ class JavascriptData:
             native = source(receiver) if receiver.type == "identifier" else ""
             if native == "tools" and (
                 method
-                in SHELL_TOOLS
-                | {"apply_patch", "clock__curr_time", "web__run", "view_image", "codex_tui__list_threads", "codex_tui__read_thread"}
+                in SHELL_TOOLS | READ_TOOLS | {"apply_patch"}
                 or GITHUB_READ_TOOL.fullmatch(method)
             ):
                 result_kind = "promise"
@@ -858,7 +858,114 @@ def closed_stdin(arguments: Node) -> bool:
         return False
 
 
-def analyse(text: str, *, refusals: list[dict] | None = None) -> tuple[bool, list[tuple[Node, bool]]]:
+def native_capabilities(root: Node) -> None:
+    globals_allowed = NATIVE_NAMES | {"Date", "RegExp", "Math", "Number", "Boolean", "Array", "image", "notify"}
+    static_methods = {
+        "Object": {"keys", "values", "entries"},
+        "JSON": {"parse", "stringify"},
+        "Promise": {"all", "allSettled"},
+        "Date": {"now", "parse", "UTC"},
+    }
+    nodes = []
+    pending = [root]
+    bound = set()
+    while pending:
+        node = pending.pop()
+        nodes.append(node)
+        pending.extend(children(node))
+        patterns = []
+        if node.type == "variable_declarator":
+            patterns.append(node.child_by_field_name("name"))
+        if node.type in {"arrow_function", "function_expression", "function_declaration", "catch_clause"}:
+            patterns.extend(node.child_by_field_name(field) for field in ("parameter", "parameters", "name"))
+        if node.type == "for_in_statement":
+            patterns.append(node.child_by_field_name("left"))
+        for pattern in patterns:
+            parts = [pattern] if pattern is not None else []
+            while parts:
+                part = parts.pop()
+                if part.type in {"identifier", "shorthand_property_identifier_pattern"}:
+                    name = property_name(part)
+                    if name in globals_allowed:
+                        raise ValueError("native binding")
+                    bound.add(name)
+                else:
+                    parts.extend(children(part))
+    for node in nodes:
+        kind = node.type
+        if kind == "identifier" and source(node) in {
+            "globalThis",
+            "global",
+            "eval",
+            "Function",
+            "Reflect",
+            "Proxy",
+            "WebAssembly",
+            "require",
+            "process",
+        }:
+            raise ValueError("dynamic capability")
+        if kind in {"this", "import", "with_statement", "meta_property"}:
+            raise ValueError("dynamic capability")
+        if kind in {"identifier", "shorthand_property_identifier"}:
+            name = source(node)
+            if name not in globals_allowed | bound:
+                raise ValueError("unknown capability")
+            if name in globals_allowed and node.parent.type in {
+                "assignment_expression",
+                "augmented_assignment_expression",
+                "update_expression",
+            }:
+                if node == node.parent.child_by_field_name("left") or node == node.parent.child_by_field_name("argument"):
+                    raise ValueError("native assignment")
+            if name == "tools":
+                member = node.parent
+                call = member.parent
+                if (
+                    member.type != "member_expression"
+                    or member.child_by_field_name("object") != node
+                    or not (
+                        native_property_condition(member)
+                        or call.type == "call_expression"
+                        and call.child_by_field_name("function") == member
+                    )
+                ):
+                    raise ValueError("native capability value")
+                method = property_name(member.child_by_field_name("property"))
+                if not native_property_condition(member) and not (
+                    method in SHELL_TOOLS | READ_TOOLS | {"apply_patch"} or GITHUB_READ_TOOL.fullmatch(method)
+                ):
+                    raise ValueError("unknown tool")
+            if name in static_methods or name == "Math":
+                member = node.parent
+                if (
+                    member.type != "member_expression"
+                    or member.child_by_field_name("object") != node
+                    or member.parent.type != "call_expression"
+                    or member.parent.child_by_field_name("function") != member
+                    or name in static_methods
+                    and property_name(member.child_by_field_name("property")) not in static_methods[name]
+                ):
+                    if not (
+                        name == "Date" and member.type == "new_expression" and member.child_by_field_name("constructor") == node
+                    ):
+                        raise ValueError("native reflection")
+        if kind == "member_expression":
+            if property_name(node.child_by_field_name("property")) in {"call", "apply", "bind"}:
+                raise ValueError("indirect call")
+        if kind == "subscript_expression":
+            key = node.child_by_field_name("index")
+            if key.type != "number" and not (key.type == "string" and property_name(key)):
+                raise ValueError("computed member")
+        if kind == "new_expression" and source(node.child_by_field_name("constructor")) not in {"Date", "RegExp"}:
+            raise ValueError("constructor")
+        if kind == "call_expression":
+            callee = node.child_by_field_name("function")
+            if callee.type not in {"identifier", "member_expression"} or node.child_by_field_name("arguments").type != "arguments":
+                raise ValueError("indirect call")
+
+
+def analyse(text: str, *, refusals: list[dict] | None = None, native_effects: bool = False) -> tuple[bool, list[tuple[Node, bool]]]:
     import tree_sitter_javascript
 
     data = text.replace("\r\n", "\n").replace("\r", "\n").encode()
@@ -891,7 +998,7 @@ def analyse(text: str, *, refusals: list[dict] | None = None) -> tuple[bool, lis
             continue
         receiver = callee.child_by_field_name("object")
         method = source(callee.child_by_field_name("property"))
-        if receiver.type == "identifier" and source(receiver) == "tools" and method in SHELL_TOOLS:
+        if receiver.type == "identifier" and source(receiver) == "tools" and method in SHELL_TOOLS | ({"apply_patch"} if native_effects else set()):
             sites.append((node.child_by_field_name("arguments"), method == "write_stdin"))
     if not lexical or root.has_error or "\u2028" in text or "\u2029" in text:
         if refusals is not None:
@@ -907,8 +1014,11 @@ def analyse(text: str, *, refusals: list[dict] | None = None) -> tuple[bool, lis
             refusals.append(refusal(root, "JavaScript lexical boundary", offset=offset))
         return False, sites
     try:
-        checker = JavascriptData()
-        checker.statement(root, checker.environment)
+        if native_effects:
+            native_capabilities(root)
+        else:
+            checker = JavascriptData()
+            checker.statement(root, checker.environment)
     except (KeyError, ValueError, SyntaxError, RecursionError) as error:
         if refusals is not None:
             refusals.append(refusal(getattr(error, "node", None) or root, f"{type(error).__name__}: {error}"))

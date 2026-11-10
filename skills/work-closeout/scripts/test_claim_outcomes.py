@@ -5,6 +5,7 @@
 # ///
 from __future__ import annotations
 
+import copy
 import json
 import unittest
 from pathlib import Path
@@ -26,6 +27,170 @@ def invocation(source: str, output: object = "") -> list[dict]:
 
 
 class RecordedClaimOutcomeTests(unittest.TestCase):
+    @staticmethod
+    def recorded_display(command: str = "cat evidence.json", *, computed: bool = False) -> list[dict]:
+        argument = 'load("command")' if computed else json.dumps(command)
+        source = (
+            'const comments=load("comments");'
+            'text(comments.filter(c=>c.created_at>"today").map(({id,body,updated_at})=>({id,body,updated_at})));'
+            f"text(await tools.exec_command({{cmd:{argument}}}));"
+        )
+        rows = invocation(source, [{"type": "input_text", "text": "Script completed\nWall time 0.5 seconds\nOutput:\n"}])
+        rows[0]["timestamp"] = "2026-01-01T00:00:00Z"
+        rows[0]["payload"]["internal_chat_message_metadata_passthrough"] = {"turn_id": "turn"}
+        rows[1]["timestamp"] = "2026-01-01T00:00:02Z"
+        rows.insert(
+            1,
+            {
+                "type": "event_msg",
+                "timestamp": "2026-01-01T00:00:01Z",
+                "payload": {
+                    "type": "item_completed",
+                    "thread_id": SESSION,
+                    "turn_id": "turn",
+                    "started_at_ms": 1767225600500,
+                    "completed_at_ms": 1767225601000,
+                    "item": {
+                        "type": "CommandExecution",
+                        "id": "process",
+                        "process_id": "123",
+                        "source": "unified_exec_startup",
+                        "command": ["sh", "-c", command],
+                        "status": "completed",
+                        "exit_code": 0,
+                        "aggregated_output": "",
+                        "duration": {"secs": 0, "nanos": 500000000},
+                    },
+                },
+            },
+        )
+        for index, row in enumerate(rows):
+            row["ordinal"] = index
+        return rows
+
+    def test_recorded_display_and_computed_commands_use_native_effects(self) -> None:
+        for command in ("cat evidence.json", COMMAND):
+            for computed in (False, True):
+                with self.subTest(command=command, computed=computed):
+                    report = check_claims.history.literal_targets(self.recorded_display(command, computed=computed), SESSION)
+                    self.assertFalse(report["unresolved_invocations"])
+                    self.assertEqual(report["targets"], {("test/a", 5)} if command == COMMAND else set())
+
+    def test_recorded_effects_require_complete_attributed_terminal_evidence(self) -> None:
+        for kind in (
+            "missing",
+            "foreign",
+            "turn",
+            "unfinished",
+            "gap",
+            "duplicate",
+            "earlier",
+            "yielded",
+            "overlap",
+            "count",
+            "duration",
+            "source",
+        ):
+            with self.subTest(kind=kind):
+                rows = self.recorded_display(COMMAND, computed=True)
+                event = rows[1]["payload"]
+                if kind == "missing":
+                    rows.pop(1)
+                elif kind == "foreign":
+                    event["thread_id"] = "foreign"
+                elif kind == "turn":
+                    event["turn_id"] = "other"
+                elif kind == "unfinished":
+                    event["item"].update(status="in_progress", exit_code=None)
+                elif kind == "gap":
+                    rows[1]["ordinal"] += 1
+                elif kind == "duplicate":
+                    rows.insert(2, copy.deepcopy(rows[1]))
+                elif kind == "earlier":
+                    event["started_at_ms"] -= 5000
+                elif kind == "yielded":
+                    rows[-1]["payload"]["output"] = "Script running with cell ID 8"
+                elif kind == "overlap":
+                    rows.insert(1, {"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "other", "input": "text(1)"}})
+                elif kind == "count":
+                    rows[0]["payload"]["input"] = "for(const n of [1,2]){" + rows[0]["payload"]["input"] + "}"
+                elif kind == "duration":
+                    event["item"]["duration"]["secs"] += 5
+                elif kind == "source":
+                    event["item"]["source"] = "unknown"
+                report = check_claims.history.literal_targets(rows, SESSION)
+                self.assertTrue(report["unresolved_invocations"])
+
+    def test_recorded_effects_do_not_accept_capability_escapes_or_unknown_counts(self) -> None:
+        for source in (
+            "const alias=tools.exec_command;",
+            'tools[load("tool")]({});',
+            'globalThis.tools.exec_command({cmd:"echo x"});',
+            'eval(load("code"));',
+            'Function(load("code"))();',
+            "Object.getPrototypeOf(text);",
+            'Reflect.get(tools,"exec_command");',
+            'const load=k=>"echo x";',
+            'load=k=>"echo x";',
+            'String.prototype.replace=()=>"echo x";',
+            'const x={run(){return tools.exec_command({cmd:"echo x"});}};x.run();',
+            'function run(){return tools.exec_command({cmd:"echo x"});}run();',
+            'const x={get result(){return tools.exec_command({cmd:"echo x"});}};text(x.result);',
+            'await load("jobs").map(async n=>tools.exec_command({cmd:n}));',
+            'await tools.write_stdin({session_id:123,chars:load("input")});',
+            'await tools.exec_command({cmd:"bash",tty:true});',
+            "await tools.mcp__codex_apps__github_add_comment_to_issue({});",
+            "await tools.unknown__write({});",
+        ):
+            with self.subTest(source=source):
+                rows = self.recorded_display(computed=True)
+                rows[0]["payload"]["input"] += source
+                self.assertTrue(check_claims.history.literal_targets(rows, SESSION)["unresolved_invocations"])
+
+    def test_earlier_yielded_process_cannot_supply_a_later_native_effect(self) -> None:
+        previous = invocation(f"text(await tools.exec_command({{cmd:{json.dumps(COMMAND)}}}));", {"session_id": 123, "output": ""})
+        for row in previous:
+            row["payload"]["call_id"] = "earlier"
+        for native_only in (False, True):
+            with self.subTest(native_only=native_only):
+                rows = self.recorded_display(COMMAND, computed=True)
+                if not native_only:
+                    rows[0]["payload"]["input"] = f"const r=await tools.exec_command({{cmd:{json.dumps(COMMAND)}}});text(r.output);"
+                report = check_claims.history.literal_targets([*previous, *rows], SESSION)
+                self.assertTrue(any(item["call_id"] == "call" for item in report["unresolved_invocations"]))
+
+    def test_later_completion_needs_the_original_native_process_identity(self) -> None:
+        for recorded in (True, False):
+            with self.subTest(recorded=recorded):
+                rows = self.recorded_display(COMMAND, computed=True)
+                event = rows.pop(1)
+                event["payload"]["completed_at_ms"] += 5000
+                event["payload"]["item"]["duration"]["secs"] += 5
+                if recorded:
+                    rows[-1]["payload"]["output"].append({"type": "input_text", "text": '[{"value":{"session_id":123}}]'})
+                rows.append(event)
+                for index, row in enumerate(rows):
+                    row["ordinal"] = index
+                report = check_claims.history.literal_targets(rows, SESSION)
+                self.assertEqual(bool(report["unresolved_invocations"]), not recorded)
+                self.assertEqual(report["targets"], {("test/a", 5)})
+
+    def test_native_argv_exposes_claims_instead_of_trusting_decoded_options(self) -> None:
+        rows = self.recorded_display()
+        rows[1]["payload"]["item"]["command"][-1] = COMMAND
+        report = check_claims.history.literal_targets(rows, SESSION)
+        self.assertEqual(report["targets"], {("test/a", 5)})
+        self.assertTrue(report["unresolved_invocations"])
+
+    def test_recorded_date_processing_does_not_need_javascript_evaluation(self) -> None:
+        rows = self.recorded_display(computed=True)
+        rows[0]["payload"]["input"] = (
+            'const stamp=load("stamp");'
+            'const date=new Date(stamp.current_time.replace(" UTC","Z").replace(" ","T"));text(date.getTime());'
+            + rows[0]["payload"]["input"]
+        )
+        self.assertFalse(check_claims.history.literal_targets(rows, SESSION)["unresolved_invocations"])
+
     def test_same_cell_stored_commands_preserve_every_claim_effect(self) -> None:
         for verb in ("show", "claim"):
             source = (

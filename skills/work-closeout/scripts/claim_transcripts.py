@@ -6,15 +6,15 @@ from __future__ import annotations
 
 import argparse
 import ast
-from contextlib import redirect_stderr, redirect_stdout
-import io
 import importlib.util
+import io
 import json
 import re
 import shlex
 import sqlite3
 from collections import Counter
 from collections.abc import Iterator
+from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -29,11 +29,13 @@ from tree_sitter import Language, Node, Parser
 if TYPE_CHECKING:
     from skills.github.scripts import github_comment as comment_cli
     from skills.github.scripts.github_api import ArgumentParsingError
-    from skills.supervisor.scripts.session_record import native_results, output_objects as values, read_jsonl
+    from skills.supervisor.scripts.session_record import native_results, read_jsonl
+    from skills.supervisor.scripts.session_record import output_objects as values
 else:
     import github_comment as comment_cli
     from github_api import ArgumentParsingError
-    from session_record import native_results, output_objects as values, read_jsonl
+    from session_record import native_results, read_jsonl
+    from session_record import output_objects as values
 
 CLOSED_STDIN_SINCE = (0, 87, 0)
 UNFINISHED_CLAIM = "unfinished_claim"
@@ -882,9 +884,176 @@ def exclusive_response_window(inputs: dict, identifier: str, responses: dict[str
     )
 
 
+class NativeEvidence(NamedTuple):
+    inputs: dict
+    processes: dict[str, int]
+    events: list[tuple[int, dict]]
+
+
+def native_evidence(
+    records: list[dict], inputs: dict, outputs: dict, responses: dict, events: list[tuple[int, dict]]
+) -> NativeEvidence:
+    all_inputs = dict(inputs)
+    for index, row in enumerate(records):
+        payload = row.get("payload") or {}
+        if payload.get("type") in {"function_call", "custom_tool_call", "local_shell_call"}:
+            all_inputs.setdefault(str(payload.get("call_id", "")), ("", False, "native", index))
+    processes = {}
+    for identifier, blocks in outputs.items():
+        if identifier not in responses:
+            continue
+        for result in values(blocks):
+            if type(result.get("session_id")) is int:
+                process = str(result["session_id"])
+                processes[process] = min(processes.get(process, responses[identifier]), responses[identifier])
+    return NativeEvidence(
+        all_inputs,
+        processes,
+        [
+            (index, row)
+            for index, row in events
+            if (row["payload"].get("item") or {}).get("type") in {"CommandExecution", "FileChange"}
+        ],
+    )
+
+
+def native_effects_complete(
+    records: list[dict], inputs: dict, identifier: str, session: str, responses: dict[str, int], native: NativeEvidence
+) -> bool:
+    text, javascript, _, start = inputs[identifier]
+    end = responses.get(identifier)
+    if not javascript or end is None:
+        return False
+    if not exclusive_response_window(native.inputs, identifier, responses, len(records)):
+        return False
+    window = records[start : end + 1]
+    ordinal = window[0].get("ordinal")
+    if type(ordinal) is not int or any(
+        type(row.get("ordinal")) is not int or row["ordinal"] != ordinal + index for index, row in enumerate(window)
+    ):
+        return False
+    output = records[end]["payload"].get("output")
+    if (
+        not isinstance(output, list)
+        or not output
+        or not isinstance(output[0], dict)
+        or not str(output[0].get("text", "")).startswith("Script completed\n")
+    ):
+        return False
+    payload = records[start]["payload"]
+    turn = (payload.get("internal_chat_message_metadata_passthrough") or {}).get("turn_id")
+    if turn is None:
+        turn = next(
+            (
+                row["payload"].get("turn_id")
+                for row in reversed(records[:start])
+                if row.get("type") == "turn_context" or (row.get("payload") or {}).get("type") == "task_started"
+            ),
+            None,
+        )
+    if not isinstance(turn, str) or not turn:
+        return False
+    try:
+        began = datetime.fromisoformat(records[start]["timestamp"])
+        returned = datetime.fromisoformat(records[end]["timestamp"])
+        if began.tzinfo is None or returned.tzinfo is None or began > returned:
+            return False
+        bounded, sites = claim_javascript.analyse(text, native_effects=True)
+        if not bounded:
+            return False
+        expected = Counter()
+        known = Counter()
+        reader = claim_javascript.LiteralCommands(LITERAL_SHELL_VALUE, LITERAL_LOOP_VALUES, LITERAL_EXPANSION_BYTES)
+        for arguments, _ in sites:
+            method = claim_javascript.shell_method(arguments)
+            if method == "write_stdin" and claim_javascript.closed_stdin(arguments):
+                continue
+            if method != "apply_patch" and (method != "exec_command" or not claim_javascript.closed_stdin(arguments)):
+                return False
+            ancestor = arguments.parent
+            while ancestor is not None:
+                if ancestor.type in {
+                    "function_declaration",
+                    "generator_function",
+                    "generator_function_declaration",
+                    "method_definition",
+                    "class_body",
+                }:
+                    return False
+                ancestor = ancestor.parent
+            count = len(reader.environments(arguments, strict=True))
+            expected["FileChange" if method == "apply_patch" else "CommandExecution"] += count
+            if method == "exec_command":
+                commands = claim_javascript.literal_commands(
+                    arguments, LITERAL_SHELL_VALUE, LITERAL_LOOP_VALUES, LITERAL_EXPANSION_BYTES, occurrences=True, reader=reader
+                )
+                if commands is not None:
+                    known.update(commands)
+    except (ValueError, TypeError, KeyError, AttributeError, RecursionError):
+        return False
+    observed = Counter()
+    commands = Counter()
+    identities = set()
+    processes = {str(result["session_id"]) for result in values(output) if type(result.get("session_id")) is int}
+    for index, row in native.events:
+        if index <= start:
+            continue
+        event = row.get("payload") or {}
+        item = event.get("item") or {}
+        kind = item.get("type")
+        if row.get("type") != "event_msg" or event.get("type") != "item_completed" or kind not in {"CommandExecution", "FileChange"}:
+            continue
+        if kind == "CommandExecution" and native.processes.get(str(item.get("process_id")), start) < start:
+            continue
+        if index > end and (
+            kind != "CommandExecution"
+            or str(item.get("process_id")) not in processes
+            or type(event.get("started_at_ms")) is not int
+            or not began.timestamp() * 1000 <= event["started_at_ms"] <= returned.timestamp() * 1000
+        ):
+            continue
+        identity = item.get("id")
+        if (
+            event.get("thread_id") != session
+            or event.get("turn_id") != turn
+            or not isinstance(identity, str)
+            or not identity
+            or identity in identities
+            or item.get("status") not in {"completed", "failed"}
+            or kind == "FileChange"
+            and item.get("status") != "completed"
+            or type(event.get("started_at_ms")) is not int
+            or type(event.get("completed_at_ms")) is not int
+            or not began.timestamp() * 1000 <= event["started_at_ms"] <= returned.timestamp() * 1000
+            or event["started_at_ms"] > event["completed_at_ms"]
+            or index < end
+            and event["completed_at_ms"] > returned.timestamp() * 1000
+        ):
+            return False
+        identities.add(identity)
+        if kind == "CommandExecution":
+            if item.get("source") != "unified_exec_startup" or type(item.get("exit_code")) is not int:
+                return False
+            duration = item.get("duration") or {}
+            if (
+                type(duration.get("secs")) is not int
+                or type(duration.get("nanos")) is not int
+                or duration["secs"] < 0
+                or not 0 <= duration["nanos"] < 1000000000
+                or abs(event["completed_at_ms"] - event["started_at_ms"] - duration["secs"] * 1000 - duration["nanos"] / 1000000) > 2
+            ):
+                return False
+            command = shell_wrapper_payload(item.get("command"))
+            if command is None:
+                return False
+            commands[command] += 1
+        observed[kind] += 1
+    return observed == +expected and not known - commands
+
+
 def window_completions(
     records: list[dict], inputs: dict, identifier: str, sources: ShellTexts, session: str, responses: dict[str, int],
-    completed_events: list[tuple[int, dict]],
+    completed_events: list[tuple[int, dict]], native: NativeEvidence,
 ) -> list[bool]:
     text, javascript, name, start = inputs[identifier]
     missing = [False] * len(sources.commands)
@@ -937,6 +1106,7 @@ def window_completions(
             or not isinstance(identity, str)
             or not identity
             or identity in seen
+            or native.processes.get(str(item.get("process_id")), start) < start
         ):
             continue
         seen.add(identity)
@@ -948,7 +1118,7 @@ def window_completions(
 
 def completed_sources(
     records: list[dict], inputs: dict, outputs: dict, identifier: str, sources: ShellTexts, session: str, responses: dict[str, int],
-    finished: set[str], completed_events: list[tuple[int, dict]],
+    finished: set[str], completed_events: list[tuple[int, dict]], native: NativeEvidence,
 ) -> list[bool]:
     text, javascript, name, _ = inputs[identifier]
     own = outputs.get(identifier, [])
@@ -972,7 +1142,7 @@ def completed_sources(
         return [ended] * len(sources.commands)
     bound = bound_shell_results(text, javascript, name, own)
     if len(bound) != len(sources.commands):
-        return window_completions(records, inputs, identifier, sources, session, responses, completed_events)
+        return window_completions(records, inputs, identifier, sources, session, responses, completed_events, native)
     flags = [type(result.get("exit_code")) is int and not isinstance(result.get("session_id"), int) for _, result in bound]
     if not all(flags) and any(type(result.get("session_id")) is int for _, result in bound):
         polls = list(ordered_poll_results(identifier, inputs, outputs))
@@ -981,7 +1151,7 @@ def completed_sources(
                  for ended, (_, result) in zip(flags, bound, strict=True)]
     if all(flags):
         return flags
-    window = window_completions(records, inputs, identifier, sources, session, responses, completed_events)
+    window = window_completions(records, inputs, identifier, sources, session, responses, completed_events, native)
     return [ended or completed for ended, completed in zip(flags, window, strict=True)]
 
 
@@ -3038,6 +3208,7 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
         if (item := execution_item(row)).get("status") in {"completed", "failed"}
         and type(item.get("exit_code")) is int
     }
+    native = native_evidence(records, inputs, own_outputs, responses, completed_events)
     if directory is not None:
         errors.extend(
             {
@@ -3050,6 +3221,8 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
     claim_may_be_interactive = False
     for identifier, (text, javascript, name, _) in inputs.items():
         if identifier in denied:
+            continue
+        if javascript and native_effects_complete(records, inputs, identifier, session, responses, native):
             continue
         unexecuted = javascript and native_javascript_parse_failure(text, outputs.get(identifier, []))
         executable_text = without_patch_text(text) if javascript else text
@@ -3065,12 +3238,13 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
         receipt_pure = not javascript or single_javascript_shell(text)
         source_ended: list[bool] = []
         launched_in_background = False
+        sources = ShellTexts([])
         try:
             sources = shell_texts(
                 text, javascript, exec_command=name == "exec_command", refusals=refusals,
                 stored_provenance=exclusive_response_window(inputs, identifier, responses, len(records)),
             )
-            source_ended = completed_sources(records, inputs, own_outputs, identifier, sources, session, responses, finished, completed_events)
+            source_ended = completed_sources(records, inputs, own_outputs, identifier, sources, session, responses, finished, completed_events, native)
             opaque = sources.opaque
             if not unexecuted and identifier not in finished:
                 claim_may_be_interactive = (
@@ -3145,7 +3319,7 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
                 saved = persisted_output(records, directory, session, identifier)
                 blocks = [*blocks, *tool_outputs(saved).get(identifier, [])]
                 restored = {**own_outputs, identifier: [*own_outputs.get(identifier, []), *tool_outputs(saved).get(identifier, [])]}
-                restored_flags = completed_sources(records, inputs, restored, identifier, sources, session, responses, finished, completed_events)
+                restored_flags = completed_sources(records, inputs, restored, identifier, sources, session, responses, finished, completed_events, native)
                 ended_invocations = [
                     ended and not discovery.asynchronous
                     for source, ended in zip(sources.commands, restored_flags, strict=True)
