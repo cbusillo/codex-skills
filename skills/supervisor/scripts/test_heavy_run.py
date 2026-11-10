@@ -28,7 +28,7 @@ from decimal import Decimal
 from functools import partial
 from multiprocessing.process import BaseProcess
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any
 from unittest.mock import patch
 
 import heavy_run
@@ -55,11 +55,14 @@ class ResultCollectionTests(unittest.TestCase):
                         (reference / "file").write_bytes(b"result")
 
                 def digest(
-                    stream: BinaryIO, algorithm: str, *, blocked: Path | None = reference / "file" if case == "unreadable" else None
+                    source_stream: Any,
+                    algorithm: str,
+                    *,
+                    blocked: Path | None = reference / "file" if case == "unreadable" else None,
                 ) -> Any:
-                    if blocked is not None and stream.name == str(blocked):
+                    if blocked is not None and source_stream.name == str(blocked):
                         raise PermissionError("fixture reference read failure")
-                    return original_digest(stream, algorithm)
+                    return original_digest(source_stream, algorithm)
 
                 destination = root / case
                 stream = io.BytesIO(json.dumps(inventory).encode() + b"\nresult")
