@@ -648,6 +648,9 @@ or a rollout apply.
 
 ### Ready Handoffs
 
+Apply [inspection Result Policy](../../jetbrains-inspection/SKILL.md#result-policy)
+before the checked handoff.
+
 When the task authorizes a Supervisor handoff, use
 `uv run <github-skill-dir>/scripts/gh-pr.py --repo OWNER/REPO ready <pr>`
 instead of hand-writing a merge-train

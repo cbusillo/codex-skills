@@ -212,12 +212,8 @@ when the next milestone depends on it. Ask before running gates that mutate
 shared environments or external resources. If linting a file for the first time,
 dry-run first when the environment supports it.
 
-For code-change readiness, inspection evidence is one of: a GREEN
-`jetbrains-inspection` result with its backend and scope, actionable findings
-that were fixed or tracked, or a concrete not-run reason such as the helper's
-UNKNOWN reason, docs-only scope, or user-approved parking. Missing inspection
-evidence for a configured code gate means the readiness answer is not fully
-ready.
+Apply the inspection skill's [Result Policy](../jetbrains-inspection/SKILL.md#result-policy)
+to code-change readiness and report its evidence. Docs-only changes may state a not-run reason.
 
 Existing lint/inspection noise is not an invisible background condition. Fix
 real findings the right way when straightforward or in the affected area. If
@@ -250,8 +246,7 @@ update is needed, say why briefly in readiness output.
 ## JetBrains IDE And Inspections
 
 Delegate JetBrains/PyCharm/IntelliJ/WebStorm inspection execution and triage to
-`jetbrains-inspection`. Treat every UNKNOWN, including an unavailable worker or
-unsupported selection, as not clean. Follow the shared
+`jetbrains-inspection` and its Result Policy above. Follow the shared
 [suppression and inspection configuration rule](../jetbrains-inspection/SKILL.md#suppressions-and-inspection-configuration).
 
 If the repo inspection config is blank or feels wrong, ask the user when the
