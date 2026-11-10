@@ -114,6 +114,130 @@ def input_entries(root: Path) -> Generator[Path, None, None]:
         yield path
 
 
+def result_inventory(root: Path) -> dict[str, dict]:
+    inventory: dict[str, dict] = {}
+    for path in input_entries(root):
+        before = path.stat()
+        entry: dict[str, int | str] = {"mode": stat.S_IMODE(before.st_mode)}
+        if path.is_file():
+            with path.open("rb") as stream:
+                entry.update(size=before.st_size, sha256=hashlib.file_digest(stream, "sha256").hexdigest())
+        after = path.stat()
+        if (before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        ):
+            raise ValueError("Result changed during inventory; preserve evidence")
+        inventory[str(path.relative_to(root))] = entry
+    return inventory
+
+
+def validate_result_inventory(inventory: object) -> None:
+    if not isinstance(inventory, dict) or "." not in inventory:
+        raise ValueError("Result inventory must include its root")
+    for name, entry in inventory.items():
+        if not isinstance(name, str) or str(Path(name)) != name or Path(name).is_absolute() or ".." in Path(name).parts:
+            raise ValueError("Result inventory paths must be canonical and relative")
+        if (
+            not isinstance(entry, dict)
+            or set(entry) not in ({"mode"}, {"mode", "size", "sha256"})
+            or type(entry.get("mode")) is not int
+            or not 0 <= entry["mode"] <= 0o777
+        ):
+            raise ValueError("Invalid result inventory entry")
+        if "sha256" in entry and (
+            type(entry["size"]) is not int
+            or entry["size"] < 0
+            or not isinstance(entry["sha256"], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", entry["sha256"])
+        ):
+            raise ValueError("Invalid result size or hash")
+        if name != "." and any(set(inventory.get(str(parent), {})) != {"mode"} for parent in Path(name).parents):
+            raise ValueError("Result parents must be recorded directories")
+
+
+def transfer_result_bytes(source: BinaryIO, destination: BinaryIO, size: int) -> None:
+    remaining = size
+    while remaining:
+        chunk = source.read(min(remaining, 1024 * 1024))
+        if not chunk:
+            raise ValueError("Result transfer interrupted; preserve partial evidence")
+        pending = memoryview(chunk)
+        while pending:
+            written = destination.write(pending)
+            if written is None or written <= 0:
+                raise OSError("Result transport stopped accepting bytes")
+            pending = pending[written:]
+        remaining -= len(chunk)
+
+
+def send_result(root: Path, stream: BinaryIO, requests: BinaryIO) -> None:
+    inventory = result_inventory(root)
+    validate_result_inventory(inventory)
+    stream.write(json.dumps(inventory).encode() + b"\n")
+    stream.flush()
+    selected = json.loads(requests.readline())
+    if (
+        not isinstance(selected, list)
+        or any(not isinstance(name, str) or name not in inventory or "sha256" not in inventory[name] for name in selected)
+        or len(set(selected)) != len(selected)
+    ):
+        raise ValueError("Request only unique recorded result files")
+    for name in selected:
+        with (root if name == "." else root / name).open("rb") as source:
+            transfer_result_bytes(source, stream, inventory[name]["size"])
+    stream.flush()
+
+
+def receive_result(stream: BinaryIO, requests: BinaryIO, destination: Path, reference: Path | None = None) -> dict[str, int]:
+    inventory: dict[str, dict] = json.loads(stream.readline())
+    validate_result_inventory(inventory)
+    if destination.exists() or destination.is_symlink():
+        raise FileExistsError("Collect only into a new result; preserve earlier evidence")
+    if destination.parent.resolve(strict=True) != destination.parent:
+        raise ValueError("Result parent must be an original directory")
+    if reference is not None:
+        if reference.resolve(strict=True) != reference:
+            raise ValueError("Result reference must be an original path")
+        for _path in input_entries(reference):
+            continue
+    free_before = shutil.disk_usage(destination.parent).free
+    report = {"cloned_files": 0, "transferred_files": 0, "transferred_bytes": 0}
+    selected = []
+    for name, entry in sorted(inventory.items()):
+        target = destination if name == "." else destination / name
+        if "sha256" not in entry:
+            target.mkdir(mode=0o700)
+            continue
+        candidate = (reference if name == "." else reference / name) if reference is not None else None
+        if candidate is not None and candidate.is_file():
+            with candidate.open("rb") as source:
+                if hashlib.file_digest(source, "sha256").hexdigest() == entry["sha256"]:
+                    clone_input(candidate, target)
+                    target.chmod(0o600)
+                    report["cloned_files"] += 1
+                    continue
+        selected.append(name)
+    requests.write(json.dumps(selected).encode() + b"\n")
+    requests.flush()
+    for name in selected:
+        with (destination if name == "." else destination / name).open("xb") as target:
+            transfer_result_bytes(stream, target, inventory[name]["size"])
+        report["transferred_files"] += 1
+        report["transferred_bytes"] += inventory[name]["size"]
+    actual = result_inventory(destination)
+    if {name: {key: value for key, value in entry.items() if key != "mode"} for name, entry in actual.items()} != {
+        name: {key: value for key, value in entry.items() if key != "mode"} for name, entry in inventory.items()
+    }:
+        raise ValueError("Collected result hashes differ; preserve all evidence")
+    for name, entry in reversed(sorted(inventory.items())):
+        (destination if name == "." else destination / name).chmod(entry["mode"])
+    report["observed_bytes_added"] = free_before - shutil.disk_usage(destination.parent).free
+    return report
+
+
 def locked_file(path: Path) -> BinaryIO:
     return os.fdopen(os.open(path, os.O_RDWR | os.O_CREAT, 0o600), "r+b")
 

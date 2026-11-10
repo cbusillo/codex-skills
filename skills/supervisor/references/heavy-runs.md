@@ -297,6 +297,26 @@ repository. Do not put private endpoints or credentials in catalog settings
 examples. Inspect the original remote job after a connection loss before retrying;
 an adapter failure never proves remote cleanup.
 
+For result collection, adapters can use `send_result` and `receive_result` from
+this same helper. The sender inventories every ordinary file and directory,
+including empty directories, with file sizes and SHA-256 hashes. The receiver
+builds a fresh result by cloning matching local files through `clone_input`,
+requests only changed or added files, then verifies every result file against
+that inventory before applying the recorded modes. Removed reference files
+are absent from the new result. References and earlier collections are never
+modified or deleted; interrupted or mismatched results stay available as partial
+evidence. A same-filesystem clone failure is explicit, with no full-copy fallback.
+Without a reference, the adapter keeps its full-transfer path.
+
+The private executor resolves a matching input in the original manifest as the
+reference automatically. An output can instead name an absolute local
+`reference` path, such as a prior collected result. Its existing runbook owns
+that adapter's adoption and matching guest artifact installation. Source landing
+does not update a guest or change an existing run. Collection reports
+`cloned_files`, `transferred_files`, `transferred_bytes` and
+`observed_bytes_added`; the last is an observed filesystem free-space difference,
+which neighboring writes can affect. No per-run deduplication script is needed.
+
 The executor setting routes every heavy run from that OS account on the host,
 including non-Odoo repositories; verify its consumers before a cut-over.
 Execution limits come from the destination host's settings. Workstation limits
