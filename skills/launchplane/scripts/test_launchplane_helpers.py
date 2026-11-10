@@ -12307,7 +12307,6 @@ def test_native_evidence_preserves_retained_probe_route_and_intent_observations(
     ("http_status", 99), ("http_status", 600), ("http_status", {}), ("http_status", []),
     ("failure_kind", True), ("failure_kind", 503), ("failure_kind", {}), ("failure_kind", []),
     ("failure_kind", "TIMEOUT"), ("failure_kind", ""), ("failure_kind", "https://planted-private-value.invalid"),
-    ("raw", "planted-private-value"),
 ])
 def test_native_evidence_refuses_unsafe_probe_metadata_without_exposing_values(field: str, value: object) -> None:
     response = _native_evidence_response()

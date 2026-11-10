@@ -964,7 +964,7 @@ installed local helper bindings.
   A service without this view cannot satisfy the
   opt-in. No native evidence is accepted on the default request.
 
-  The producer's pinned [wire and coverage contract](https://github.com/cbusillo/launchplane/blob/dbda589bd6872f5a68337e68b18ae1b692272d74/docs/service-boundary.md)
+  The producer's pinned [wire and coverage contract](https://github.com/cbusillo/launchplane/blob/9e3a5ad982d162a7d149ba68ba60702cce24c64e/docs/service-boundary.md)
   owns evidence meanings and retention limits. The view changes no recovery
   eligibility, needed-copy protection, caller, grant or provider/log IO.
   Example (substitute an already known operation id):
