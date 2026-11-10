@@ -1509,6 +1509,8 @@ def test_attachment_passthrough_and_failures_never_replay() -> None:
         video = image.with_suffix(".mp4")
         image.write_bytes(b"image fixture")
         video.write_bytes(b"video fixture")
+        mentioned_image = image.with_name("@outsider.png")
+        mentioned_image.write_bytes(b"image fixture")
         attachments = [str(image) + "#Evidence", str(video)]
         repo = f"{github_comment.ATTACHMENT_OWNER}/repo"
         url = f"https://github.com/{repo}/issues/42#issuecomment-1001"
@@ -1522,6 +1524,7 @@ def test_attachment_passthrough_and_failures_never_replay() -> None:
         successful_modes = {"success", "canonical_case", "crlf_body", "attributed_question", "escaped_alt"}
         upload_url_modes = {"failed_upload", "bad_readback", "wrong_author", "missing_author", "readback_failure",
                             "extra_prose", "unmatched_bracket"}
+        client_refusals = {"outside_page", "outside_review", "missing_client", "alt_mention", "filename_mention", "personal"}
 
         def assert_upload_reconciliation(mode: str, reconciliation: dict[str, Any]) -> None:
             assert reconciliation["required_before_retry"] is True, reconciliation
@@ -1534,10 +1537,12 @@ def test_attachment_passthrough_and_failures_never_replay() -> None:
                 assert "url" not in reconciliation, reconciliation
             else:
                 assert reconciliation["url"] == bot_url, reconciliation
-        def exercise(kind: str, mode: str) -> None:
+        def exercise(kind: str, mode: str, *, guarded: bool = False) -> None:
             calls: list[list[str]] = []
             posted: list[str] = []
             readback: dict[str, Any] = {**comment_body(1001, github_comment.ATTACHMENT_OWNER), "html_url": url}
+            requested_attachments = ([str(mentioned_image), str(video)] if mode == "filename_mention" else
+                                     [str(image) + "#&#64;outsider", str(video)] if mode == "alt_mention" else attachments)
 
             def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
                 calls.append(command)
@@ -1547,7 +1552,7 @@ def test_attachment_passthrough_and_failures_never_replay() -> None:
                 assert len(posted) == 1, posted
                 assert command[:4] == ["fake-gh", kind, "comment", "42"]
                 assert command[command.index("--repo") + 1].casefold() == repo
-                assert [command[index + 1] for index, value in enumerate(command) if value == "--attach"] == attachments
+                assert [command[index + 1] for index, value in enumerate(command) if value == "--attach"] == requested_attachments
                 assert kwargs["input"] == f"[{github_comment.AGENT_POSTED_LINE}]({bot_url})"
                 if mode == "launch_failure":
                     raise OSError("gh could not start")
@@ -1575,6 +1580,15 @@ def test_attachment_passthrough_and_failures_never_replay() -> None:
                     return success({"owner": {"login": github_comment.ATTACHMENT_OWNER}, "full_name": repo})
                 if path == "/user":
                     return success({"login": github_comment.ATTACHMENT_OWNER if mode == "bot_actor" else "fixture-automation"})
+                if path.endswith("/issues/42"):
+                    return success({"user": {"login": "client"}, "body": "status", **({"pull_request": {}} if kind == "pr" else {})})
+                if guarded and "/issues/42/comments?" in path:
+                    if mode == "outside_page":
+                        return (success([comment_body(2, "outsider")]) if "page=2" in path else
+                                success([], headers={"link": '<https://api.github.com/next>; rel="next"'}))
+                    return success([comment_body(2, "client-agent[bot]"), comment_body(3, "teammate")])
+                if guarded and "/pulls/42/reviews?" in path:
+                    return success([comment_body(4, "outsider")] if mode == "outside_review" else [])
                 if method == "POST":
                     posted.append(body["body"])
                     if mode == "bot_failure":
@@ -1607,15 +1621,22 @@ def test_attachment_passthrough_and_failures_never_replay() -> None:
                     patch.object(question_counter, "configured_queue", return_value=None), \
                     patch.object(question_counter, "update", side_effect=update_question), \
                     patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_OWN_USER": "1", "GH_WITH_ENV_TOKEN_OWN_USER_LOGIN": github_comment.ATTACHMENT_OWNER}), \
+                    patch.object(github_comment.github_identity, "acts_as_own_user", return_value=mode == "personal"), \
+                    patch.object(github_comment, "people_team", side_effect=lambda login: ["teammate"] if login == "client" else []), \
                     patch.object(github_api.github_catalog_health, "marker_fields", return_value="catalog=fixture"), \
                     patch.object(github_comment.subprocess, "run", side_effect=run), \
                     patch.object(github_comment, "_call_api", side_effect=read_api):
                 try:
-                    result = github_comment.comment(kind, 42, requested, repo=requested_repo, gh_cmd="fake-gh", attachments=attachments)
+                    result = github_comment.comment(
+                        kind, 42, requested, repo=requested_repo, gh_cmd="fake-gh", attachments=requested_attachments,
+                        client_logins=(["client"] if mode == "missing_client" else ["client", "app/client-agent"]) if guarded else None,
+                    )
                 except github_comment.CommentError as error:
                     assert mode not in successful_modes, error
-                    before_post = mode in ("old_cli", "help_failure", "bot_actor")
+                    before_post = mode in ("old_cli", "help_failure", "bot_actor") or mode in client_refusals
                     assert error.failure.write_outcome == ("not_started" if before_post else "unknown" if mode == "bot_failure" else "applied")
+                    if mode in client_refusals:
+                        assert error.failure.cause == "client_reply_refused", error
                     if not before_post and mode != "bot_failure":
                         assert error.payload["url"] == bot_url
                         assert error.payload["attachment_write_outcome"] == ("not_started" if mode in ("prewrite_refusal", "question_binding_failure") else
@@ -1628,12 +1649,17 @@ def test_attachment_passthrough_and_failures_never_replay() -> None:
                     assert result["attachment_comment"]["url"] == url
                     if mode == "attributed_question":
                         question_counter.verify_number(counter_file, reserved, bot_url)
-                assert len(posted) == (0 if mode in ("old_cli", "help_failure", "bot_actor") else 1)
-            assert len(calls) == (1 if mode in ("old_cli", "help_failure", "bot_actor", "bot_failure", "question_binding_failure") else 2)
+                assert len(posted) == (0 if mode in ("old_cli", "help_failure", "bot_actor") or mode in client_refusals else 1)
+                if posted:
+                    assert github_comment.canonical_comment_body(posted[0]).strip() == requested.removeprefix(github_comment.AGENT_POSTED_LINE).strip()
+            assert len(calls) == (1 if mode in ("old_cli", "help_failure", "bot_actor", "bot_failure", "question_binding_failure") or mode in client_refusals else 2)
 
         for comment_kind in ("issue", "pr"):
             for failure_mode in modes:
                 exercise(comment_kind, failure_mode)
+            for client_mode in ("success", "failed_upload", "forged_receipt", *sorted(client_refusals - {"outside_review"})):
+                exercise(comment_kind, client_mode, guarded=True)
+        exercise("pr", "outside_review", guarded=True)
         with patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_OWN_USER": "0"}), patch.object(
             github_comment.subprocess, "run", side_effect=AssertionError("must not call CLI")
         ):
