@@ -88,7 +88,11 @@ does not record, verified through `people` or the product's recorded identity
 context. This mode checks the opening, all timeline comments, PR reviews and
 inline comments, and the outgoing text for outside participants and mentions;
 unreadable coverage refuses the reply. Hidden historical metadata is not a
-mention. It requires the configured automation identity. A refusal names the
+mention. It requires the configured automation identity for reply text. With
+`--attach` and the existing own-user opt-in, a second comment carries only
+attachment markup and the linked agent line. Keep all verified `--client-login`
+flags on the combined call; attachment basenames and alt text get the same
+outside-mention check. A refusal names the
 participant; it is not permission to omit the
 flag. The Director's agents not configured as own identities, such as the
 product's Launchplane bot, also go in `--client-login`. Unknown and third-party
