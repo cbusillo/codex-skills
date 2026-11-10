@@ -1016,6 +1016,10 @@ def test_attachment_route_enforces_limits_through_real_wrapper() -> None:
               "    path = next(arg for arg in args if arg.startswith('/')).split('?')[0]\n"
               "    if path == '/user':\n"
               "        result = {'login': 'catalog-app[bot]'}\n"
+              "    elif path.endswith('/issues/42'):\n"
+              "        result = {'user': {'login': 'client'}, 'body': 'status', 'pull_request': {}}\n"
+              "    elif path.endswith(('/pulls/42/reviews', '/pulls/42/comments')):\n"
+              "        result = []\n"
               "    elif path.endswith('/issues/42/comments'):\n"
               "        if 'POST' in args:\n"
               "            body = json.load(sys.stdin)['body']\n"
@@ -1024,7 +1028,7 @@ def test_attachment_route_enforces_limits_through_real_wrapper() -> None:
               "            result = {'id': 7351, 'html_url': f'https://github.com/{owner}/catalog/issues/42#issuecomment-7351',\n"
               "                      'user': {'login': 'catalog-app[bot]'}, 'body': body}\n"
               "        else:\n"
-              "            result = []\n"
+              "            result = [{'user': {'login': 'outsider'}}] if os.environ.get('FIXTURE_CLIENT_OUTSIDE') else []\n"
               "    elif path.endswith('/comments/7351'):\n"
               "        result = {'id': 7351, 'html_url': f'https://github.com/{owner}/catalog/issues/42#issuecomment-7351',\n"
               "                  'issue_url': f'https://api.github.com/repos/{owner}/catalog/issues/' + os.environ.get('FIXTURE_SOURCE_ISSUE', '42'),\n"
@@ -1046,10 +1050,13 @@ def test_attachment_route_enforces_limits_through_real_wrapper() -> None:
             "GH_PR_GH": str(SCRIPT), "FIXTURE_UPLOAD": str(root / "uploaded.md"),
             "GITHUB_RETRY_STATE_DIR": str(root / "retry-state"),
         }
-        for kind in ("issue", "pr"):
+        for kind, guarded in (("issue", False), ("pr", False), ("issue", True), ("pr", True)):
             calls_file.write_text("")
             command = ([sys.executable, str(SCRIPT.with_name("gh-pr.py")), "--repo", repo, "comment", "42"]
-                       if kind == "pr" else [sys.executable, str(SCRIPT.with_name("github_comment.py")), kind, "42", "--repo", repo])
+                       if kind == "pr" and not guarded else
+                       [str(SCRIPT.with_name("gh-comment")), kind, "42", "--repo", repo])
+            if guarded:
+                command.extend(["--client-login", "client", "--client-login", "app/client-agent"])
             result = subprocess.run(
                 [*command, "--body-file", "-", "--attach", str(image) + "#Evidence"],
                 env=env, input="Attachment proof", text=True, capture_output=True, timeout=15,
@@ -1065,6 +1072,16 @@ def test_attachment_route_enforces_limits_through_real_wrapper() -> None:
             assert payload["actor"] == "catalog-app[bot]", payload
             assert payload["url"] == bot_url, payload
             assert payload["attachment_comment"]["actor"] == owner, payload
+            if guarded:
+                calls_file.write_text("")
+                refused = subprocess.run(
+                    [*command, "--body-file", "-", "--attach", str(image)],
+                    env={**env, "FIXTURE_CLIENT_OUTSIDE": "1"}, input="proof", text=True, capture_output=True, timeout=15,
+                )
+                assert refused.returncode != 0, refused.stdout
+                assert json.loads(refused.stdout)["write_outcome"] == "not_started", refused.stdout
+                effects = [json.loads(line)[0] for line in calls_file.read_text().splitlines()]
+                assert "bot_body" not in effects and "upload_body" not in effects, effects
         positioned = ["issue", "--repo", repo, "comment", "42", "--body-file", "-", "--attach", str(image)]
         result = subprocess.run([str(SCRIPT), *positioned], env=env, input=body, text=True, capture_output=True, timeout=15, check=True)
         assert result.returncode == 0, (result.stdout, result.stderr)
@@ -1078,6 +1095,8 @@ def test_attachment_route_enforces_limits_through_real_wrapper() -> None:
         for comment_command in (
             [sys.executable, str(SCRIPT.with_name("github_comment.py")), "issue", "42", "--repo", repo],
             [sys.executable, str(SCRIPT.with_name("gh-pr.py")), "--repo", repo, "comment", "42"],
+            [str(SCRIPT.with_name("gh-comment")), "pr", "42", "--repo", repo,
+             "--client-login", "client", "--client-login", "app/client-agent"],
         ):
             calls_file.write_text("")
             refused = subprocess.run(

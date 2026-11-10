@@ -553,6 +553,7 @@ def client_team(client_logins: list[str]) -> set[str]:
 def validate_client_reply(
     repo: str, number: int, body: str, client_logins: list[str], *, actor: str,
     gh_cmd: str, operation: str, retry_summaries: list[github_api_core.RetrySummary],
+    attachment_texts: list[str] | None = None,
 ) -> None:
     bots = {login.casefold() for login in github_identity.configured_bot_logins()}
     primary_bot = github_identity.automation_login()
@@ -589,7 +590,7 @@ def validate_client_reply(
             raise ValueError(f"Client reply refused: outside or unknown participant {author or '(no login)'}; "
                              "add --client-login for it only if verified as the Client's, otherwise obtain "
                              "exact-text approval")
-    texts = [body]
+    texts = [body, *(attachment_texts or [])]
     for record in records:
         rendered = record.get("body_html")
         texts.extend((rendered if isinstance(rendered, str) else str(record.get("body") or ""), str(record.get("title") or "")))
@@ -856,6 +857,7 @@ def _comment_impl(
     verified_actor: str | None = None,
     validate_actor: Callable[[str], None] | None = None,
     client_logins: list[str] | None = None,
+    client_attachment_texts: list[str] | None = None,
 ) -> dict[str, Any]:
     operation = operation or f"github.comment.{kind}"
     expected_actor = effective_expected_actor(expected_actor)
@@ -939,7 +941,8 @@ def _comment_impl(
     if client_logins:
         try:
             validate_client_reply(resolved_repo, number, body, client_logins, actor=actor,
-                                  gh_cmd=gh_cmd, operation=operation, retry_summaries=collected_retry_summaries)
+                                  gh_cmd=gh_cmd, operation=operation, retry_summaries=collected_retry_summaries,
+                                  attachment_texts=client_attachment_texts)
         except ValueError as error:
             raise _local_error(str(error), operation=operation, cause="client_reply_refused",
                                expected_actor=expected_actor, failed_step="validate_client_reply") from error
@@ -1335,6 +1338,7 @@ def attachment_write_outcome(stderr: str, nonce: str) -> str:
 def attached_comment(
     kind: str, number: int, body: str, attachments: list[str], *, repo: str | None,
     gh_cmd: str, operation: str, retry_summaries: list[github_api_core.RetrySummary],
+    client_logins: list[str] | None = None,
 ) -> dict[str, Any]:
     resolved_repo = resolve_repo(repo, gh_cmd=gh_cmd, operation=operation)
     if body.splitlines()[:1] == [AGENT_POSTED_LINE]:
@@ -1384,6 +1388,9 @@ def attached_comment(
     agent_comment = _comment_impl(
         kind, number, body, repo=resolved_repo, gh_cmd=gh_cmd, operation=operation,
         validate_actor=validate_attachment_bot, retry_summaries=retry_summaries,
+        client_logins=client_logins,
+        client_attachment_texts=[text for path, _, alt in (item.partition("#") for item in attachments)
+                                 for text in (pathlib.Path(path).name, alt)],
     )
     upload_body = f"[{AGENT_POSTED_LINE}]({agent_comment['url']})"
     upload_started = False
@@ -1407,9 +1414,11 @@ def attached_comment(
         )
         upload_only = shlex.join(["gh-with-env-token", kind, "comment", str(number), "--repo", resolved_repo,
                                   "--body-file", "-", *[value for path in attachments for value in ("--attach", path)]])
+        client_recovery = ("Re-read the complete current thread and revalidate the attachment labels under the Client-reply rule before recovery. "
+                           if client_logins else "")
         raise _local_error(
             f"The automation report is saved at {agent_comment['url']}. Do not replay the combined attachment command. "
-            f"{instruction} Only if no attachment comment exists, upload just the attachments with:\n"
+            f"{client_recovery}{instruction} Only if no attachment comment exists, upload just the attachments with:\n"
             f"printf '%s\\n' {shlex.quote(upload_body)} | GH_WITH_ENV_TOKEN_OWN_USER=1 {upload_only}\n{error}",
             operation=operation, cause=failure.cause,
             actor=agent_comment["actor"], expected_actor=agent_comment["expected_actor"],
@@ -1548,7 +1557,7 @@ def comment(
         if attachments:
             if (kind not in ("issue", "pr") or number <= 0 or edit_last or edit_comment is not None
                     or expected_body is not None or expected_updated_at is not None or create_if_none or dedupe_body or before_create is not None
-                    or validate_actor is not None or client_logins):
+                    or validate_actor is not None):
                 raise _local_error(
                     "--attach requires a new issue or PR comment with a positive target; editing and deduplication are unsupported",
                     operation=operation or f"github.comment.{kind}", cause="validation_error", failed_step="input_validation",
@@ -1556,6 +1565,7 @@ def comment(
             payload = attached_comment(
                 kind, number, body, attachments, repo=repo, gh_cmd=gh_cmd,
                 operation=operation or f"github.comment.{kind}", retry_summaries=collected_retry_summaries,
+                client_logins=client_logins,
             )
         else:
             payload = _comment_impl(
