@@ -9,19 +9,21 @@ import argparse
 import base64
 import copy
 import importlib.util
+import io
 import json
 import subprocess
 import sys
 import unittest
+from contextlib import redirect_stderr
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+import ready_handoff
 from github_api import ApiResult
 from github_read import GitHubReadError, GitHubReadShapeError
 from ready_handoff import READY, handoff_body, latest_ready
-import ready_handoff
 
 spec = importlib.util.spec_from_file_location("ready_pr", Path(__file__).with_name("gh-pr.py"))
 assert spec and spec.loader
@@ -34,9 +36,13 @@ OWNER_REVIEW_ACCEPTED = {"id": 2, "name": "launchplane/owner-review", "status": 
 PR = {"number": 1, "state": "open", "draft": False, "labels": [], "changed_files": 1, "head": {"sha": SHA}, "base": {"ref": "main"}, "user": {"login": "engineer"}}
 
 
+def patch_attr(target: Any, name: str, *args: Any, **kwargs: Any) -> Any:
+    return patch.object(target, name, *args, **kwargs)
+
+
 class Reader:
     def __init__(self):
-        self.pr = copy.deepcopy(PR)
+        self.pr: dict[str, Any] = copy.deepcopy(PR)
         self.checks: list[dict[str, Any]] = [{"id": 1, "name": "unit", "status": "completed", "conclusion": "success"}]
         self.statuses = []
         self.runs = []
@@ -61,7 +67,7 @@ class Reader:
         if path.endswith("/pulls/1"):
             self.pr_reads += 1
             return copy.deepcopy(self.current_pr if self.pr_reads > 1 and self.current_pr else self.pr)
-        if f"/contents/{ready_handoff.REVIEW_CONFIG_PATH}?ref=main" in path:
+        if f"/contents/{ready_handoff.REVIEW_CONFIG_PATH}?ref=" in path:
             if self.config is None:
                 raise GitHubReadError("Not Found", result=ApiResult(ok=False, status=404, body=None), diagnostics={})
             return {"content": base64.b64encode(json.dumps(self.config).encode()).decode()}
@@ -218,6 +224,27 @@ class ReadyTests(unittest.TestCase):
         self.reader.pr["head"]["sha"] = "b" * 40
         self.assertFalse(latest_ready(self.reader.pr, [comment], {"engineer"}))
         self.assertFalse(latest_ready(self.reader.pr, [provider_comment], {"engineer"}))
+
+    def test_non_default_base_feedback_keeps_ready_stacks_and_failed_ci_guard(self) -> None:
+        self.reader.pr["base"] = {"ref": "work/parent", "repo": {"default_branch": "trunk"}}
+        for passing in (True, False):
+            with self.subTest(passing=passing), redirect_stderr(io.StringIO()) as notice:
+                self.reader.pr_reads = 0
+                self.writer.reset_mock()
+                self.reader.checks[0]["conclusion"] = "success" if passing else "failure"
+                if passing:
+                    result, _ = self.post()
+                    self.assertEqual(result["baseFeedback"]["base"], self.reader.pr["base"]["ref"])
+                    self.assertEqual(result["baseFeedback"]["default"], self.reader.pr["base"]["repo"]["default_branch"])
+                else:
+                    with self.assertRaises(helper.PrHelperError) as caught:
+                        helper.cmd_ready(self.args)
+                    self.writer.assert_not_called()
+                    feedback = caught.exception.payload["baseFeedback"]
+                    self.assertEqual(feedback["base"], self.reader.pr["base"]["ref"])
+                    self.assertEqual(feedback["default"], self.reader.pr["base"]["repo"]["default_branch"])
+                for branch in (self.reader.pr["base"]["ref"], self.reader.pr["base"]["repo"]["default_branch"]):
+                    self.assertIn(branch, notice.getvalue())
 
     def test_empty_checks_wait_for_ci_with_supported_no_ci_route(self):
         self.reader.checks = []
@@ -852,6 +879,84 @@ class ReadyTests(unittest.TestCase):
             args = helper.parse_args()
         self.assertIs(args.func, helper.cmd_ready)
         self.assertTrue(args.waiting_for_client)
+
+
+class CreateBaseFeedbackTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.reader = Reader()
+        self.reader.pr["base"] = {"ref": "work/parent", "repo": {"default_branch": "trunk"}}
+        self.url = f"https://github.com/{REPO}/pull/1"
+        self.args = helper.build_parser().parse_args(
+            ["--repo", REPO, "create", "--title", "Change", "--body-file", "fixture", "--base", "requested"]
+        )
+        for target, name, value in (
+            (helper.github_read_core, "GitHubReader", self.reader),
+            (helper.github_identity, "acts_as_own_user", False),
+            (helper, "run_pr_write", subprocess.CompletedProcess([], 0, self.url, "")),
+        ):
+            started = patch.object(target, name, return_value=value)
+            started.start()
+            self.addCleanup(started.stop)
+
+    def test_accidental_base_reports_actual_github_branches_after_one_create(self) -> None:
+        with redirect_stderr(io.StringIO()) as notice:
+            result = helper.cmd_create(self.args)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["url"], self.url)
+        feedback = result["baseFeedback"]
+        self.assertEqual(feedback["base"], self.reader.pr["base"]["ref"])
+        self.assertEqual(feedback["default"], self.reader.pr["base"]["repo"]["default_branch"])
+        self.assertEqual(set(feedback["remedies"]), {"retarget", "held_draft"})
+        for branch in (feedback["base"], feedback["default"]):
+            self.assertIn(branch, notice.getvalue())
+        self.assertNotIn("requested", notice.getvalue())
+        helper.run_pr_write.assert_called_once()
+
+    def test_draft_child_and_default_base_create_without_warning_or_retarget(self) -> None:
+        for draft in (True, False):
+            with self.subTest(draft=draft), redirect_stderr(io.StringIO()) as notice:
+                self.args.draft = draft
+                self.reader.pr["draft"] = draft
+                base = self.reader.pr["base"]
+                base["ref"] = "work/parent" if draft else base["repo"]["default_branch"]
+                result = helper.cmd_create(self.args)
+                self.assertTrue(result["ok"])
+                self.assertFalse(result.get("baseFeedback"))
+                self.assertEqual(notice.getvalue(), "")
+                command = helper.run_pr_write.call_args.args[0]
+                self.assertEqual("--draft" in command, draft)
+                self.assertEqual(command[command.index("--base") + 1], self.args.base)
+
+    def test_dry_run_skips_created_pr_read(self) -> None:
+        self.args.dry_run = True
+        self.assertTrue(helper.cmd_create(self.args)["ok"])
+        self.assertEqual(self.reader.pr_reads, 0)
+
+    def test_feedback_read_failure_preserves_confirmed_create_without_replay(self) -> None:
+        def fail_read(*_args: Any, **_kwargs: Any) -> None:
+            helper.CURRENT_RETRY_FIELDS.update(
+                {"retry_eligible": True, "recommended_next_action": "retry_read", "outcome_certainty": "unknown"}
+            )
+            raise helper.PrHelperError("read unavailable")
+
+        self.addCleanup(helper.CURRENT_RETRY_FIELDS.clear)
+        with patch_attr(helper, "cmd_view", side_effect=fail_read), redirect_stderr(io.StringIO()):
+            result = helper.cmd_create(self.args)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["url"], self.url)
+        self.assertTrue(result["baseFeedbackUnavailable"])
+        self.assertIs(helper.CURRENT_RETRY_FIELDS["retry_eligible"], False)
+        self.assertEqual(helper.CURRENT_RETRY_FIELDS["outcome_certainty"], "confirmed")
+        self.assertNotEqual(helper.CURRENT_RETRY_FIELDS["recommended_next_action"], "retry_read")
+        helper.run_pr_write.assert_called_once()
+
+    def test_missing_created_url_never_reads_an_unrelated_branch_pr(self) -> None:
+        helper.run_pr_write.return_value = subprocess.CompletedProcess([], 0, "Created", "")
+        with redirect_stderr(io.StringIO()):
+            result = helper.cmd_create(self.args)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["baseFeedbackUnavailable"])
+        self.assertEqual(self.reader.pr_reads, 0)
 
 
 class SupervisorReceiptTests(unittest.TestCase):
