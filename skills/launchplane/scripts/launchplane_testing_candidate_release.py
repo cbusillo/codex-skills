@@ -29,18 +29,31 @@ REFUSAL_STATUS = {
     "idempotency_key_reused": "conflict",
     "release_receipt_unavailable": "not_started",
     "mutation_reconciliation_required": "outcome_unknown",
+    "idempotency_key_required": "invalid",
+    "authorization_denied": "refused",
+}
+CANDIDATE_REFUSALS = {
+    "candidate_release_held",
+    "candidate_release_no_candidate",
+    "candidate_release_not_testing",
+    "candidate_release_outcome_unrecorded",
+    "candidate_release_selected",
+    "testing_in_use",
+    "testing_needed_copy",
+    "testing_production_resources_shared",
+    "testing_staff_hold",
 }
 
 RECOVERY = {
     "ok": "Keep the operation record, failure receipts and evidence. Check measured free space before another restore.",
     "held": "Review the candidate and resource reasons. Apply requires a new eligible plan and, if a key was used, a new key.",
-    "refused": "Nothing was released. The refusal names what protects the candidate; resolve that, then plan a new dry run. Do not remove containers or volumes by hand.",
-    "stale_plan": "Nothing was released. Save and review a new dry run before apply.",
-    "conflict": "This request was not dispatched. The key belongs to a different release request; use the request it was made for.",
+    "refused": "Check the refusal and resolve what protects the candidate. If an earlier apply is unsettled, retain its original evidence and key for readback before planning again.",
+    "stale_plan": "The reviewed plan changed. Read back any unsettled earlier apply with its original evidence and key before reviewing a new plan.",
+    "conflict": "The key belongs to a different release request. Use that key with the exact request it was made for.",
     "not_started": "No release exists for this key. Apply the reviewed dry run with this key first.",
     "outcome_unknown": "The release may have started. Keep the original request, reviewed evidence, digest and key. Use testing-candidate-release-readback with those original arguments until the receipts establish the outcome.",
     "unavailable": "The service could not plan the release; nothing was released. Inspect the trace and retry the dry run.",
-    "invalid": "This request was not dispatched. Save and review a dry run of this exact request before apply.",
+    "invalid": "Check the request arguments. Apply requires saved evidence from a reviewed dry run of the exact request.",
 }
 
 
@@ -82,6 +95,8 @@ def intent(h: Any, args: argparse.Namespace) -> tuple[dict[str, str], dict[str, 
         if not DIGEST_RE.fullmatch(args.expected_plan_digest):
             raise ValueError("invalid_candidate_release_review")
         h._require_idempotency(args)
+        if len(args.idempotency_key.strip()) > 200:
+            raise ValueError("idempotency_key_too_long")
         body["reviewed_plan_sha256"] = args.expected_plan_digest
         request["reviewed_plan_sha256"] = args.expected_plan_digest
     h.assert_public_safe_shape(request)
@@ -120,7 +135,7 @@ def project_resource(h: Any, value: object) -> dict[str, object]:
     row = h._require_dict(value)
     result: dict[str, object] = {
         "role": h.public_identifier(row.get("role")),
-        "volume_identity_sha256": digest_field(row.get("volume_identity_sha256")),
+        "volume_identity_sha256": digest_field(row.get("volume_identity_sha256"), allow_empty=True),
         "status": row_status(row.get("status")),
         "reason": optional_identifier(h, row.get("reason")),
         "backing_sha256": digest_field(row.get("backing_sha256", ""), allow_empty=True),
@@ -315,15 +330,13 @@ def execute(h: Any, args: argparse.Namespace) -> int:
                 exc=error,
                 provider_payload=payload,
             ).get("summary", {})
-            code = str(diagnostics.get("error_code", ""))
-            if code in REFUSAL_STATUS:
-                status = REFUSAL_STATUS[code]
-            elif code == "candidate_release_unavailable":
-                status = "unavailable"
-            elif error.code in {403, 409}:
-                status = "refused"
-            else:
-                status = "unavailable" if mode == "dry-run" else "outcome_unknown"
+            code = diagnostics.get("error_code")
+            status = "unavailable" if mode == "dry-run" else "outcome_unknown"
+            if isinstance(code, str):
+                if code in REFUSAL_STATUS:
+                    status = REFUSAL_STATUS[code]
+                elif mode != "readback" and code in CANDIDATE_REFUSALS:
+                    status = "refused"
             return finish(
                 h,
                 operation=operation,

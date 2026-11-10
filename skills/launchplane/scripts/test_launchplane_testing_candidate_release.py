@@ -107,7 +107,7 @@ def test_apply_without_matching_review_never_reaches_the_service(
         (failure("mutation_reconciliation_required"), "outcome_unknown"),
         (failure("internal", 502), "outcome_unknown"),
         (failure("timeout", 408), "outcome_unknown"),
-        (failure("candidate_release_unavailable"), "unavailable"),
+        (failure("candidate_release_unavailable"), "outcome_unknown"),
         (urllib.error.URLError("dropped"), "outcome_unknown"),
     ],
 )
@@ -117,9 +117,24 @@ def test_apply_outcomes_map_to_their_recovery(tmp_path: Path, error: Exception, 
     assert "PRIVATE_SENTINEL" not in json.dumps(result)
 
 
-def test_readback_gateway_failure_is_unknown() -> None:
-    code, result, _ = invoke(argv("readback"), failure("bad_gateway", 502))
+@pytest.mark.parametrize(
+    "error",
+    [
+        failure("bad_gateway", 502),
+        failure("candidate_release_unavailable"),
+        failure("testing_in_use"),
+    ],
+)
+def test_readback_errors_preserve_uncertain_outcomes(error: Exception) -> None:
+    code, result, _ = invoke(argv("readback"), error)
     assert code != 0 and result["status"] == "outcome_unknown"
+
+
+def test_overlong_key_is_rejected_before_service_call() -> None:
+    args = argv("readback")
+    args[-1] = "k" * 201
+    code, _, calls = invoke(args)
+    assert code != 0 and not calls
 
 
 def test_response_for_another_operation_or_plan_is_not_success(tmp_path: Path) -> None:
@@ -184,12 +199,14 @@ def test_held_plan_surfaces_evidence_and_cannot_apply(tmp_path: Path) -> None:
         "reserve_bytes": 3,
         "deficit_bytes": 7,
     }
+    absent = {**resource, "volume_identity_sha256": "", "backing_sha256": "", "status": "absent"}
+    absent.pop("private_path")
     unallocated = {
         **candidate,
         "operation_id": "another-original",
         "target_id": "",
         "selected": False,
-        "resources": [],
+        "resources": [absent],
         "physical_readback": {},
     }
     reply = response(
