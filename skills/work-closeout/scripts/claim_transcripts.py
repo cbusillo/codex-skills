@@ -861,17 +861,38 @@ def terminal_command(item: dict, text: str) -> bool:
     return command == text or shell_wrapper_payload(command) == text
 
 
+def javascript_outcome(output: object) -> str | None:
+    if (
+        not isinstance(output, list)
+        or not output
+        or not isinstance(output[0], dict)
+        or output[0].get("type") != "input_text"
+        or not isinstance(output[0].get("text"), str)
+    ):
+        return None
+    return next((status for status in ("completed", "failed") if output[0]["text"].startswith(f"Script {status}\n")), None)
+
+
 def response_positions(records: list[dict]) -> dict[str, int]:
-    responses = {
-        str(payload.get("call_id", "")): index
-        for index, row in enumerate(records)
-        if isinstance(payload := row.get("payload"), dict)
-        and payload.get("type") in {"function_call_output", "custom_tool_call_output", "local_shell_call_output"}
-    }
-    for row in records:
-        payload = row.get("payload") or {}
-        if payload.get("type") == "custom_tool_call_output" and "Script running with cell ID" in str(payload.get("output", "")):
-            responses.pop(str(payload.get("call_id", "")), None)
+    responses = {}
+    for index, row in enumerate(records):
+        payload = row.get("payload")
+        if not isinstance(payload, dict) or payload.get("type") not in {
+            "function_call_output",
+            "custom_tool_call_output",
+            "local_shell_call_output",
+        }:
+            continue
+        identifier = str(payload.get("call_id", ""))
+        output = payload.get("output")
+        if (
+            payload["type"] == "custom_tool_call_output"
+            and javascript_outcome(output) is None
+            and "Script running with cell ID" in str(output)
+        ):
+            responses.pop(identifier, None)
+        else:
+            responses[identifier] = index
     return responses
 
 
@@ -933,12 +954,7 @@ def native_effects_complete(
     ):
         return False
     output = records[end]["payload"].get("output")
-    if (
-        not isinstance(output, list)
-        or not output
-        or not isinstance(output[0], dict)
-        or not str(output[0].get("text", "")).startswith("Script completed\n")
-    ):
+    if javascript_outcome(output) != "completed":
         return False
     payload = records[start]["payload"]
     turn = (payload.get("internal_chat_message_metadata_passthrough") or {}).get("turn_id")

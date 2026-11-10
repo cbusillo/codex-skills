@@ -196,6 +196,33 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
         rows[0]["payload"]["input"] = "const jobs=[1];jobs.push(2);for(const n of jobs){" + rows[0]["payload"]["input"] + "}"
         self.assertTrue(check_claims.history.literal_targets(rows, SESSION)["unresolved_invocations"])
 
+    def test_native_effects_reuse_the_existing_numeric_member_proof(self) -> None:
+        for initializer, clears in (("0", True), ('load("index")', False)):
+            with self.subTest(initializer=initializer):
+                rows = self.recorded_display(computed=True)
+                rows[0]["payload"]["input"] = (
+                    'const job={cmd:"cat evidence.json"};const r=await tools.exec_command({cmd:job.cmd});'
+                    f"const results=[r];for(let i={initializer};i<results.length;i++)text(results[i]);"
+                )
+                report = check_claims.history.literal_targets(rows, SESSION)
+                self.assertEqual(not report["unresolved_invocations"], clears)
+
+    def test_displayed_yield_text_does_not_turn_a_completed_cell_into_an_overlap(self) -> None:
+        for running in (False, True):
+            with self.subTest(running=running):
+                header = "Script running with cell ID 9\n" if running else "Script completed\nWall time 0.5 seconds\nOutput:\n"
+                earlier = invocation(
+                    'text(await tools.exec_command({cmd:"cat source.js"}));',
+                    [
+                        {"type": "input_text", "text": header},
+                        {"type": "input_text", "text": "The source contains Script running with cell ID 9"},
+                    ],
+                )
+                for row in earlier:
+                    row["payload"]["call_id"] = "display"
+                report = check_claims.history.literal_targets([*earlier, *self.recorded_display(computed=True)], SESSION)
+                self.assertEqual(bool(report["unresolved_invocations"]), running)
+
     def test_same_cell_stored_commands_preserve_every_claim_effect(self) -> None:
         for verb in ("show", "claim"):
             source = (
