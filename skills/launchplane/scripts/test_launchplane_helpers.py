@@ -12401,6 +12401,8 @@ def test_native_evidence_requires_requested_view_and_original_operation() -> Non
     assert status == 1 and not payload["result"]
     for include in ([], ["--include-native-evidence"]):
         response = {**_native_evidence_response(), "native_execution_binding": {}}
+        if not include:
+            del response["native_evidence"]
         status, payload, _ = _run_product_read([*argv, *include], response)
         assert status == 1 and not payload["result"]
 
