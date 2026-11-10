@@ -126,8 +126,8 @@ class InputStagingTests(unittest.TestCase):
 
     def test_prepare_failures_and_crash_recovery_collect_only_registered_staging(self) -> None:
         def prepare(driver: heavy_run.Docker, original: Path, action: str, requested: dict) -> dict:
-            staged = driver.stage_input(original)
-            (staged.parent / "readonly").mkdir(mode=0o555)
+            prepared_input = driver.stage_input(original)
+            (prepared_input.parent / "readonly").mkdir(mode=0o555)
             if action == "canceled":
                 raise heavy_run.Canceled(signal.SIGTERM)
             return requested
@@ -191,8 +191,8 @@ class InputStagingTests(unittest.TestCase):
             retained = []
             manifest = {"containers": [{"name": "job", "image": "fixture"}], "job": "job"}
 
-            def prepare(owner: heavy_run.Docker) -> dict:
-                staged = owner.stage_input(source)
+            def prepare(driver: heavy_run.Docker) -> dict:
+                staged = driver.stage_input(source)
                 retained.append(staged)
                 (staged.parent / ".owner").write_text("foreign owner")
                 return manifest
