@@ -57,8 +57,22 @@ within the held roles; with no role they all apply.
    appear as one count with a source link, not as queue entries. Watch history
    seeds full-history radar threads and question sources; fresh source
    readers decide what is still unanswered. Questions and radar share their
-   collected discussions and metadata within a run; each new run reads fresh
-   sources. The other readers run at the same time. The radar's repository
+   collected discussions and metadata within a run. On one host, other Supervisor
+   sessions using the same `--owner`, queue, resolved ledger and identity
+   reuse successful GraphQL query responses for five minutes. The digest says
+   how many were reused and the oldest response's age; roles and `--full` are
+   applied after every source is evaluated again. A repeat by the producing
+   session still reads fresh, including commands without `--role`. Use `--fresh`
+   to invalidate the requested responses and verify an action just taken.
+   Failed requests stay live; a failed refresh leaves no earlier success reusable.
+   All reports and errors are recomputed. Local state, routing preconditions and
+   primary release/acceptance reads stay fresh. There is no whole-digest cache,
+   daemon or seat registry; private query bodies use the existing reader cache
+   and publisher beside the ledger, with cleanup at each check.
+   Checks outside the reuse window still read GitHub; run one check before the
+   other seats check within that window to get the saving. Open the source before
+   claiming, merging, closing or acting on a candidate.
+   The other readers run at the same time. The radar's repository
    comment scan keeps a watermark beside the ledger (`<ledger>-radar-scan.json`)
    and reads only comments changed since it; a missing, unreadable or
    other-identity watermark, or one that no longer covers the window, rereads

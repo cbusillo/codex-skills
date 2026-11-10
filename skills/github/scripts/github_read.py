@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import fcntl
 import hashlib
 import json
@@ -17,12 +18,15 @@ import pathlib
 import random
 import re
 import subprocess
+import threading
 import time
 import urllib.parse
+import uuid
 from dataclasses import replace
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import datetime
-from typing import Any, NamedTuple, NoReturn, Optional
+from typing import Any, NamedTuple, NoReturn, Optional, Self
 
 import github_api as github_api_core
 import github_http_cache
@@ -39,6 +43,13 @@ EXPECTED_ACTOR = github_identity.automation_login()
 WORKFLOW_SETTLEMENT_GRACE_SECONDS = 300
 GRAPHQL_REPOSITORY_BATCH_SIZE = 100
 GRAPHQL_INVENTORY_PAGE_LIMIT = 100
+SHARED_QUERY_WINDOW = 300
+SHARED_QUERY_ENV = "GITHUB_ROUTINE_QUERY_READS"
+SHARED_QUERY_OPERATIONS = {"github.plan.next", "github.comment_radar"}
+SHARED_QUERY_MAX_ENTRIES = 2048
+SHARED_QUERY_MAX_BYTES = 64 * 1024 * 1024
+_query_usage_lock = threading.Lock()
+_query_usage: dict[str, float | int] = {"reused": 0, "oldest_age_seconds": 0.0, "unavailable": 0}
 FAILED_CHECK_CONCLUSIONS = {"failure", "timed_out", "cancelled", "action_required", "startup_failure"}
 PASSED_CHECK_CONCLUSIONS = {"success", "neutral", "skipped"}
 MERGE_STATE_STATUS = {
@@ -103,8 +114,50 @@ def _default_cache_dir() -> pathlib.Path:
     return root / "state" / "github-read-cache"
 
 
+def shared_query_usage() -> dict[str, float | int]:
+    with _query_usage_lock:
+        return dict(_query_usage)
+
+
+def query_reuse_context() -> dict[str, Any] | None:
+    try:
+        value = json.loads(os.environ.get(SHARED_QUERY_ENV, "null"))
+        if (isinstance(value, dict) and all(isinstance(value.get(key), str) and value[key] for key in ("root", "scope", "producer"))
+                and pathlib.Path(value["root"]).is_absolute() and type(value.get("fresh")) is bool):
+            return value
+    except (ValueError, TypeError):
+        return None
+    return None
+
+
+def prune_shared_queries(root: pathlib.Path) -> None:
+    try:
+        github_http_cache.prune(root, max_age_seconds=SHARED_QUERY_WINDOW, schema=1,
+                                max_entries=SHARED_QUERY_MAX_ENTRIES, max_total_bytes=SHARED_QUERY_MAX_BYTES)
+    except OSError:
+        with _query_usage_lock:
+            _query_usage["unavailable"] += 1
+
+
+@contextmanager
+def shared_query_reads(root: pathlib.Path, scope: str, producer: str, *, fresh: bool = False) -> Iterator[None]:
+    previous = os.environ.get(SHARED_QUERY_ENV)
+    with _query_usage_lock:
+        _query_usage.update(reused=0, oldest_age_seconds=0.0, unavailable=0)
+    os.environ[SHARED_QUERY_ENV] = json.dumps({"root": str(root.resolve()), "scope": scope, "producer": producer, "fresh": fresh})
+    prune_shared_queries(root)
+    try:
+        yield
+    finally:
+        prune_shared_queries(root)
+        if previous is None:
+            os.environ.pop(SHARED_QUERY_ENV, None)
+        else:
+            os.environ[SHARED_QUERY_ENV] = previous
+
+
 class ConditionalResponseCache:
-    """Small private, body-safe cache for validator-backed REST GETs.
+    """Private bodies for validator-backed GETs and opt-in shared GraphQL queries.
 
     The cache is deliberately opt-in at the reader boundary.  Entries are
     scoped by host, configured authenticated actor, request path (including
@@ -164,6 +217,83 @@ class ConditionalResponseCache:
         self.root.chmod(0o700)
         # Both cache modes use the same private, atomic, bounded publisher.
         github_http_cache.publish(self.root, path, item, max_age_seconds=self.max_age_seconds)
+
+    @classmethod
+    def for_query(cls, reader: "GitHubReader", operation: str, context: dict[str, Any]) -> Self | None:
+        if (not reader.expected_actor
+                or reader.actor and reader.actor.casefold() != reader.expected_actor.casefold()
+                or operation not in SHARED_QUERY_OPERATIONS):
+            return None
+        identity = [os.environ.get("GH_HOST") or github_api_core.DEFAULT_HOST, reader.expected_actor.casefold(),
+                    reader.gh_cmd, reader.gh_prefix_args, operation]
+        scope = hashlib.sha256(json.dumps([identity, github_api_core.DEFAULT_API_VERSION, context["scope"]],
+                                         sort_keys=True).encode()).hexdigest()
+        cache = cls(pathlib.Path(context["root"]), scope=scope)
+        cache.max_age_seconds = SHARED_QUERY_WINDOW
+        return cache
+
+    @contextmanager
+    def query_metadata(self, path: pathlib.Path) -> Iterator[None]:
+        with (self.root / f"metadata-{path.stem[:2]}.lock").open("a+") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+    def query(self, reader: "GitHubReader", body: dict[str, Any], context: dict[str, Any],
+              read: Callable[[], github_api_core.ApiResult]) -> github_api_core.ApiResult:
+        expected_actor = reader.expected_actor
+        if not expected_actor:
+            return read()
+        path, _ = self._paths(json.dumps(body, sort_keys=True), {})
+        try:
+            self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
+            if not github_http_cache.owned(self.root, directory=True):
+                raise OSError("shared query directory is not owned")
+            self.root.chmod(0o700)
+            with self.query_metadata(path):
+                cached = self._read(path)
+                age = time.time() - float((cached or {}).get("validated_at") or 0)
+                if (cached and isinstance(cached.get("generation"), str) and cached.get("producer") != context["producer"] and not context["fresh"]
+                        and 0 <= age < self.max_age_seconds and isinstance(cached.get("body"), dict)
+                        and isinstance(cached["body"].get("data"), dict) and not cached["body"].get("errors")):
+                    content = copy.deepcopy(cached["body"])
+                    if "rateLimit" in content["data"]:
+                        content["data"]["rateLimit"] = {"cost": 0}
+                    with _query_usage_lock:
+                        _query_usage["reused"] += 1
+                        _query_usage["oldest_age_seconds"] = max(_query_usage["oldest_age_seconds"], age)
+                    return github_api_core.ApiResult(ok=True, status=200, body=content,
+                        headers={"x-codex-cache": "coalesced", "x-codex-cache-age": str(age)},
+                        actor=reader.actor, expected_actor=reader.expected_actor,
+                        operation=reader.operation, host=github_api_core.DEFAULT_HOST, bucket="graphql", graphql_operation="query")
+                path.unlink(missing_ok=True)
+                generation = uuid.uuid4().hex
+                github_http_cache.publish(self.root, path,
+                    {"schema": self.schema_version, "body": None, "headers": {}, "generation": generation},
+                    max_age_seconds=self.max_age_seconds, prune_after=False)
+        except (OSError, ValueError, TypeError):
+            with _query_usage_lock:
+                _query_usage["unavailable"] += 1
+            return read()
+        result = read()
+        content = result.body
+        if (result.ok and result.status == 200 and result.failure is None
+                and result.expected_actor and result.expected_actor.casefold() == expected_actor.casefold()
+                and (not result.actor or result.actor.casefold() == expected_actor.casefold())
+                and isinstance(content, dict) and isinstance(content.get("data"), dict) and not content.get("errors")):
+            try:
+                with self.query_metadata(path):
+                    pending = self._read(path)
+                    if pending and pending.get("generation") == generation:
+                        github_http_cache.publish(self.root, path,
+                            {"schema": self.schema_version, "body": content, "headers": {}, "producer": context["producer"],
+                             "generation": generation, "validated_at": time.time()}, max_age_seconds=self.max_age_seconds, prune_after=False)
+            except OSError:
+                with _query_usage_lock:
+                    _query_usage["unavailable"] += 1
+        return result
 
     def request(self, reader: "GitHubReader", method: str, path: str, *, step: str) -> github_api_core.ApiResult:
         headers = {"Accept": "application/vnd.github+json"}
@@ -343,17 +473,20 @@ class GitHubReader:
         retry_policy: Optional[github_api_core.RetryPolicy] = None,
         deadline_at: Optional[float] = None,
     ) -> github_api_core.ApiResult:
-        """Run one bounded, same-actor GraphQL query without REST caching."""
-        result = self._transport_request(
-            "POST",
-            "/graphql",
-            step=step,
-            body={"query": query, "variables": variables},
-            bucket="graphql",
-            operation=operation,
-            retry_policy=retry_policy,
-            deadline_at=deadline_at if deadline_at is not None else self.deadline_at,
-        )
+        """Run one bounded, same-actor GraphQL query."""
+        body = {"query": query, "variables": variables}
+        def read() -> github_api_core.ApiResult:
+            return self._transport_request("POST", "/graphql", step=step, body=body, bucket="graphql", operation=operation,
+                retry_policy=retry_policy, deadline_at=deadline_at if deadline_at is not None else self.deadline_at)
+        context = query_reuse_context()
+        pure = github_api_core.infer_graphql_operation_type(body) == "query" and not github_api_core.reader_request_is_write("POST", "/graphql", body)
+        deadline = deadline_at if deadline_at is not None else self.deadline_at
+        within_deadline = deadline is None or time.time() < deadline
+        running = self.retry_runtime is None or not self.retry_runtime.cancelled()
+        cache = ConditionalResponseCache.for_query(self, operation or self.operation, context) if context and pure and within_deadline and running and self._identity_error is None else None
+        result = cache.query(self, body, context, read) if cache is not None and context is not None else read()
+        if result.headers.get("x-codex-cache") == "coalesced" and operation:
+            result.operation = operation
         self._record_result(result, method="POST", path="/graphql", step=step)
         return result
 

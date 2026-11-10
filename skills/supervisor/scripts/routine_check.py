@@ -4,6 +4,7 @@
 # dependencies = ["PyYAML==6.0.3"]
 # ///
 import argparse
+import hashlib
 import importlib
 import json
 import os
@@ -13,6 +14,7 @@ import sys
 import time
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -686,6 +688,7 @@ def main() -> int:
     parser.add_argument("--github-cli-login", help="retain the plain install login selected by supervisor.py start")
     parser.add_argument("--full", action="store_true", help="include acknowledged questions")
     parser.add_argument("--role", action="append", choices=SUPERVISOR_ROLES, default=[], help="held seat; repeat for multiple roles, omit for all")
+    parser.add_argument("--fresh", action="store_true", help="invalidate requested shared query responses and read GitHub again")
     parser.add_argument("--owner", required=True)
     parser.add_argument("--queue", required=True)
     parser.add_argument("--ledger", type=Path, required=True)
@@ -715,10 +718,36 @@ def main() -> int:
         return watch_report(args.foreign_log, window=str(config.get("comment_window") or radar.DEFAULT_WINDOW))
 
     service_readers = {f"service {path}": lambda path=path: watch_report(path, service=True) for path in args.service_log}
-    sources = collect({"watch": read_watch, **service_readers})
-    sources.update(collect(build_readers(args, sources["watch"])))
-    sources["primary"] = read_source(lambda: primary_reads(sources["next"], sources["sessions"].get("sessions", []), **primary_readers(args)), None)
-    output = digest(sources, full=args.full, roles=tuple(args.role))
+    context = nullcontext()
+    unavailable = None
+    producer = os.environ.get("CODEX_SESSION_ID") or os.environ.get("CODEX_THREAD_ID") or os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if producer or args.fresh:
+        try:
+            environment, _ = github_access.identity_context()
+            environment = {key: value for key, value in environment.items() if key != "CODE_HOME" and not key.endswith("TOKEN_CACHE_DIR")}
+            env_file = Path(environment["CODEX_SKILLS_ENV_FILE"])
+            stamp = env_file.stat().st_mtime_ns if env_file.exists() else None
+            scope = hashlib.sha256(json.dumps([args.owner.casefold(), args.queue, args.github_cli_login, environment, stamp],
+                                              sort_keys=True).encode()).hexdigest()
+            ledger = args.ledger.resolve()
+            context = github_read.shared_query_reads(ledger.with_name(f"{ledger.stem}-github-reads"),
+                                                     scope, producer or f"manual-{os.getpid()}", fresh=args.fresh)
+        except (OSError, ValueError) as error:
+            unavailable = str(error)
+    with context:
+        sources = collect({"watch": read_watch, **service_readers})
+        sources.update(collect(build_readers(args, sources["watch"])))
+        sources["primary"] = read_source(lambda: primary_reads(sources["next"], sources["sessions"].get("sessions", []), **primary_readers(args)), None)
+        output = digest(sources, full=args.full, roles=tuple(args.role))
+        if producer or args.fresh:
+            usage = github_read.shared_query_usage() if unavailable is None else {"reused": 0, "oldest_age_seconds": 0, "unavailable": 1}
+            child_usage = sources.get("next", {}).get("performance", {}).get("shared_queries", {})
+            reused = usage["reused"] + child_usage.get("reused", 0)
+            age = max(usage["oldest_age_seconds"], child_usage.get("oldest_age_seconds", 0))
+            if reused:
+                output = f"REUSED {reused} successful GitHub query responses; oldest age={age:.1f}s; --fresh reads again\n{output}"
+            if usage["unavailable"] or child_usage.get("unavailable") or unavailable:
+                output = f"SHARING_UNAVAILABLE {unavailable or 'cache storage unavailable'}; affected queries read live\n{output}"
     print(output)
     return int(any(line.startswith("ERROR ") for line in output.splitlines()))
 

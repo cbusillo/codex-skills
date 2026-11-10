@@ -57,7 +57,7 @@ def _root() -> pathlib.Path:
     return pathlib.Path(os.environ.get('GITHUB_HTTP_CACHE_DIR') or state / 'http-cache').expanduser()
 
 
-def _owned(path: pathlib.Path, *, directory: bool = False) -> bool:
+def owned(path: pathlib.Path, *, directory: bool = False) -> bool:
     info = path.lstat()
     return info.st_uid == os.getuid() and (stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode))
 
@@ -72,7 +72,7 @@ def _sensitive(value: Any) -> bool:
 
 def _read(path: pathlib.Path, key: str) -> dict[str, Any] | None:
     try:
-        if not _owned(path) or path.stat().st_size > MAX_ENTRY_BYTES:
+        if not owned(path) or path.stat().st_size > MAX_ENTRY_BYTES:
             return None
         item = json.loads(path.read_text(encoding='utf-8'))
         if (not isinstance(item, dict) or item.get('key') != key or 'body' not in item
@@ -104,7 +104,7 @@ def _cache_entry(path: pathlib.Path) -> dict[str, Any] | None:
 
 
 def publish(root: pathlib.Path, path: pathlib.Path, item: dict[str, Any], *,
-             max_age_seconds: float | None = None) -> None:
+             max_age_seconds: float | None = None, prune_after: bool = True) -> None:
     now = time.time()
     age = MAX_AGE_SECONDS if max_age_seconds is None else max_age_seconds
     item = {**item, "expires_at": now + age}
@@ -120,38 +120,43 @@ def publish(root: pathlib.Path, path: pathlib.Path, item: dict[str, Any], *,
             os.fchmod(stream.fileno(), 0o600)
             stream.write(data)
         os.replace(name, path)
-        entries = []
-        for entry in root.glob('*.json'):
-            try:
-                if not re.fullmatch(r"[a-f0-9]{64}\.json", entry.name) or not _owned(entry):
-                    continue
-                info = entry.stat()
-                # The common path needs only stats. Decode a body only when
-                # considering its removal, then prove it belongs to this cache.
-                if now - info.st_mtime > min(MAX_AGE_SECONDS, age):
-                    cached = _cache_entry(entry)
-                    if cached is None:
-                        continue
-                    expiry = cached.get("expires_at")
-                    same_format = (cached.get("schema") == 1) == (item.get("schema") == 1)
-                    expired = now >= expiry if isinstance(expiry, (int, float)) else (
-                        same_format and now - info.st_mtime > age
-                    )
-                    if expired:
-                        entry.unlink(missing_ok=True)
-                        continue
-                entries.append((info.st_mtime, info.st_size, entry))
-            except FileNotFoundError:
-                continue
-        total = sum(size for _, size, _ in entries)
-        entries.sort(key=lambda record: record[0])
-        while entries and (len(entries) > MAX_ENTRIES or total > MAX_TOTAL_BYTES):
-            _, size, old = entries.pop(0)
-            if _cache_entry(old) is not None:
-                old.unlink(missing_ok=True)
-            total -= size
+        if prune_after:
+            schema = item.get("schema")
+            prune(root, max_age_seconds=age, schema=schema if isinstance(schema, int) else None)
     finally:
         pathlib.Path(name).unlink(missing_ok=True)
+
+
+def prune(root: pathlib.Path, *, max_age_seconds: float = MAX_AGE_SECONDS, schema: int | None = None,
+          max_entries: int | None = None, max_total_bytes: int | None = None) -> None:
+    now = time.time()
+    entries = []
+    for entry in root.glob('*.json'):
+        try:
+            if not re.fullmatch(r"[a-f0-9]{64}\.json", entry.name) or not owned(entry):
+                continue
+            info = entry.stat()
+            if now - info.st_mtime > min(MAX_AGE_SECONDS, max_age_seconds):
+                cached = _cache_entry(entry)
+                if cached is None:
+                    continue
+                expiry = cached.get("expires_at")
+                same_format = (cached.get("schema") == 1) == (schema == 1)
+                expired = now >= expiry if isinstance(expiry, (int, float)) else same_format and now - info.st_mtime > max_age_seconds
+                if expired:
+                    entry.unlink(missing_ok=True)
+                    continue
+            entries.append((info.st_mtime, info.st_size, entry))
+        except FileNotFoundError:
+            continue
+    total = sum(size for _, size, _ in entries)
+    entries.sort(key=lambda record: record[0])
+    while entries and (len(entries) > (MAX_ENTRIES if max_entries is None else max_entries)
+                      or total > (MAX_TOTAL_BYTES if max_total_bytes is None else max_total_bytes)):
+        _, size, old = entries.pop(0)
+        if _cache_entry(old) is not None:
+            old.unlink(missing_ok=True)
+        total -= size
 
 
 def request(
@@ -178,7 +183,7 @@ def request(
     entry = root / f'{key}.json'
     try:
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
-        if not _owned(root, directory=True):
+        if not owned(root, directory=True):
             raise OSError('Cache directory is not owned')
         root.chmod(0o700)
         cached = _read(entry, key)
