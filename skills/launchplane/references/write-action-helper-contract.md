@@ -2949,6 +2949,30 @@ request; `stale_plan` requires refreshing and reviewing the exact dry-run. The f
 operation; public PR history contains the head, reason and Director citation.
 
 
+## Failed testing candidate release
+
+`testing-candidate-release-dry-run`, `-apply` and `-readback` use
+`POST /v1/products/{product}/testing-rebuild/{operation_id}/candidate-release`
+with `--product` and `--operation-id` of a failed native testing rebuild. They
+release that operation's private candidate containers and labeled volumes and
+keep the operation record, failure receipts and evidence. See Launchplane's
+[testing candidate storage](https://github.com/cbusillo/launchplane/blob/main/docs/testing-candidate-release.md)
+for what the service refuses and why.
+
+Save the dry-run JSON outside the checkout. It reports `status` (`eligible` or
+`absent`), `plan_sha256`, `reclaimable_bytes` and the operation's
+`failure_code`. Apply requires `--reviewed-dry-run --dry-run-evidence-file
+/private/dry.json`, `--expected-plan-digest` from that output and
+`--idempotency-key`; evidence for another product, operation, digest or a
+non-`eligible` plan is refused before any request. Readback takes the same
+digest and key.
+
+A refusal (`refused`, `stale_plan`, `conflict`, `not_started`) released nothing.
+Transport loss, HTTP 5xx or `mutation_reconciliation_required` on apply is
+`outcome_unknown`: keep the digest and key, read back, and if it is still
+unsettled apply again with the same digest and key to finish it. Never start
+over with a new key, and never remove containers or volumes by hand.
+
 ## Governance projection read
 
 `governance-projection-read --repository OWNER/REPO --base-branch BRANCH --pr N`
