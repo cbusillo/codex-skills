@@ -422,7 +422,13 @@ Both commands take `--product`, `--context`, `--instance`, `--check-name`,
 `--no-require-runtime-identity`, and `--reason`. A private check may also name a
 registered `--private-endpoint-key`; enabling a private check requires it.
 For a disabled private check an omitted key preserves the existing key.
-No argument accepts an endpoint URL, domain, provider target or full profile.
+A public check may opt into `--public-url` to select a public HTTPS endpoint.
+Omitting it preserves the legacy request and strict response shape, compatible
+with the old deployed producer. A supplied value is stripped before its exact
+private value joins the payload digest; the receipt exposes only
+`public_url_sha256`. The producer validates public-host authority, HTTPS,
+credentials, port and outbound protections. No provider target or full-profile
+argument is accepted.
 
 The lane's dependency coverage policy is optional. Omit every dependency flag
 to preserve it; the request is then identical to one from before the policy
@@ -444,10 +450,23 @@ Save the dry-run JSON outside the repository. Apply requires that evidence via
 `--reviewed-dry-run`, and a stable `--idempotency-key`. A request digest binds
 the exact arguments, including the reason and private endpoint key, while the
 service binds the reviewed plan to the current profile. The helper reads the
-profile before apply and stops if the resolved endpoint differs from review.
-After apply it reads the selected lane/check back, compares the intended policy,
-and verifies preservation of the stored public URL and lane fallback URLs
-privately. Private keys must match the requested or preserved registered key.
+profile before apply and stops if the current endpoint differs from review.
+For an explicit selection, `endpoint_sha256` remains the desired endpoint hash
+and must equal `public_url_sha256`; the producer must additionally return
+`current_resolved_url`, projected only as `current_endpoint_sha256`. Missing,
+substituted or unexpected selection evidence fails closed. Default calls reject
+that new response field and continue comparing the current endpoint with
+`endpoint_sha256`; selection calls compare with `current_endpoint_sha256`.
+The apply result must retain both reviewed hashes and the exact plan digest.
+
+After apply the helper reads the selected lane/check back and compares the
+intended policy. Default calls preserve the stored URL, including an empty URL
+using lane fallback. Selection calls expect exactly the requested stored URL;
+private preservation hashes verify other checks, selected-check settings and
+unrelated profile fields. Only the requested flags, monitoring intent,
+explicit dependency policy, selected URL and producer source/update stamps
+may change. Lane fallback URLs always survive unchanged. Private keys must
+match the requested or preserved registered key.
 
 Receipts contain the lane/check, intent and flags, dependency mode and override
 kinds, digests, trace/record ids and read-back verification. URLs, endpoint keys

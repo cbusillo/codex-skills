@@ -7017,7 +7017,7 @@ HEALTH_MONITORING_PLAN_FIELDS = {
     "status", "mode", "product", "context", "instance", "check_name", "current_check_kind",
     "requested_check_kind", "current_monitoring_intent", "requested_monitoring_intent",
     "operation", "current_enabled", "requested_enabled", "current_require_runtime_identity",
-    "requested_require_runtime_identity", "private_endpoint_key", "resolved_url", "changed",
+    "requested_require_runtime_identity", "private_endpoint_key", "resolved_url", "current_resolved_url", "changed",
     "applied", "reason", "source_label", "profile_updated_at_before", "profile_updated_at_after",
     "profile_sha256_before", "plan_sha256", "current_dependency_health", "requested_dependency_health",
 }
@@ -7098,6 +7098,11 @@ def health_monitoring_body(
         "enabled": args.enabled, "require_runtime_identity": args.require_runtime_identity,
         "private_endpoint_key": args.private_endpoint_key.strip(),
     }
+    selected_url = getattr(args, "public_url", None)
+    if selected_url is not None:
+        if args.check_kind != "public_http" or not selected_url.strip():
+            raise ValueError("invalid_public_url_selection")
+        body["public_url"] = selected_url.strip()
     dependency_health = _requested_dependency_health(args)
     if dependency_health is not None:
         # Omission keeps the request and its saved evidence identical to legacy calls.
@@ -7125,6 +7130,8 @@ def health_monitoring_body(
             "check_kind", "monitoring_intent", "enabled", "require_runtime_identity",
         )},
     }
+    if selected_url is not None:
+        request["public_url_sha256"] = _canonical_sha256(body["public_url"])
     if dependency_health is not None:
         request["dependency_health"] = _public_dependency_health(dependency_health)
     if mode == "apply":
@@ -7141,6 +7148,11 @@ def health_monitoring_body(
                 "check_kind", "monitoring_intent", "enabled", "require_runtime_identity",
             ))
             or not re.fullmatch(r"[0-9a-f]{64}", str(reviewed.get("endpoint_sha256", "")))
+            or (selected_url is not None and (
+                reviewed.get("endpoint_sha256") != request["public_url_sha256"]
+                or not re.fullmatch(r"[0-9a-f]{64}", str(reviewed.get("current_endpoint_sha256", "")))
+            ))
+            or (selected_url is None and "current_endpoint_sha256" in reviewed)
             or (dependency_health is not None
                 and reviewed.get("requested_dependency_health") != request["dependency_health"])
         ):
@@ -7154,6 +7166,14 @@ def _project_health_monitoring_plan(
 ) -> dict[str, object]:
     source = _require_dict(value)
     if source.keys() - HEALTH_MONITORING_PLAN_FIELDS:
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    selection: dict[str, object] = {}
+    if "public_url_sha256" in request:
+        if (not isinstance(source.get("current_resolved_url"), str)
+                or _canonical_sha256(source.get("resolved_url")) != request["public_url_sha256"]):
+            raise LaunchplaneSafetyError("invalid_response")
+        selection["current_endpoint_sha256"] = _canonical_sha256(source["current_resolved_url"])
+    elif "current_resolved_url" in source:
         raise LaunchplaneSafetyError("unsafe_response_shape")
     mode = _reviewed_plan_mode(source.get("mode"))
     if (
@@ -7201,7 +7221,7 @@ def _project_health_monitoring_plan(
         "current_require_runtime_identity": _optional_bool(source.get("current_require_runtime_identity")),
         "endpoint_sha256": _canonical_sha256(source["resolved_url"]),
         "plan_sha256": _required_lower_sha256(source.get("plan_sha256"), code="invalid_response"),
-        **dependency_review,
+        **dependency_review, **selection,
     }
     assert_public_safe_shape(projected)
     return projected
@@ -7251,6 +7271,19 @@ def read_health_monitoring(
                           or type(public["require_runtime_identity"]) is not bool))
         ):
             raise LaunchplaneSafetyError("invalid_response")
+        if "public_url" in body:
+            preserved_profile = copy.deepcopy(profile)
+            preserved_profile.pop("updated_at", None)
+            preserved_profile.pop("source", None)
+            preserved_lane = preserved_profile["lanes"][lanes.index(lane)]
+            preserved_policy = preserved_lane["health_monitoring"]
+            preserved_policy.pop("monitoring_intent", None)
+            preserved_policy.pop("dependency_health", None)
+            preserved_policy["checks"] = [candidate for candidate in checks if candidate is not check]
+            endpoint["profile_preservation_sha256"] = _canonical_sha256(preserved_profile)
+            endpoint["selected_check_preservation_sha256"] = _canonical_sha256({
+                key: value for key, value in check.items() if key not in {"url", "enabled", "require_runtime_identity"}
+            }) if check else ""
         dependency_health = _dependency_health_policy(policy.get("dependency_health"))
         public["dependency_health"] = _public_dependency_health(dependency_health)
         assert_public_safe_shape(public)
@@ -7271,7 +7304,8 @@ def execute_health_monitoring_apply(
     def preflight(settings: dict[str, str]) -> dict[str, object] | None:
         _policy, endpoint, dependency_health = read_health_monitoring(settings=settings, body=body, timeout=args.timeout)
         resolved_url = (endpoint["url"] or endpoint["health_url"] or endpoint["base_url"]) if body["check_kind"] == "public_http" else ""
-        if _canonical_sha256(resolved_url) != reviewed["endpoint_sha256"]:
+        current_endpoint_field = "current_endpoint_sha256" if "public_url" in body else "endpoint_sha256"
+        if _canonical_sha256(resolved_url) != reviewed[current_endpoint_field]:
             return {"error_code": "health_endpoint_changed_since_review",
                     "recommendation": "The endpoint changed since review; run a new dry-run."}
         before.update(endpoint)
@@ -7281,15 +7315,18 @@ def execute_health_monitoring_apply(
     def finish(settings: dict[str, str], _provider: dict[str, Any], payload: dict[str, Any]) -> bool:
         result = payload["result"]
         applied_as_reviewed = (result["plan_sha256"] == body["reviewed_plan_sha256"]
-                               and result["endpoint_sha256"] == reviewed["endpoint_sha256"])
+                               and result["endpoint_sha256"] == reviewed["endpoint_sha256"]
+                               and result.get("current_endpoint_sha256") == reviewed.get("current_endpoint_sha256"))
         if not applied_as_reviewed:
             payload["warnings"].append(warning("applied_plan_differs_from_review", "The applied monitoring plan differs from review."))
 
         def read() -> dict[str, object]:
             policy, endpoint, dependency_health = read_health_monitoring(settings=settings, body=body, timeout=args.timeout)
-            # A new private check may adopt its reviewed registered key. Public URLs,
-            # including an empty stored URL with lane fallback, stay byte-for-byte unchanged.
             expected_endpoint = {**before}
+            if "public_url" in body:
+                expected_endpoint["url"] = body["public_url"]
+                if not before["selected_check_preservation_sha256"]:
+                    expected_endpoint["selected_check_preservation_sha256"] = endpoint["selected_check_preservation_sha256"]
             if body["check_kind"] == "private_http" and body["private_endpoint_key"]:
                 expected_endpoint["private_endpoint_key"] = body["private_endpoint_key"]
             # An omitted dependency policy must survive the edit unchanged, reason included.
@@ -12074,7 +12111,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
 
     for command in ("health-monitoring-dry-run", "health-monitoring-apply"):
-        monitoring = subparsers.add_parser(command, help="Plan or apply one lane's health monitoring check, preserving its endpoint.")
+        monitoring = subparsers.add_parser(command, help="Plan or apply one lane's health monitoring check.")
         for argument in ("--product", "--context", "--instance", "--check-name", "--reason"):
             monitoring.add_argument(argument, required=True)
         monitoring.add_argument("--check-kind", choices=sorted(HEALTH_MONITORING_KINDS), required=True)
@@ -12082,6 +12119,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         monitoring.add_argument("--enabled", action=argparse.BooleanOptionalAction, required=True)
         monitoring.add_argument("--require-runtime-identity", action=argparse.BooleanOptionalAction, required=True)
         monitoring.add_argument("--private-endpoint-key", default="")
+        monitoring.add_argument("--public-url", help="Select a public HTTPS endpoint; omit to preserve the current endpoint.")
         monitoring.add_argument("--dependency-mode", choices=sorted(HEALTH_DEPENDENCY_MODES),
                                 help="Set the lane's dependency coverage policy; omit to preserve it.")
         monitoring.add_argument("--dependency-source", choices=sorted(HEALTH_DEPENDENCY_SOURCES),
