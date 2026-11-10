@@ -347,8 +347,17 @@ Keep the journal with its session; another host also needs the complete native
 lineage and recorded claim results.
 
 For older helpers, the reader reconstructs bounded literal invocations and
-native outputs without executing recorded programs. A shell command it cannot
-decode, such as one that names the helper through a shell variable, can be
+native outputs without executing recorded programs. Code-mode cells can also
+use the canonical JavaScript parser's capability check and bounded occurrence
+counts with their native command and file-change events. Every effect must
+match the session, turn, exclusive call window and terminal result; later
+command completions additionally need the original returned process identity.
+Native command records retain claim discovery and outcome checks even when
+the cell did not print their output. Missing events, unknown counts, dynamic
+capabilities and interactive writes retain incomplete coverage. The literal
+reconstruction remains available for transcripts without this native proof.
+A shell command it cannot decode, such as one that names the helper through a
+shell variable, can be
 settled by GitHub's own record instead: every claim comment shows its session
 ID, so one search of the App's account for that ID finds the claims made under
 that session ID, and each one found is checked like any other target. The
