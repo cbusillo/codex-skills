@@ -1673,7 +1673,11 @@ def test_attachment_passthrough_and_failures_never_replay() -> None:
 
 def test_client_reply_refuses_outside_participants_and_mentions_before_writing() -> None:
     hidden = '<!-- github-plan:wait {"evidence": "The ask @mentions the Client"} -->'
-    allowed = {"allowed", "hidden_opening", "hidden_timeline", "hidden_review", "hidden_inline"}
+    allowed = {"allowed", "hidden_opening", "hidden_timeline", "hidden_review", "hidden_inline", "rendered_code"}
+    css = "@media (max-width: 900px) { .nav { display: none; } }"
+    rendered = {"rendered_mention": '<p>cc <a class="user-mention" href="https://github.com/outsider">@outsider</a></p>',
+                "rendered_code": f'<div class="highlight" data-snippet-clipboard-copy-content="{css}"><pre>'
+                                 f'<span class="pl-k">@media</span> (max-width: 900px) {{}}</pre></div><p><code>@media</code></p>'}
 
     def exercise(source: str) -> None:
         def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
@@ -1681,10 +1685,10 @@ def test_client_reply_refuses_outside_participants_and_mentions_before_writing()
                 return success({"login": "fixture-automation"})
             if method == "POST":
                 return success(comment_body(1001))
-            history = comment_body(5, actor="client", body=hidden)
+            history = comment_body(5, actor="client", body=f"```css\n{css}\n```" if source == "rendered_code" else hidden)
             accept = (_kwargs.get("extra_headers") or {}).get("Accept", "")
             if accept.endswith((".full+json", ".html+json")) and source != "raw_fallback":
-                history["body_html"] = "<p>Recorded.</p>" if source != "rendered_mention" else "<code>&lt;!-- &#64;mentions --&gt;</code>"
+                history["body_html"] = rendered.get(source, "<p>Recorded.</p>")
             if path.endswith("/issues/42"):
                 return success({"user": {"login": "client"}, "body": "@client", "pull_request": {}} | (
                     {"user": {"login": "outsider"}} if source == "opening" else
@@ -1701,7 +1705,7 @@ def test_client_reply_refuses_outside_participants_and_mentions_before_writing()
                 return success([None] if source == "malformed" else
                                [comment_body(2, actor="outsider")] if source == "timeline" else
                                [{"body": "missing identity"}] if source == "missing_author" else
-                               [history] if source in ("hidden_timeline", "rendered_mention", "raw_fallback") else [])
+                               [history] if source in ("hidden_timeline", "rendered_mention", "rendered_code", "raw_fallback") else [])
             if "/pulls/42/reviews?" in path:
                 return success([comment_body(3, actor="client", body="<code>@outsider</code>")] if source == "review" else
                                [history] if source == "hidden_review" else [])

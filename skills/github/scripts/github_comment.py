@@ -42,6 +42,8 @@ OPERATION_MARKER_LINE_RE = re.compile(
 )
 MENTION_RE = re.compile(r"(?<!\w)@(?P<login>[A-Za-z0-9](?:-?[A-Za-z0-9]){0,38}(?:/[A-Za-z0-9_-]+)?)")
 QUIET_MENTION_OPEN, QUIET_MENTION_CLOSE = "<code>", "</code>"
+# GitHub links mentions only in rendered prose: code blocks, code spans and tag attributes never notify anyone.
+RENDERED_NON_PROSE = re.compile(r"<(pre|code)\b[^>]*>.*?</\1>|<[^>]*>", re.DOTALL | re.IGNORECASE)
 ATTACHMENT_OWNER = "cbusillo"
 AGENT_POSTED_LINE = "Posted by an agent."
 ATTACHMENT_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".mp4", ".mov", ".webm"}
@@ -593,11 +595,12 @@ def validate_client_reply(
     texts = [body, *(attachment_texts or [])]
     for record in records:
         rendered = record.get("body_html")
-        texts.extend((rendered if isinstance(rendered, str) else str(record.get("body") or ""), str(record.get("title") or "")))
+        texts.extend((RENDERED_NON_PROSE.sub(" ", rendered) if isinstance(rendered, str) else str(record.get("body") or ""),
+                      str(record.get("title") or "")))
     for text in texts:
         for match in MENTION_RE.finditer(html.unescape(text)):
             if match["login"].casefold() not in mention_logins:
-                raise ValueError(f"Client reply refused: outside mention @{match['login']}; obtain exact-text approval")
+                raise ValueError(f"Client reply refused: outside mention `@{match['login']}`; obtain exact-text approval")
 
 
 def _latest_actor_comment(comments: list[dict[str, Any]], actor: str) -> Optional[dict[str, Any]]:

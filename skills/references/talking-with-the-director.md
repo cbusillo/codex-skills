@@ -87,8 +87,8 @@ agents and their company's people. Repeat `--client-login` only for someone it
 does not record, verified through `people` or the product's recorded identity
 context. This mode checks the opening, all timeline comments, PR reviews and
 inline comments, and the outgoing text for outside participants and mentions;
-unreadable coverage refuses the reply. Hidden historical metadata is not a
-mention. It requires the configured automation identity for reply text. With
+unreadable coverage refuses the reply. Hidden metadata and code in history are
+not mentions. It requires the configured automation identity for reply text. With
 `--attach` and the existing own-user opt-in, a second comment carries only
 attachment markup and the linked agent line. Keep all verified `--client-login`
 flags on the combined call; attachment basenames and alt text get the same
