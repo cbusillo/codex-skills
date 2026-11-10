@@ -559,6 +559,7 @@ BOUNDED_READ_RESPONSE_FIELDS: dict[str, frozenset[str]] = {
         },
         "target-replacement-operation-read": {
             "status", "trace_id", "operation", "result", "recovery", "native_evidence",
+            "native_execution_binding",
         },
         "testing-hold-read": {
             "status", "trace_id", "records", "result", "replayed", "original_trace_id",

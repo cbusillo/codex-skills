@@ -6540,6 +6540,8 @@ def summarize_target_replacement_operation_read(
         )
     elif "native_evidence" in provider_payload:
         raise LaunchplaneSafetyError("unsafe_response_shape")
+    if "native_execution_binding" in provider_payload:
+        raise LaunchplaneSafetyError("unsafe_response_shape")
     payload["result"] = result
     payload["summary"] = {
         "launchplane_status": status,
