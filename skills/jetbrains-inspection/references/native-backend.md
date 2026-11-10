@@ -39,8 +39,10 @@ The only human setup step is to open the printed `.command` launcher, sign in
 with an existing entitlement, and quit. It isolates config, plugins, home, system,
 log and temp paths and holds the backend's `worker.lock`. IDE restarts retain that
 lock and paths, using JetBrains' [restart exit-code mode](https://github.com/JetBrains/intellij-community/blob/master/platform/platform-impl/src/com/intellij/util/Restarter.java).
-That mode cannot run app-update commands; update the installed app normally,
-then reopen the worker launcher. Preparation never launches an IDE or handles
+That mode cannot run app-update commands. Before updating the worker's app, verify
+its required plugins support the new build; qualify it through `--ide-app` first.
+Keep the worker on a dedicated app path that normal IDE updates do not replace.
+Preparation never launches an IDE or handles
 activation data. Required plugins and Odoo framework roots are covered below.
 
 ### WebStorm
@@ -328,10 +330,16 @@ Receipts retain the interpreter, `python_sdk_observed` from the matching
 `pydantic_plugin_version` actually loaded by the engine. Descriptor presence
 alone does not establish that a plugin loaded; a missing Pydantic load
 observation keeps the run UNKNOWN.
-An existing incompatible or damaged plugin still needs a worker-level update
-or reinstall through that worker's Plugins screen after an IDE upgrade; the
-built-in installer does not update an already installed version. No repository
-configuration changes are needed.
+After an IDE upgrade, compare the installed plugin's declared build range with
+the selected app and check for a compatible vendor update. The built-in installer
+does not update an already installed version. When no compatible update exists,
+use `--ide-app /absolute/compatible/PyCharm.app` to qualify an official compatible
+app through the existing worker. Require observed SDK and plugin load, full
+selected execution and closed custody before changing `nativeWorkers.pycharm.app`.
+This Python proof does not qualify Odoo inspections. Before Plugins-screen or
+activation work, verify the worker's locked GUI launcher selects that same
+qualified app build; a headless app override does not change the GUI launcher.
+Keep activation and credentials in place. No repository configuration change is needed.
 
 Correct interpreter and plugin setup can still leave PyCharm findings for
 Pydantic Literal fields, Click parameter constructors and decorated commands,

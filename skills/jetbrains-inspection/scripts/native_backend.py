@@ -1654,9 +1654,10 @@ def next_action_for_reason(host: Any, receipt: dict[str, Any], reason: str, verd
     elif reason in {"native_required_plugin_missing", "native_required_plugins_unreadable", "native_worker_plugins_unreadable"}:
         action = UNAVAILABLE_REASONS[reason][1].format(**(PLUGIN_FALLBACK | receipt.get("missing_plugins", {})), product=product.display_name)
     elif reason == "native_python_support_plugin_unavailable":
-        action = ("The Pydantic support plugin was not installed, enabled or loaded. Check first-install network access and "
-                  "compatibility with the configured PyCharm build. An installed incompatible or damaged plugin needs an "
-                  "update or reinstall through the independent worker's Plugins screen, using its launcher, before one fresh assessment.")
+        action = ("Pydantic loading was not proved. Check its declared build range and available vendor updates against "
+                  "the selected PyCharm app. If no compatible update exists, qualify an official compatible app through "
+                  "--ide-app before changing nativeWorkers.pycharm.app; see references/native-backend.md. "
+                  "Before Plugins-screen maintenance, verify the locked worker launcher selects that same qualified build.")
     elif reason in {"native_node_not_configured", "native_node_unavailable"}:
         action = "Set jetbrains.nativeWorkers.webstorm.node in the shared helper config to the absolute path of an executable node with npm in the same directory. See references/native-backend.md."
     elif reason in {"native_jdk_not_configured", "native_jdk_unavailable"}:
