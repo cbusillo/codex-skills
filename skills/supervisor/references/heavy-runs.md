@@ -302,7 +302,7 @@ this same helper. The sender inventories every ordinary file and directory,
 including empty directories, with file sizes and SHA-256 hashes. The receiver
 builds a fresh result by cloning matching local files through `clone_input`,
 requests only changed or added files, then verifies every result file against
-that inventory before applying ordinary modes with owner access. Removed reference files
+that inventory before applying ordinary modes with access for the receiving user. Removed reference files
 are absent from the new result. Reference bytes are never changed; interrupted
 or mismatched results stay available as partial evidence. A missing, aliased or
 unreadable reference is optional: its files are transferred instead. A file on
