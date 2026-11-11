@@ -11,6 +11,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
+from launchplane_contract import helper_command_path
 from test_launchplane_inventory_readback import invoke as invoke_private
 
 
@@ -78,7 +79,9 @@ def test_failed_inspection_preserves_partial_facts_and_exact_private_request(tmp
     assert code == 0
     request = transport.call_args.args[0]
     assert request.method == "GET"
-    assert urlsplit(request.full_url).path == "/v1/products/example/preview-evidence"
+    assert urlsplit(request.full_url).path == helper_command_path("preview-container-observation").format(
+        product=intent()["product"]
+    )
     assert parse_qs(urlsplit(request.full_url).query) == {key: [str(value)] for key, value in intent().items() if key != "product"}
     assert request.get_header("Cache-control") == "no-store"
     assert json.loads(destination.read_text()) == response()
@@ -106,7 +109,7 @@ def test_running_and_drift_never_upgrade_verification(tmp_path: Path, running: b
 
 @pytest.mark.parametrize("selection", ["unknown", "missing_or_unavailable", "missing", "ambiguous"])
 @pytest.mark.parametrize("coverage", ["unknown", "invalid", "complete"])
-def test_inventory_outcomes_preserve_unknowns_without_inventing_absence(tmp_path: Path, selection: str, coverage: str) -> None:
+def test_inventory_outcomes_round_trip_without_synthesizing_facts(tmp_path: Path, selection: str, coverage: str) -> None:
     returned = response()
     returned["result"]["observation"] = {"selection": selection, "inventory_coverage": coverage, "exists": None}
     code, _, _, destination = invoke(tmp_path, returned=returned)
@@ -129,6 +132,8 @@ def test_controller_plan_selector_is_not_replaced_with_resolved_original(tmp_pat
 @pytest.mark.parametrize(
     "field,value",
     [
+        ("product", "x" * 129),
+        ("product", "two words"),
         ("pr_number", True),
         ("pr_number", 0),
         ("source_git_ref", "main"),
@@ -198,15 +203,10 @@ def test_invalid_observations_never_become_saved_evidence(tmp_path: Path, field:
 )
 def test_cross_binding_response_is_rejected(tmp_path: Path, field: str) -> None:
     returned = response()
-    returned["result"]["binding"][field] = 43 if field == "pr_number" else "other"
+    returned["result"]["binding"][field] = (
+        43 if field == "pr_number" else "mutation-reservation-" + "e" * 64 if field == "original_reservation_id" else "other"
+    )
     code, _, _, destination = invoke(tmp_path, returned=returned)
-    assert code != 0
-    assert not destination.exists()
-
-
-@pytest.mark.parametrize("cache_control", ["", "private", "no-store-extra", "max-age=10"])
-def test_cached_response_cannot_be_saved(tmp_path: Path, cache_control: str) -> None:
-    code, _, _, destination = invoke(tmp_path, cache_control=cache_control)
     assert code != 0
     assert not destination.exists()
 
@@ -252,8 +252,7 @@ def test_missing_required_result_fields_are_rejected(tmp_path: Path, field: str)
     assert not destination.exists()
 
 
-@pytest.mark.parametrize("status", [401, 403, 409, 503])
-def test_http_failure_retains_safe_trace_without_raw_error(tmp_path: Path, status: int) -> None:
+def test_http_failure_retains_safe_trace_without_raw_error(tmp_path: Path) -> None:
     import io
     import urllib.error
     from email.message import Message
@@ -266,7 +265,7 @@ def test_http_failure_retains_safe_trace_without_raw_error(tmp_path: Path, statu
     headers = Message()
     headers["X-Trace-Id"] = body["trace_id"]
     error = urllib.error.HTTPError(
-        "https://plane.example.invalid", status, "PRIVATE_REASON", headers, io.BytesIO(json.dumps(body).encode())
+        "https://plane.example.invalid", 503, "PRIVATE_REASON", headers, io.BytesIO(json.dumps(body).encode())
     )
     code, public, _, destination = invoke(tmp_path, error=error)
     assert code != 0

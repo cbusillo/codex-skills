@@ -20,6 +20,7 @@ from launchplane_native_evidence import _closed_object, _code, _observation_time
 COMMAND = "preview-container-observation"
 EXACT_FIELDS = {"product", "pr_number", "source_git_ref", "image_digest", "preview_id", "generation_id", "target_id"}
 ORIGINAL_PATTERN = r"mutation-reservation-[a-f0-9]{64}"
+# https://github.com/cbusillo/launchplane/blob/fc2a03fdf64d11fd922ebea7c1e2ff150eb235ec/control_plane/odoo_runtime_reads.py
 OBSERVATION_CODES = {
     "selection": {"unknown", "unique", "missing", "ambiguous", "missing_or_unavailable"},
     "inventory_coverage": {"unknown", "complete", "invalid"},
@@ -61,7 +62,7 @@ def validate_intent(value: object) -> dict[str, Any]:
     source = _closed_object(value, {*EXACT_FIELDS, "mode"}, {"original_reservation_id", "plan_id"})
     require(source["mode"] == "container_observation")
     require(type(source["pr_number"]) is int and source["pr_number"] >= 1)
-    identifier(source["product"])
+    text(source["product"], maximum=128, pattern=r"[A-Za-z0-9_.:-]+")
     text(source["source_git_ref"], pattern=r"[a-f0-9]{40}")
     text(source["image_digest"], pattern=r"sha256:[a-f0-9]{64}")
     for field in ("preview_id", "generation_id"):

@@ -3384,16 +3384,12 @@ holds; it cannot prove that another upload may start.
 `preview-container-observation --payload-file <private-request.json> --result-file
 <new-private-result.json>` reads `GET /v1/products/{product}/preview-evidence`
 through the existing authenticated read transport with request and response
-`Cache-Control: no-store`. Its private request has exactly `product`,
-`pr_number` (positive integer), `source_git_ref` (40 lowercase hex digits),
-`image_digest` (`sha256:` plus 64 lowercase hex digits), `preview_id`,
-`generation_id`, `target_id`, and `mode: "container_observation"`, plus exactly
-one nonempty `original_reservation_id` (`mutation-reservation-` plus 64 lowercase
-hex digits) or `plan_id` (`odoo-preview-plan-` plus letters, digits, `_` or `-`,
-128 characters total at most). The unused original/plan field may be omitted
-or empty. Product uses the existing product identifier validation. Preview,
-generation and target selectors are nonempty, at most 256 characters; target
-uses letters, digits, `_` and `-`. No selector is discovered or substituted.
+`Cache-Control: no-store`. Its private request has `product`, `pr_number`,
+`source_git_ref`, `image_digest`, `preview_id`, `generation_id`, `target_id`,
+and `mode: "container_observation"`, plus exactly one nonempty
+`original_reservation_id` or `plan_id`. The unused original/plan selector may
+be omitted or empty. The linked producer models own the field bounds; the
+caller validates them without discovering or substituting selectors.
 The read uses the existing `preview.read` authority and a 180-second default
 timeout; installation supplies no new authority.
 
@@ -3410,7 +3406,8 @@ The new result file is private (0600), outside the repository and never
 overwrites an existing path. It retains only the validated closed envelope,
 without adding defaults or changing missing and null fields. Unknown,
 missing_or_unavailable, missing, ambiguous, invalid and not_reached stay
-distinct. Empty inventory cannot establish absence. Config/State bodies,
+distinct. The caller preserves the producer's unknown inventory observations
+without inferring absence. Config/State bodies,
 environment, unrelated records and raw errors are rejected. Stdout carries
 safe diagnostics and a save receipt; `runtime_verification` stays
 `not_performed` and `import_eligibility` stays `not_evaluated`, even when

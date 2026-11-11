@@ -13028,10 +13028,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     args = parser.parse_args(argv)
     import launchplane_website_indexing
     import launchplane_inventory_readback
+    import launchplane_preview_observation
     from launchplane_disposable_lane import TIMEOUTS as disposable_lane_timeouts
     args.timeout = getattr(
         args, "timeout",
-        launchplane_inventory_readback.TIMEOUT_SECONDS if args.command in {launchplane_inventory_readback.COMMAND, "preview-container-observation"}
+        launchplane_inventory_readback.TIMEOUT_SECONDS if args.command in {launchplane_inventory_readback.COMMAND, launchplane_preview_observation.COMMAND}
         else launchplane_website_indexing.TIMEOUT_SECONDS if args.command in launchplane_website_indexing.COMMANDS
         else disposable_lane_timeouts[args.command] if args.command in disposable_lane_timeouts
         else PREFLIGHT_TIMEOUT_SECONDS if args.command == PREFLIGHT
