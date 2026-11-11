@@ -992,6 +992,31 @@ installed local helper bindings.
   uv run skills/launchplane/scripts/launchplane-write-action.py \
     target-replacement-operation-read --operation-id OPERATION_ID --include-native-evidence
   ```
+  Add `--native-execution-binding-file /absolute/private/new-binding.json` to
+  select `include_native_execution_binding=true` on that GET. Use a fresh
+  filename in an existing private directory outside the active repository.
+  The helper creates the file with mode `0600` and refuses existing files,
+  final symlinks and repository-local destinations. The file holds only the
+  validated [NativeTestingExecutionBinding](https://github.com/cbusillo/launchplane/blob/2550cf18a20bbdc93c277a62ae0914ad20ab3ce4/control_plane/contracts/native_testing_rebuild_evidence.py)
+  object. Standard output adds a receipt with a package digest and
+  availability, binding and coverage codes. The two flags may be combined
+  on one GET.
+
+  The configured identity must already have full-record authority
+  (`odoo_target_replacement_apply.execute` on the original product, context and
+  instance). An `operations.read`-only caller receives HTTP 403
+  `authorization_denied`. Retained selectors describe the original execution
+  target where bound. Missing and unverified selectors, legacy route intents,
+  and unretained execution account, trace or program stay explicit. This read
+  establishes no failure cause, current provider state, effect exclusion or
+  permission to release. Any referenced failure JSON remains host-local.
+
+  ```sh
+  uv run skills/launchplane/scripts/launchplane-write-action.py \
+    target-replacement-operation-read --operation-id OPERATION_ID \
+    --native-execution-binding-file /absolute/private/new-binding.json
+  ```
+
 - `target-replacement-plan-read --product --instance` calls
   `POST /v1/drivers/odoo/target-replacement-plan` with
   `{"schema_version": 1, "product": P, "replacement": {"product": P, "instance": I}}`
