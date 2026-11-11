@@ -649,6 +649,10 @@ or name; a change to `.github/`, the validation scripts or a
 code-owned path runs the complete suite. Before landing a pull request outside
 the train, run the workflow by hand on its branch and wait for it to pass.
 
+Hosted jobs use installed zsh when available. Otherwise, apt retries transient
+package downloads with backoff within the setup step's timeout. Exhausted
+provisioning still fails the job before validation; zsh coverage stays mandatory.
+
 ## JetBrains inspections
 
 On macOS, `jetbrains-inspection` runs Python, YAML and Odoo assessments through stock

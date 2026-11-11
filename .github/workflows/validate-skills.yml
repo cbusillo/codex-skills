@@ -53,12 +53,11 @@ jobs:
 
       - name: Ensure zsh for interactive shell behavior tests
         if: steps.lane.outputs.run == 'true'
-        # A hung apt install then fails as a retryable step instead of using the job's whole budget.
-        timeout-minutes: 5
+        timeout-minutes: 8
         run: |
           if ! command -v zsh >/dev/null; then
-            sudo apt-get update
-            sudo apt-get install --yes --no-install-recommends zsh
+            sudo apt-get -o Acquire::Retries=15 update --error-on=any
+            sudo apt-get -o Acquire::Retries=15 install --yes --no-install-recommends zsh
           fi
 
       - name: Validate skills
