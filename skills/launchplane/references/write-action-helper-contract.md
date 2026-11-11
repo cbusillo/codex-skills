@@ -18,6 +18,48 @@ when their path spellings differ. A repository-local link to an external payload
 and an external link to repository-local data are both refused; an external payload,
 including an external link to another external file, is accepted.
 
+## Current testing inventory and purchaser readback
+
+`odoo-inventory-readback` uses the existing operator GET transport and
+`operations.read` identity for
+`/v1/products/{product}/environments/testing/odoo-inventory-readback`.
+The [reviewed producer schema](https://github.com/cbusillo/launchplane/issues/5982#issuecomment-6795148145)
+owns the request and response contract. Source compatibility does not prove
+producer activation or authorize a real recipient read.
+
+```bash
+uv run scripts/launchplane-write-action.py odoo-inventory-readback \
+  --payload-file /private/inventory-request.json \
+  --result-file /private/inventory-result.json
+```
+
+The private JSON requires exactly `product`, `context`, `deployment_record_id`,
+`source_git_ref` (40 lowercase hex characters), `artifact_id`, `image_digest`
+(`sha256:` and 64 lowercase hex characters), `target_id`, positive integer
+`company_id`, `part_ids` (one to ten distinct positive numeric strings, at most
+18 digits each), and `purchaser_xmlid` (`cm_custom.user_gunneet`). Other selectors
+are refused before transport. The helper sends `part_ids` as repeated query
+keys. It does not discover or substitute any expected binding input.
+
+The transport requests and requires `Cache-Control: no-store`, accepts at most
+one MiB, and retains existing redirect and TLS protections. Complete typed
+results are saved only to a new mode-0600 file outside the active repository,
+using the existing private evidence writer. The closed response and all nested
+fields are checked before saving; unexpected fields or mismatched runtime,
+target, company or witness bindings fail safely. Stdout omits selectors,
+inventory, purchaser details, topology and evidence paths. Existing files are
+never overwritten. There is no local cache or automatic retry.
+
+The private result preserves omitted optional fields, nulls, zeroes and
+`present`, `missing`, `unavailable` and runtime `unknown` distinctions. Exit
+zero means a valid private response was saved, including a response that says
+runtime `unknown`; inspect its contents for the actual outcome. Database UUID
+and transaction snapshot describe the current observation, not immutable
+restore provenance. Historical importer reconciliation remains unavailable,
+and purchaser first sign-in remains `not_observed`. This read performs no
+import, restore, health qualification, external source probe or access change.
+Original, custody, unknown-effect and production holds remain in force.
+
 ## Application testing private ingress
 
 `testing-private-ingress-dry-run`, `testing-private-ingress-apply` and

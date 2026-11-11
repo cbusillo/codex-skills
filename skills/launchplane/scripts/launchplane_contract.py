@@ -53,6 +53,9 @@ HELPER_OPERATIONS = {
 }
 
 LOCAL_EXTENSION_ROUTES = {
+    "odoo-inventory-readback": {
+        "method": "GET", "path": "/v1/products/{product}/environments/testing/odoo-inventory-readback", "mode": "read",
+    },
     "attention-events-read": {
         "method": "GET", "path": "/v1/attention/requests/events", "mode": "read",
     },
@@ -539,6 +542,7 @@ BOUNDED_READ_RESPONSE_FIELDS: dict[str, frozenset[str]] = {
         "governance-projection-read": {"status", "trace_id", "projection"},
         "merge-train-policy-targets-read": {"status", "trace_id", "policy", "targets"},
         "odoo-host-source-grants-read": {"status", "trace_id", "result"},
+        "odoo-inventory-readback": {"status", "trace_id", "result"},
         "path-check": {"status", "trace_id", "check"},
         "preview-history-read": {"status", "trace_id", "preview", "generations"},
         "private-health-endpoint-read": {
