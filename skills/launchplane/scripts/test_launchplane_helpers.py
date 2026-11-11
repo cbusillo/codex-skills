@@ -12761,7 +12761,7 @@ def test_native_binding_preserves_full_record_authority_refusal(tmp_path: Path) 
     assert not destination.exists()
 
 
-def _first_empty_secret(purpose: str = "ODOO_DB_PASSWORD") -> dict[str, str]:
+def _first_empty_generation_metadata(purpose: str = "ODOO_DB_PASSWORD") -> dict[str, str]:
     return {"binding_key": purpose, "generate": "odoo_first_empty", "secret_class": "prod_only"}
 
 
@@ -12772,7 +12772,7 @@ def _first_empty_payload(purpose: str = "ODOO_DB_PASSWORD") -> dict[str, Any]:
         "instance": "prod",
         "reason": "Fictional original preparation",
         "odoo_first_empty": "runtime_credentials",
-        "secrets": [_first_empty_secret(purpose)],
+        "secrets": [_first_empty_generation_metadata(purpose)],
     }
 
 
@@ -13168,7 +13168,7 @@ def test_first_empty_apply_requires_matching_accepted_review_and_generation_inte
     else:
         body = _first_empty_payload()
         if damage == "duplicate_input":
-            body["secrets"] = [_first_empty_secret(), _first_empty_secret()]
+            body["secrets"] = [_first_empty_generation_metadata(), _first_empty_generation_metadata()]
         else:
             body.pop("odoo_first_empty")
         _write_json(tmp_path, "first-empty.json", body)
