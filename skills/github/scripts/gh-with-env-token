@@ -894,8 +894,10 @@ app_auth_for_command() {
 			return 2
 		fi
 		require_installation=1
-	elif [ -n "$target_repo" ] && is_write_command "$@" && ! verify_read_command "$@" 2>/dev/null; then
+	elif [ -n "$target_repo" ] && is_write_command "$@" &&
+		{ [ "$own_user_opt_in" -eq 1 ] || ! verify_read_command "$@" 2>/dev/null; }; then
 		# A GraphQL query is a POST but a read, so it keeps the App reader.
+		# Under the own-user opt-in the contributor route still serves it.
 		require_installation=1
 	fi
 	set -- app-auth
@@ -970,7 +972,9 @@ if args and args[0] == "api" and context.bucket == "graphql":
     if payload is None:
         # Arguments gh rejects already made the context a write.
         parsed = github_api.parse_gh_api_args(args[1:])
-        if parsed is not None and parsed.graphql_query is not None:
+        # gh sends an --input body instead of the fields; one not captured
+        # here (a file, or --input=-) cannot be verified as a read.
+        if parsed is not None and parsed.graphql_query is not None and not parsed.has_input:
             payload = {"query": parsed.graphql_query}
     if github_api.reader_request_is_write("POST", "/graphql", payload):
         context = github_api.CommandContext(True, context.transport, context.bucket)

@@ -600,6 +600,15 @@ def test_app_installation_follows_the_target_repository() -> None:
                                  gh_command=fake_gh, extra_env={"GH_REPO": "second-owner/site"})
             assert result.returncode == 0, (query, result.stderr)
             assert result.stdout == f"{token}\n", (query, result.stdout)
+        # gh sends an uncaptured --input body instead of the query field, and
+        # the own-user opt-in keeps its contributor route.
+        body = root / "mutation.json"
+        body.write_text('{"query":"mutation { addStar(input:{starrableId:\\"x\\"}) { clientMutationId } }"}')
+        for args, extra in (((f"--input={body}",), {}), ((), {"GH_WITH_ENV_TOKEN_OWN_USER": "1"})):
+            result = run_wrapper(env_file, unused, identity, "api", "graphql", *args, "-f", "query=query { viewer { id } }",
+                                 gh_command=fake_gh, extra_env={"GH_REPO": "second-owner/site", **extra})
+            assert result.returncode == 0, (args, extra, result.stderr)
+            assert result.stdout == "token:--repo second-owner/site --require-installation\n", (args, extra, result.stdout)
 
         refused = run_wrapper(
             env_file, unused, identity,

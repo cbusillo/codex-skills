@@ -4,6 +4,7 @@
 # dependencies = [
 #     "iterm2==2.30",
 #     "websockets==17.4",
+#     "zstandard==0.25.0",
 # ]
 # ///
 """Target iTerm or tmux sessions by exact identity; separate text and Return sends."""
