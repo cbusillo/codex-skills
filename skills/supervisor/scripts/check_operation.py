@@ -103,6 +103,8 @@ class Operation:
                 self.state["steps"].pop(gate, None)
                 save_state(self.path, self.state)
             reason = f"{payload['reason_code']}; " if isinstance(payload, dict) and payload.get("reason_code") else ""
+            if isinstance(payload, dict) and payload.get("error"):
+                reason += f"{payload['error']}; "
             if isinstance(payload, dict) and isinstance(payload.get("blocked"), list):
                 reason += "".join(f"{row}; " for row in payload["blocked"][:3])
             raise GateFailed(gate, f"{reason}helper exited {result.returncode}; inspect {gate}.json")

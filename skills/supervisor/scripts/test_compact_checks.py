@@ -59,6 +59,90 @@ class ChangesTests(unittest.TestCase):
 
 
 class OperationTests(unittest.TestCase):
+    def test_recovery_accepts_a_newer_verified_handoff_in_the_same_launch(self) -> None:
+        ledger = self.root / "ledger.json"
+        source = {"session_id": "native", "harness": "claude", "supervisor_owned": True, "transcript": "native.jsonl",
+                  "launch_started_at": "2026-01-01T00:00:00Z", "handoff_url": "https://github.com/test/a/issues/1#issuecomment-95"}
+        args = argparse.Namespace(ledger=ledger, session_id="native", handoff_url="https://github.com/test/a/issues/1#issuecomment-99")
+
+        class Reader:
+            def __init__(self, replies: dict[str, dict]) -> None:
+                self.replies = replies
+
+            def get_json(self, path: str, **_: Any) -> dict:
+                return self.replies[path.rsplit("/", 1)[-1]]
+
+        for newer in (False, True):
+            ledger.write_text(json.dumps([source]))
+            entry = session_closeout.normalize_ledger_entry(ledger, source)
+            entry["recovery"] = {"kind": "handoff"}
+            previous = {"created_at": "2026-01-02T00:00:00Z", "updated_at": "2026-01-02T00:00:00Z",
+                        "body": "Session: native\nEarlier progress", "user": {"login": "agent[bot]"},
+                        "issue_url": "https://api.github.com/repos/test/a/issues/1"}
+            stamp = "2026-01-03T00:00:00Z" if newer else "2026-01-01T00:01:00Z"
+            current = {**previous, "created_at": stamp, "updated_at": stamp, "body": "Session: native\nSafe to exit: yes"}
+
+            with (self.subTest(newer=newer),
+                  patch.object(session_closeout, "GitHubReader", return_value=Reader({"99": current, "95": previous})),
+                  patch.object(session_closeout.github_identity, "automation_login", return_value="agent[bot]"),
+                  patch.object(session_closeout.closure, "source_records", return_value={})):
+                operation = check_operation.Operation(self.root / str(newer), [str(ledger), "native"])
+                if newer:
+                    session_closeout.verify_handoff(entry, args, operation, retired=False)
+                    self.assertEqual(json.loads(ledger.read_text())[0]["handoff_url"], args.handoff_url)
+                else:
+                    with self.assertRaises(ValueError):
+                        session_closeout.verify_handoff(entry, args, operation, retired=False)
+                    self.assertEqual(json.loads(ledger.read_text()), [source])
+
+    def test_recovery_retires_only_the_gone_claim_free_row_and_replays_custody(self) -> None:
+        ledger = self.root / "ledger.json"
+        transcript = self.root / "source.jsonl"
+        transcript.write_text(json.dumps({"type": "user", "sessionId": "native", "timestamp": "2026-01-01T00:00:00Z",
+                                          "message": {"content": "unfinished request"}}) + "\n")
+        source = {"session_id": "native", "harness": "claude", "supervisor_owned": True,
+                  "pid": 123, "tty": "ttys001", "transcript": str(transcript), "backend": "tmux",
+                  "tmux_session_id": "terminal"}
+        other = {**source, "session_id": "other", "pid": 124}
+        ledger.write_text(json.dumps([source, other]))
+        log = self.root / "closed.json"
+        args = argparse.Namespace(ledger=ledger, session_id="native", supervisor_session="supervisor", owner="test",
+                                  recover_ended=True, successor_session=None, handoff_url=None, exit_seconds=.1)
+        claims = {"ok": True, "claims_clear": True, "coverage": {"complete": True}, "session_ids": ["native"],
+                  "blocked": [], "unresolved_invocations": []}
+        release = session_closeout.release
+
+        def run(_operation: check_operation.Operation, gate: str, command: list[str], **_: Any) -> dict | list:
+            if gate == "claims":
+                self.assertIn("--require-released-claims", command)
+                return claims
+            if gate == "finish":
+                self.assertIn("--recover-ended", command)
+                release.record_recovery(log, {**source, "recovery": {"kind": "gone"}}, "supervisor")
+                return {"ok": True, "needs_reconciliation": False}
+            self.assertIn(gate, ("terminals", "disappearance"))
+            return []
+
+        with (patch.object(check_operation.Operation, "run", run),
+              patch.object(session_closeout.closure, "closed_log", return_value=log),
+              patch.object(session_closeout.closure, "ownership", return_value=nullcontext()),
+              patch.object(session_closeout.session_liveness, "process_absent", return_value=True),
+              patch.object(session_closeout.session_liveness, "inventory", return_value=[]),
+              patch_attr(release, "inventory", return_value=[]),
+              patch.object(release, "recovery_claims", return_value=claims),
+              patch.object(release, "transcript_roots", return_value=[str(self.root)])):
+            operation = check_operation.Operation(self.root / "recovery", [str(ledger), "native"])
+            session_closeout.closeout(args, operation)
+            self.assertEqual(json.loads(ledger.read_text()), [other])
+            closed = json.loads(log.read_text())[0]
+            self.assertTrue(all(closed[key] == value for key, value in source.items()))
+            self.assertNotIn("verdict_at", closed)
+            session_closeout.closeout(args, operation)
+            transcript.write_text(transcript.read_text() + json.dumps({"type": "user", "sessionId": "native",
+                "timestamp": "2026-01-02T00:00:00Z", "message": {"content": "resumed"}}) + "\n")
+            with self.assertRaises(ValueError):
+                session_closeout.closeout(args, operation)
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)

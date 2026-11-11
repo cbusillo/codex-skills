@@ -472,6 +472,7 @@ def check(
     reader_for_repo: Callable[[str | None, float], GitHubReader] | None = None,
     read_timeout: float = 600,
     termination_record: dict | None = None,
+    require_released_claims: bool = False,
 ) -> dict:
     deadline = time.time() + read_timeout
     source_deadline = time.monotonic() + read_timeout
@@ -505,7 +506,7 @@ def check(
     signoffs, release_proofs = {}, []
 
     def check_target(native: str, repo: str, number: int) -> None:
-        if github_plan_lease.uses_live_claims(repo):
+        if not require_released_claims and github_plan_lease.uses_live_claims(repo):
             return
         try:
             if repo not in readers:
@@ -599,6 +600,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--termination-record", type=Path, help="Original Codex source-host record for verified reboot recovery")
     parser.add_argument("--confirm-session-ended", action="store_true", help="Attest native task and unavailable peer closure")
+    parser.add_argument("--require-released-claims", action="store_true", help="Verify exact claim releases even under live-claim policy")
     parser.add_argument("--read-timeout", type=float, default=600, help="Bounded aggregate claim/source read budget in seconds")
     args = parser.parse_args(argv)
     try:
@@ -623,7 +625,8 @@ def main(argv: list[str] | None = None) -> int:
         if record_bytes is not None:
             import github_plan_native
             record = github_plan_native._cancel_selected(args.termination_record, args.session[0])
-        report = check(entries, owners=args.owner, termination_record=record, read_timeout=args.read_timeout)
+        report = check(entries, owners=args.owner, termination_record=record, read_timeout=args.read_timeout,
+                       require_released_claims=args.require_released_claims)
         if args.termination_record and args.termination_record.read_bytes() != record_bytes:
             raise ValueError("termination record changed during claim readback")
         report["checked_at"] = time.time()
