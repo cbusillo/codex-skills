@@ -122,8 +122,7 @@ def terminal_state(record):
 def transcript_snapshot(record, path):
     """Keep a crash-truncated final line intact; never tolerate interior corruption."""
     before = path.stat()
-    with path.open(encoding="utf-8") as stream:
-        lines = list(stream)
+    lines = native_helpers()[0].transcript_lines(path)
     records, truncated = native_transcript_records({**record, "transcript": str(path)}, lines, local_only=False)
     after = path.stat()
     if (before.st_mtime_ns, before.st_size) != (after.st_mtime_ns, after.st_size):
@@ -296,9 +295,11 @@ class _TranscriptActivity(NamedTuple):
 
 def _verify_transcripts(record: dict, roots: frozenset[Path], *, before_boot: datetime | None = None) -> _TranscriptActivity:
     session = record["session_id"]
-    paths = {Path(record["transcript"]).resolve()}
+    reader = native_helpers()[0]
+    paths = {reader.recorded_transcript(record["transcript"])}
     for root in roots:
-        paths.update(path.resolve() for path in Path(root).rglob(f"*{session}*.jsonl"))
+        for pattern in reader.transcript_glob(session):
+            paths.update(path.resolve() for path in Path(root).rglob(pattern))
     now = datetime.now(timezone.utc)
     ended = stamp(record["ended_at"])
     last, latest = None, None

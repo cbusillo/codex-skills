@@ -27,6 +27,7 @@ from typing import Any
 import release_session_claims as helper
 from skills.github.scripts import github_plan_claim, github_plan_release
 closure = importlib.import_module("github_plan_closure")
+tmux_terminal = importlib.import_module("tmux_terminal")
 identity = importlib.import_module("github_identity")
 
 ACTOR = "test-automation[bot]"
@@ -156,29 +157,32 @@ class ReleaseTests(unittest.TestCase):
                 self.assertEqual(helper.validate_finished(closed, "supervisor")["state"], "turn_ended")
 
     def test_gone_recovery_asks_whether_the_original_process_exists_not_whether_its_tty_is_used(self) -> None:
-        last = helper.release.stamp("2026-01-01T00:01:01Z")
+        last = github_plan_release.stamp("2026-01-01T00:01:01Z")
         later, earlier = last + timedelta(days=1), last - timedelta(seconds=1)
         source = {key: value for key, value in self.entry.items() if key not in {"ended_at", "process_exit_verified"}}
         launched = {**source, "launch_pid": source["pid"], "launch_started_at": (earlier - timedelta(minutes=1)).isoformat()}
         unrelated = "sleep 60"
-        cases = (  # entry, live process births, host boot, recovered
-            ("newer occupant", source, {456: later}, None, True),
-            ("newer occupant after reboot", source, {456: later}, last + timedelta(hours=1), True),
-            ("recorded PID still present after its launch", launched, {source["pid"]: later}, None, False),
-            ("older occupant may be its work", source, {456: earlier}, None, False),
-            ("source process alive", source, {source["pid"]: earlier}, None, False),
-            ("source alive without launch time", source, {source["pid"]: later}, None, False),
+        terminal, launchd = 999, 1
+        cases = (  # entry, live process births, parent of the occupant, host boot, recovered
+            ("newer occupant of a later terminal", source, {456: later}, terminal, None, True),
+            ("orphaned work the session left", source, {456: later}, launchd, None, False),
+            ("orphan after a reboot ended the session", source, {456: later}, launchd, last + timedelta(hours=1), True),
+            ("recorded PID still present after its launch", launched, {source["pid"]: later}, terminal, None, False),
+            ("older occupant may be its work", source, {456: earlier}, terminal, None, False),
+            ("source process alive", source, {source["pid"]: earlier}, terminal, None, False),
+            ("source alive without launch time", source, {source["pid"]: later}, terminal, None, False),
         )
-        for name, entry, births, boot, recovered in cases:
+        for name, entry, births, parent, boot, recovered in cases:
             rows = [(pid, source["tty"], "codex" if pid == source["pid"] and born < last else unrelated)
                     for pid, born in births.items()]
             log = self.root / f"{name}.json"
             with (self.subTest(name), patch_attribute(closure, "ownership", return_value=contextlib.nullcontext()),
                   patch.object(helper, "recovery_claims"), patch.object(helper, "inventory", return_value=rows),
-                  patch.object(helper.closure, "process_started_at", side_effect=births.__getitem__),
+                  patch_attribute(closure, "process_started_at", side_effect=births.__getitem__),
                   patch.object(helper.session_liveness, "process_started_at", side_effect=births.__getitem__),
                   patch.object(helper.session_liveness, "process_absent", side_effect=lambda pid, live=births: pid not in live),
-                  patch.object(helper.session_liveness, "host_boot_time", return_value=boot)):
+                  patch.object(helper.session_liveness, "host_boot_time", return_value=boot),
+                  patch_attribute(tmux_terminal, "process_parents", return_value={pid: parent for pid in births})):
                 if recovered:
                     closed = helper.record_recovery(log, {**entry, "recovery": {"kind": "gone"}}, "supervisor")
                     helper.validate_finished(closed, "supervisor")

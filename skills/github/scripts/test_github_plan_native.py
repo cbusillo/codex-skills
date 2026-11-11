@@ -504,6 +504,11 @@ class NativeQueueTests(unittest.TestCase):
             facts = CLOSURE.transcript_facts(f.session, str(f.transcript), include_status=True)
             self.assertEqual(list(facts), [str(compressed.resolve())])
             self.assertTrue(facts[str(compressed.resolve())]["status"]["safe_verdict"])
+            snapshot = NATIVE.source_snapshot(f.entry, require_verdict=False)
+            self.assertEqual(snapshot["path"], str(compressed.resolve()))
+            compressed.write_bytes(compressed.read_bytes()[:-4])
+            with self.assertRaises(OSError):
+                NATIVE.source_snapshot(f.entry, require_verdict=False)
 
     def test_manual_file_deadline_preserves_the_observer_default_and_still_expires(self) -> None:
         from types import SimpleNamespace

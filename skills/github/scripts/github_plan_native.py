@@ -507,8 +507,10 @@ def _source_process(entry, saved, context=None, *, recorded=None):
 def _ended_original_activity(entry):
     """Once the recorded process is gone, its last transcript activity bounds the work it started.
 
-    A reboot after that activity ends everything the session ran; otherwise the
-    session's last turn must have ended, so no tool was still being started.
+    A reboot after that activity ends everything the session ran. Otherwise its
+    last turn must have ended, and nothing on its old TTY may be an orphan: work
+    a dead session left running is reparented to init, while a later terminal's
+    processes descend from that terminal's live owner.
     """
     from github_plan_sessions import native_helpers, process_liveness
     from github_plan_release import stamp
@@ -522,7 +524,16 @@ def _ended_original_activity(entry):
     booted = liveness.host_boot_time()
     if booted is not None and max(times) < booted:
         return max(times)
-    return max(times) if session_record.session_status(entry)["state"] == "turn_ended" else None
+    if session_record.session_status(entry)["state"] != "turn_ended" or not isinstance(entry.get("tty"), str):
+        return None
+    import release_session_claims
+    from tmux_terminal import process_parents
+    tty = entry["tty"].removeprefix("/dev/")
+    occupants = {pid for pid, process_tty, _command in release_session_claims.inventory() if process_tty == tty}
+    parents = process_parents()
+    if any(pid not in parents or parents[pid] not in occupants and parents[pid] <= 1 for pid in occupants):
+        return None
+    return max(times)
 
 
 def recheck_source_process(process):
@@ -553,7 +564,7 @@ authenticated_paths = _authenticated_paths
 
 def source_snapshot(entry: dict, process: _SourceProcess | None = None, *, require_verdict: bool = True) -> dict:
     """Only file/process reads; safe to await in a cancellable worker thread."""
-    from github_plan_sessions import configured_homes, observation_homes
+    from github_plan_sessions import configured_homes, native_helpers, observation_homes
     if process is None:
         process = verify_source_process(entry)
     else:
@@ -568,7 +579,7 @@ def source_snapshot(entry: dict, process: _SourceProcess | None = None, *, requi
         raise ValueError("native end proof requires the original owned source identity")
     generation = source.get("resumed_generation")
     home = Path(effective["codex_home"]).expanduser().resolve(strict=True)
-    primary = Path(effective["transcript"]).resolve(strict=True)
+    primary = native_helpers()[1].recorded_transcript(effective["transcript"])
     if generation is None and not any(primary.is_relative_to((home / root).resolve()) for root in ("sessions", "archived_sessions")):
         raise ValueError("native source home and transcript disagree")
     configured = set(configured_homes(strict=True))
@@ -778,8 +789,8 @@ def source_generation(entry: dict, saved: dict | None) -> dict | None:
 
 
 def _cancel_origin(entry, action):
-    from github_plan_sessions import configured_homes
-    primary = Path(entry["transcript"]).resolve(strict=True)
+    from github_plan_sessions import configured_homes, native_helpers
+    primary = native_helpers()[1].recorded_transcript(entry["transcript"])
     configured = set(configured_homes(strict=True))
     known = {Path(value).resolve(strict=True) for value in closure.action_homes(action)["known"]}
     if entry.get("codex_home"):
@@ -829,7 +840,7 @@ def _cancel_quiet(facts, snapshot, home, target):
 
 async def prove_crash_end(entry: dict, *, deadline: float | None = None, process: _TerminationProcess | None = None) -> None:
     import github_plan_termination as termination
-    from github_plan_sessions import observation_homes
+    from github_plan_sessions import native_helpers, observation_homes
     session = entry["session_id"]
     deadline = time.monotonic() + 600 if deadline is None else deadline
     if entry.get("harness") != "codex":
@@ -852,7 +863,8 @@ async def prove_crash_end(entry: dict, *, deadline: float | None = None, process
             raise ValueError("native crash proof requires verified reboot termination")
         termination.require_preboot_action(action, process.rebooted_at)
         reader = lambda lines: termination.native_transcript_records(entry, lines)
-        home, primary = Path(entry["codex_home"]).expanduser().resolve(strict=True), Path(entry["transcript"]).resolve(strict=True)
+        home = Path(entry["codex_home"]).expanduser().resolve(strict=True)
+        primary = native_helpers()[1].recorded_transcript(entry["transcript"])
         observed = observation_homes(strict=True, sources=[entry], actions=[action])
         if not any(primary.is_relative_to((candidate / name).resolve()) for candidate in observed for name in ("sessions", "archived_sessions")):
             raise ValueError("native crash transcript is outside established account roots")

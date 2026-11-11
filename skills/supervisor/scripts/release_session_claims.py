@@ -173,9 +173,10 @@ def validate_closure_state(entry: dict[str, Any], supervisor_session: str, *, na
         raise ValueError("transcript resumed after the recorded closure")
     if "verdict_at" in entry and entry["verdict_at"] != status["timestamp"]:
         raise ValueError("recorded verdict time differs from the verified transcript")
-    paths = {Path(entry["transcript"]).resolve()}
+    paths = {session_record.recorded_transcript(entry["transcript"])}
     for root in entry.get("_transcript_roots", []):
-        paths.update(p.resolve() for p in Path(root).rglob(f"*{entry['session_id']}*{Path(entry['transcript']).suffix}"))
+        for pattern in session_record.transcript_glob(entry["session_id"], Path(entry["transcript"]).suffix):
+            paths.update(p.resolve() for p in Path(root).rglob(pattern))
     for path in paths:
         other = session_record.session_status({**entry, "transcript": str(path)})
         records = session_record.read_jsonl(path)

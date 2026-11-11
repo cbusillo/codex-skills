@@ -118,6 +118,16 @@ def transcript_file(path: Path) -> Path:
     return compressed if path.suffix == ".jsonl" and not path.exists() and compressed.exists() else path
 
 
+def recorded_transcript(value: str | Path) -> Path:
+    """The existing file behind a recorded transcript name."""
+    return transcript_file(Path(value)).resolve(strict=True)
+
+
+def transcript_glob(session: str, suffix: str = ".jsonl") -> tuple[str, ...]:
+    """Patterns for a session's transcript copies, compressed or not."""
+    return (f"*{session}*{suffix}",) + ((f"*{session}*{suffix}.zst",) if suffix == ".jsonl" else ())
+
+
 def transcript_bytes(path: Path) -> bytes:
     path = transcript_file(path)
     if path.suffix != ".zst":
@@ -130,7 +140,7 @@ def transcript_bytes(path: Path) -> bytes:
 
 
 def transcript_lines(path: Path) -> list[str]:
-    return [line.decode("utf-8") for line in transcript_bytes(path).splitlines(keepends=True)]
+    return [line.decode() for line in transcript_bytes(path).splitlines(keepends=True)]
 
 
 def read_jsonl(path: Path) -> list[dict]:
