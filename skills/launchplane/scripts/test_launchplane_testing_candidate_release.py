@@ -112,8 +112,11 @@ def test_apply_without_matching_review_never_reaches_the_service(
     ],
 )
 def test_apply_outcomes_map_to_their_recovery(tmp_path: Path, error: Exception, expected: str) -> None:
+    from launchplane_testing_candidate_release import RECOVERY
+
     code, result, _ = invoke(argv("apply", reviewed_evidence(tmp_path)), error)
     assert code != 0 and result["status"] == expected
+    assert result["summary"]["recommendation"] == result["warnings"][0]["message"] == RECOVERY[expected]
     assert "PRIVATE_SENTINEL" not in json.dumps(result)
 
 

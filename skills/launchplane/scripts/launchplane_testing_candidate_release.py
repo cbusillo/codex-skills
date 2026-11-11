@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["jsonschema==4.26.0", "rfc3339-validator==0.1.4"]
+# dependencies = []
 # ///
 from __future__ import annotations
 
@@ -13,6 +13,8 @@ import urllib.error
 import urllib.parse
 from pathlib import Path
 from typing import Any
+
+from launchplane_testing_state import write_staged
 
 PREFIX = "testing-candidate-release-"
 COMMANDS = frozenset(PREFIX + mode for mode in ("dry-run", "apply", "readback"))
@@ -91,7 +93,7 @@ def intent(h: Any, args: argparse.Namespace) -> tuple[dict[str, str], dict[str, 
         "mode": mode,
     }
     body: dict[str, object] = {"mode": mode}
-    if getattr(args, "custody_evidence_file", None):
+    if getattr(args, "custody_evidence_file", None) is not None:
         from launchplane_website_indexing import destination
 
         if (
@@ -101,7 +103,6 @@ def intent(h: Any, args: argparse.Namespace) -> tuple[dict[str, str], dict[str, 
         ):
             raise ValueError("invalid_custody_request")
         destination(h, args.custody_evidence_file)
-        custody_reference(h, args.custody_evidence_file)
         body["include_evidence"] = True
     if args.receiver_operation_id is not None:
         receiver = h.public_identifier(args.receiver_operation_id)
@@ -329,21 +330,31 @@ def custody_reference(h: Any, path: str) -> str:
     return public_reference
 
 
-def retain_custody(h: Any, response: dict[str, Any], result: dict[str, object], path: str) -> dict[str, object]:
-    from jsonschema import Draft202012Validator, FormatChecker, validators
-    from launchplane_testing_state import write_staged
-
+def custody_validator() -> Any:
+    try:
+        from jsonschema import Draft202012Validator, FormatChecker, exceptions, validators
+    except ImportError:
+        raise ValueError("custody_validation_unavailable") from None
+    formats = FormatChecker()
+    if "date-time" not in formats.checkers:
+        raise ValueError("custody_validation_unavailable")
     schema_path = Path(__file__).resolve().parent.parent / "references" / "candidate-custody-evidence.schema.json"
-    packet = response.get("evidence")
+    try:
+        schema = json.loads(schema_path.read_text())
+        Draft202012Validator.check_schema(schema)
+    except (ValueError, OSError, exceptions.SchemaError):
+        raise ValueError("custody_validation_unavailable") from None
     checker = Draft202012Validator.TYPE_CHECKER.redefine(
         "integer",
         lambda _checker, value: type(value) is int and -(2**63) <= value < 2**63,
     )
-    validator = validators.extend(Draft202012Validator, type_checker=checker)(
-        json.loads(schema_path.read_text()), format_checker=FormatChecker()
-    )
+    return validators.extend(Draft202012Validator, type_checker=checker)(schema, format_checker=formats)
+
+
+def retain_custody(h: Any, response: dict[str, Any], result: dict[str, object], reference: str, validator: Any) -> dict[str, object]:
+    packet = response.get("evidence")
     if not isinstance(packet, dict) or not validator.is_valid(packet):
-        raise ValueError("invalid_custody_evidence")
+        raise ValueError("custody_evidence_unavailable")
     trace = response.get("trace_id")
     if (
         not isinstance(trace, str)
@@ -351,7 +362,7 @@ def retain_custody(h: Any, response: dict[str, Any], result: dict[str, object], 
         or h.public_trace_id(trace) != trace
         or packet.get("plan_sha256") != response.get("plan_sha256")
     ):
-        raise ValueError("invalid_custody_binding")
+        raise ValueError("custody_evidence_unavailable")
     canonical = json.dumps(
         without_nulls({key: value for key, value in packet.items() if key != "packet_sha256"}),
         sort_keys=True,
@@ -360,19 +371,19 @@ def retain_custody(h: Any, response: dict[str, Any], result: dict[str, object], 
     ).encode()
     packet_hash = hashlib.sha256(canonical).hexdigest()
     if packet.get("packet_sha256") != packet_hash:
-        raise ValueError("invalid_custody_hash")
+        raise ValueError("custody_evidence_unavailable")
     saved = {key: response[key] for key in ("product", "operation_id", "trace_id", "plan_sha256", "status")}
     saved["evidence"] = packet
     saved["release_review"] = result
     summary = {
         "status": response["status"],
         "plan_sha256": response["plan_sha256"],
-        "custody_evidence_file": custody_reference(h, path),
+        "custody_evidence_file": reference,
         "packet_sha256": packet_hash,
         "outcomes": custody_outcomes(packet),
     }
     h.assert_public_safe_shape(summary)
-    summary["file_sha256"] = write_staged(h, path, saved)
+    summary["file_sha256"] = write_staged(h, reference, saved)
     return summary
 
 
@@ -418,16 +429,18 @@ def finish(
     status: str,
     result: dict[str, object] | None = None,
     diagnostics: dict[str, object] | None = None,
+    recovery: str | None = None,
 ) -> int:
     output = h.base_payload(status=status, operation=operation, request=request)
     summary = dict(diagnostics or {})
-    summary.setdefault("recommendation", RECOVERY[status])
+    recommendation = recovery or RECOVERY[status]
+    summary["recommendation"] = recommendation
     output["summary"] = summary
     if result is not None:
         output["result"] = result
     if status != "ok":
         error_code = summary.get("error_code")
-        output["warnings"] = [h.warning(error_code if isinstance(error_code, str) else status, RECOVERY[status])]
+        output["warnings"] = [h.warning(error_code if isinstance(error_code, str) else status, recommendation)]
     for value in output.values():
         h.assert_public_safe_shape(value)
     h.emit(output)
@@ -437,6 +450,9 @@ def finish(
 def execute(h: Any, args: argparse.Namespace) -> int:
     operation = args.command
     request, body = intent(h, args)
+    evidence_file = getattr(args, "custody_evidence_file", None)
+    evidence_reference = custody_reference(h, evidence_file) if evidence_file is not None else ""
+    evidence_validator = custody_validator() if evidence_file is not None else None
     mode = request["mode"]
     if mode == "apply" and not reviewed(args.dry_run_evidence_file, request):
         return finish(
@@ -465,8 +481,8 @@ def execute(h: Any, args: argparse.Namespace) -> int:
             no_store=bool(body.get("include_evidence")),
         )
         result = project(h, response, request)
-        if getattr(args, "custody_evidence_file", None):
-            result = retain_custody(h, response, result, args.custody_evidence_file)
+        if evidence_file is not None:
+            result = retain_custody(h, response, result, evidence_reference, evidence_validator)
         status = "held" if result["status"] == "held" else "ok"
         return finish(
             h,
@@ -512,8 +528,8 @@ def execute(h: Any, args: argparse.Namespace) -> int:
                 diagnostics={
                     **h.service_response_diagnostics(response),
                     "error_code": "custody_evidence_unavailable",
-                    "recommendation": "The custody evidence could not be verified or saved. Preserve any private destination and existing holds; no saved evidence is established.",
                 },
+                recovery="The custody evidence could not be verified or saved. Preserve any private destination and existing holds; no saved evidence is established.",
             )
         return finish(
             h,

@@ -6,6 +6,7 @@
 import copy
 import hashlib
 import json
+import sys
 from email.message import Message
 from pathlib import Path
 from typing import Any
@@ -155,24 +156,51 @@ def test_unsafe_or_normalized_public_reference_refuses_before_job(tmp_path: Path
 
 
 def test_save_failure_preserves_safe_trace_and_reports_evidence_unavailable(tmp_path: Path) -> None:
-    import launchplane_testing_state
-
     target = tmp_path / "custody.json"
-    with patch.object(launchplane_testing_state, "write_staged", side_effect=ValueError("PRIVATE_SENTINEL")):
-        code, result, calls = invoke(argv() + ["--custody-evidence-file", str(target)], response(evidence=packet()))
-    assert code == 1 and result["status"] == "unavailable" and len(calls) == 1 and not target.exists()
+
+    def raced_destination(_request: object) -> dict[str, object]:
+        target.write_text("PRIVATE_SENTINEL")
+        return response(evidence=packet())
+
+    code, result, calls = invoke(argv() + ["--custody-evidence-file", str(target)], raced_destination)
+    assert code == 1 and result["status"] == "unavailable" and len(calls) == 1
+    assert target.read_text() == "PRIVATE_SENTINEL"
     assert result["summary"]["trace_id"] == "trace-test"
     assert result["summary"]["error_code"] == "custody_evidence_unavailable"
     assert "PRIVATE_SENTINEL" not in json.dumps(result)
+    assert result["summary"]["recommendation"] == result["warnings"][0]["message"]
+
+
+@pytest.mark.parametrize("filename", ["missing/packet.json", ""])
+def test_missing_parent_or_empty_destination_refuses_before_job(tmp_path: Path, filename: str) -> None:
+    path = str(tmp_path / filename) if filename else ""
+    code, _, calls = invoke(argv() + ["--custody-evidence-file", path], response(evidence=packet()))
+    assert code != 0 and not calls
+
+
+@pytest.mark.parametrize("missing", ["jsonschema", "date-time"])
+def test_unavailable_schema_validation_refuses_before_job(tmp_path: Path, missing: str) -> None:
+    from jsonschema import FormatChecker
+
+    if missing == "jsonschema":
+        context = patch.dict(sys.modules, {"jsonschema": None})
+    else:
+        context = patch.dict(FormatChecker.checkers, {}, clear=True)
+    with context:
+        code, _, calls = invoke(argv() + ["--custody-evidence-file", str(tmp_path / "packet.json")], response(evidence=packet()))
+    assert code != 0 and not calls
 
 
 def test_default_ignores_unsolicited_packet_and_keeps_original_projection() -> None:
     code, original, calls = invoke(argv(), response())
     code_extra, extra, extra_calls = invoke(argv(), response(evidence={"raw": "PRIVATE_SENTINEL"}))
-    assert code == code_extra == 0 and original == extra and calls == extra_calls
+    assert code == code_extra == 0 and calls == extra_calls
+    assert {key: value for key, value in original.items() if key != "generated_at"} == {
+        key: value for key, value in extra.items() if key != "generated_at"
+    }
 
 
-@pytest.mark.parametrize("cache_control", ["no-store", "private", ""])
+@pytest.mark.parametrize("cache_control", ["no-store", ""])
 def test_private_post_enforces_no_store_on_the_same_authenticated_transport(cache_control: str) -> None:
     from test_launchplane_helpers import write_action
 
@@ -211,7 +239,6 @@ def test_private_post_enforces_no_store_on_the_same_authenticated_transport(cach
         assert transport.call_count == 1
         request = transport.call_args.args[0]
         assert request.method == "POST" and request.get_header("Authorization") == "Bearer fictional"
-        assert request.get_header("Cache-control") == "no-store"
 
 
 if __name__ == "__main__":

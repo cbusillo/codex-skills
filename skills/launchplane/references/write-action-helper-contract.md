@@ -3181,7 +3181,8 @@ Dry run alone accepts `--custody-evidence-file /private/custody.json` to send
 `include_evidence: true` on that same authenticated POST. It rejects a receiver
 and requires a new file outside the checkout, with an existing writable parent.
 The response must carry `Cache-Control: no-store` and fit the existing private
-response limit. No additional service or provider request is made.
+response limit. Destination, validator and RFC3339 support are qualified before
+the request. No additional service or provider request is made.
 
 The file is created exclusively with mode 0600 and holds the unchanged custody
 packet, exact product/original/trace/plan/status envelope and existing projected

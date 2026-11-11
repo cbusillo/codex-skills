@@ -46,7 +46,7 @@
             "scripts/validate_execution_environment.py",
             "skills/github/scripts/test_github_work_evidence.py",
             "skills/history/scripts/test_search_history.py",
-            "skills/launchplane/scripts/launchplane_testing_candidate_release.py",
+            "skills/launchplane/scripts/launchplane-write-action.py",
             "skills/supervisor/scripts/iterm_tab.py"
           ],
           "testRoots": [
