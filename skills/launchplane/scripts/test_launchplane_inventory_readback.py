@@ -10,12 +10,14 @@ import json
 import stat
 import urllib.error
 from contextlib import redirect_stdout
+from email.message import Message
 from pathlib import Path
 from typing import Any, NamedTuple
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
+from launchplane_inventory_readback import PURCHASER
 from test_launchplane_helpers import write_action as helper
 
 
@@ -37,7 +39,7 @@ def intent() -> dict[str, Any]:
         "target_id": "target-fictional",
         "company_id": 7,
         "part_ids": ["11", "12"],
-        "purchaser_xmlid": "cm_custom.user_gunneet",
+        "purchaser_xmlid": PURCHASER,
     }
 
 
@@ -118,7 +120,9 @@ class Response(io.BytesIO):
     def __init__(self, value: object, cache_control: str = "private, no-store") -> None:
         super().__init__(value if isinstance(value, bytes) else json.dumps(value).encode())
         self.status = 200
-        self.headers = {"Cache-Control": cache_control}
+        self.headers = Message()
+        for header in cache_control.split(";"):
+            self.headers["Cache-Control"] = header
 
 
 def invoke(
@@ -128,11 +132,12 @@ def invoke(
     returned: object = None,
     cache_control: str = "private, no-store",
     error: Exception | None = None,
+    result_file: Path | None = None,
 ) -> Invocation:
     (tmp_path / "repo").mkdir(exist_ok=True)
     private = tmp_path / "request.json"
     private.write_text(json.dumps(intent() if request is None else request))
-    destination = tmp_path / "result.json"
+    destination = result_file if result_file is not None else tmp_path / "result.json"
     output = io.StringIO()
     with (
         patch.object(helper, "active_repo_root", return_value=tmp_path / "repo"),
@@ -280,7 +285,7 @@ def test_missing_no_store_refuses_before_private_save(tmp_path: Path, cache_cont
     assert not destination.exists()
 
 
-@pytest.mark.parametrize("returned", [b"PRIVATE_INVALID", b"{" + b"x" * (1024 * 1024), {"result": {}}])
+@pytest.mark.parametrize("returned", [b"PRIVATE_INVALID", {"result": {}}])
 def test_malformed_or_oversize_response_fails_without_disclosure(tmp_path: Path, returned: object) -> None:
     code, _, _, destination = invoke(tmp_path, returned=returned)
     assert code != 0
@@ -289,16 +294,19 @@ def test_malformed_or_oversize_response_fails_without_disclosure(tmp_path: Path,
 
 def test_http_error_does_not_save_or_disclose_private_body(tmp_path: Path) -> None:
     error = urllib.error.HTTPError("https://PRIVATE_HOST", 403, "PRIVATE_REASON", {}, io.BytesIO(b"PRIVATE_ERROR"))
-    code, _, _, destination = invoke(tmp_path, error=error)
+    code, public, _, destination = invoke(tmp_path, error=error)
     assert code != 0
+    assert public["status"] == "denied"
+    assert public["summary"]["http_status"] == 403
     assert not destination.exists()
 
 
 def test_existing_result_is_never_overwritten(tmp_path: Path) -> None:
     destination = tmp_path / "result.json"
     destination.write_text("retained")
-    code, _, _, _ = invoke(tmp_path)
+    code, _, transport, _ = invoke(tmp_path)
     assert code != 0
+    transport.assert_not_called()
     assert destination.read_text() == "retained"
 
 
@@ -347,6 +355,84 @@ def test_unknown_fields_at_every_private_boundary_fail_safely(tmp_path: Path, lo
         "facts": result["facts"],
     }[location]
     selected["future_field"] = "PRIVATE_FUTURE"
+    code, _, _, destination = invoke(tmp_path, returned=returned)
+    assert code != 0
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize("location", ["repo", "missing-parent", "nul"])
+def test_invalid_private_destination_is_refused_before_transport(tmp_path: Path, location: str) -> None:
+    destination = {
+        "repo": tmp_path / "repo" / "result.json",
+        "missing-parent": tmp_path / "missing" / "result.json",
+        "nul": tmp_path / "bad\0name",
+    }[location]
+    code, _, transport, _ = invoke(tmp_path, result_file=destination)
+    assert code != 0
+    transport.assert_not_called()
+
+
+@pytest.mark.parametrize("product", [".", "..", "example:alternate"])
+def test_product_uses_existing_read_path_validation(tmp_path: Path, product: str) -> None:
+    code, _, transport, _ = invoke(tmp_path, request={**intent(), "product": product})
+    assert code != 0
+    transport.assert_not_called()
+
+
+def test_valid_oversized_response_is_refused_by_transport_limit(tmp_path: Path) -> None:
+    returned = response()
+    returned["result"]["evidence"]["target_name"] = "x" * (1024 * 1024)
+    code, public, _, destination = invoke(tmp_path, returned=returned)
+    assert code != 0
+    assert public["status"] == "invalid"
+    assert not destination.exists()
+
+
+def test_separate_cache_control_headers_preserve_no_store(tmp_path: Path) -> None:
+    code, _, _, _ = invoke(tmp_path, cache_control="private;no-store")
+    assert code == 0
+
+
+def test_optional_runtime_identity_uses_exact_pinned_reference_digest(tmp_path: Path) -> None:
+    returned = response()
+    identity = returned["result"]["evidence"]["identity"]
+    del identity["product"]
+    del identity["image_digest"]
+    identity["image_reference"] = "registry.example.invalid/fictional@" + intent()["image_digest"]
+    code, _, _, destination = invoke(tmp_path, returned=returned)
+    assert code == 0
+    assert json.loads(destination.read_text()) == returned
+
+
+@pytest.mark.parametrize("field", ["evidence", "observed_at", "database_snapshot", "company_id", "facts", "purchaser"])
+def test_verified_runtime_requires_complete_bound_application_evidence(tmp_path: Path, field: str) -> None:
+    returned = response()
+    del returned["result"][field]
+    code, _, _, destination = invoke(tmp_path, returned=returned)
+    assert code != 0
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize(
+    "change", ["target", "partial-parts", "reordered-parts", "failure-stage", "supplier-type", "purchaser-type", "fact-type"]
+)
+def test_application_binding_and_nested_types_fail_closed(tmp_path: Path, change: str) -> None:
+    returned = response()
+    result = returned["result"]
+    if change == "target":
+        result["evidence"]["target_id"] = "another-target"
+    elif change == "partial-parts":
+        result["parts"] = result["parts"][:1]
+    elif change == "reordered-parts":
+        result["parts"].reverse()
+    elif change == "failure-stage":
+        result["failure_stage"] = "drift"
+    elif change == "supplier-type":
+        result["parts"][0]["supplier_costs"] = {"supplier_id": 1}
+    elif change == "purchaser-type":
+        result["purchaser"]["active"] = "yes"
+    else:
+        result["facts"]["parts"] = True
     code, _, _, destination = invoke(tmp_path, returned=returned)
     assert code != 0
     assert not destination.exists()

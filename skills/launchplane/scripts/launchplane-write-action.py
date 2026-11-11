@@ -696,7 +696,8 @@ def _read_service_response(response: Any, *, private_no_store: bool = False) -> 
     status = getattr(response, "status", None)
     if private_no_store:
         headers = getattr(response, "headers", {})
-        directives = {item.strip().lower() for item in headers.get("Cache-Control", "").split(",")}
+        cache_headers = headers.get_all("Cache-Control", []) if hasattr(headers, "get_all") else [headers.get("Cache-Control", "")]
+        directives = {item.strip().lower() for header in cache_headers for item in header.split(",")}
         if status != 200 or "no-store" not in directives:
             raise ServiceResponseError({})
     try:
@@ -13023,10 +13024,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     remediation.add_argument("--reviewed-dry-run", action="store_true")
     args = parser.parse_args(argv)
     import launchplane_website_indexing
+    from launchplane_inventory_readback import COMMAND as inventory_readback_command, TIMEOUT_SECONDS as inventory_readback_timeout
     from launchplane_disposable_lane import TIMEOUTS as disposable_lane_timeouts
     args.timeout = getattr(
         args, "timeout",
-        launchplane_website_indexing.TIMEOUT_SECONDS if args.command in launchplane_website_indexing.COMMANDS
+        inventory_readback_timeout if args.command == inventory_readback_command
+        else launchplane_website_indexing.TIMEOUT_SECONDS if args.command in launchplane_website_indexing.COMMANDS
         else disposable_lane_timeouts[args.command] if args.command in disposable_lane_timeouts
         else PREFLIGHT_TIMEOUT_SECONDS if args.command == PREFLIGHT
         else testing_resources_timeout if args.command.startswith("testing-replacement-resources-")

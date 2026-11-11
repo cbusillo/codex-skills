@@ -542,7 +542,6 @@ BOUNDED_READ_RESPONSE_FIELDS: dict[str, frozenset[str]] = {
         "governance-projection-read": {"status", "trace_id", "projection"},
         "merge-train-policy-targets-read": {"status", "trace_id", "policy", "targets"},
         "odoo-host-source-grants-read": {"status", "trace_id", "result"},
-        "odoo-inventory-readback": {"status", "trace_id", "result"},
         "path-check": {"status", "trace_id", "check"},
         "preview-history-read": {"status", "trace_id", "preview", "generations"},
         "private-health-endpoint-read": {

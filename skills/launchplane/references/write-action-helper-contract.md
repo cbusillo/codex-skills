@@ -48,14 +48,22 @@ using the existing private evidence writer. The closed response and all nested
 fields are checked before saving; unexpected fields or mismatched runtime,
 target, company or witness bindings fail safely. Stdout omits selectors,
 inventory, purchaser details, topology and evidence paths. Existing files are
-never overwritten. There is no local cache or automatic retry.
+never overwritten; destination and product-path checks run before transport.
+There is no local cache or automatic retry. The default timeout is 180 seconds;
+the global `--timeout` override remains supported. Shared safe diagnostics
+distinguish authorization, transport, response-validation and save failures.
+Keep real evidence in the owning task's private evidence directory under the
+repository's artifact rules; never publish its contents.
 
 The private result preserves omitted optional fields, nulls, zeroes and
 `present`, `missing`, `unavailable` and runtime `unknown` distinctions. Exit
 zero means a valid private response was saved, including a response that says
 runtime `unknown`; inspect its contents for the actual outcome. Database UUID
 and transaction snapshot describe the current observation, not immutable
-restore provenance. Historical importer reconciliation remains unavailable,
+restore provenance. The producer binds witnesses in request order. Optional
+runtime product and digest fields follow the existing native identity checks;
+an omitted digest must match through the pinned image reference instead.
+Historical importer reconciliation remains unavailable,
 and purchaser first sign-in remains `not_observed`. This read performs no
 import, restore, health qualification, external source probe or access change.
 Original, custody, unknown-effect and production holds remain in force.

@@ -11,11 +11,13 @@ import re
 import urllib.error
 from typing import Any
 
-from launchplane_native_evidence import _closed_object
+from launchplane_native_evidence import _closed_object, _runtime_identity
 from launchplane_safety import LaunchplaneSafetyError
 from launchplane_testing_state import write_staged
+from launchplane_website_indexing import destination as validate_destination
 
 COMMAND = "odoo-inventory-readback"
+TIMEOUT_SECONDS = 180.0
 PURCHASER = "cm_custom.user_gunneet"
 BINDING_FIELDS = {
     "context",
@@ -240,45 +242,13 @@ def validate_evidence(value: object, intent: dict[str, Any]) -> None:
     for field in ("target_id", "target_name", "container_id", "observed_at"):
         require(isinstance(evidence[field], str))
     require(evidence["target_id"] == intent["target_id"])
-    identity = _closed_object(
-        evidence["identity"],
-        {
-            "context",
-            "instance",
-            "deployment_record_id",
-            "artifact_id",
-            "source_git_ref",
-        },
-        {
-            "schema_version",
-            "product",
-            "environment_kind",
-            "image_reference",
-            "release_tuple_id",
-            "preview_id",
-            "preview_generation_id",
-            "deployed_at",
-            "slot",
-            "release_id",
-            "image_digest",
-            "database_uuid",
-        },
-    )
-    for field, item in identity.items():
-        if field == "schema_version":
-            require(type(item) is int and item >= 1)
-        else:
-            require(isinstance(item, str))
-    for field in (
-        "product",
-        "context",
-        "deployment_record_id",
-        "artifact_id",
-        "source_git_ref",
-        "image_digest",
-    ):
-        require(identity.get(field) == intent[field])
-    require(identity["instance"] == "testing")
+    identity = evidence["identity"]
+    _runtime_identity(identity, {**intent, "instance": "testing", "request": intent})
+    require(identity["deployment_record_id"] == intent["deployment_record_id"])
+    digest = identity.get("image_digest") or identity.get("image_reference", "").rpartition("@")[2]
+    require(digest == intent["image_digest"])
+    if identity.get("image_reference"):
+        require(identity["image_reference"].rpartition("@")[2] == intent["image_digest"])
 
 
 def validate_response(value: object, intent: dict[str, Any]) -> dict[str, Any]:
@@ -352,7 +322,8 @@ def execute(h: Any, args: argparse.Namespace) -> int:
     try:
         intent = validate_intent(h.read_payload_file(args.payload_file))
         destination = args.result_file
-        require(isinstance(destination, str) and destination.strip() not in ("", "-"))
+        validate_destination(h, destination)
+        path = h._product_read_path(COMMAND, product=intent["product"])
     except (ValueError, OSError):
         h.emit(
             h.unavailable_payload(
@@ -367,11 +338,12 @@ def execute(h: Any, args: argparse.Namespace) -> int:
     settings = h.prepare_operator_settings(args=args, operation=COMMAND, request=request)
     if settings is None:
         return 2
+    response = None
     try:
         response = h.request_launchplane_read(
             service_url=settings["service_url"],
             settings=settings,
-            path=h.helper_command_path(COMMAND).format(product=intent["product"]),
+            path=path,
             query={key: str(value) if type(value) is int else value for key, value in intent.items() if key != "product"},
             timeout=args.timeout,
             no_store=True,
@@ -385,18 +357,32 @@ def execute(h: Any, args: argparse.Namespace) -> int:
             "applied": False,
         }
         payload["summary"] = {
-            "recommendation": "Read the private current-facts evidence. Historical reconciliation and first sign-in remain unobserved; existing holds remain."
+            **h.service_response_diagnostics(response),
+            "recommendation": "Read the private current-facts evidence. Historical reconciliation and first sign-in remain unobserved; existing holds remain.",
         }
         h.emit(payload)
         return 0
-    except (ValueError, OSError, http.client.HTTPException, urllib.error.URLError):
+    except urllib.error.HTTPError as error:
+        try:
+            h.emit_http_error_payload(operation=COMMAND, request=request, exc=error)
+        finally:
+            error.close()
+    except h.ServiceResponseError as error:
+        h.emit_safety_error_payload(
+            operation=COMMAND, request=request, exc=LaunchplaneSafetyError("invalid_response"), provider_payload=error
+        )
+    except LaunchplaneSafetyError as error:
+        h.emit_safety_error_payload(operation=COMMAND, request=request, exc=error, provider_payload=response)
+    except ValueError:
         h.emit(
             h.unavailable_payload(
                 operation=COMMAND,
                 request=request,
                 status="unavailable",
-                code="inventory_read_unavailable",
-                message="The inventory read or private save failed. No application outcome is established; retain existing evidence and holds.",
+                code="private_result_unavailable",
+                message="The private result could not be saved. Retain existing evidence and holds; no application outcome is established.",
             )
         )
-        return 1
+    except (OSError, http.client.HTTPException, urllib.error.URLError) as error:
+        h.emit_read_transport_error(operation=COMMAND, request=request, timeout=args.timeout, exc=error)
+    return 1
