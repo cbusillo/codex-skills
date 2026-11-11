@@ -72,6 +72,14 @@ LOCAL_EXTENSION_ROUTES = {
         }
         for mode in ("dry-run", "apply", "readback")
     },
+    **{
+        "testing-candidate-release-" + mode: {
+            "method": "POST",
+            "path": "/v1/products/{product}/testing-rebuild/{operation_id}/candidate-release",
+            "mode": mode,
+        }
+        for mode in ("dry-run", "apply", "readback")
+    },
     "context-runtime-settings-read": {
         "method": "GET", "path": "/v1/contexts/{context}/runtime-settings", "mode": "read",
     },

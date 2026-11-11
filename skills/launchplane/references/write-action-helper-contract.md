@@ -2949,6 +2949,45 @@ request; `stale_plan` requires refreshing and reviewing the exact dry-run. The f
 operation; public PR history contains the head, reason and Director citation.
 
 
+## Failed testing candidate release
+
+`testing-candidate-release-dry-run`, `-apply` and `-readback` use
+`POST /v1/products/{product}/testing-rebuild/{operation_id}/candidate-release`
+with `--product` and `--operation-id` of a failed native testing rebuild. They
+release that operation's private candidate containers and labeled volumes and
+keep the operation record, failure receipts and evidence. See Launchplane's
+[testing candidate storage](https://github.com/cbusillo/launchplane/blob/main/docs/testing-candidate-release.md)
+for what the service refuses and why.
+
+Save the dry-run JSON outside the checkout. It reports `eligible`, `held` or
+`absent`, with the plan digest and failure code. Apply requires an eligible
+plan, `--reviewed-dry-run --dry-run-evidence-file /private/dry.json`,
+`--expected-plan-digest` from `result.plan_sha256`, and `--idempotency-key`.
+The optional `--receiver-operation-id` assesses the migrated receiver's backing
+capacity. Supply the same receiver or omit it consistently for dry run,
+apply and readback. Apply checks the saved product, candidate, receiver and
+digest before calling the service.
+
+Candidate results report the selected original and other candidates in the same
+context, with custody reasons and resource evidence. To review a different
+candidate, dry-run its own original operation. `capacity` reports free bytes,
+required additional bytes, reserve and deficit for each assessed backing.
+A `capacity_refusal` leaves capacity unresolved. `reclaimable_bytes` is an
+estimate when present. Physical readback reports observed free-space change by
+volume identity, which can include concurrent activity. A `released` result
+means the reviewed eligible resources are absent. Protected source volumes
+can remain.
+
+On `held`, inspect the candidate and resource reasons. Any further attempt
+requires a fresh eligible plan and a new key if the previous key was used.
+On `outcome_unknown`, preserve the original request, evidence, digest and key
+and use `testing-candidate-release-readback` with those arguments. On the
+converged producer, an apply with the same key after uncertain effects
+observes the original receipt until its effects are known. A new key is for
+a new eligible plan after settlement. A stale plan requires a fresh review,
+a reused key belongs to its original request, and a missing receipt means
+no release was recorded for that key.
+
 ## Governance projection read
 
 `governance-projection-read --repository OWNER/REPO --base-branch BRANCH --pr N`
