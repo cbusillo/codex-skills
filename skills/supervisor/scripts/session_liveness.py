@@ -606,6 +606,16 @@ def native_exit_cutoff(entry):
         return None
 
 
+def tty_has_orphan(tty: str, rows: list[tuple[int, str, str]]) -> bool:
+    # https://man7.org/linux/man-pages/man2/PR_SET_CHILD_SUBREAPER.2const.html
+    if sys.platform != "darwin":
+        return any(process_tty == tty.removeprefix("/dev/") for _pid, process_tty, _command in rows)
+    from tmux_terminal import process_parents
+    occupants = {pid for pid, process_tty, _command in rows if process_tty == tty.removeprefix("/dev/")}
+    parents = process_parents()
+    return any(pid not in parents or parents[pid] not in occupants and parents[pid] <= 1 for pid in occupants)
+
+
 def replacement_tty_owner(entry, rows, *, started_at):
     """Prove one newer process tree after the exact source pane disappeared."""
     socket = entry.get("tmux_socket", "supervisor")

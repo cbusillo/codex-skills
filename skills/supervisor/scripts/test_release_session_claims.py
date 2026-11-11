@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["zstandard==0.25.0"]
 # ///
 """Disposable transcripts and GitHub adapters exercise session claim release."""
 
@@ -27,6 +27,7 @@ from typing import Any
 import release_session_claims as helper
 from skills.github.scripts import github_plan_claim, github_plan_release
 closure = importlib.import_module("github_plan_closure")
+tmux_terminal = importlib.import_module("tmux_terminal")
 identity = importlib.import_module("github_identity")
 
 ACTOR = "test-automation[bot]"
@@ -133,6 +134,67 @@ class ReleaseTests(unittest.TestCase):
         self.assertTrue(all(saved[key] == value for key, value in original.items()))
         self.assertNotIn("verdict_at", saved)
         self.assertFalse(helper.session_record.session_status(saved)["safe_verdict"])
+
+    def test_gone_recovery_reads_the_compressed_transcript_and_refuses_damaged_copies(self) -> None:
+        import zstandard
+        compressed = self.transcript.with_name(self.transcript.name + ".zst")
+        packed = zstandard.ZstdCompressor().compress(self.transcript.read_bytes())
+        self.transcript.unlink()
+        original = {key: value for key, value in self.entry.items() if key not in {"ended_at", "process_exit_verified"}}
+        for variant, data in (("compressed", packed), ("truncated", packed[:-4]), ("missing", None)):
+            compressed.unlink(missing_ok=True)
+            if data is not None:
+                compressed.write_bytes(data)
+            log = self.root / f"{variant}.json"
+            with (self.subTest(variant=variant), patch_attribute(closure, "ownership", return_value=contextlib.nullcontext()),
+                  patch.object(helper, "recovery_claims")):
+                if variant != "compressed":
+                    with self.assertRaises(OSError):
+                        helper.record_recovery(log, {**original, "recovery": {"kind": "gone"}}, "supervisor")
+                    continue
+                closed = helper.record_recovery(log, {**original, "recovery": {"kind": "gone"}}, "supervisor")
+                self.assertEqual(closed["transcript"], str(self.transcript))
+                self.assertEqual(helper.validate_finished(closed, "supervisor")["state"], "turn_ended")
+
+    def test_gone_recovery_asks_whether_the_original_process_exists_not_whether_its_tty_is_used(self) -> None:
+        last = github_plan_release.stamp("2026-01-01T00:01:01Z")
+        later, earlier = last + timedelta(days=1), last - timedelta(seconds=1)
+        source = {key: value for key, value in self.entry.items() if key not in {"ended_at", "process_exit_verified"}}
+        launched = {**source, "launch_pid": source["pid"], "launch_started_at": (earlier - timedelta(minutes=1)).isoformat()}
+        unrelated = "sleep 60"
+        terminal, launchd = 999, 1
+        cases = (
+            ("newer occupant of a later terminal", source, {456: later}, terminal, None, True),
+            ("orphaned work the session left", source, {456: later}, launchd, None, False),
+            ("orphan after a reboot ended the session", source, {456: later}, launchd, last + timedelta(hours=1), True),
+            ("recorded PID still present after its launch", launched, {source["pid"]: later}, terminal, None, False),
+            ("older occupant may be its work", source, {456: earlier}, terminal, None, False),
+            ("source process alive", source, {source["pid"]: earlier}, terminal, None, False),
+            ("source alive without launch time", source, {source["pid"]: later}, terminal, None, False),
+        )
+        for name, entry, births, parent, boot, recovered in cases:
+            rows = [(pid, source["tty"], "codex" if pid == source["pid"] and born < last else unrelated)
+                    for pid, born in births.items()]
+            log = self.root / f"{name}.json"
+            with (self.subTest(name), patch_attribute(closure, "ownership", return_value=contextlib.nullcontext()),
+                  patch.object(helper, "recovery_claims"), patch.object(helper, "inventory", return_value=rows),
+                  patch.object(helper.session_liveness, "inventory", return_value=rows),
+                  patch_attribute(closure, "process_started_at", side_effect=births.__getitem__),
+                  patch.object(helper.session_liveness, "process_started_at", side_effect=births.__getitem__),
+                  patch.object(helper.session_liveness, "process_absent", side_effect=lambda pid, live=births: pid not in live),
+                  patch.object(helper.session_liveness, "host_boot_time", return_value=boot),
+                  patch_attribute(tmux_terminal, "process_parents", return_value={pid: parent for pid in births}),
+                  patch.object(helper.session_liveness.sys, "platform", "darwin")):
+                if recovered:
+                    closed = helper.record_recovery(log, {**entry, "recovery": {"kind": "gone"}}, "supervisor")
+                    helper.validate_finished(closed, "supervisor")
+                else:
+                    with self.assertRaises(ValueError):
+                        helper.record_recovery(log, {**entry, "recovery": {"kind": "gone"}}, "supervisor")
+
+    def test_off_macos_any_tty_occupant_may_be_adopted_leftover_work(self) -> None:
+        with patch.object(helper.session_liveness.sys, "platform", "linux"):
+            self.assertTrue(helper.session_liveness.tty_has_orphan("ttys123", [(456, "ttys123", "sleep 60")]))
 
     def test_recovered_custody_is_not_releasable_by_backfill(self) -> None:
         ledger, log = self.root / "ledger.json", self.root / "closed.json"

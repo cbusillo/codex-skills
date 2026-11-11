@@ -88,6 +88,7 @@
       <w>socketpair</w>
       <w>sockname</w>
       <w>strftime</w>
+      <w>subreaper</w>
       <w>surrogateescape</w>
       <w>surrogatepass</w>
       <w>tinyauth</w>

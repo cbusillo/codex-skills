@@ -2251,6 +2251,13 @@ inventing a Safe verdict, then retires only that row. A missing terminal needs n
 terminal action. Live or uncertain processes, claims, incomplete reads and
 unresolved mutations still refuse.
 
+Recovery's process exit asks whether the recorded process still exists. Once its
+PID is gone, its old TTY blocks only for processes born before the session's last
+transcript activity, which counts once its last turn ended or the host has booted
+since. A later occupant of a reused TTY does not block; a recorded PID that is
+present again still refuses. A recorded transcript that Codex has
+since compressed to `.jsonl.zst` is read in place; a damaged copy refuses.
+
 A generation that handed off may use the same command with
 `--handoff-url <posted-safe-handoff>` and `--successor-session <native-id>`.
 Before its normal guarded quit, recovery verifies recorded successor admission,
