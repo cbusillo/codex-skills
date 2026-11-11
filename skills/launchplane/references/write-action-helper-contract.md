@@ -1578,6 +1578,48 @@ credential or provider write. Source validation uses offline tests only.
   from the service's candidate, never caller-supplied domains or provider ids.
   Blocked/conflict plans are diagnostic evidence and never apply eligible.
 
+For private inputs, add `--result-file /private/new-route-inputs.json` to
+`route-authority-discover`. The existing private destination validator and
+exclusive mode-0600 writer require a new file outside the repository; existing
+files and symlinks are preserved. Stdout remains the bounded public summary,
+with `private_result_saved: true` only after a successful save. No raw service
+response, credentials, provider evidence, configuration, unrelated lanes or
+URLs are exported. The read makes no plan or mutation.
+
+The private JSON packet has `kind: "route-authority-inputs"`, `schema_version: 1`,
+`scope: {product, context, instance}`, authoritative `production_use`,
+`expected_current: {state, record_sha256}` for a present binding,
+`recorded_binding: {domains, edge_endpoint_key, target_name, target_category,
+provider_target_type, tls_owner, status}`, and
+`current_target: {target_id, target_type, tracked_domains, provider_domains}`.
+Recorded binding domains remain explicitly separate from the current tracked
+and provider domains. The latter use the existing inspect reader and identity
+comparison, and must agree in full. The current binding digest is reread before
+saving. Truncated, missing, unknown, mismatched or untraced evidence cannot
+produce a usable ingress packet. Missing `production_use` and explicit
+`unknown` return different error codes. The original untraced HTTP404 cause
+remains unknown; these projections do not diagnose it.
+
+For a present binding, `ingress_payload` contains the exact scope, a verification
+reason and `route: {domain_names, edge_endpoint_key}`. It intentionally omits
+host ID and scalar settings, which the existing effect-free comparison derives
+and binds privately. Pass the **whole saved discovery packet** directly to
+`route-binding-dry-run --ingress-payload-file /private/new-route-inputs.json`;
+no extraction, manual inventory or new permission is required. Existing plain
+ingress files and explicit caller host/settings expectations remain supported.
+The saved packet is input, never authorization, a reviewed plan or a freshness
+claim: the continuation repeats its normal current-source comparisons and CAS.
+
+Confirmed absence instead saves `expected_current: {state: "absent"}`,
+`recorded_binding: null`, `ingress_payload: null` and
+`next_operation: "route-binding-dry-run"`. It invents no edge, target or binding;
+use that owning job without an ingress file. `route-binding-read --result-file`
+saves only the recorded binding projection and digest (or confirmed absence),
+without a product-profile or provider read, `production_use`, `current_target`
+or usable ingress payload. Its recorded domains are never current inventory.
+Private-file save failure reports `private_result_unavailable`; preserve any
+partial destination before choosing a new path.
+
 For the supported verification-to-reconciliation continuation, pass
 `--ingress-payload-file <private-file>` to `route-binding-dry-run`. It uses the same ingress input above and opts into
 verification only when reconcile reports solely `ingress_audit_missing` or
