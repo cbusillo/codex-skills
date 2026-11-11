@@ -1206,9 +1206,9 @@ class PrimaryReadTests(unittest.TestCase):
         self.assertNotIn("ask=", waits[3])
 
     def test_an_answered_wait_outside_a_milestone_asks_for_an_owner(self) -> None:
-        answered = {"url": "https://github.com/owner/site/issues/317", "waiting_for": "Justin answers the copy questions",
-                    "ask": {"ask_url": "https://github.com/owner/site/issues/317#issuecomment-5", "author": "helper-bot", "replied_since": True}}
-        waiting = {**answered, "url": "https://github.com/owner/site/issues/318", "ask": {**answered["ask"], "replied_since": False}}
+        ask = {"ask_url": "https://github.com/owner/site/issues/317#issuecomment-5", "author": "helper-bot", "replied_since": True}
+        answered = {"url": "https://github.com/owner/site/issues/317", "waiting_for": "Justin answers the copy questions", "ask": ask}
+        waiting = {**answered, "url": "https://github.com/owner/site/issues/318", "ask": {**ask, "replied_since": False}}
         selection = {"waiting": [answered, waiting], "recorded_waits": [answered]}
         self.assertFalse([line for line in self.run_digest(selection) if line.startswith("ANSWERED")])
         primary = routine_check.primary_reads(selection, [], owner_review=Mock(return_value=None), client_release=Mock(),
