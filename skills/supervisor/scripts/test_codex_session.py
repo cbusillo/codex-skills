@@ -189,7 +189,7 @@ class ResumeTests(unittest.TestCase):
 
     def test_queue_cli_preserves_certain_absence_but_never_relabels_permission_or_native_refusal(self) -> None:
         for cause, not_sent in ((ValueError("not loaded"), True), (PermissionError("denied"), False),
-                                (SESSION.NativeRequestRejected("rejected"), False)):
+                                (TimeoutError(), True), (SESSION.NativeRequestRejected("rejected"), False)):
             error = SESSION.QueueNotSent(str(cause))
             error.__cause__ = cause
             output = io.StringIO()
@@ -198,6 +198,7 @@ class ResumeTests(unittest.TestCase):
                     patch.dict(SESSION.__dict__, {"run": MagicMock(side_effect=error)}), contextlib.redirect_stdout(output):
                 self.assertEqual(SESSION.main(), 1)
             self.assertEqual(json.loads(output.getvalue())["not_sent"], not_sent)
+            self.assertTrue(json.loads(output.getvalue())["error"])
 
     def test_generic_launch_and_resume_preserve_the_callers_label(self) -> None:
         observed = []

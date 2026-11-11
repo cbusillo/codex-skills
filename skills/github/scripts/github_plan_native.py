@@ -39,12 +39,14 @@ async def connection(home: Path, *, max_msg_size: int = 64 * 1024 * 1024, deadli
     if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
         raise ValueError("native socket ownership is unavailable")
     sequence = 0
+    stage = "connect"
     try:
         async with asyncio.timeout(read_timeout(deadline_at)):
             async with aiohttp.ClientSession(connector=aiohttp.UnixConnector(path=str(endpoint))) as client:
                 async with client.ws_connect("http://localhost/", max_msg_size=max_msg_size) as ws:
                     async def request(method: str, params: dict) -> Any:
-                        nonlocal sequence
+                        nonlocal sequence, stage
+                        stage = method
                         sequence += 1
                         await ws.send_json({"id": sequence, "method": method, "params": params})
                         while True:
@@ -68,6 +70,8 @@ async def connection(home: Path, *, max_msg_size: int = 64 * 1024 * 1024, deadli
                         raise ValueError("native daemon home identity disagrees with the source")
                     await ws.send_json({"method": "initialized"})
                     yield request
+    except TimeoutError as error:
+        raise TimeoutError(f"native {stage} timed out ({type(error).__name__}); preserve state before retrying") from error
     except aiohttp.ClientError as error:
         if isinstance(error, (OSError, ValueError)):
             raise  # Preserve existing known-absence and ordinary refusal handling.
@@ -521,7 +525,7 @@ def _authenticated_paths(snapshots, homes):
 authenticated_paths = _authenticated_paths
 
 
-def source_snapshot(entry, process=None):
+def source_snapshot(entry: dict, process: _SourceProcess | None = None, *, require_verdict: bool = True) -> dict:
     """Only file/process reads; safe to await in a cancellable worker thread."""
     from github_plan_sessions import configured_homes, observation_homes
     if process is None:
@@ -548,7 +552,8 @@ def source_snapshot(entry, process=None):
     homes = {home, *(Path(value) for value in scope["known"])}
     if source.get("codex_home") is not None:
         homes.add(Path(source["codex_home"]).expanduser().resolve(strict=True))
-    snapshots = closure.transcripts(session, str(primary), include_status=True, additional_homes=homes)
+    read = closure.transcripts if require_verdict else closure.transcript_facts
+    snapshots = read(session, str(primary), include_status=True, additional_homes=homes)
     if context is not None:
         from github_plan_release import stamp
         for snapshot in snapshots.values():
@@ -630,12 +635,14 @@ def current_facts(value):
     return result
 
 
-async def prove_end(entry, request=None, *, process=None):
+async def prove_end(entry: dict, request: Any = None, *, process: _SourceProcess | None = None,
+                    require_verdict: bool = True) -> dict:
     """Return immutable read facts; the owner clears its barrier after awaiting."""
     session = entry["session_id"]
     action = closure.lease_state(session)
-    before = (await asyncio.to_thread(source_snapshot, entry) if process is None else
-              await asyncio.to_thread(source_snapshot, entry, process))
+    options = {} if require_verdict else {"require_verdict": False}
+    before = (await asyncio.to_thread(source_snapshot, entry, **options) if process is None else
+              await asyncio.to_thread(source_snapshot, entry, process, **options))
     async with AsyncExitStack() as connections:
         readers = {}
         for home in before["homes"]:
@@ -655,7 +662,7 @@ async def prove_end(entry, request=None, *, process=None):
         # The last native persistence read can commit buffered events. Read the
         # canonical source after that fence, never accept an earlier snapshot.
         try:
-            after = await asyncio.to_thread(source_snapshot, entry, before["process"])
+            after = await asyncio.to_thread(source_snapshot, entry, before["process"], **options)
         except _SourceEndMismatch as error:
             # Qualification was already complete before the RPC sandwich.
             # New activity during it is a changed source, not another candidate.

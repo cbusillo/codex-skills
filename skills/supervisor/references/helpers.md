@@ -2238,6 +2238,41 @@ resolution still apply; release grants no product, runtime or merge authority.
 
 ### Release a verified finished session
 
+For a gone session without a final verdict, reuse its original closeout evidence:
+
+```sh
+uv run skills/supervisor/scripts/session_closeout.py --ledger <private-ledger.json> --session-id <native-id> --supervisor-session <supervisor-id> --owner OWNER --evidence <original-closeout-evidence> --recover-ended
+```
+
+Recovery requires verified process exit, quiet authenticated native copies and
+complete exact claim-release coverage, including repositories using live claims.
+It preserves the original ledger custody in the canonical closed log without
+inventing a Safe verdict, then retires only that row. A missing terminal needs no
+terminal action. Live or uncertain processes, claims, incomplete reads and
+unresolved mutations still refuse.
+
+A generation that handed off may use the same command with
+`--handoff-url <posted-safe-handoff>` and `--successor-session <native-id>`.
+Before its normal guarded quit, recovery verifies recorded successor admission,
+an unchanged automation-authored Safe handoff bound to this source generation,
+a later successor row for the same repository and work issue,
+and no worker rows still owned by the source. The successor may be in
+the active ledger or canonical closed log. Native idle, input, PID, TTY and
+actual process-exit checks still apply. With one matching active successor the
+helper can discover it; otherwise select its exact ID. Keep the same journal
+after a definite refusal. An uncertain mutation still requires reconciliation.
+The Safe verdict may already be in a completed native turn after that posted
+handoff; a later acknowledgement does not erase it. An explicitly conditional
+handoff still refuses. Recovery never writes a replacement verdict.
+
+`release_session_claims.py finish --recover-ended` previews this claim-free
+closure after process exit; add `--apply` to record it. Use the same successor
+and handoff options for handed-off custody. Finish does not remove the active
+row or close its terminal; `session_closeout.py` completes those steps. Backfill
+reports recovered rows as non-releasable and never creates an attestation or
+claim release from them. Refusals include a gate and nonempty error; native
+timeouts name the stalled operation, preserving queue uncertainty.
+
 Normal shutdown uses [Routine check](routine-check.md); exceptional input,
 reviews and handoffs follow [shutdown](../SKILL.md#close-finished-sessions-on-every-notice-and-check).
 Preserve the original journal on recovery:

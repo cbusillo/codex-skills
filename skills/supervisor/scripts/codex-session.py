@@ -100,7 +100,7 @@ def run(args) -> int:
             try:
                 status.update(asyncio.run(session_queue(home.expanduser().resolve(strict=True), args.session_id)))
             except (OSError, ValueError) as error:
-                status["queue_error"] = str(error)
+                status["queue_error"] = str(error) or type(error).__name__
         print(json.dumps(status))
         return 0
     home = (args.codex_home or recorded_lead_home(args.session_id, args.ledger)).expanduser().resolve(strict=True)
@@ -177,7 +177,8 @@ def main() -> int:
         return run(args)
     except QueueNotSent as error:
         refused = isinstance(error.__cause__, (PermissionError, NativeRequestRejected))
-        print(json.dumps({"ok": False, "error": str(error), "not_sent": not refused}))
+        print(json.dumps({"ok": False, "gate": args.command,
+                          "error": str(error) or type(error).__name__, "not_sent": not refused}))
         return 1
     except (KeyError, TypeError):
         if args.command != "queue-cancel":
@@ -185,7 +186,7 @@ def main() -> int:
         print(json.dumps({"ok": False, "error": "Malformed source record; preserve current state."}))
         return 1
     except (OSError, ValueError, subprocess.SubprocessError) as error:
-        print(json.dumps({"ok": False, "error": str(error)}))
+        print(json.dumps({"ok": False, "gate": args.command, "error": str(error) or type(error).__name__}))
         return 1
 
 

@@ -232,6 +232,70 @@ class NativeFactsTests(unittest.IsolatedAsyncioTestCase):
 
 
 class NativeQueueTests(unittest.TestCase):
+    def test_recovery_qualifies_the_recorded_resumed_generation_without_an_end_time(self) -> None:
+        import uuid
+        with ReceiptFixture(str(uuid.uuid4())) as fixture:
+            records = [json.loads(line) for line in fixture.transcript.read_text().splitlines()]
+            records[2]["payload"]["message"] = "Handoff already posted."
+            fixture.transcript.write_text("\n".join(json.dumps(row) for row in records) + "\n")
+            generation = {key: fixture.entry[key] for key in (
+                "codex_home", "launch_pid", "launch_generation", "launch_started_at", "pid", "tty", "transcript")}
+            saved = {**fixture.entry, "resumed_at": "2026-10-01T02:01:00Z", "resumed_generation": generation}
+            fixture.log.write_text(json.dumps([saved]))
+            source = {**fixture.entry, "recovery": {"kind": "gone"}}
+            with patch.object(fixture.release, "recovery_claims"):
+                closed = fixture.release.record_recovery(fixture.log, source, "supervisor")
+                self.assertTrue(closed["process_exit_verified"])
+                self.assertFalse(closed.get("resumed_at"))
+                self.assertNotIn("verdict_at", closed)
+                fixture.log.write_text(json.dumps([{**saved, "resumed_generation": {**generation, "launch_generation": "another"}}]))
+                with self.assertRaises(ValueError):
+                    fixture.release.record_recovery(fixture.log, source, "supervisor")
+
+    def test_missing_verdict_native_proof_still_requires_runtime_quiet(self) -> None:
+        import uuid
+        with ReceiptFixture(str(uuid.uuid4())) as fixture:
+            records = [json.loads(line) for line in fixture.transcript.read_text().splitlines()]
+            records[2]["payload"]["message"] = "Already handed off."
+            fixture.transcript.write_text("\n".join(json.dumps(row) for row in records) + "\n")
+            fixture.log.write_text("[]")
+            with self.assertRaises(ValueError):
+                asyncio.run(NATIVE.prove_end(fixture.entry))
+            proof = asyncio.run(NATIVE.prove_end(fixture.entry, require_verdict=False))
+            self.assertFalse(proof["snapshot"]["transcripts"][str(fixture.transcript)]["status"]["safe_verdict"])
+            fixture.queue_items = [{"id": "pending", "clientUserMessageId": "client", "input": []}]
+            with self.assertRaises(ValueError):
+                asyncio.run(NATIVE.prove_end(fixture.entry, require_verdict=False))
+            fixture.queue_items = []
+            fixture.native_state = "notLoaded"
+            with CLOSURE.ownership(fixture.session, create=True):
+                CLOSURE.set_action_pending(fixture.session, True, method="opaque-fixture-action", home=fixture.home)
+            with patch.object(fixture.release, "recovery_claims"):
+                closed = fixture.release.record_recovery(fixture.log, {**fixture.entry, "recovery": {"kind": "gone"}}, "supervisor")
+            self.assertNotIn("verdict_at", closed)
+            self.assertFalse(fixture.mutations)
+
+    def test_native_timeout_names_the_stalled_read(self) -> None:
+        import uuid
+        with ReceiptFixture(str(uuid.uuid4())) as fixture:
+            method = "thread/read"
+
+            async def stalled(_request: dict) -> None:
+                await asyncio.sleep(.1)
+
+            fixture.rpc_results[method] = stalled
+
+            async def read() -> None:
+                async with NATIVE.connection(fixture.home, deadline_at=NATIVE.time.time() + .04) as request:
+                    await request(method, {"threadId": fixture.session})
+
+            with self.assertRaises(TimeoutError) as failure:
+                asyncio.run(read())
+            self.assertTrue(str(failure.exception))
+            self.assertIn(method, str(failure.exception))
+            self.assertIn(type(failure.exception).__name__, str(failure.exception))
+            self.assertFalse(fixture.mutations)
+
     def test_active_steer_and_future_queue_use_distinct_native_routes(self) -> None:
         import uuid
         for delivery in ("queue", "steer"):

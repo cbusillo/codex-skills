@@ -48,6 +48,130 @@ def comment(number, body, author=ACTOR):
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_recovery_rejects_live_process_and_incomplete_claim_reads(self) -> None:
+        entry = {**self.entry, "recovery": {"kind": "gone"}}
+        for obstruction in ("live", "incomplete", "held"):
+            with self.subTest(obstruction=obstruction):
+                inventory = [(entry["pid"], entry["tty"], "codex")] if obstruction == "live" else []
+                report = {"ok": obstruction == "held", "claims_clear": False,
+                          "coverage": {"complete": obstruction == "held"}, "session_ids": [entry["session_id"]],
+                          "blocked": ["held claim"] if obstruction == "held" else [], "unresolved_invocations": []}
+                result = SimpleNamespace(returncode=1, stdout=json.dumps(report))
+                with (patch.object(helper, "inventory", return_value=inventory),
+                      patch.object(helper.subprocess, "run", return_value=result), self.assertRaises(ValueError)):
+                    helper.validate_recovery(entry, "supervisor")
+
+    def test_handoff_recovery_requires_source_successor_and_authored_safe_handoff(self) -> None:
+        records = helper.session_record.read_jsonl(self.transcript)
+        records[1]["payload"]["message"] = "Handoff already posted."
+        self.transcript.write_text("\n".join(json.dumps(row) for row in records) + "\n")
+        ledger = self.root / "ledger.json"
+        source: dict[str, Any] = {**self.entry, "repository": "test/a", "issue": 1, "launch_started_at": "2025-12-31T00:00:00Z",
+                  "recovery": {"kind": "handoff", "ledger": str(ledger), "successor_session": "successor"}}
+        successor: dict[str, Any] = {**self.entry, "session_id": "successor", "repository": "test/a", "issue": 1,
+                     "launch_started_at": "2026-01-01T00:00:01Z"}
+        posted: dict[str, Any] = {**comment(99, f"Session: {source['session_id']}\nSafe to exit: yes"),
+                  "issue_url": "https://api.github.com/repos/test/a/issues/1"}
+        for variant in ("qualified", "native_verdict", "no_native_verdict", "pre_handoff_verdict", "opaque_action", "missing", "mismatch", "old_successor", "wrong_author", "conditional", "edited", "no_admission", "owned_worker", "active"):
+            rows = [source] if variant == "missing" else [source, {**successor, "issue": 2 if variant == "mismatch" else 1}]
+            if variant == "owned_worker":
+                rows.append({**self.entry, "session_id": "worker", "lead_session_id": source["session_id"]})
+            if variant == "old_successor":
+                rows[1]["launch_started_at"] = "2025-12-30T00:00:00Z"
+            ledger.write_text(json.dumps(rows))
+            verdict = "conditional" if variant == "conditional" else "yes"
+            handoff = {**posted, "body": f"Session: {source['session_id']}\nSafe to exit: {verdict}",
+                       "user": {"login": "foreign" if variant == "wrong_author" else ACTOR}}
+            if variant in {"native_verdict", "pre_handoff_verdict", "no_native_verdict", "opaque_action"}:
+                handoff["body"] = f"Session: {source['session_id']}\nCoordination custody has transferred to the successor."
+                prior = [dict(row) for row in records]
+                if variant != "no_native_verdict":
+                    prior[1] = {**prior[1], "payload": {"type": "agent_message", "message": "Safe to exit: yes"}}
+                if variant == "pre_handoff_verdict":
+                    handoff["created_at"] = handoff["updated_at"] = "2026-01-01T00:01:00.500000Z"
+                    rows[1]["launch_started_at"] = "2026-01-01T00:01:02Z"
+                    ledger.write_text(json.dumps(rows))
+                acknowledgement = {"type": "event_msg", "timestamp": "2026-01-01T00:02:00Z",
+                                   "payload": {"type": "agent_message", "message": "Already handed off."}}
+                self.transcript.write_text("\n".join(json.dumps(row) for row in [*prior, acknowledgement, {
+                    "type": "event_msg", "timestamp": "2026-01-01T00:02:01Z", "payload": {"type": "task_complete"}}]) + "\n")
+            elif variant != "active":
+                self.transcript.write_text("\n".join(json.dumps(row) for row in records) + "\n")
+            if variant == "edited":
+                handoff["updated_at"] = successor["launch_started_at"]
+            entry = {**source, "recovery": dict(source["recovery"])}
+            if variant == "active":
+                self.transcript.write_text(self.transcript.read_text() + json.dumps({
+                    "timestamp": "2026-01-01T00:03:00Z", "type": "event_msg", "payload": {"type": "task_started", "turn_id": "new"}}) + "\n")
+            with (self.subTest(variant=variant),
+                  patch_attribute(closure, "lease_state", return_value={"successor_admitted": variant != "no_admission",
+                      **({"action_pending": True, "action_kind": "opaque", "action_at": "2026-01-01T00:01:30Z"}
+                         if variant == "opaque_action" else {})}),
+                  patch_attribute(identity, "automation_login", return_value=ACTOR),
+                  patch.object(helper, "GitHubReader", return_value=self.reader),
+                  patch_attribute(self.reader, "get_json", return_value=handoff),
+                  patch.object(helper, "recovery_claims")):
+                if variant in {"qualified", "native_verdict"}:
+                    helper.validate_recovery(entry, "supervisor", before_exit=True)
+                    self.assertEqual(entry["recovery"]["successor_session"], successor["session_id"])
+                else:
+                    with self.assertRaises(ValueError):
+                        helper.validate_recovery(entry, "supervisor", before_exit=True)
+
+    def test_gone_claim_free_recovery_records_custody_without_a_verdict(self) -> None:
+        records = helper.session_record.read_jsonl(self.transcript)[:1]
+        self.transcript.write_text("\n".join(json.dumps(row) for row in records) + "\n")
+        log = self.root / "closed.json"
+        original = {**self.entry, "handoff_url": None, "recovery": {"kind": "gone"}}
+        original.pop("ended_at")
+        original.pop("process_exit_verified")
+        with (patch_attribute(closure, "ownership", return_value=contextlib.nullcontext()),
+              patch.object(helper, "recovery_claims", return_value={"coverage": {"complete": True}})):
+            closed = helper.record_recovery(log, original, "supervisor")
+        saved = json.loads(log.read_text())[0]
+        self.assertEqual(saved, closed)
+        self.assertTrue(all(saved[key] == value for key, value in original.items()))
+        self.assertNotIn("verdict_at", saved)
+        self.assertFalse(helper.session_record.session_status(saved)["safe_verdict"])
+
+    def test_recovered_custody_is_not_releasable_by_backfill(self) -> None:
+        ledger, log = self.root / "ledger.json", self.root / "closed.json"
+        source = {key: value for key, value in self.entry.items() if key not in {"ended_at", "process_exit_verified", "handoff_url"}}
+        ledger.write_text(json.dumps([source]))
+        self.transcript.write_text(json.dumps(helper.session_record.read_jsonl(self.transcript)[0]) + "\n")
+        common = ["--closed-log", str(log), "--supervisor-session", "supervisor", "--owner", "test", "--confirm-session-ended",
+                  "--transcript-root", str(self.root), "--apply"]
+        for mode in ("finish", "backfill"):
+            output = io.StringIO()
+            options = (["--ledger", str(ledger), "--session-id", source["session_id"], "--recover-ended"]
+                       if mode == "finish" else ["--checkout-root", str(self.root)])
+            with (self.subTest(mode=mode), patch.object(helper.sys, "argv", ["helper", mode, *common, *options]),
+                  patch_attribute(closure, "ownership", return_value=contextlib.nullcontext()),
+                  patch_attribute(identity, "automation_login", return_value=ACTOR),
+                  patch.object(helper, "recovery_claims"), patch.object(helper, "release_session") as release_session,
+                  patch_attribute(helper, "comment") as post, contextlib.redirect_stdout(output)):
+                self.assertEqual(helper.main(), 0)
+                self.assertTrue(json.loads(output.getvalue())["ok"])
+                release_session.assert_not_called()
+                post.assert_not_called()
+        self.assertEqual(json.loads(ledger.read_text()), [source])
+
+    def test_finish_reports_bare_native_timeout_before_recording(self) -> None:
+        ledger = self.root / "ledger.json"
+        ledger.write_text(json.dumps([self.entry]))
+        argv = ["helper", "finish", "--ledger", str(ledger), "--session-id", SOURCE["session"],
+                "--supervisor-session", "supervisor", "--owner", "test", "--confirm-session-ended",
+                "--transcript-root", str(self.root)]
+        output = io.StringIO()
+        with (patch.object(helper.sys, "argv", argv),
+              patch_attribute(identity, "automation_login", return_value=ACTOR),
+              patch.object(helper, "record_closure", side_effect=TimeoutError()), contextlib.redirect_stdout(output)):
+            self.assertEqual(helper.main(), 1)
+        result = json.loads(output.getvalue())
+        self.assertTrue(result["error"])
+        self.assertTrue(result["gate"])
+        self.assertEqual(result["completed_sessions"][0]["session_id"], SOURCE["session"])
+
     def test_closeout_preserves_native_model_and_weekly_outcomes(self) -> None:
         for harness in ("codex", "claude"):
             model, effort = f"fixture-{harness}", "medium"
@@ -199,6 +323,8 @@ class ReleaseTests(unittest.TestCase):
             result = json.loads(output.getvalue())
             self.assertFalse(result["ok"])
             self.assertTrue(result["needs_reconciliation"])
+            self.assertTrue(result.get("gate"))
+            self.assertTrue(result.get("error"))
 
     def test_backfill_posting_contention_never_posts(self) -> None:
         log = self.root / "closed.json"

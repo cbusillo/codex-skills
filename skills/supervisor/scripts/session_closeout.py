@@ -79,7 +79,8 @@ async def native_idle(entry: dict) -> None:
     home = Path(entry["codex_home"]).expanduser().resolve(strict=True)
     action = closure.lease_state(entry["session_id"])
     homes = {home, *(Path(value).resolve() for value in closure.action_homes(action)["known"])}
-    snapshots = closure.transcripts(entry["session_id"], entry["transcript"], include_status=True, additional_homes=homes)
+    read = closure.transcript_facts if entry.get("recovery") else closure.transcripts
+    snapshots = read(entry["session_id"], entry["transcript"], include_status=True, additional_homes=homes)
     require(not any(row["status"].get("background_tasks") or row["status"].get("active_realtime_sessions")
                     or row["status"].get("realtime_coverage") is False for row in snapshots.values()),
             "native_idle", "an authenticated source copy has background work or incomplete lifecycle coverage")
@@ -98,6 +99,9 @@ def ready(entry: dict, supervisor: str) -> dict:
         "ownership",
         "requires another explicitly Supervisor-owned session",
     )
+    if entry.get("recovery"):
+        return release.validate_recovery(entry, supervisor,
+                                         before_exit=not session_liveness.process_absent(entry.get("pid")))
     try:
         status = session_status(entry)
     except (OSError, ValueError, KeyError, TypeError) as error:
@@ -178,7 +182,8 @@ def verify_handoff(entry: dict, args: argparse.Namespace, operation: Operation, 
     except (ValueError, OSError, GitHubReadError) as error:
         raise GateFailed("handoff", str(error)) from error
     selected = getattr(args, "handoff_url", None) or operation.state.get("handoff", {}).get("url") or associated
-    require(not associated or associated == selected, "handoff", "current handoff differs; preserve it")
+    replacing = entry.get("recovery", {}).get("kind") == "handoff" and getattr(args, "handoff_url", None)
+    require(not associated or associated == selected or bool(replacing), "handoff", "current handoff differs; preserve it")
     evidence = None
     if not selected:
         repo, number = entry.get("repository"), entry.get("issue")
@@ -216,6 +221,10 @@ def verify_handoff(entry: dict, args: argparse.Namespace, operation: Operation, 
         raise GateFailed("handoff", f"{selected}: {error}") from error
     require(started is None or claim_release.stamp(handoff["created_at"]) >= started,
             "handoff", "handoff must be created in this launch generation")
+    if replacing and associated and associated != selected:
+        previous = release.handoff(reader, {**entry, "handoff_url": associated}, actor)
+        require(claim_release.stamp(handoff["created_at"]) > claim_release.stamp(previous["created_at"]),
+                "handoff", "recovery handoff does not supersede the recorded handoff")
     if not explicit_session(handoff.get("body") or "", args.session_id):
         evidence = evidence if evidence is not None else claim_evidence(entry, operation, "handoff_comments")
         require(projected_handoff(handoff, evidence, actor, args.session_id),
@@ -258,7 +267,8 @@ def validate_retired_closeout(args: argparse.Namespace, operation: Operation, *,
         require(fingerprint({key: value for key, value in identity.items() if key != "handoff_url"}) == generation,
                 "retirement", "canonical closure generation changed")
         handoff = operation.state.get("handoff", {})
-        require(bool(identity["handoff_url"]) and handoff.get("url") == identity["handoff_url"]
+        require(saved.get("closure_kind") == "claim_free_recovery" or
+                bool(identity["handoff_url"]) and handoff.get("url") == identity["handoff_url"]
                 and handoff.get("session_id") == args.session_id
                 and getattr(args, "handoff_url", identity["handoff_url"]) in {None, identity["handoff_url"]},
                 "retirement", "canonical closure handoff differs from the completed journal")
@@ -266,10 +276,12 @@ def validate_retired_closeout(args: argparse.Namespace, operation: Operation, *,
             argv, bounded = session_liveness.process_arguments(pid, command)
             resumed, _kind, _exact = session_liveness.invocation(argv, bounded=bounded)
             session_liveness.require_source_not_resumed(args.session_id, resumed)
-        validate = release.validate_closure if retain_terminal else release.validate_closure_state
+        validate = release.validate_finished if saved.get("closure_kind") == "claim_free_recovery" else (
+            release.validate_closure if retain_terminal else release.validate_closure_state)
         status = validate({**saved, "_transcript_roots": release.transcript_roots(saved["harness"], None, [], saved)},
                           args.supervisor_session)
-        require(status["state"] == "turn_ended" and not status["background_tasks"], "verdict", "closed source has unfinished native work")
+        require((saved.get("closure_kind") == "claim_free_recovery" or status["state"] == "turn_ended")
+                and not status["background_tasks"], "verdict", "closed source has unfinished native work")
         with closure.store_lock(args.ledger, create=True):
             rows = iterm_tab.read_launch_ledger(args.ledger)
             active = [normalize_ledger_entry(args.ledger, row) for row in rows if row.get("session_id") == args.session_id]
@@ -290,12 +302,21 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
     require(operation.state.get("generation", generation) == generation, "identity", "journal belongs to another launch generation")
     operation.state["generation"] = generation
     save_state(operation.path, operation.state)
+    if getattr(args, "recover_ended", False):
+        require(closeout_mutations_settled(operation.state), "recovery", "previous mutation requires reconciliation")
+        entry["recovery"] = ({"kind": "gone"} if session_liveness.process_absent(entry.get("pid")) else {
+            "kind": "handoff", "ledger": str(args.ledger.resolve()),
+            "successor_session": getattr(args, "successor_session", None),
+            "handoff_url": getattr(args, "handoff_url", None)})
+        saved = closure.source_records({args.session_id}).get(args.session_id)
+        if isinstance(saved, dict) and saved.get("closure_kind") == "claim_free_recovery":
+            entry["recovery"] = saved["recovery"]
     ready(entry, args.supervisor_session)
     backend = entry.get("backend", "iterm")
     selected_terminal = entry.get("tmux_session_id" if backend == "tmux" else "iterm_session_id")
-    if not isinstance(selected_terminal, str) or not selected_terminal:
+    if (not isinstance(selected_terminal, str) or not selected_terminal) and entry.get("recovery", {}).get("kind") != "gone":
         raise GateFailed("identity", "thread-only session has no matched terminal")
-    terminal_id = selected_terminal
+    terminal_id = selected_terminal or ""
     terminal = ["uv", "run", str(SCRIPTS / "iterm_tab.py"), "--backend", backend]
 
     def call(gate: str, action: str, *extra: str, once: bool = False) -> dict:
@@ -310,6 +331,7 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
                 "--owner", args.owner,
                 "--session", args.session_id,
                 "--transcript", entry["transcript"],
+                *(["--require-released-claims"] if entry.get("recovery") else []),
             ],
             timeout=660,
         )
@@ -378,7 +400,8 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
         deadline = time.monotonic() + args.exit_seconds
         while True:
             current = [row for row in load_ledger(args.ledger) if row["session_id"] == args.session_id]
-            require(current == [entry], "identity", "active source changed; preserve the ledger")
+            expected = {key: value for key, value in entry.items() if key != "recovery"}
+            require(current == [expected], "identity", "active source changed; preserve the ledger")
             try:
                 require(session_liveness.process_absent(entry.get("pid")), "process_exit", "process remains; terminal kept")
                 native.verify_source_process(entry)
@@ -391,7 +414,8 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
 
     with closure.ownership(args.session_id, create=True):
         claims()
-        verify_handoff(entry, args, operation, retired=False)
+        if not entry.get("recovery") or entry["recovery"]["kind"] == "handoff":
+            verify_handoff(entry, args, operation, retired=False)
         if not session_liveness.process_absent(entry.get("pid")) and not operation.state["steps"].get("quit"):
             operation.gate = "native_idle"
             asyncio.run(native_idle(entry))
@@ -421,6 +445,10 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
             "--supervisor-session", args.supervisor_session,
             "--owner", args.owner,
             "--confirm-session-ended", "--apply",
+            *(["--recover-ended"] if entry.get("recovery") else []),
+            *(["--successor-session", entry["recovery"]["successor_session"]]
+              if entry.get("recovery", {}).get("kind") == "handoff" else []),
+            *(["--handoff-url", entry["handoff_url"]] if entry.get("recovery") and entry.get("handoff_url") else []),
         ],
         timeout=660,
     )
@@ -429,21 +457,22 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
         "finish",
         "claim discovery or release needs reconciliation; terminal kept",
     )
-    panes = operation.run("terminals", [*terminal, "list"])
+    panes = operation.run("terminals", [*terminal, "list"]) if terminal_id else []
     if any(pane["session_id"] == terminal_id for pane in panes):
         call("close", "close", "--ledger", str(args.ledger), once=True)
-    panes = operation.run("disappearance", [*terminal, "list"])
+    panes = operation.run("disappearance", [*terminal, "list"]) if terminal_id else []
     require(not any(pane["session_id"] == terminal_id for pane in panes), "disappearance", "terminal closure is uncertain")
     operation.gate = "retirement"
     with closure.ownership(args.session_id, create=True):
         saved = closure.source_records({args.session_id})[args.session_id]
         require(not saved.get("resumed_at") and release.closure_identity(saved) == release.closure_identity(entry),
                 "retirement", "canonical closure does not preserve this finished generation")
-        release.validate_closure({**saved, "_transcript_roots": release.transcript_roots(saved["harness"], None, [], saved)}, args.supervisor_session)
+        release.validate_finished({**saved, "_transcript_roots": release.transcript_roots(saved["harness"], None, [], saved)}, args.supervisor_session)
         with closure.store_lock(args.ledger, create=True):
             active_rows = iterm_tab.read_launch_ledger(args.ledger)
             active_matches = [normalize_ledger_entry(args.ledger, row) for row in active_rows if row.get("session_id") == args.session_id]
-            require(active_matches == [entry], "retirement", "active source changed; preserve the ledger")
+            require(active_matches == [{key: value for key, value in entry.items() if key != "recovery"}],
+                    "retirement", "active source changed; preserve the ledger")
             operation.state["retired_generation"] = generation
             save_state(operation.path, operation.state)
             save_state(args.ledger, [row for row in active_rows if row.get("session_id") != args.session_id])
@@ -457,6 +486,8 @@ def main() -> int:
     parser.add_argument("--owner", required=True)
     parser.add_argument("--evidence", type=Path, required=True)
     parser.add_argument("--handoff-url", help="explicit posted handoff after source verification, including a different work issue")
+    parser.add_argument("--recover-ended", action="store_true", help="Recover a claim-free gone or proven handed-off generation")
+    parser.add_argument("--successor-session", help="Exact successor ledger row for handed-off recovery")
     parser.add_argument("--exit-seconds", type=float, default=30)
     args = parser.parse_args()
     try:
