@@ -53,6 +53,9 @@ HELPER_OPERATIONS = {
 }
 
 LOCAL_EXTENSION_ROUTES = {
+    "odoo-inventory-readback": {
+        "method": "GET", "path": "/v1/products/{product}/environments/testing/odoo-inventory-readback", "mode": "read",
+    },
     "attention-events-read": {
         "method": "GET", "path": "/v1/attention/requests/events", "mode": "read",
     },

@@ -92,6 +92,7 @@ READ_ONLY_OPERATIONS = {
     "product-environment-read",
     "product-activity-read",
     "odoo-host-source-grants-read",
+    "odoo-inventory-readback",
     "protected-artifacts-read",
     "product-profile-read",
     "path-check",
@@ -691,10 +692,19 @@ def service_response_diagnostics(source: object, *, controller: bool = False) ->
     return diagnostics
 
 
-def _read_service_response(response: Any) -> dict[str, Any]:
+def _read_service_response(response: Any, *, private_no_store: bool = False) -> dict[str, Any]:
     status = getattr(response, "status", None)
+    if private_no_store:
+        headers = getattr(response, "headers", {})
+        cache_headers = headers.get_all("Cache-Control", []) if hasattr(headers, "get_all") else [headers.get("Cache-Control", "")]
+        directives = {item.strip().lower() for header in cache_headers for item in header.split(",")}
+        if status != 200 or "no-store" not in directives:
+            raise ServiceResponseError({})
     try:
-        payload = json.loads(response.read().decode("utf-8"))
+        content = response.read(1024 * 1024 + 1) if private_no_store else response.read()
+        if private_no_store and len(content) > 1024 * 1024:
+            raise ServiceResponseError({})
+        payload = json.loads(content.decode("utf-8"))
     except (OSError, http.client.HTTPException) as exc:
         setattr(exc, "http_status", status)
         raise
@@ -737,6 +747,7 @@ def request_launchplane_read(
     settings: dict[str, str],
     query: Mapping[str, str | list[str]],
     timeout: float,
+    no_store: bool = False,
 ) -> dict[str, Any]:
     encoded_query = urllib.parse.urlencode(query, doseq=True)
     request = urllib.request.Request(
@@ -744,8 +755,10 @@ def request_launchplane_read(
     )
     request.add_header("Accept", "application/json")
     request.add_header("Authorization", f"Bearer {settings['token']}")
+    if no_store:
+        request.add_header("Cache-Control", "no-store")
     with safe_urlopen(request, timeout=timeout) as response:
-        return _read_service_response(response)
+        return _read_service_response(response, private_no_store=no_store)
 
 
 def _request_identifier(value: object) -> str:
@@ -12272,6 +12285,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
               "and other disposable lane commands: 30; controller: 180; other commands: 10)."),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+    from launchplane_inventory_readback import add_parser as add_inventory_readback_parser
+    add_inventory_readback_parser(subparsers)
     from launchplane_website_indexing import add_parser as add_website_indexing_parser
     add_website_indexing_parser(subparsers)
     from launchplane_testing_rebuild import add_parser as add_testing_rebuild_parser
@@ -13009,10 +13024,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     remediation.add_argument("--reviewed-dry-run", action="store_true")
     args = parser.parse_args(argv)
     import launchplane_website_indexing
+    import launchplane_inventory_readback
     from launchplane_disposable_lane import TIMEOUTS as disposable_lane_timeouts
     args.timeout = getattr(
         args, "timeout",
-        launchplane_website_indexing.TIMEOUT_SECONDS if args.command in launchplane_website_indexing.COMMANDS
+        launchplane_inventory_readback.TIMEOUT_SECONDS if args.command == launchplane_inventory_readback.COMMAND
+        else launchplane_website_indexing.TIMEOUT_SECONDS if args.command in launchplane_website_indexing.COMMANDS
         else disposable_lane_timeouts[args.command] if args.command in disposable_lane_timeouts
         else PREFLIGHT_TIMEOUT_SECONDS if args.command == PREFLIGHT
         else testing_resources_timeout if args.command.startswith("testing-replacement-resources-")
@@ -13249,6 +13266,9 @@ def _project_inert_plan(provider: dict[str, Any], body: dict[str, Any]) -> dict[
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     try:
+        import launchplane_inventory_readback
+        if args.command == launchplane_inventory_readback.COMMAND:
+            return launchplane_inventory_readback.execute(sys.modules[__name__], args)
         import launchplane_website_indexing
         if args.command in launchplane_website_indexing.COMMANDS:
             return launchplane_website_indexing.execute(sys.modules[__name__], args)
