@@ -1654,6 +1654,8 @@ def _project_product_config_apply_result(result: object) -> dict[str, object]:
     ):
         if key in source:
             value = source[key]
+            if key == "odoo_business_hours":
+                value = {"policy_before": None, "policy_after": None, **_require_dict(value)}
             if key == "secrets" and source.get("odoo_first_empty") is not None:
                 if not isinstance(value, list) or any(
                     _require_dict(secret).get("value_source") not in (None, "generated") for secret in value
@@ -7956,7 +7958,7 @@ def _execute_first_empty_apply(args: argparse.Namespace, body: dict[str, object]
             settings=settings,
             timeout=args.timeout,
             query={},
-            path=_product_read_path("product-secret-bindings-read", product=str(body["product"])),
+            path=_product_read_path("product-secret-bindings-read", product=cast(str, body["product"])),
         )
         _require_read_fields("product-secret-bindings-read", response)
         if response.get("status") != "ok":
@@ -8044,6 +8046,7 @@ def product_config_payload_body(args: argparse.Namespace, *, mode: str) -> dict[
                 digest_result_key="odoo_first_empty",
             )
             request = _first_empty_request(body)
+            purposes = cast(list[str], request["binding_keys"])
             if any(
                 evidence["request"].get(key) != value
                 for key, value in request.items()
@@ -8058,11 +8061,11 @@ def product_config_payload_body(args: argparse.Namespace, *, mode: str) -> dict[
                     or evidence["request"].get("mode") != "dry-run"
                     or any(result.get(key) != request[key] for key in ("product", "context", "instance"))
                     or not isinstance(selected_secrets, list)
-                    or len(selected_secrets) != len(request["binding_keys"])
+                    or len(selected_secrets) != len(purposes)
                     or any(
                         not isinstance(secret, dict) or not isinstance(secret.get("binding_key"), str) for secret in selected_secrets
                     )
-                    or sorted(secret.get("binding_key", "") for secret in selected_secrets) != sorted(request["binding_keys"])
+                    or sorted(secret.get("binding_key", "") for secret in selected_secrets) != sorted(purposes)
                     or any(
                         secret.get("action") != "created"
                         or secret.get("secret_class") != "prod_only"

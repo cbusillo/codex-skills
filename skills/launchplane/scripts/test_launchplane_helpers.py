@@ -12814,7 +12814,7 @@ def _first_empty_response(mode: str = "dry-run", purpose: str = "ODOO_DB_PASSWOR
 
 
 def _first_empty_bindings(purpose: str = "ODOO_DB_PASSWORD") -> dict[str, Any]:
-    response = _secret_bindings_response()
+    response = cast(dict[str, Any], _secret_bindings_response())
     binding = response["bindings"][0]
     binding.pop("provider_note")
     binding.update(binding_key=purpose, name=purpose, context="example-site", secret_class="prod_only", sharing_reason=None)
@@ -12936,7 +12936,7 @@ def test_first_empty_canonical_apply_keeps_null_and_generated_metadata(tmp_path:
     path, evidence = _first_empty_review(tmp_path)
     saved = _write_json(tmp_path, "review.json", evidence)
     digest = evidence["result"]["odoo_first_empty"]["plan_sha256"]
-    canonical = {
+    canonical: dict[str, Any] = {
         **_first_empty_payload(),
         "schema_version": 1,
         "mode": "apply",
@@ -13171,3 +13171,16 @@ def test_first_empty_apply_requires_matching_accepted_review_and_generation_inte
     saved = _write_json(tmp_path, "review.json", evidence)
     status, _, posts, reads = _run_main(["product-config-apply", "--payload-file", path, *_reviewed_apply_argv(digest, saved)])
     assert status == 2 and not posts and not reads
+
+
+def test_first_empty_companion_preserves_calendar_packet_with_omitted_null_policies(tmp_path: Path) -> None:
+    response = _calendar_response("clear")
+    calendar = response["result"]["odoo_business_hours"]
+    calendar.update(policy_before=None, changed=False)
+    calendar.pop("policy_before")
+    expected_after = calendar.pop("policy_after")
+    path = _write_json(tmp_path, "calendar.json", _calendar_payload("clear"))
+    status, output, posts, reads = _run_main(["product-config-dry-run", "--payload-file", path], post=response)
+    assert status == 0 and len(posts) == 1 and not reads, output
+    assert output["result"]["odoo_business_hours"]["policy_after"] == expected_after
+    assert "odoo_first_empty" not in output["result"]
