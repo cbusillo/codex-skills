@@ -1377,6 +1377,53 @@ authorization result, not a reason to use another path.
   target holds the reviewed domains and health-check path. These are compared,
   never printed.
 
+`dokploy-target-disable-empty-compose-auto-deploy-dry-run`, `-apply` and
+`-readback` use the same setup route with operation
+`disable-empty-compose-auto-deploy` and service product `launchplane`.
+The private payload requires `context`, `instance: "prod"`, `target_id`,
+`project_id`, `environment_id`, `server_id`, `reason` and the exact existing
+`expected_current_provider_target` (`DeployedTargetReference`). Optional
+`schema_version` and `target_type: "compose"` retain the producer defaults.
+Allocation, source, environment values and provider patch fields are refused.
+Identity strings must have no surrounding whitespace. The service owns exclusive
+original never-live Odoo eligibility, current authority, configuration, storage,
+placement, reservations and same-caller review; the caller adds no grant.
+
+Dry-run sends no key, review or confirmation. Save its bounded JSON output,
+including the complete closed `automation_review`: strict boolean
+`observed_auto_deploy`, aware `observed_at` and aggregate `plan_sha256`.
+Apply requires the unchanged private payload, `--reviewed-dry-run`,
+`--expected-plan-digest`, `--dry-run-evidence-file` and an ORIGINAL corrective
+`--idempotency-key`, distinct from creation. The helper carries the exact saved
+review and existing setup confirmation. Its aggregate review binding also
+compares the current service and entire private intent; no private host or
+secret-value hash is printed. The service rechecks review freshness and all facts
+before any new effect. A dry-run observing False is an observation, not an apply.
+
+Readback requires that same payload, original key, review evidence and digest,
+with the same caller/token label, and sends `mode: "readback"` without confirmation
+or apply acknowledgement. It never performs a second mutation. An uncertain
+original can be adopted only through the service's independent qualified literal
+False with unchanged facts, even after the original review expires. A different
+key cannot read back an operation that does not exist under it. Changed or
+unproved facts retain the fence; no new actor, key, review, target, creation replay
+or retry-safe-absence escape is supplied. Preserve original artifacts on every
+refusal, timeout or invalid response; reconcile the original before another act.
+
+Output validates raw returned context/instance/operation, strict applied/disabled
+booleans and full review agreement before safe projection. Placement/reference
+identities are covered by the private intent and service review, not echoed by the
+producer. `observed_auto_deploy` stays the ORIGINAL review observation, often True;
+it is not the independent provider False. Non-replayed applied completion/adoption
+means the service independently verified False. Both apply and readback return
+result mode `apply`. Completed replay returns stored original completion with
+`replayed: true`, `original_trace_id` and `current_state_verified: false`; exit zero
+confirms that historical completion, with no new effect or current-state claim.
+Ordinary absent replay metadata stays compatible. No redundant readback POST is
+added after apply. Compose source, env/mount values, provider references/placement,
+private hosts/participants, ciphertext and secret-value hashes are never output.
+This source/installed caller proof authorizes no real target operation.
+
 `dokploy-target-complete-compose-source-dry-run` and
 `dokploy-target-complete-compose-source-apply` use the same setup route with
 `operation: "complete-compose-source"`. The private payload accepts only
