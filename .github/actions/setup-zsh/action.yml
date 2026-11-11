@@ -1,0 +1,25 @@
+name: Set up zsh
+description: Use installed zsh or checksum-pinned Debian packages without Ubuntu mirror access
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        if command -v zsh >/dev/null; then
+          zsh --version
+          exit 0
+        fi
+        directory=$(mktemp -d "$RUNNER_TEMP/catalog-zsh.XXXXXX")
+        trap 'rm -rf "$directory"' EXIT
+        packages=()
+        while read -r digest package; do
+          curl --fail --location --silent --show-error --retry 3 \
+            "https://deb.debian.org/debian/pool/main/z/zsh/$package" -o "$directory/$package"
+          printf '%s  %s\n' "$digest" "$directory/$package" | sha256sum --check
+          packages+=("$directory/$package")
+        done <<'PACKAGES'
+        400c958c7fdb66a945cad32c0edc81cedcfface0059b5e2beb46097a457099bd zsh-common_5.9-8_all.deb
+        69791a2e667258a54449cfa01ad0d8d198a4c6e27f02f21c864d0545efe18966 zsh_5.9-8+b24_amd64.deb
+        PACKAGES
+        sudo dpkg --install "${packages[@]}"
+        zsh --version

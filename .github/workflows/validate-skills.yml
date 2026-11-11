@@ -53,12 +53,8 @@ jobs:
 
       - name: Ensure zsh for interactive shell behavior tests
         if: steps.lane.outputs.run == 'true'
-        timeout-minutes: 8
-        run: |
-          if ! command -v zsh >/dev/null; then
-            sudo apt-get -o Acquire::Retries=15 update
-            sudo apt-get -o Acquire::Retries=15 install --yes --no-install-recommends zsh
-          fi
+        timeout-minutes: 5
+        uses: ./.github/actions/setup-zsh
 
       - name: Validate skills
         if: steps.lane.outputs.run == 'true'
