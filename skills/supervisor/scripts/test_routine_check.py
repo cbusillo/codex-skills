@@ -31,6 +31,7 @@ import routine_check
 import question_delivery
 import session_closeout
 claim_transcripts: Any = importlib.import_module("claim_transcripts")
+plan_sessions: Any = importlib.import_module("github_plan_sessions")
 from check_operation import GateFailed, Operation
 
 from skills.github.scripts.github_api import ApiResult
@@ -1098,7 +1099,8 @@ class PrimaryReadTests(unittest.TestCase):
         lead = "01a1b839-608e-7a73-b683-bb6c7da113a7"
         read = "timed export profile on owner/app production"
         issue = item(number=5, actor=f"agent:{lead}", action=f"Production read refused: {read}")
-        queued = {**issue, "queue": classify(issue)}
+        with patch_attr(plan_sessions, "actor_state", return_value=github_plan_lease.LIVE):
+            queued = {**issue, "queue": classify(issue)}
         self.assertEqual(queued["queue"]["reason"], "named_recipient_requires_reconciliation")
         lines = self.run_digest({"needs_status": [queued]})
         self.assertTrue([line for line in lines if line.startswith("PRODUCTION_READ_REFUSED") and read in line and f"next_actor=agent:{lead}" in line])
