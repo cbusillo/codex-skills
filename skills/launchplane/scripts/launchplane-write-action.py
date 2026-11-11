@@ -12260,6 +12260,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
               "and other disposable lane commands: 30; controller: 180; other commands: 10)."),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+    from launchplane_website_indexing import add_parser as add_website_indexing_parser
+    add_website_indexing_parser(subparsers)
     from launchplane_testing_rebuild import add_parser as add_testing_rebuild_parser
     add_testing_rebuild_parser(subparsers)
     from launchplane_testing_state import add_parser as add_testing_state_parser
@@ -12992,10 +12994,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     remediation.add_argument("--idempotency-key", required=True)
     remediation.add_argument("--reviewed-dry-run", action="store_true")
     args = parser.parse_args(argv)
+    import launchplane_website_indexing
     from launchplane_disposable_lane import TIMEOUTS as disposable_lane_timeouts
     args.timeout = getattr(
         args, "timeout",
-        disposable_lane_timeouts[args.command] if args.command in disposable_lane_timeouts
+        launchplane_website_indexing.TIMEOUT_SECONDS if args.command in launchplane_website_indexing.COMMANDS
+        else disposable_lane_timeouts[args.command] if args.command in disposable_lane_timeouts
         else PREFLIGHT_TIMEOUT_SECONDS if args.command == PREFLIGHT
         else testing_resources_timeout if args.command.startswith("testing-replacement-resources-")
         else OPERATION_PATH_CHECK_TIMEOUT_SECONDS if args.command == "path-check" and args.intent is not None
@@ -13217,6 +13221,9 @@ def _project_inert_plan(provider: dict[str, Any], body: dict[str, Any]) -> dict[
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     try:
+        import launchplane_website_indexing
+        if args.command in launchplane_website_indexing.COMMANDS:
+            return launchplane_website_indexing.execute(sys.modules[__name__], args)
         from launchplane_testing_state import COMMANDS as testing_state_commands, execute as execute_testing_state
         if args.command in testing_state_commands:
             return execute_testing_state(sys.modules[__name__], args)

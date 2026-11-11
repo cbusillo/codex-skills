@@ -3155,3 +3155,67 @@ Inspect binding metadata before retrying
 that same operation; never select another credential, identity, key or workflow
 to evade a denial or conflict. Terminal agents remain refused by the service.
 These commands add no grants and never call a provider directly.
+
+## Native Odoo website indexing
+
+`odoo-website-indexing-dry-run`, `odoo-website-indexing-apply` and
+`odoo-website-indexing-readback` use only the typed `website_indexing` branch
+of `POST /v1/drivers/odoo/post-deploy`. They reuse the private admin
+configuration, authenticated transport and `product_config.plan`/`apply`
+authority. They expose no maintenance, deployment or state toggle. The
+[producer contract](https://github.com/cbusillo/launchplane/blob/main/docs/odoo-website-settings.md#prelaunch-crawler-protection)
+owns route/runtime/receiver authority and durable reconciliation.
+
+Keep this input outside the repository. Omitting `mode` lets the selected
+command supply it, so the same private file works for all three commands:
+
+```json
+{
+  "product": "example-odoo",
+  "post_deploy": {
+    "context": "example",
+    "instance": "prod",
+    "reason": "Protect the prelaunch native website.",
+    "website_indexing": {"public_origin": "https://example.test"}
+  }
+}
+```
+
+The closed input also accepts optional positive `schema_version` on the
+envelope and `post_deploy`, and optional `website_id` and `reviewed_plan`
+inside `website_indexing`. Omitted/null website ID leaves unique native
+selection to the service. An explicit `mode` must match the command. Reason
+is required for apply. `production_use` is always service-derived.
+
+```sh
+uv run skills/launchplane/scripts/launchplane-write-action.py odoo-website-indexing-dry-run --payload-file /private/indexing.json --result-file /private/plan.json
+uv run skills/launchplane/scripts/launchplane-write-action.py odoo-website-indexing-apply --payload-file /private/indexing.json --reviewed-plan-file /private/plan.json --result-file /private/receipt.json --idempotency-key ORIGINAL_KEY
+uv run skills/launchplane/scripts/launchplane-write-action.py odoo-website-indexing-readback --payload-file /private/indexing.json --result-file /private/readback.json
+```
+
+Review the complete saved `result` before apply. The helper embeds it unchanged
+as `reviewed_plan`; alternatively supply the full object in the input, without
+`--reviewed-plan-file`. Preserve the input, saved review and original key.
+Every result destination must be new, outside the repository, with an existing
+parent. The exclusive writer creates it with owner-only permissions. It saves
+only the closed typed response, including binding digest, database UUID, native
+website ID/origin, authoritative state, full head hashes, managed-element
+states, plan digest, committed receipt and optional replay/original trace.
+Public output replaces the database UUID and origin with digests; it retains
+the other typed evidence. Unknown/missing fields and mismatched apply receipts
+fail explicitly. A private-save failure after acceptance preserves the verified
+summary as `accepted_unverified` and exits nonzero. Native commands default to
+180 seconds; global `--timeout` overrides it.
+
+Readback is a fresh observation with `committed=false`, not proof that a prior
+apply committed. Compare the same binding/database/selector/state and the
+committed receipt's after hash with the fresh before hash and managed state.
+Lost or unverified apply replies remain uncertain, including the producer's
+`website_indexing_unverified` conflict. Retain the identical effective request
+and original key for service-owned durable reconciliation. The exact bound
+native after-image proves completion; the unchanged reviewed before-image
+permits that original operation to retry. Other images stay unknown. Never
+retry automatically, replace the key or infer recovery eligibility locally.
+Current route authority is independently required; a route digest cannot
+replace native binding proof. Source delivery lifts no hold, acceptance,
+custody, backup, release or receiver prerequisite and proves no target effect.
