@@ -324,27 +324,16 @@ def project_prerequisites(value: object) -> dict[str, Any]:
     return {key: value[key] for key in ("candidate_phase", "restore_workflow_started", "holds")}
 
 
-def load_bound_source(h: Any, args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, str]]:
-    product, operation = (str(getattr(args, key, "") or "").strip() for key in ("product", "operation_id"))
-    if any(h.PRODUCT_READ_PATH_SEGMENT_RE.fullmatch(item) is None for item in (product, operation)):
-        raise ValueError("invalid_request")
-    source = load_manifest(args.migrated_source_file, product=product)
-    binding = h.metadata_review_digest(source)
-    request = {
-        "product": h.public_identifier(product),
-        "operation_id": h.public_identifier(operation),
-        "source_binding_sha256": binding,
-    }
-    return source, request
-
-
-def execute_read(h: Any, args: argparse.Namespace) -> int:
-    source, request = load_bound_source(h, args)
+def execute_read(
+    h: Any,
+    args: argparse.Namespace,
+    *,
+    source: dict[str, Any],
+    request: dict[str, str],
+    settings: dict[str, str],
+    route: str,
+) -> int:
     product, operation, binding = (request[key] for key in ("product", "operation_id", "source_binding_sha256"))
-    settings = h.prepare_operator_settings(args=args, operation=READ_COMMAND, request=request)
-    if settings is None:
-        return 2
-    route = h.internal_helper_path("testing-rebuild-migrated-state").format(product=product, operation_id=operation)
     try:
         response = private_request(h, settings, args.private_address, route + "?include_prerequisites=true", timeout=args.timeout)
         check_state(response, product=product, operation=operation, binding=binding, source=source)
@@ -409,12 +398,22 @@ def execute_read(h: Any, args: argparse.Namespace) -> int:
 
 
 def execute(h: Any, args: argparse.Namespace) -> int:
-    source, request = load_bound_source(h, args)
-    product, operation, binding = (request[key] for key in ("product", "operation_id", "source_binding_sha256"))
-    settings = h.prepare_operator_settings(args=args, operation=COMMAND, request=request)
+    product, operation = (str(getattr(args, key, "") or "").strip() for key in ("product", "operation_id"))
+    if any(h.PRODUCT_READ_PATH_SEGMENT_RE.fullmatch(item) is None for item in (product, operation)):
+        raise ValueError("invalid_request")
+    source = load_manifest(args.migrated_source_file, product=product)
+    binding = h.metadata_review_digest(source)
+    request = {
+        "product": h.public_identifier(product),
+        "operation_id": h.public_identifier(operation),
+        "source_binding_sha256": binding,
+    }
+    settings = h.prepare_operator_settings(args=args, operation=args.command, request=request)
     if settings is None:
         return 2
     route = h.internal_helper_path("testing-rebuild-migrated-state").format(product=product, operation_id=operation)
+    if args.command == READ_COMMAND:
+        return execute_read(h, args, source=source, request=request, settings=settings, route=route)
     validated_private_address(args.private_address)
     private_origin(h, settings, route)
     try:

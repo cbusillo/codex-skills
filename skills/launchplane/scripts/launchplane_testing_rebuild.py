@@ -298,10 +298,7 @@ def rejection(h: Any, request: dict[str, object], error: urllib.error.HTTPError)
 
 def execute(h: Any, args: argparse.Namespace) -> int:
     from launchplane_migrated_upload import execute as upload
-    if args.command == MIGRATED_READ_COMMAND:
-        from launchplane_migrated_upload import execute_read as read_migrated_state
-        return read_migrated_state(h, args)
-    if args.command == UPLOAD_COMMAND:
+    if args.command in {UPLOAD_COMMAND, MIGRATED_READ_COMMAND}:
         return upload(h, args)
     if args.command == READ_COMMAND:
         return execute_read(h, args)
