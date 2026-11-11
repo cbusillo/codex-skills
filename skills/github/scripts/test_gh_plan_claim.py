@@ -201,6 +201,7 @@ class ClaimTests(unittest.TestCase):
         self.enterContext(patch.dict(os.environ))
         self.enterContext(patch.dict(vars(PLAN), {"next_graph_reader": lambda _repo: None}))
         os.environ["HOME"] = self.enterContext(tempfile.TemporaryDirectory())
+        os.environ["CODE_HOME"] = os.environ["HOME"]
         os.environ.pop("DIRECTION_MARKER", None)
         self.enterContext(patch.object(Path, "home", return_value=Path(os.environ["HOME"])))
         for name in (n for names in github_agent.NATIVE_SESSION_VARS.values() for n in names):
@@ -6934,9 +6935,9 @@ class ClaimTests(unittest.TestCase):
     def test_wait_review_records_real_hold_then_evidenced_release_without_editing_prose(self):
         self.wait = None
         self.args.all = self.args.clear = False
-        self.args.waiting_for = "Chris's device test"
-        self.args.ends_when = "Chris records the test result"
-        self.args.evidence = "Director's recorded device-test request"
+        self.args.waiting_for = "Device test completes"
+        self.args.ends_when = "Test result recorded"
+        self.args.evidence = "Recorded device-test request"
         self.args.recheck = "2026-12-01"
         original = copy.deepcopy(self.issue)
         self.run_claim(command=PLAN.cmd_wait)
@@ -6944,7 +6945,7 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(self.issue, original)
         self.args.waiting_for = self.args.ends_when = self.args.recheck = None
         self.args.clear = True
-        self.args.evidence = "Chris recorded acceptance of the device test"
+        self.args.evidence = "Device test passed"
         self.run_claim(command=PLAN.cmd_wait)
         self.run_claim()
         self.assertTrue(self.emitted.call_args.args[0]["ok"])
@@ -7051,7 +7052,7 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(wait_record.records(self.comments[-1]["body"])[0]["state"], "waiting")
 
     def test_new_issue_creation_records_all_waits_or_reviewed_absence(self):
-        for flags in (("--wait-clear",), ("--waiting-for", "Mike's device test", "--ends-when", "Test accepted",
+        for flags in (("--wait-clear",), ("--waiting-for", "Device test completes", "--ends-when", "Test passed",
                       "--waiting-for", "Vendor price list arrives", "--ends-when", "Price confirmed", "--recheck", "2026-12-01"),
                       ("--waiting-for", "Next release", "--ends-when", "Production includes fix",
                        "--release-product", "fixture", "--release-commit", "a" * 40,
