@@ -3048,11 +3048,12 @@ output. No new grant is involved: the service holds the Director-agent authority
 and records a request, never an acceptance or a promotion. Standing acceptance
 then starts the existing gated release for `director_standing` products; observe
 it and do not promote by hand. For Client products (`held`, `promote` or
-`promote_with_rollback_drill`), this sends only the review request. The Client
+`promote_with_rollback_drill`), this records the review request and notifies the
+Client through the normal invitation sender. It starts no production action. The Client
 must separately accept the exact release, and the recorded policy and server
 backup, rollback and release gates still apply. A held policy remains held.
 The result preserves `release_on_acceptance` and reports
-`client_acceptance_required`; it never changes the Client or policy.
+`invitation_delivery` for Client request results; it never changes the Client or policy.
 
 Both modes read the recorded product profile and stop on an unsupported or
 malformed response. They stop with `refused` and a `refusal_reason` unless a
@@ -3062,13 +3063,27 @@ that a standing product uses this route only for its first release carrying
 recorded production settings.
 
 `stale` means the checklist changed, before or during the call. Run `--plan` for
-a new current read and review it; neither a retry nor a new key bypasses this. A
-digest already recorded with this decision and reason returns `ok` without sending again;
-with a different decision or reason it is `conflict`. After a lost response or a 5xx the helper
-reads back once: a matching saved request is `ok` with `verified_by_readback`,
-otherwise `outcome_unknown`. Keep the same digest, reason, decision reference and
-key, and rerun to read it back. An accepted response without this exact request
-is `accepted_unverified`.
+a new current read and review it; neither a retry nor a new key bypasses this.
+A matching saved request retains `request_id` and `request_recorded` even when
+stale, without attributing the current lane versions to that old digest.
+A digest recorded with a different decision, reason or source is `conflict`.
+
+A successful Client POST returns `ok` with `invitation_delivery: confirmed`.
+A matching saved request deduplicates without another POST, but a read alone
+proves only the request record: Client results return `accepted_unverified`
+with `invitation_delivery: unverified`, including after a lost response, 5xx or
+`release_review_not_opened`. Plan reads also mark saved delivery unverified.
+The service's existing worker continues delivery from the saved request.
+Keep its digest, reason, decision reference and key; do not create a replacement
+to force another invitation. The review URL identifies the product's review page,
+not proof that a particular invitation reached the Client.
+
+Director-standing requests retain `ok` for an exact saved request, including
+readback after an uncertain POST. If no matching request can be proved after
+a lost response or 5xx, the result is `outcome_unknown`; keep the original inputs
+for reconciliation. An accepted response without this exact request remains
+`accepted_unverified`. Denials, missing routes and other producer refusals stay
+explicit and never select another caller or identity.
 
 ## Pending Client review withdrawal
 
