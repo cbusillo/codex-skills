@@ -83,25 +83,23 @@ def request_seen(entry: dict, text: str, after: int) -> bool:
     return False
 
 
+def reconcile_catalog_runtime(source: Path, operation: Operation, *arguments: str, repo: str) -> dict:
+    return operation.run(
+        "runtime", ["uv", "run", str(source / "skills/github/scripts/reconcile-runtime-checkout.py"),
+                    "--repo", repo, "--timeout-seconds", "120", *arguments],
+        timeout=660, retry_read=True,
+    )
+
+
 def reconcile_runtime(config: dict, operation: Operation, *, bind_landing: bool = True) -> tuple[Path, str]:
     repo, landing = config["repo"], config["landing_sha"]
     require(len(landing) == 40 and all(char in "0123456789abcdef" for char in landing), "landing", "requires a full landing SHA")
     reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 120)
     landing_pull(reader, repo, landing, expected_pr=config.get("pr"))
     source, runtime = Path(config["source_worktree"]), Path(config["runtime_worktree"])
-    runtime_receipt = operation.run(
-        "runtime",
-        [
-            "uv",
-            "run",
-            str(source / "skills/github/scripts/reconcile-runtime-checkout.py"),
-            "--repo",
-            repo,
-            "--merged-worktree",
-            str(source),
-            *(["--landing-sha", landing] if bind_landing else []),
-        ],
-        timeout=660, retry_read=True,
+    runtime_receipt = reconcile_catalog_runtime(
+        source, operation, "--merged-worktree", str(source),
+        *(["--landing-sha", landing] if bind_landing else []), repo=repo,
     )
     require(
         runtime_receipt.get("status") in {"synchronized", "already_current"},
@@ -596,8 +594,7 @@ def poll(config: dict, evidence: Path, *, supersede_failed: bool = False) -> dic
         state: dict = json.loads(state_path.read_text()) if state_path.exists() else {"repo": config["repo"], "last_sha": None}
         require(state.get("repo") == config["repo"], "identity", "cursor belongs to another repository")
         discovery = Operation(evidence / "discovery", [config["repo"], "discovery"])
-        runtime = discovery.run("runtime", ["uv", "run", str(source / "skills/github/scripts/reconcile-runtime-checkout.py"),
-                                           "--repo", config["repo"]], timeout=660, retry_read=True)
+        runtime = reconcile_catalog_runtime(source, discovery, repo=config["repo"])
         require(runtime.get("status") in {"synchronized", "already_current"}, "discovery", "runtime reconciliation incomplete")
         current: dict = dict(config)
         landings = state.get("pending") or pending_landings(source, state["last_sha"], runtime["after_sha"])

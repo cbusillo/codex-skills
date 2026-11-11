@@ -83,7 +83,7 @@ class Operation:
             if isinstance(error, subprocess.TimeoutExpired):
                 output = {name: value.decode(errors="replace") if isinstance(value, bytes) else value or ""
                           for name, value in (("stdout", error.stdout), ("stderr", error.stderr))}
-            save_state(self.evidence / (gate + ".json"), {"error": str(error), "mutation_uncertain": once, **output})
+            save_state(self.evidence / (gate + ".json"), {"error": str(error), "mutation_uncertain": once or retry_read, **output})
             raise GateFailed(gate, f"{type(error).__name__}; inspect {gate}.json") from error
         if once:
             self.state["steps"][gate]["process_exited"] = True

@@ -311,8 +311,8 @@ def store_supervisor(config_path: Path, recipient: dict) -> dict:
     return recipient
 
 
-def host_command(argv: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(argv, capture_output=True, text=True, timeout=20)
+def host_command(argv: list[str], *, timeout: float = 20) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
 
 
 def checked_host_command(argv: list[str]) -> None:
@@ -321,8 +321,8 @@ def checked_host_command(argv: list[str]) -> None:
         raise ValueError(f"service manager failed: {result.stderr.strip()}")
 
 
-def launchd_status(target: str) -> subprocess.CompletedProcess[str]:
-    result = host_command(["launchctl", "print", target])
+def launchd_status(target: str, *, timeout: float = 20) -> subprocess.CompletedProcess[str]:
+    result = host_command(["launchctl", "print", target], timeout=timeout)
     if result.returncode and "Could not find service" not in result.stderr:
         raise ValueError(f"service status unavailable: {result.stderr.strip()}")
     return result
@@ -383,15 +383,44 @@ def prepare_service_host(config_path: Path, catalog: Path, output: Path, name: s
             "log": str(logs / (name + ".jsonl"))}
 
 
-def service_host_active(host: dict) -> bool:
+def service_host_active(host: dict, *, timeout: float = 20) -> bool:
     if host["backend"] == "launchd":
-        result = launchd_status(host["target"])
+        result = launchd_status(host["target"], timeout=timeout)
         return result.returncode == 0 and re.search(r"(?m)^\s*state = running\s*$", result.stdout) is not None
-    result = host_command(["systemctl", "--user", "is-active", host["target"]])
+    result = host_command(["systemctl", "--user", "is-active", host["target"]], timeout=timeout)
     state = result.stdout.strip()
     if state not in {"active", "inactive", "failed", "unknown", "activating", "deactivating", "reloading", "refreshing", "maintenance"}:
         raise ValueError(f"service status unavailable: {result.stderr.strip()}")
     return state in {"active", "reloading", "refreshing"}
+
+
+def catalog_service_warning() -> str:
+    label = f"{LABEL_PREFIX}.catalog"
+    try:
+        if sys.platform == "darwin":
+            installed = Path.home() / "Library/LaunchAgents" / f"{label}.plist"
+            if not installed.is_file():
+                return ""
+            job = plistlib.loads(installed.read_bytes())
+            if not isinstance(job, dict):
+                raise ValueError("invalid service job")
+            if job.get("StartCalendarInterval"):
+                return ""
+            host = {"backend": "launchd", "target": f"gui/{os.getuid()}/{label}"}
+        elif sys.platform == "linux":
+            installed = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))) / "systemd/user" / f"{label}.service"
+            if not installed.is_file():
+                return ""
+            host = {"backend": "systemd", "target": installed.name}
+        else:
+            return ""
+        if service_host_active(host, timeout=2):
+            return ""
+    except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+        return "Catalog landing verification service state unconfirmed; Supervisor: inspect its service manager and logs."
+    guide = Path(__file__).resolve().parents[1] / "references/helpers.md"
+    return ("WARNING: Catalog landing verification stopped. Supervisor: inspect its service log and reconcile before restart; "
+            f"{guide}#catalog-landing-verification.")
 
 
 def ensure_service_host(host: dict, config_path: Path, name: str) -> dict:
