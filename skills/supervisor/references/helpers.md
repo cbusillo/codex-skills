@@ -1010,7 +1010,10 @@ in `supervisor_session` for closeout exclusion; update it at takeover.
 Catalog verification needs no `services.py bind` or managed Supervisor pane.
 Include its existing `logs/catalog.jsonl` in the
 [routine digest](routine-check.md) with `--service-log`. The service stops and
-records each failure there; it has no separate notification sender or delivery state.
+records each failure there. Session startup also reads the existing installed
+continuous catalog job through the shared launchd/systemd reader, naming the
+Supervisor when it is stopped or its state is unconfirmed. Calendar jobs are
+quiet between firings. There is no separate notification sender or delivery state.
 Before updating an existing installation, remove `failure_argv` from its catalog
 service configuration, the unused `DIRECTOR_DIGEST_DISCORD_WEBHOOK_URL` setting,
 and `<config>.catalog.notice*.json` receipts. Preserve the service log, stop marker
@@ -1038,10 +1041,13 @@ retain the shared reader's retry and refusal policy.
 Verification failures post the failed gate. The existing runner records any failed
 child or stale reconciliation marker in its service log, including an interrupted
 run or a helper that cannot start, then keeps the service stopped.
-Retryable runtime discovery and reconciliation reads leave a bounded
-receipt and retry on the next poll without advancing the cursor or reporting a
-failed verification. A retry requires explicit proof that the runtime was not
-mutated; [source-update retries](../../github/references/cli-reference.md#runtime-checkout-reconciliation)
+Runtime discovery and reconciliation pass the helper's read deadline inside
+its process timeout. A busy reconciliation lock or an expired read deadline
+returns a retryable no-write receipt and retries on the next poll without
+advancing the cursor or reporting a failed verification. The read deadline
+ends before a checkout mutation starts; its existing mutation and postcondition
+bounds remain. Process timeouts preserve uncertainty and stop the service.
+A retry requires explicit proof that the runtime was not mutated; [source-update retries](../../github/references/cli-reference.md#runtime-checkout-reconciliation)
 use this same path. Pending uncertain mutations still stop the service. Read private evidence and reconcile any
 uncertain launch, request or comment before recovery. An uncertain
 report is checked once the posting process exits, using a comments read bounded

@@ -37,6 +37,23 @@ def marker(turn: dt.datetime | None = None, **audits: dt.datetime) -> dict[str, 
     return {"turn": turn, "audits": {repo.replace("__", "/"): stamp for repo, stamp in audits.items()}}
 
 
+class CatalogServiceReminderTests(unittest.TestCase):
+    def test_startup_surfaces_the_shared_service_readers_warning(self) -> None:
+        sys.path.insert(0, str(HOOK.parents[1]))
+        from skills.supervisor.scripts import services
+        output = io.StringIO()
+        with (mock.patch.object(services, "catalog_service_warning", return_value="fixture stopped service") as read,
+              mock.patch.object(hook, "marker_path", return_value=MARKER),
+              mock.patch.object(hook, "direction_root", return_value=None),
+              mock.patch.object(hook, "session_reminder", return_value=""),
+              mock.patch.object(hook, "memory_reminder", return_value=""),
+              mock.patch.object(hook, "agent_tools_warning", return_value=""),
+              contextlib.redirect_stdout(output)):
+            self.assertEqual(hook.main(), 0)
+        read.assert_called_once()
+        self.assertIn("fixture stopped service", output.getvalue())
+
+
 class AgentToolsReminderTests(unittest.TestCase):
     def test_tool_checker_exceptions_do_not_escape_startup(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -174,6 +191,8 @@ class MemoryReminderTests(unittest.TestCase):
 
 class IsolatedDirectionHookTests(unittest.TestCase):
     def setUp(self) -> None:
+        home = self.enterContext(tempfile.TemporaryDirectory())
+        self.enterContext(mock.patch.dict(os.environ, {"HOME": home}))
         # Direction-only scenarios must not inspect the host's installed memory.
         patcher = mock.patch.object(hook, "memory_reminder", return_value="")
         patcher.start()

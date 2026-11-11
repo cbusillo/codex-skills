@@ -203,8 +203,7 @@ class WorktreeTests(unittest.TestCase):
             fcntl.flock(lock, fcntl.LOCK_EX)
             with mock.patch.dict(os.environ, self.env, clear=True):
                 receipt = dev_worktree.checkout_rules().reconcile_primary_checkout(self.repo)
-            self.assertEqual(receipt["status"], "blocked")
-            self.assertEqual(receipt["reason_code"], "runtime_reconciliation_busy")
+            self.assertEqual(receipt["status"], "retryable")
             self.assertFalse(receipt["runtime_mutated"])
             result = subprocess.run([sys.executable, str(SCRIPT), str(self.repo), "busy", self.initial],
                                     env=self.env, capture_output=True, text=True, timeout=10)

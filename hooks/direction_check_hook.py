@@ -496,6 +496,13 @@ def main(*, skills_only: bool = False, catalog_root: Path | None = None, runtime
             print(tools_line, flush=True)
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
         try:
+            from skills.supervisor.scripts.services import catalog_service_warning
+            service_line = catalog_service_warning()
+            if service_line:
+                print(service_line, flush=True)
+        except (ImportError, OSError):
+            pass
+        try:
             from scripts.catalog_runtime import status_line
             catalog_line = status_line(catalog, observe=True) if (catalog / ".local" / "catalog-install.json").is_file() else ""
             if catalog_line:
