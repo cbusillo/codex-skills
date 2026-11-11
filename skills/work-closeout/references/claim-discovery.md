@@ -107,8 +107,8 @@ dependency chains remain conditional. Known different keys do not affect the
 snapshot, even when their values, timing or control flow are unknown. Unknown
 keys, same-key overwrites and deferred loads cannot prove provenance.
 The harness store is session-scoped serializable data. Stored command provenance
-also requires a complete, exclusive native cell window; missing completion,
-yielded or overlapping calls stay conditional. A snapshot captured before an
+also requires a complete, exclusive native cell window; missing completion
+or overlapping calls stay conditional. A snapshot captured before an
 await can still be used afterward in that window. No stored program is executed.
 GitHub connector operations named with the read verbs `fetch`, `get`, `list`,
 `search`, `compare` and `download` are data reads. Write verbs and unknown tool
@@ -213,8 +213,10 @@ the full possible execution count. A process yielded by a completed cell can
 finish afterward without a printed process ID only before the next native tool
 invocation, with contiguous ordinals through that completion. Its start interval
 and the exclusive window exclude an earlier hidden process. Across another
-invocation, the original returned process identity remains required. Overlapping
-or still-running code-mode cells, unbounded repetitions, missing timestamps,
+invocation, the original returned process identity remains required. A yielded
+cell ends at its exact native wait's terminal response; ambiguous cell IDs,
+missing or unrecognized wait results and overlapping calls stay conditional.
+Still-running code-mode cells, unbounded repetitions, missing timestamps,
 foreign events and duplicate event IDs cannot satisfy that proof. Literal loops
 and callbacks reuse the existing bounded literal expansion; no historical code
 is executed.

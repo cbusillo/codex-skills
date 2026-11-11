@@ -784,6 +784,16 @@ def bound_shell_results(text: str, javascript: bool, name: str, blocks: list[obj
     return list(zip(parts, results, strict=True))
 
 
+def native_options(text: str) -> dict:
+    pairs = json.loads(text, object_pairs_hook=lambda members: members)
+    if not isinstance(pairs, list) or any(not isinstance(pair, tuple) or len(pair) != 2 for pair in pairs):
+        raise ValueError("native options")
+    options = dict(pairs)
+    if len(options) != len(pairs):
+        raise ValueError("duplicate native option")
+    return options
+
+
 def poll_process(text: str, javascript: bool, name: str) -> int | None:
     try:
         if javascript:
@@ -800,12 +810,7 @@ def poll_process(text: str, javascript: bool, name: str) -> int | None:
                     return None
                 options[key] = ast.literal_eval(claim_javascript.source(member.child_by_field_name("value")))
         elif name == "write_stdin":
-            pairs = json.loads(text, object_pairs_hook=list)
-            if not isinstance(pairs, list) or any(not isinstance(pair, tuple) or len(pair) != 2 for pair in pairs):
-                return None
-            options = dict(pairs)
-            if len(options) != len(pairs):
-                return None
+            options = native_options(text)
         else:
             return None
         process = options.get("session_id")
@@ -879,15 +884,32 @@ def javascript_outcome(output: object) -> str | None:
 def response_positions(records: list[dict]) -> dict[str, int]:
     responses = {}
     running = set()
+    execs = set()
+    cells = {}
+    waits = {}
+    completed = {}
+    ambiguous = set()
     for index, row in enumerate(records):
         payload = row.get("payload")
-        if not isinstance(payload, dict) or payload.get("type") not in {
+        if not isinstance(payload, dict):
+            continue
+        identifier = str(payload.get("call_id", ""))
+        if payload.get("type") == "custom_tool_call" and payload.get("name") == "exec":
+            execs.add(identifier)
+        if payload.get("type") == "function_call" and payload.get("name") == "wait":
+            try:
+                options = native_options(payload.get("arguments", ""))
+                cell = options.get("cell_id")
+                if isinstance(cell, str) and cell in cells and options.get("terminate", False) is False:
+                    waits[identifier] = cell
+            except (TypeError, ValueError):
+                continue
+        if payload.get("type") not in {
             "function_call_output",
             "custom_tool_call_output",
             "local_shell_call_output",
         }:
             continue
-        identifier = str(payload.get("call_id", ""))
         output = payload.get("output")
         if (
             payload["type"] == "custom_tool_call_output"
@@ -895,9 +917,30 @@ def response_positions(records: list[dict]) -> dict[str, int]:
             and "Script running with cell ID" in str(output)
         ):
             running.add(identifier)
+            header = output
+            if isinstance(output, list):
+                header = (
+                    output[0].get("text")
+                    if output and isinstance(output[0], dict) and output[0].get("type") == "input_text"
+                    else None
+                )
+            match = re.match(r"\AScript running with cell ID (\S+)\n", header) if isinstance(header, str) else None
+            if identifier in execs and match:
+                cell = match[1]
+                if cell in cells:
+                    ambiguous.add(cell)
+                cells[cell] = identifier
         else:
             responses[identifier] = index
-    return {identifier: index for identifier, index in responses.items() if identifier not in running}
+        if payload["type"] == "function_call_output" and identifier in waits and javascript_outcome(output) is not None:
+            cell = waits[identifier]
+            if cell in completed:
+                ambiguous.add(cell)
+            completed[cell] = index
+    return {
+        **{identifier: index for identifier, index in responses.items() if identifier not in running},
+        **{cells[cell]: index for cell, index in completed.items() if cell not in ambiguous},
+    }
 
 
 def exclusive_response_window(inputs: dict, identifier: str, responses: dict[str, int], record_count: int) -> bool:

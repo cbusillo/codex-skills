@@ -895,6 +895,13 @@ class ClaimCloseoutTests(unittest.TestCase):
         ]
         self.assert_held_until_released(self.entry(rows=({"type": "response_item", **row} for row in rows)))
 
+    def test_completed_cell_wait_preserves_exact_claim_release_checks(self) -> None:
+        outcomes: Any = importlib.import_module("test_claim_outcomes")
+        rows = outcomes.RecordedClaimOutcomeTests.recorded_waited_claim(
+            f"uv run gh-plan.py --repo {REPO} claim 1 --session {SESSION}"
+        )
+        self.assert_held_until_released(self.entry(rows=rows))
+
     def test_polling_one_process_many_times_links_each_poll_output_once(self) -> None:
         polls = 12
         rows = [
