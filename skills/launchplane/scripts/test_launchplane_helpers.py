@@ -12540,10 +12540,8 @@ def _native_binding_with_selectors() -> dict[str, Any]:
     response = _native_binding_response()
     binding = response["native_execution_binding"]
     scope = {name: binding[name] for name in ("product", "context")}
-    candidate_digest = hashlib.sha256(
-        json.dumps({**scope, "operation": binding["operation_id"]}, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-    route_digest = hashlib.sha256(json.dumps(scope, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    namespace = "lp-testing-87ce5addeb3ab8b030b831d7c22fb4d6"
+    route_id = "lp-testing-route-c07a5498c78ca329d2ee26d2fb6a42b8"
     retained = {"availability": "present", "binding": "matched", "coverage": "retained_record_only"}
     evidence = binding["native_evidence"]
     evidence["checkpoint"].update(retained)
@@ -12551,10 +12549,11 @@ def _native_binding_with_selectors() -> dict[str, Any]:
     evidence["terminal_probe"].update(attempt=4, coverage="checkpoint_probe_only")
     evidence["forward_route"].update(retained, attempt=3)
     binding.update(
+        reservation_id="mutation-reservation-1c653114f69d7090f1adf8464e365fffaed6e8a05a9e31db4f9685d070a8e302",
         candidate={
             **retained,
             "selector": {
-                "namespace": "lp-testing-" + candidate_digest[:32],
+                "namespace": namespace,
                 "server_id": "private_server",
                 "project_id": "private_project",
                 "environment_id": "private_environment",
@@ -12563,6 +12562,7 @@ def _native_binding_with_selectors() -> dict[str, Any]:
                 "runtime_identity": {
                     **scope, "instance": binding["instance"], "deployment_record_id": "private_deployment",
                     "artifact_id": "private_artifact", "source_git_ref": "private_source_ref",
+                    "slot": "", "release_id": "", "database_uuid": "", "image_digest": "",
                 },
             },
         },
@@ -12572,8 +12572,8 @@ def _native_binding_with_selectors() -> dict[str, Any]:
             "attempt": 3,
             "selector": {
                 "server_id": "private_server",
-                "copy_id": "lp-testing-" + candidate_digest[:32],
-                "route_id": "lp-testing-route-" + route_digest[:32],
+                "copy_id": namespace,
+                "route_id": route_id,
                 "route_digest": "b" * 64,
                 "document_sha256": "absent",
                 "backend": "https://private-backend.invalid",
@@ -12607,7 +12607,7 @@ def test_native_binding_preserves_partial_selectors_and_redacts_the_receipt(tmp_
     (("candidate", "selector", "runtime_identity", "context"), "foreign"),
     (("candidate", "selector", "runtime_identity", "raw"), {}),
     (("candidate", "selector", "server_id"), "foreign_server"),
-    (("forward_route", "selector", "backend"), "https://user:password@private-backend.invalid"),
+    (("forward_route", "selector", "backend"), "https://private-backend.invalid/invalid-path"),
     (("forward_route", "selector", "copy_id"), "foreign-copy"),
     (("forward_route", "attempt"), 4),
     (("native_evidence", "terminal_probe", "attempt"), 6),

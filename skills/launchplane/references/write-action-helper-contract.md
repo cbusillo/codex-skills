@@ -1000,7 +1000,8 @@ installed local helper bindings.
   validated [NativeTestingExecutionBinding](https://github.com/cbusillo/launchplane/blob/2550cf18a20bbdc93c277a62ae0914ad20ab3ce4/control_plane/contracts/native_testing_rebuild_evidence.py)
   object. Standard output adds a receipt with a package digest and
   availability, binding and coverage codes. The two flags may be combined
-  on one GET.
+  on one GET. Treat the file as complete only after the command reports
+  `written` with its SHA-256 digest.
 
   The configured identity must already have full-record authority
   (`odoo_target_replacement_apply.execute` on the original product, context and
