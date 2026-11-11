@@ -3037,7 +3037,8 @@ and approves pending plans in the UI; no helper approval or apply path is added.
 `release-request --product P --plan` reads the current profile and checklist and
 sends nothing. It reports `release_on_acceptance`, `checklist_digest`, both lanes'
 source commits, whether they carry runtime settings, blocker count and `review_url`.
-A plan with a current prerequisite reports `refused` and `refusal_reason`.
+A plan with a structured current prerequisite reports `refused` and
+`refusal_reason`. Blocker text is counted, never interpreted as caller policy.
 Item text, settings, artifact ids, blocker prose, saved reason and actor stay private.
 The profile supplies the configured policy; the review's similarly named field
 supplies the effective release action and cannot replace it.
@@ -3059,12 +3060,19 @@ observe it and do not promote by hand.
 A successful Client POST returns `ok`, `request_id`, `request_recorded` and
 `invitation_delivery: confirmed`. This means the producer confirmed its invitation
 receipt, including an existing receipt, not that it sent a fresh notification.
-A matching saved request deduplicates without another POST. A read proves only
-the request record: Client results return `accepted_unverified` and
-`invitation_delivery: unverified`. Director-standing results retain `ok` for an
-exact saved request. Current prerequisites override either result with `refused`;
-the request identity is retained. The same settlement applies after an uncertain
-POST, preserving the producer's error code and trace even when readback finds the request.
+For an unchanged Client request with no current prerequisite, an explicit rerun
+sends the same POST, digest, reason, reference and key. The producer reuses the
+saved request and existing invitation receipt without a second notification.
+No automatic POST retry occurs. Director-standing requests deduplicate locally.
+
+After an uncertain POST, one readback can prove the saved request, but cannot
+confirm Client delivery: it returns `accepted_unverified` with
+`invitation_delivery: unverified`, preserving the producer error code and trace.
+Current prerequisites remain visible alongside the request ID. A matching
+request that has since received a decision returns `ok`, `review_decided: true`
+and `refusal_reason: release_already_decided`, directing observation of that
+outcome; other prerequisites return `refused`. This preserves Director-standing
+success after its worker has recorded acceptance, without advising a new release.
 
 `stale` means the checklist changed; the old request identity is retained without
 attributing new lane versions to it. Review a fresh `--plan`; a new key cannot
@@ -3072,9 +3080,9 @@ bypass drift. A digest recorded with a different decision, reason or source is
 `conflict`. An accepted response without the exact request is `accepted_unverified`.
 After a timeout, 5xx or `release_review_not_opened`, readback runs once. Unproved
 transport effects remain `outcome_unknown`; producer refusals stay explicit.
-Keep the original digest, reason, reference and key for reconciliation. The
-service worker continues delivery from its saved request; never create a
-replacement or blindly repeat POST to force an invitation. The review URL alone
+Keep the original digest, reason, reference and key for reconciliation. An
+explicit unchanged rerun uses the producer confirmation path above; never create
+a replacement or blindly repeat POST to force an invitation. The review URL alone
 proves no delivery. Denials never select another caller or identity.
 
 ## Pending Client review withdrawal

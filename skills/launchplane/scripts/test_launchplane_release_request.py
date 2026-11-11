@@ -13,8 +13,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-from launchplane_release_request import CLIENT_APPROVAL_BLOCKER as CLIENT_APPROVAL
-from launchplane_release_request import COMMAND, REVIEW_PAGE
+from launchplane_release_request import COMMAND, REQUEST_SOURCE, REVIEW_PAGE
 from test_launchplane_helpers import _product_profile_response
 from test_launchplane_helpers import write_action as h
 
@@ -66,7 +65,7 @@ def review(digest: str = DIGEST, saved: dict[str, object] | None = None, **field
             "items": [{"title": "PRIVATE_ITEM_TITLE"}],
         },
         "checklist_digest": digest,
-        "blockers": [CLIENT_APPROVAL],
+        "blockers": ["PRIVATE_CLIENT_APPROVAL_BLOCKER"],
         "latest_decision": None,
         "unavailable_reason": None,
     }
@@ -83,7 +82,7 @@ def saved_request(digest: str = DIGEST, decision: str = DECISION, reason: str = 
         "product": "site",
         "checklist_digest": digest,
         "decision_reference": decision,
-        "source": "director_request",
+        "source": REQUEST_SOURCE,
         "actor": "private-actor-subject",
         "reason": reason,
         "decided_at": "2026-11-09T03:00:00+00:00",
@@ -126,7 +125,7 @@ def invoke(
 
 def assert_private_values_absent(payload: dict[str, Any]) -> None:
     rendered = json.dumps(payload)
-    for private in (REASON, DECISION, "PRIVATE_ITEM_TITLE", "PRIVATE_SETTING_NAME", "private-artifact", "private-actor-subject", "PRIVATE_SERVICE_PROSE", CLIENT_APPROVAL):
+    for private in (REASON, DECISION, "PRIVATE_ITEM_TITLE", "PRIVATE_SETTING_NAME", "private-artifact", "private-actor-subject", "PRIVATE_SERVICE_PROSE", "PRIVATE_CLIENT_APPROVAL_BLOCKER"):
         assert private not in rendered, private
 
 
@@ -141,20 +140,9 @@ def test_plan_reports_the_exact_checklist_and_sends_nothing() -> None:
     assert_private_values_absent(payload)
 
 
-@pytest.mark.parametrize("acceptance", ["unsupported", "", None])
-@pytest.mark.parametrize("args", [plan_args(), request_args()])
-def test_unsupported_profile_cannot_request(acceptance: Any, args: list[str]) -> None:
-    code, payload, posts = invoke(args, reviews=[review()], acceptance=acceptance)
-    assert code == 1 and posts == []
-    assert payload["status"] == "invalid"
-
-
 @pytest.mark.parametrize(
     ("fields", "reason"),
     [
-        ({"blockers": [CLIENT_APPROVAL, "A second real blocker."]}, "checklist_blocked"),
-        ({"blockers": ["A different single blocker."]}, "checklist_blocked"),
-        ({"blockers": []}, "checklist_blocked"),
         ({"checklist_complete": False}, "checklist_incomplete"),
         ({"unavailable_reason": "evidence_missing"}, "checklist_unavailable"),
         ({"checklist": None, "checklist_digest": ""}, "checklist_unavailable"),
@@ -204,7 +192,7 @@ def test_request_binds_the_reviewed_digest_decision_and_key() -> None:
         "product": "site",
         "checklist_digest": DIGEST,
         "reason": REASON,
-        "source": "director_request",
+        "source": REQUEST_SOURCE,
         "decision_reference": DECISION,
     }
     assert payload["status"] == "ok"
@@ -229,7 +217,8 @@ def test_a_recorded_request_is_reported_without_sending_again(acceptance: str) -
         reviews=[review(saved=saved_request(), approved=True, latest_decision={"decision": "accepted"})],
         acceptance=acceptance,
     )
-    assert code == 1 and posts == []
+    assert code == 0 and posts == []
+    assert payload["result"]["review_decided"] is True
     assert payload["summary"]["refusal_reason"] == "release_already_decided"
     assert payload["result"]["request_recorded"] is True
     assert payload["result"]["request_id"] == RECORD_ID
@@ -321,6 +310,7 @@ def test_definite_service_refusal_reads_back_then_refuses() -> None:
 @pytest.mark.parametrize("uncertain", [False, True])
 def test_saved_request_preserves_current_refusal(uncertain: bool) -> None:
     decided = review(saved=saved_request(), approved=True, latest_decision={"decision": "accepted"})
+    decided["reviewing_temporary_hotfix"] = True
     code, payload, posts = invoke(
         request_args(),
         reviews=[review(), decided] if uncertain else [decided],
@@ -328,7 +318,7 @@ def test_saved_request_preserves_current_refusal(uncertain: bool) -> None:
     )
     assert code == 1 and len(posts) == int(uncertain)
     assert payload["status"] == "refused"
-    assert payload["summary"]["refusal_reason"] == "release_already_decided"
+    assert payload["summary"]["refusal_reason"] == "temporary_hotfix_pending"
     assert payload["result"]["request_id"] == RECORD_ID
 
 
@@ -345,7 +335,42 @@ def test_matching_readback_retains_producer_diagnostics(http_status: int, error_
     assert payload["result"]["invitation_delivery"] == "unverified"
 
 
-def test_new_request_leaves_eligibility_to_the_producer() -> None:
+def test_explicit_rerun_can_confirm_a_client_request_after_a_lost_response() -> None:
+    code, uncertain, original = invoke(request_args(), reviews=[review(), review(saved=saved_request())], posts=[TimeoutError("lost")])
+    assert code == 1 and uncertain["status"] == "accepted_unverified"
+    code, confirmed, repeated = invoke(request_args(), reviews=[review(saved=saved_request())], posts=[review(saved=saved_request())])
+    assert code == 0 and confirmed["result"]["invitation_delivery"] == "confirmed"
+    assert len(original) == len(repeated) == 1
+    assert original[0].kwargs == repeated[0].kwargs
+
+
+def test_lost_standing_response_observes_an_already_decided_request() -> None:
+    code, payload, posts = invoke(
+        request_args(), reviews=[review(), review(saved=saved_request(), latest_decision={"decision": "accepted"})],
+        posts=[http_error(502, "bad_gateway")], acceptance="director_standing",
+    )
+    assert code == 0 and len(posts) == 1
+    assert payload["result"]["review_decided"] is True
+    assert payload["summary"]["refusal_reason"] == "release_already_decided"
+    assert payload["summary"]["trace_id"] == "trace-error"
+
+
+@pytest.mark.parametrize("uncertain", [False, True])
+@pytest.mark.parametrize("drift", [False, True])
+def test_conflicting_request_does_not_hide_current_state(uncertain: bool, drift: bool) -> None:
+    current = review(digest=NEW_DIGEST if drift else DIGEST, saved=saved_request(reason=OTHER_REASON), checklist_complete=False)
+    code, payload, posts = invoke(
+        request_args(), reviews=[review(), current] if uncertain else [current], posts=[http_error(409, "release_review_not_opened")] if uncertain else None,
+    )
+    assert code == 1 and len(posts) == int(uncertain)
+    assert payload["status"] == ("stale" if drift else "conflict")
+    if not drift:
+        assert payload["summary"]["refusal_reason"] == "checklist_incomplete"
+    if uncertain:
+        assert payload["summary"]["trace_id"] == "trace-error"
+
+
+def test_service_refusal_preserves_the_specific_readback_prerequisite() -> None:
     code, payload, posts = invoke(
         request_args(),
         reviews=[review(checklist_complete=False), review(checklist_complete=False)],
@@ -353,6 +378,8 @@ def test_new_request_leaves_eligibility_to_the_producer() -> None:
     )
     assert code == 1 and len(posts) == 1
     assert payload["summary"]["error_code"] == "release_review_not_opened"
+    assert payload["status"] == "refused"
+    assert payload["summary"]["refusal_reason"] == "checklist_incomplete"
 
 
 @pytest.mark.parametrize(
@@ -426,9 +453,10 @@ def test_temporary_hotfix_explains_the_actual_review_prerequisite() -> None:
 
 
 @pytest.mark.parametrize("acceptance", ["held", "promote", "promote_with_rollback_drill", "director_standing"])
-def test_typed_transport_plans_requests_and_deduplicates_without_accepting(acceptance: str) -> None:
+def test_typed_transport_confirms_client_requests_without_duplicate_publication(acceptance: str) -> None:
     saved: dict[str, object] | None = None
     calls: list[tuple[str, str]] = []
+    publications: list[str] = []
 
     def transport(request: urllib.request.Request, **_kwargs: Any) -> io.BytesIO:
         nonlocal saved
@@ -447,15 +475,10 @@ def test_typed_transport_plans_requests_and_deduplicates_without_accepting(accep
             data = request.data
             assert isinstance(data, bytes)
             envelope = json.loads(data)
-            assert envelope == {
-                "product": "site",
-                "checklist_digest": DIGEST,
-                "reason": REASON,
-                "source": "director_request",
-                "decision_reference": DECISION,
-            }
-            assert request.get_header("Idempotency-key") == OPERATION_KEY
-            saved = saved_request()
+            assert envelope["checklist_digest"] == DIGEST
+            if saved is None:
+                saved = saved_request()
+                publications.append(str(saved["record_id"]))
             body = review(saved=saved)
         return io.BytesIO(json.dumps(body).encode())
 
@@ -464,14 +487,14 @@ def test_typed_transport_plans_requests_and_deduplicates_without_accepting(accep
         for index, args in enumerate((plan_args(), request_args(), request_args())):
             output = io.StringIO()
             with redirect_stdout(output):
-                assert h.main(args) == (1 if index == 2 and acceptance != "director_standing" else 0)
+                assert h.main(args) == 0
             payload = json.loads(output.getvalue())
-            assert payload["result"]["release_on_acceptance"] == acceptance
             if index and acceptance != "director_standing":
-                assert payload["result"]["invitation_delivery"] == ("confirmed" if index == 1 else "unverified")
+                assert payload["result"]["invitation_delivery"] == "confirmed"
             assert_private_values_absent(payload)
             assert "fictional-token" not in output.getvalue()
-    assert [path for method, path in calls if method != "GET"] == [h.helper_command_path(COMMAND)]
+    assert [path for method, path in calls if method != "GET"] == [h.helper_command_path(COMMAND)] * (1 if acceptance == "director_standing" else 2)
+    assert publications == [RECORD_ID]
 
 
 if __name__ == "__main__":

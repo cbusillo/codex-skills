@@ -19,7 +19,6 @@ REVIEW_READ = "release-review-read"
 REVIEW_PAGE = "/ui/owner-review"
 REQUEST_SOURCE = "director_request"
 STANDING_ACCEPTANCE = "director_standing"
-CLIENT_APPROVAL_BLOCKER = "Client approval of this release is required."
 MAX_REASON_LENGTH = 1000
 MAX_KEY_LENGTH = 200
 SHA256_RE = re.compile(r"[a-f0-9]{64}")
@@ -35,7 +34,6 @@ REFUSAL_ADVICE = {
     "temporary_hotfix_pending": "A temporary hotfix is awaiting its Client review first.",
     "no_new_release": "Production already runs the testing version.",
     "checklist_incomplete": "The checklist is incomplete. Finish its evidence before requesting a release.",
-    "checklist_blocked": "The checklist has blockers besides Client approval. Resolve them; this command never clears a blocker.",
     "service_not_opened": "Launchplane recorded no request for this checklist. Read it again with --plan and resolve what the release review reports.",
 }
 
@@ -161,7 +159,7 @@ def _project_saved_request(h: Any, value: object, product: str) -> dict[str, Any
     return saved
 
 
-def _refusal(status: dict[str, Any], checklist: dict[str, Any] | None, blockers: list[str], *, hotfix: bool) -> str:
+def _review_prerequisite(status: dict[str, Any], checklist: dict[str, Any] | None, *, hotfix: bool) -> str:
     review_required = status.get("required") is True
     if not review_required:
         return "release_review_not_required"
@@ -172,7 +170,6 @@ def _refusal(status: dict[str, Any], checklist: dict[str, Any] | None, blockers:
         ("release_already_decided", status.get("approved") is True or status.get("latest_decision") is not None),
         ("no_new_release", status.get("no_new_release") is True or checklist.get("production") == checklist.get("candidate")),
         ("checklist_incomplete", status.get("checklist_complete") is not True),
-        ("checklist_blocked", blockers != [CLIENT_APPROVAL_BLOCKER]),
     )
     return next((code for code, failed in checks if failed), "")
 
@@ -201,7 +198,7 @@ def _project_review(h: Any, response: dict[str, Any], product: str) -> ReviewSta
         production=production,
         candidate=candidate,
         blocker_count=len(blockers),
-        refusal=_refusal(status, checklist, blockers, hotfix=response.get("reviewing_temporary_hotfix") is True),
+        refusal=_review_prerequisite(status, checklist, hotfix=response.get("reviewing_temporary_hotfix") is True),
         saved=_project_saved_request(h, response.get("release_request"), product),
     )
 
@@ -302,6 +299,9 @@ def _finish_recorded(
     if state.digest != intent.digest:
         return _finish(h, intent, "stale", result=result, diagnostics=diagnostics or CHECKLIST_CHANGED_DIAGNOSTICS)
     result.update(_result(h, settings, intent, state, acceptance))
+    if state.refusal == "release_already_decided":
+        result["review_decided"] = True
+        return _finish(h, intent, "ok", result=result, refusal=state.refusal, diagnostics=diagnostics)
     if state.refusal:
         return _finish(h, intent, "refused", result=result, refusal=state.refusal, diagnostics=diagnostics)
     if not standing and not delivery_confirmed:
@@ -313,7 +313,7 @@ def _finish_recorded(
             diagnostics=diagnostics,
             recommendation=(
                 "The request is recorded; Client invitation delivery is unverified. Keep the same digest, reason, decision reference and key. "
-                "The service continues delivery from this saved request; do not create a replacement to force another invitation."
+                "Rerun those same inputs to ask the existing service route to confirm its receipt; do not create a replacement request."
             ),
         )
     advice = (
@@ -325,6 +325,21 @@ def _finish_recorded(
         )
     )
     return _finish(h, intent, "ok", result=result, diagnostics=diagnostics, recommendation=advice)
+
+
+def _finish_unmatched(
+    h: Any, settings: dict[str, str], intent: Intent, state: ReviewState, acceptance: str,
+    *, status: str, refusal: str = "", diagnostics: dict[str, object] | None = None,
+) -> int:
+    if state.digest and state.digest != intent.digest:
+        return _finish(h, intent, "stale", diagnostics=diagnostics or CHECKLIST_CHANGED_DIAGNOSTICS)
+    if _recorded_differently(state, intent):
+        status = "conflict"
+    return _finish(
+        h, intent, status, result=_result(h, settings, intent, state, acceptance),
+        refusal=state.refusal or refusal, diagnostics=diagnostics,
+        recommendation=RECOVERY["outcome_unknown"] if status == "outcome_unknown" else "",
+    )
 
 
 def _settle_uncertain_post(
@@ -344,9 +359,7 @@ def _settle_uncertain_post(
         return _finish(h, intent, "outcome_unknown", diagnostics=diagnostics)
     if (saved := _matching_request(state, intent)) is not None:
         return _finish_recorded(h, settings, intent, state, acceptance, saved, readback=True, diagnostics=diagnostics)
-    if _recorded_differently(state, intent):
-        return _finish(h, intent, "conflict", diagnostics=diagnostics)
-    return _finish(h, intent, status, refusal=refusal, diagnostics=diagnostics)
+    return _finish_unmatched(h, settings, intent, state, acceptance, status=status, refusal=refusal, diagnostics=diagnostics)
 
 
 def _submit(h: Any, settings: dict[str, str], intent: Intent, acceptance: str, timeout: float) -> int:
@@ -386,8 +399,7 @@ def _submit(h: Any, settings: dict[str, str], intent: Intent, acceptance: str, t
             delivery_confirmed=True,
             diagnostics=h.service_response_diagnostics(response),
         )
-    status = "conflict" if _recorded_differently(state, intent) else "accepted_unverified"
-    return _finish(h, intent, status, diagnostics=h.service_response_diagnostics(response))
+    return _finish_unmatched(h, settings, intent, state, acceptance, status="accepted_unverified", diagnostics=h.service_response_diagnostics(response))
 
 
 def _finish_refused_post(h: Any, settings: dict[str, str], intent: Intent, acceptance: str, timeout: float, error: urllib.error.HTTPError) -> int:
@@ -432,12 +444,10 @@ def execute(h: Any, args: argparse.Namespace) -> int:
         return _finish_read_failure(h, intent, args.timeout, error)
     if args.plan:
         return _finish_plan(h, settings, intent, state, acceptance)
-    if (saved := _matching_request(state, intent)) is not None:
+    if (saved := _matching_request(state, intent)) is not None and (acceptance == STANDING_ACCEPTANCE or state.refusal or state.digest != intent.digest):
         return _finish_recorded(h, settings, intent, state, acceptance, saved)
-    if _recorded_differently(state, intent):
-        return _finish(h, intent, "conflict")
-    if state.digest and state.digest != intent.digest:
-        return _finish(h, intent, "stale", diagnostics=CHECKLIST_CHANGED_DIAGNOSTICS)
+    if _recorded_differently(state, intent) or state.digest and state.digest != intent.digest:
+        return _finish_unmatched(h, settings, intent, state, acceptance, status="conflict")
     return _submit(h, settings, intent, acceptance, args.timeout)
 
 
