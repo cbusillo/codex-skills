@@ -36,8 +36,7 @@ Rules for this brief (every Supervisor brief carries them):
   8, do not open another. Fixes that unblock landing or repair failing CI are
   exempt from this cap; their briefs name the repair and exemption.
 - Pace (Director, October 18, 2026): never open PRs faster than they can land.
-  Finish and hand off what you open before starting anything new. Choose launch
-  tiers under [Accounts, Pace, And Launch Tier](../SKILL.md#accounts-pace-and-launch-tier).
+  Finish and hand off what you open before starting anything new.
 - Never use the Director's own Chrome (the ChatGPT for Chrome extension, Claude in
   Chrome, or any automation of his browser) unless the brief is a GUI task
   that names it. Browser and page checks run headless (Playwright or the
@@ -76,7 +75,8 @@ Rules for this brief (every Supervisor brief carries them):
   `Engineering ready; waiting for <named reason>`, then run `ready` when the
   hold ends. A brief that holds a PR names that wait in one line.
 - Briefs state the goal and observable finish line, not a mechanism to build.
-  A named mechanism is a suggestion unless it records a Director decision.
+  A named mechanism is a suggestion unless it records a Director decision. Choose
+  tiers under [Accounts, Pace, And Launch Tier](../SKILL.md#accounts-pace-and-launch-tier).
 - Small fixes in the same file or area that share the change's reason go in
   the same PR; different behavior, its own risk, security or access,
   Client-visible, or large work gets a separate issue.

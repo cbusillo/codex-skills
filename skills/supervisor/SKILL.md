@@ -370,12 +370,12 @@ Start new work, including leads, migration and safety slices, on the provider's
 everyday model; try a cheaper tier when work keeps passing. A failed or looping
 run calls for a re-plan or re-brief, not a step up. Reserve the strongest tier
 for a one-shot plan or diagnosis of very hard, stuck, high-cost work; name that
-reason in the brief. Effort follows the work: medium, high for policy, guidance
-and hard debugging. A Director's recorded tier decisions take precedence.
-For example, the Director's November 11, 2026 price facts put Astra at about
+reason in the brief. Effort stays high for leads, policy, guidance, authorization,
+credentials, security, migration, reviews of safety changes and hard debugging;
+medium otherwise. A Director's recorded tier decisions take precedence.
+For example, the Director's November 11, 2026 OpenAI price facts put Astra at about
 5 times Sol's input/output price and 10 times its cached-input price
 ([decision and prices](https://github.com/cbusillo/codex-skills/issues/4144)).
-Account and quota lessons go to [account selection](references/helpers.md#choosing-the-account).
 
 ## The Pattern
 
