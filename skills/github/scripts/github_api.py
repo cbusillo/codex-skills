@@ -920,7 +920,11 @@ class GhApiCommand:
     endpoint: str
     method: Optional[str]
     fields: tuple[str, ...]
-    has_input: bool
+    input_source: str
+
+    @property
+    def has_input(self) -> bool:
+        return bool(self.input_source)
 
     @property
     def sent_method(self) -> str:
@@ -1001,8 +1005,16 @@ def parse_gh_api_args(args: list[str]) -> Optional[GhApiCommand]:
         endpoint=positionals[0],
         method=methods[-1] if methods else None,
         fields=tuple(value for name, value in options if name in ("--field", "--raw-field")),
-        has_input=bool(inputs and inputs[-1]),
+        input_source=inputs[-1] if inputs else "",
     )
+
+
+def graphql_body_sent(parsed: GhApiCommand, stdin_text: Optional[str]) -> Any:
+    if not parsed.has_input:
+        return parsed.graphql_query
+    if parsed.input_source == "-" and stdin_text:
+        return _try_parse_json(stdin_text)
+    return None
 
 
 def _skip_gh_context_flags(args: list[str]) -> list[str]:
@@ -1034,9 +1046,7 @@ def infer_gh_command_context(args: list[str], *, input_text: Optional[str] = Non
         if parsed is None:
             return CommandContext(True, "rest_api", "rest_core")
         if is_graphql_path(parsed.endpoint):
-            graphql_document: Any = parsed.graphql_query
-            if parsed.has_input and input_text:
-                graphql_document = _try_parse_json(input_text)
+            graphql_document = graphql_body_sent(parsed, input_text)
             operation = infer_graphql_operation_type(graphql_document)
             return CommandContext(
                 infer_is_write(parsed.method or "GET", parsed.endpoint, graphql_document, graphql_operation=operation),
