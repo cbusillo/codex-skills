@@ -1,8 +1,8 @@
 name: Launchplane Read Response Fields
 
-# Fails when the pinned read response fields differ from the ones Launchplane
-# declares on main. The daily run catches a Launchplane change between
-# codex-skills pull requests, before an added field stops a bounded read.
+# Fails when Launchplane main declares a bounded read field the catalog's
+# allowlist does not accept. Launchplane's own CI runs the same check on its
+# pull requests; this run is the backstop.
 on:
   pull_request:
   push:
@@ -17,7 +17,7 @@ permissions:
 
 jobs:
   check:
-    name: Pinned read fields match Launchplane
+    name: Launchplane read fields are accepted
     runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
@@ -43,5 +43,5 @@ jobs:
         working-directory: .local/launchplane-schema-source
         run: uv run --locked launchplane service export-openapi --output "$RUNNER_TEMP/launchplane-openapi.json"
 
-      - name: Compare the pin with Launchplane main
-        run: uv run skills/launchplane/scripts/sync-read-response-fields.py check --openapi "$RUNNER_TEMP/launchplane-openapi.json"
+      - name: Check Launchplane main's read fields against the allowlists
+        run: uv run skills/launchplane/scripts/check-read-response-fields.py --openapi "$RUNNER_TEMP/launchplane-openapi.json"
