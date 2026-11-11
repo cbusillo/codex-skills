@@ -235,7 +235,8 @@ def classify(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[st
         return {**row, "state": "underway", "reason": "existing_claim_or_artifact",
                 "ownership_evidence": [*conflicts, *artifacts], "certainty": "current_or_stale"}
     if actor and actor.startswith("agent:"):
-        if (row.get("next_actor_session_state") == github_plan_lease.EXPIRED or released_actor(actor, discussion, trusted) or any(
+        session_state = row.get("next_actor_session_state")
+        if session_state == github_plan_lease.EXPIRED or session_state is None and (released_actor(actor, discussion, trusted) or any(
                 actor.removeprefix("agent:").casefold() in {record["worker"].casefold(), record["session"].casefold()}
                 for record in facts["ended_ownership"])):
             return {**row, "state": "needs_status", "reason": "next_actor_session_released"}
