@@ -521,6 +521,9 @@ INTERNAL_HELPER_ROUTES = {
 # set fails closed; an accepted field the read does not project is dropped.
 # references/launchplane-read-response-fields.json pins the fields Launchplane
 # declares for these routes, and the tests require each pinned set to fit here.
+NATIVE_EXECUTION_BINDING_FIELD = "native_execution_binding"
+
+
 BOUNDED_READ_RESPONSE_FIELDS: dict[str, frozenset[str]] = {
     command: frozenset(fields)
     for command, fields in {
@@ -567,7 +570,7 @@ BOUNDED_READ_RESPONSE_FIELDS: dict[str, frozenset[str]] = {
         },
         "target-replacement-operation-read": {
             "status", "trace_id", "operation", "result", "recovery", "native_evidence",
-            "native_execution_binding",
+            NATIVE_EXECUTION_BINDING_FIELD,
         },
         "testing-hold-read": {
             "status", "trace_id", "records", "result", "replayed", "original_trace_id",
