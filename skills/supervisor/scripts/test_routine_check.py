@@ -31,10 +31,12 @@ import routine_check
 import question_delivery
 import session_closeout
 claim_transcripts: Any = importlib.import_module("claim_transcripts")
+plan_sessions: Any = importlib.import_module("github_plan_sessions")
 from check_operation import GateFailed, Operation
 
 from skills.github.scripts.github_api import ApiResult
-from skills.github.scripts import github_agent
+from skills.github.scripts import github_agent, github_plan_lease
+from skills.github.scripts.github_plan_status.next_actor import SUPERVISOR_ROLES
 from skills.github.scripts.test_gh_plan_next import global_fixture, global_issue, next_args, relationships, track
 from skills.github.scripts.test_github_next_queue import classify, item
 
@@ -1059,6 +1061,29 @@ class PrimaryReadTests(unittest.TestCase):
         self.assertTrue([line for line in lines if line.startswith("SUPERVISOR_ACTION") and "age=UNKNOWN" in line])
         self.assertTrue([line for line in lines if line.startswith("ERROR supervisor_action")])
 
+    def test_departed_session_actor_surfaces_even_behind_wait_or_pr_handoff(self) -> None:
+        actor = 'agent:01970242-7941-7f0c-b461-16aa5723fb52'
+        for state in (github_plan_lease.EXPIRED, github_plan_lease.UNKNOWN, github_plan_lease.LIVE):
+            for field in ('candidates', 'needs_status', 'excluded', 'underway'):
+                row = queue_row(5, actor, 'Qualify the retained source', recorded='2026-11-08T15:42:00+00:00')
+                row['queue']['next_actor_session_state'] = state
+                if field == 'excluded':
+                    row['exclusion'] = 'blocked_by_open_dependency'
+                if field == 'underway':
+                    row['queue']['state'] = field
+                for role in SUPERVISOR_ROLES:
+                    output = routine_check.digest({'next': {field: [row]}}, roles=(role,))
+                    self.assertEqual('SUPERVISOR_ACTION ' + row['url'] in output, state != github_plan_lease.LIVE)
+                    if state != github_plan_lease.LIVE:
+                        self.assertIn(actor, output)
+                        self.assertFalse(any(line.startswith('ERROR supervisor_action') for line in output.splitlines()))
+                        self.assertIn('Qualify the retained source', output)
+        row['queue'].update(next_actor_session_state=github_plan_lease.EXPIRED,
+                            next_action='Production read refused: health payload of owner/app production')
+        output = routine_check.digest({'next': {'underway': [row]}})
+        self.assertIn('PRODUCTION_READ_REFUSED ' + row['url'], output)
+        self.assertIn(routine_check.REFUSED_READ_ROUTE, output)
+
     def test_refused_production_read_is_routed_with_its_read_and_repeats_until_settled(self) -> None:
         read = "health payload of owner/app production over the private operations path"
         row = queue_row(190, "agent:supervisor", f"Production read refused: {read}", recorded="2026-11-08T15:42:00+00:00")
@@ -1074,7 +1099,8 @@ class PrimaryReadTests(unittest.TestCase):
         lead = "01a1b839-608e-7a73-b683-bb6c7da113a7"
         read = "timed export profile on owner/app production"
         issue = item(number=5, actor=f"agent:{lead}", action=f"Production read refused: {read}")
-        queued = {**issue, "queue": classify(issue)}
+        with patch_attr(plan_sessions, "actor_state", return_value=github_plan_lease.LIVE):
+            queued = {**issue, "queue": classify(issue)}
         self.assertEqual(queued["queue"]["reason"], "named_recipient_requires_reconciliation")
         lines = self.run_digest({"needs_status": [queued]})
         self.assertTrue([line for line in lines if line.startswith("PRODUCTION_READ_REFUSED") and read in line and f"next_actor=agent:{lead}" in line])
