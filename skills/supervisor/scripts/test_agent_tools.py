@@ -71,7 +71,8 @@ class ClaudeToolTests(unittest.TestCase):
 
 
 class BrowserProbeTests(unittest.TestCase):
-    def server(self, behavior: str) -> dict:
+    @staticmethod
+    def server(behavior: str) -> dict:
         script = '''import json, os, sys, time
 for line in sys.stdin:
     msg=json.loads(line)
