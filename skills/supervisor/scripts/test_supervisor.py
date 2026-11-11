@@ -1829,10 +1829,16 @@ class ProcessArgumentsTests(unittest.TestCase):
 
     def test_claude_browser_helper_cannot_clear_a_replaced_agent(self) -> None:
         helper = ["/tools/claude", "--claude-in-chrome-mcp"]
+        diagnostic = [*helper, iterm_tab.agent_tools.CHROME_DEBUG_FLAG]
         agent = [helper[0], "--session-id", self.source]
         for native, command, expected in (
             (helper, " ".join(agent), (agent, False)),
             (agent, " ".join(helper), (agent, True)),
+            (diagnostic, " ".join(diagnostic), ([], True)),
+            (diagnostic, " ".join(agent), (agent, False)),
+            (agent, " ".join(diagnostic), (agent, True)),
+            ([*diagnostic, "--session-id", self.source], " ".join([*diagnostic, "--session-id", self.source]),
+             ([*diagnostic, "--session-id", self.source], True)),
         ):
             with self.subTest(native=native, command=command), patch.object(session_liveness, "native_arguments", return_value=native):
                 self.assertEqual(session_liveness.process_arguments(123, command), expected)

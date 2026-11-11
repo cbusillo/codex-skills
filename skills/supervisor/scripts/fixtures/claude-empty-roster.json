@@ -1,0 +1,4 @@
+{
+  "source": "Read-only native MCP trace, November 11, 2026. Identity omitted.",
+  "trace": "2026-11-11T17:32:06.051Z [INFO] [Claude in Chrome] WebSocket connected, sending connect message\n2026-11-11T17:32:06.076Z [DEBUG] [Claude in Chrome] Bridge received: {\"type\":\"waiting\"}\n2026-11-11T17:32:06.153Z [INFO] [Claude in Chrome] Connection successful\n2026-11-11T17:32:06.153Z [INFO] [Claude in Chrome] ensureConnected called, connected=true, authenticated=true, wsState=1\n2026-11-11T17:32:06.153Z [INFO] [Claude in Chrome] Already connected and authenticated\n2026-11-11T17:32:06.207Z [DEBUG] [Claude in Chrome] Bridge received: {\"type\":\"extensions_list\",\"extensions\":[],\"recently_closed\":[]}\n"
+}
