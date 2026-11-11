@@ -220,7 +220,8 @@ These are interactive zsh functions only. The real binaries on PATH stay intact:
 `command claude`, `command codex`, noninteractive scripts, daemons, bridges and
 IDE plugins keep invoking them directly. Local behavior tests require zsh;
 the validation gate checks for it before starting the suite. Every CI caller
-installs it when absent. On a minimal Ubuntu environment, use
+installs it when absent, with bounded retries for transient package downloads.
+On a minimal Ubuntu environment, use
 `sudo apt-get install --yes zsh`; macOS includes it.
 
 ### Walking a new person through setup
@@ -648,10 +649,6 @@ helper tests that reach a changed file through what they import, load by path
 or name; a change to `.github/`, the validation scripts or a
 code-owned path runs the complete suite. Before landing a pull request outside
 the train, run the workflow by hand on its branch and wait for it to pass.
-
-Hosted jobs use installed zsh when available. Otherwise, apt retries transient
-package downloads with backoff within the setup step's timeout. Exhausted
-provisioning still fails the job before validation; zsh coverage stays mandatory.
 
 ## JetBrains inspections
 
