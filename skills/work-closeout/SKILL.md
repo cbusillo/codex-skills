@@ -350,8 +350,8 @@ For older helpers, the reader reconstructs bounded literal invocations and
 native outputs without executing recorded programs. Code-mode cells can also
 use the canonical JavaScript parser's capability check and bounded occurrence
 counts with their native command and file-change events. Every effect must
-match the session, turn, exclusive call window and terminal result; later
-command completions additionally need the original returned process identity.
+match the session, turn, exclusive call window and terminal result under the
+[recorded native proof](references/claim-discovery.md).
 Native command records retain claim discovery and outcome checks even when
 the cell did not print their output. Missing events, unknown counts, dynamic
 capabilities and interactive writes retain incomplete coverage. The literal

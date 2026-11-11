@@ -3075,6 +3075,22 @@ print(root)"""
         self.assertTrue(report["claims_clear"], report)
         self.assertTrue(report["coverage"]["complete"], report)
 
+    def test_adjacent_native_completion_covers_projected_parallel_results(self) -> None:
+        from test_claim_outcomes import RecordedClaimOutcomeTests
+
+        for command in ("cat evidence.json", f"uv run gh-plan.py --repo {REPO} claim 1 --session {SESSION}"):
+            with self.subTest(command=command):
+                rows = RecordedClaimOutcomeTests.recorded_parallel_completion(command)
+                root = self.entry(cli_version=SUPPORTED_CLI_VERSION, rows=rows)
+                report = helper.check([root])
+                self.assertFalse(report["unresolved_invocations"], report)
+                if "gh-plan" in command:
+                    self.assert_blocks_record(report, 1)
+                    self.comments.append(self.release)
+                    report = helper.check([root])
+                self.assertTrue(report["claims_clear"], report)
+                self.assertTrue(report["coverage"]["complete"], report)
+
     def test_recorded_claim_uses_the_target_repositories_writer(self) -> None:
         client_actor = "client-fixture[bot]"
         self.reader.expected_actor = client_actor
