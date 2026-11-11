@@ -312,7 +312,7 @@ def store_supervisor(config_path: Path, recipient: dict) -> dict:
 
 
 def host_command(argv: list[str], *, timeout: float = 20) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
+    return subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
 
 
 def checked_host_command(argv: list[str]) -> None:

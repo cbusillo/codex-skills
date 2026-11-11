@@ -37,11 +37,6 @@ def marker(turn: dt.datetime | None = None, **audits: dt.datetime) -> dict[str, 
     return {"turn": turn, "audits": {repo.replace("__", "/"): stamp for repo, stamp in audits.items()}}
 
 
-def setUpModule() -> None:
-    home = unittest.enterModuleContext(tempfile.TemporaryDirectory())
-    unittest.enterModuleContext(mock.patch.dict(os.environ, {"HOME": home}))
-
-
 class CatalogServiceReminderTests(unittest.TestCase):
     def test_startup_surfaces_the_shared_service_readers_warning(self) -> None:
         sys.path.insert(0, str(HOOK.parents[1]))
@@ -196,6 +191,8 @@ class MemoryReminderTests(unittest.TestCase):
 
 class IsolatedDirectionHookTests(unittest.TestCase):
     def setUp(self) -> None:
+        home = self.enterContext(tempfile.TemporaryDirectory())
+        self.enterContext(mock.patch.dict(os.environ, {"HOME": home}))
         # Direction-only scenarios must not inspect the host's installed memory.
         patcher = mock.patch.object(hook, "memory_reminder", return_value="")
         patcher.start()
