@@ -673,6 +673,13 @@ def tool_outputs(records: list[dict], *, followups: bool = True) -> dict[str, li
 
 JAVASCRIPT_LITERAL = r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|`(?:\\.|[^`\\])*`'
 JAVASCRIPT_COMMENT = r"//[^\r\n\u2028\u2029]*|/\*.*?\*/|#![^\r\n\u2028\u2029]*"
+JAVASCRIPT_PARSE_FAILURE = (
+    "Script failed\nWall time 0.0 seconds\nOutput:\n",
+    "Script error:\nSyntaxError: Invalid or unexpected token",
+)
+JAVASCRIPT_TOKEN = re.compile(
+    "|".join((JAVASCRIPT_LITERAL, JAVASCRIPT_COMMENT, r"[A-Za-z_$][A-Za-z0-9_$]*", r"[0-9]+", r"\S")), re.DOTALL
+)
 
 CLAIM_WORD = re.compile(r"""(?:^|[\s'"`])claim(?:$|[\s'"`])""")
 JAVASCRIPT_PATCH = re.compile(r"\btools\.apply_patch\s*\(\s*(?:" + JAVASCRIPT_LITERAL + r")\s*\)", re.DOTALL)
@@ -680,11 +687,7 @@ JAVASCRIPT_PATCH = re.compile(r"\btools\.apply_patch\s*\(\s*(?:" + JAVASCRIPT_LI
 
 def javascript_tokens(text: str) -> list[str]:
     return [
-        token
-        for token in re.findall(
-            JAVASCRIPT_LITERAL + "|" + JAVASCRIPT_COMMENT + r"|[A-Za-z_$][A-Za-z0-9_$]*|[0-9]+|[^\s]", text, re.DOTALL
-        )
-        if not token.startswith(("//", "/*", "#!"))
+        token[0] for token in JAVASCRIPT_TOKEN.finditer(text) if not token[0].startswith(("//", "/*", "#!"))
     ]
 
 
@@ -940,7 +943,14 @@ def native_evidence(
 
 
 def native_effects_complete(
-    records: list[dict], inputs: dict, identifier: str, session: str, responses: dict[str, int], native: NativeEvidence
+    records: list[dict],
+    inputs: dict,
+    identifier: str,
+    session: str,
+    responses: dict[str, int],
+    native: NativeEvidence,
+    *,
+    pre_evaluation: bool = False,
 ) -> bool:
     text, javascript, _, start = inputs[identifier]
     end = responses.get(identifier)
@@ -955,7 +965,7 @@ def native_effects_complete(
     ):
         return False
     output = records[end]["payload"].get("output")
-    if javascript_outcome(output) != "completed":
+    if javascript_outcome(output) != ("failed" if pre_evaluation else "completed"):
         return False
     payload = records[start]["payload"]
     turn = (payload.get("internal_chat_message_metadata_passthrough") or {}).get("turn_id")
@@ -975,7 +985,7 @@ def native_effects_complete(
         returned = datetime.fromisoformat(records[end]["timestamp"])
         if began.tzinfo is None or returned.tzinfo is None or began > returned:
             return False
-        bounded, sites = claim_javascript.analyse(text, native_effects=True)
+        bounded, sites = (True, []) if pre_evaluation else claim_javascript.analyse(text, native_effects=True)
         if not bounded:
             return False
         expected = Counter()
@@ -1032,6 +1042,15 @@ def native_effects_complete(
         item = event.get("item") or {}
         kind = item.get("type")
         if row.get("type") != "event_msg" or event.get("type") != "item_completed" or kind not in {"CommandExecution", "FileChange"}:
+            continue
+        if pre_evaluation:
+            if (
+                index <= end
+                or str(item.get("process_id")) in processes
+                or type(event.get("started_at_ms")) is int
+                and began.timestamp() * 1000 <= event["started_at_ms"] <= returned.timestamp() * 1000
+            ):
+                return False
             continue
         if kind == "CommandExecution" and native.processes.get(str(item.get("process_id")), start) < start:
             continue
@@ -1186,7 +1205,7 @@ def completed_sources(
     return [ended or completed for ended, completed in zip(flags, window, strict=True)]
 
 
-def native_javascript_parse_failure(text: str, blocks: list[object]) -> bool:
+def native_javascript_parse_failure(text: str, blocks: list[object], *, mixed_body: bool = False) -> bool:
     messages = [
         item["text"]
         for block in blocks
@@ -1194,15 +1213,25 @@ def native_javascript_parse_failure(text: str, blocks: list[object]) -> bool:
         for item in block
         if isinstance(item, dict) and item.get("type") == "input_text" and isinstance(item.get("text"), str)
     ]
-    if len(messages) != 2 or messages[0] != "Script failed\nWall time 0.0 seconds\nOutput:\n":
+    if tuple(messages) != JAVASCRIPT_PARSE_FAILURE:
         return False
-    if messages[1] != "Script error:\nSyntaxError: Invalid or unexpected token" or not (
-        single_javascript_shell(text) or literal_javascript_shell_parts(text) is not None
-    ):
+    if single_javascript_shell(text) or literal_javascript_shell_parts(text) is not None:
+        return any(
+            token.startswith(('"', "'")) and re.search(r"[\r\n]", re.sub(r"\\(?:\r\n|\r|\n)", "", token)) is not None
+            for token in javascript_tokens(text)
+        )
+    quotes = claim_javascript.invalid_property_quotes(text) if mixed_body else []
+    if not quotes:
         return False
+    root = quotes[0]
+    while root.parent is not None:
+        root = root.parent
+    offset = len(root.text[:quotes[0].start_byte].decode())
     return any(
-        token.startswith(('"', "'")) and re.search(r"[\r\n]", re.sub(r"\\(?:\r\n|\r|\n)", "", token)) is not None
-        for token in javascript_tokens(text)
+        match.start() == offset
+        and match[0].startswith('"')
+        and re.search(r"[\r\n]", re.sub(r"\\(?:\r\n|\r|\n)", "", match[0])) is not None
+        for match in JAVASCRIPT_TOKEN.finditer(root.text.decode())
     )
 
 
@@ -3253,9 +3282,15 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
     for identifier, (text, javascript, name, _) in inputs.items():
         if identifier in denied:
             continue
-        if javascript and native_effects_complete(records, inputs, identifier, session, responses, native):
+        parse_failure = javascript and native_javascript_parse_failure(text, outputs.get(identifier, []), mixed_body=True)
+        native_complete = javascript and native_effects_complete(
+            records, inputs, identifier, session, responses, native, pre_evaluation=parse_failure
+        )
+        if native_complete and not parse_failure:
             continue
-        unexecuted = javascript and native_javascript_parse_failure(text, outputs.get(identifier, []))
+        unexecuted = native_complete or (
+            javascript and not native.events and native_javascript_parse_failure(text, outputs.get(identifier, []))
+        )
         executable_text = without_patch_text(text) if javascript else text
         claim_related_here = "gh-plan" in executable_text or CLAIM_WORD.search(executable_text) is not None
         invocations = []

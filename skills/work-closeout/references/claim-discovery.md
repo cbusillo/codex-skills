@@ -64,6 +64,19 @@ line continuations do not supply that proof. Other failures, runtime `eval`
 errors and differences between JavaScript engines stay conditional. Known
 receipt targets are still checked; no recorded JavaScript is executed.
 
+For native code-mode modules, the same error can also prove whole-cell
+nonexecution for a malformed object key in a mixed body. Every recovered syntax
+error must be one double quote immediately between an identifier key and its
+colon. The first quote must start the existing lexer's ordinary string token
+containing an unescaped physical newline. The canonical syntax walk retains all
+lexical refusals; regexes and any other error or missing node refuse this proof.
+The original native tool contract evaluates each cell as one V8 async module.
+The existing exclusive, contiguous, timestamped session/turn window must prove
+zero native effects, including later effects started in that window. A recorded
+effect contradicts nonexecution. This mixed-body proof never uses the legacy
+fallback for traces without native effect events, and runtime-thrown
+SyntaxError remains unresolved. Known targets still require their release checks.
+
 Command fields and their literal bindings use the same syntax tree. The reader
 expands immutable constant strings/arrays, literal `for-of` loops, and maps of
 literal arrays, including destructured tuple parameters and numeric map indices.
