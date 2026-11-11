@@ -15,7 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from launchplane_contract import BOUNDED_READ_RESPONSE_FIELDS, bounded_read_path  # noqa: E402
 
 MAX_OPENAPI_BYTES = 16 * 1024 * 1024
-ALLOWLIST_LOCATION = "BOUNDED_READ_RESPONSE_FIELDS in skills/launchplane/scripts/launchplane_contract.py"
+FIELD_HIDING_KEYWORDS = frozenset({"allOf", "anyOf", "oneOf", "not", "if", "then", "else", "patternProperties", "$dynamicRef"})
+ALLOWLIST_LOCATION ="BOUNDED_READ_RESPONSE_FIELDS in skills/launchplane/scripts/launchplane_contract.py"
 
 
 def read_openapi(path: Path) -> dict[str, Any]:
@@ -26,11 +27,28 @@ def read_openapi(path: Path) -> dict[str, Any]:
     return json.loads(body)
 
 
+def resolve_schema(schemas: dict[str, Any], schema: object) -> dict[str, Any]:
+    followed: set[str] = set()
+    while isinstance(schema, dict) and "$ref" in schema:
+        reference = schema["$ref"]
+        if len(schema) != 1 or not isinstance(reference, str) or reference in followed:
+            raise ValueError(f"unsupported reference {reference!r}")
+        followed.add(reference)
+        schema = schemas[reference.removeprefix("#/components/schemas/")]
+    if not isinstance(schema, dict):
+        raise ValueError("response schema is not an object")
+    return schema
+
+
+def declares_closed_field_list(schema: dict[str, Any]) -> bool:
+    return schema.get("additionalProperties") is False and not schema.keys() & FIELD_HIDING_KEYWORDS
+
+
 def response_fields(openapi: dict[str, Any], path: str) -> set[str]:
-    schemas = openapi["components"]["schemas"]
-    schema = openapi["paths"][path]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
-    while "$ref" in schema:
-        schema = schemas[schema["$ref"].removeprefix("#/components/schemas/")]
+    response = openapi["paths"][path]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+    schema = resolve_schema(openapi["components"]["schemas"], response)
+    if not declares_closed_field_list(schema):
+        raise ValueError(f"{path} does not declare a closed list of response fields")
     properties = schema["properties"]
     if not isinstance(properties, dict) or not properties:
         raise ValueError(f"{path} declares no response fields")

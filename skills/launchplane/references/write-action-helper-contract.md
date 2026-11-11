@@ -2483,7 +2483,9 @@ only when the read should emit it, land that first, then rerun the producer's
 check. The `Launchplane Read Response Fields` workflow runs the same check
 against Launchplane `main` on catalog pull requests, on `main` and daily. The
 comparator exits 0 when every declared field is accepted, 1 when one is not
-and 2 when it cannot derive the fields from the supplied schema.
+and 2 when it cannot derive the fields from the supplied schema, including a
+response that is not a closed object (`additionalProperties: false`, with no
+composition such as `allOf`) and so could carry a field it does not list.
 
 The merge-train controller reply has no helper allowlist. Launchplane publishes
 its contract as `contracts/merge-train-controller-reply.schema.json` and tests
