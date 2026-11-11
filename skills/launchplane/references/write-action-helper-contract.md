@@ -1833,7 +1833,7 @@ and a readback recommendation. It must not be retried as a failed write.
   Odoo website-settings, integration-allowances, testing-hold,
   product-repository-identity, generic-web deploy-recovery, repository-inventory,
   product expected-config, and merge-train policy import applies; product-config
-  apply emits it only for the reviewed business-hours path, exiting 1. It exits 1 for the reviewed lane-setup
+  apply emits it for reviewed business-hours and first-empty inputs, exiting 1. It exits 1 for the reviewed lane-setup
   applies (product Client, product image repository, Dokploy target, production
   backup authority, and private health endpoint). In every case the write may
   have committed; read back the active record before any retry.
@@ -1989,6 +1989,44 @@ payload, saved review and idempotency key before deciding recovery. Neither
 state proves no write. A committed clear receipt and a later profile read are
 separate evidence. Source delivery does not configure a product, activate a
 live release policy or prove a release drill.
+
+### First-empty Odoo runtime credentials
+
+The existing product-config commands accept the standalone `odoo_first_empty:
+"runtime_credentials"` intent for an exact product/context/prod and selected
+generated runtime purposes. Each secret requests `generate: "odoo_first_empty"`
+and `secret_class: "prod_only"`. The service owns purpose eligibility, original
+target/storage qualification, binding absence and same-caller canonical dry-run
+markers. The withdrawn `data_policy` intent is unsupported. No lasting empty-data
+policy or permission is created; all data, Live, backup, held-release and bootstrap
+protections remain with the service.
+
+Save the accepted dry-run helper output. Apply requires `--reviewed-dry-run`,
+`--dry-run-evidence-file`, `--expected-plan-digest` and the original
+`--idempotency-key`. Review binds the canonical metadata, selected purposes,
+product/context/prod, source label, reason and confirmation, plus the returned
+plan digest. A digest alone does not replace the service's same-caller marker.
+Both the caller form and producer-normalized canonical form are supported;
+canonical null value and generated metadata are preserved and empty runtime
+input is omitted. Caller values, copying, adoption, foreign scopes, unrelated
+changes and unknown fields are refused before HTTP.
+
+Only this intent emits optional `result.odoo_first_empty`: intent, plan_sha256,
+data, provenance and applied, with the actual producer's typed defaults when
+omitted. Its `data` describes that plan's observation, never later disposal
+authority. Ordinary/calendar responses do not acquire this result. After an
+aligned apply or stored replay, an independent existing secret-bindings GET
+must show complete service and projection coverage and one matching exact-lane
+name/class/version row per selected purpose. It proves current binding metadata,
+not credential values, generation or current empty storage. Missing, scoped,
+unsafe or mismatched reads remain `accepted_unverified`, exit 1.
+
+No automatic retry or replanning occurs. Running, reconciliation-required,
+transport-loss and unreadable-result outcomes retain the original request,
+review and key. Absent bindings do not prove effects absent. Use supported
+original-operation reconciliation before any retry. Completed replay is the
+service's stored response, without a new generation or storage probe. Installed
+service and caller compatibility must both qualify before a real request.
 
 ### Copying a managed runtime secret
 
@@ -2436,7 +2474,9 @@ provider dictionary pass-through:
   safe-to-execute, next action, managed binding keys, runtime key-safety finding
   codes, and product-config/intent record ids. Secret results also show a
   copied secret's `copy_from` (context, instance and version id); any other
-  field in it is refused. Schema-v2 runtime retirement
+  field in it is refused. First-empty requests also emit the closed typed
+  `odoo_first_empty` result and independently checked binding metadata above.
+  Schema-v2 runtime retirement
   responses also expose the before/after lists of retired provider key names.
   Each list is bounded, unique, and restricted to uppercase environment key
   names; nonempty lists require instance scope. Nested record metadata is
