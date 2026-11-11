@@ -72,14 +72,31 @@ class ReleaseTests(unittest.TestCase):
                      "launch_started_at": "2026-01-01T00:00:01Z"}
         posted: dict[str, Any] = {**comment(99, f"Session: {source['session_id']}\nSafe to exit: yes"),
                   "issue_url": "https://api.github.com/repos/test/a/issues/1"}
-        for variant in ("qualified", "missing", "mismatch", "wrong_author", "conditional", "edited", "no_admission", "owned_worker", "active"):
+        for variant in ("qualified", "native_verdict", "no_native_verdict", "pre_handoff_verdict", "missing", "mismatch", "old_successor", "wrong_author", "conditional", "edited", "no_admission", "owned_worker", "active"):
             rows = [source] if variant == "missing" else [source, {**successor, "issue": 2 if variant == "mismatch" else 1}]
             if variant == "owned_worker":
                 rows.append({**self.entry, "session_id": "worker", "lead_session_id": source["session_id"]})
+            if variant == "old_successor":
+                rows[1]["launch_started_at"] = "2025-12-30T00:00:00Z"
             ledger.write_text(json.dumps(rows))
             verdict = "conditional" if variant == "conditional" else "yes"
             handoff = {**posted, "body": f"Session: {source['session_id']}\nSafe to exit: {verdict}",
                        "user": {"login": "foreign" if variant == "wrong_author" else ACTOR}}
+            if variant in {"native_verdict", "pre_handoff_verdict", "no_native_verdict"}:
+                handoff["body"] = f"Session: {source['session_id']}\nCoordination custody has transferred to the successor."
+                prior = [dict(row) for row in records]
+                if variant != "no_native_verdict":
+                    prior[1] = {**prior[1], "payload": {"type": "agent_message", "message": "Safe to exit: yes"}}
+                if variant == "pre_handoff_verdict":
+                    handoff["created_at"] = handoff["updated_at"] = "2026-01-01T00:01:00.500000Z"
+                    rows[1]["launch_started_at"] = "2026-01-01T00:01:02Z"
+                    ledger.write_text(json.dumps(rows))
+                acknowledgement = {"type": "event_msg", "timestamp": "2026-01-01T00:02:00Z",
+                                   "payload": {"type": "agent_message", "message": "Already handed off."}}
+                self.transcript.write_text("\n".join(json.dumps(row) for row in [*prior, acknowledgement, {
+                    "type": "event_msg", "timestamp": "2026-01-01T00:02:01Z", "payload": {"type": "task_complete"}}]) + "\n")
+            elif variant != "active":
+                self.transcript.write_text("\n".join(json.dumps(row) for row in records) + "\n")
             if variant == "edited":
                 handoff["updated_at"] = successor["launch_started_at"]
             entry = {**source, "recovery": dict(source["recovery"])}
@@ -92,7 +109,7 @@ class ReleaseTests(unittest.TestCase):
                   patch.object(helper, "GitHubReader", return_value=self.reader),
                   patch_attribute(self.reader, "get_json", return_value=handoff),
                   patch.object(helper, "recovery_claims")):
-                if variant == "qualified":
+                if variant in {"qualified", "native_verdict"}:
                     helper.validate_recovery(entry, "supervisor", before_exit=True)
                     self.assertEqual(entry["recovery"]["successor_session"], successor["session_id"])
                 else:

@@ -2255,12 +2255,15 @@ A generation that handed off may use the same command with
 `--handoff-url <posted-safe-handoff>` and `--successor-session <native-id>`.
 Before its normal guarded quit, recovery verifies recorded successor admission,
 an unchanged automation-authored Safe handoff bound to this source generation,
-a successor row for the same repository and work issue launched after that
-handoff, and no worker rows still owned by the source. The successor may be in
+a later successor row for the same repository and work issue,
+and no worker rows still owned by the source. The successor may be in
 the active ledger or canonical closed log. Native idle, input, PID, TTY and
 actual process-exit checks still apply. With one matching active successor the
 helper can discover it; otherwise select its exact ID. Keep the same journal
 after a definite refusal. An uncertain mutation still requires reconciliation.
+The Safe verdict may already be in a completed native turn after that posted
+handoff; a later acknowledgement does not erase it. An explicitly conditional
+handoff still refuses. Recovery never writes a replacement verdict.
 
 `release_session_claims.py finish --recover-ended` previews this claim-free
 closure after process exit; add `--apply` to record it. Use the same successor

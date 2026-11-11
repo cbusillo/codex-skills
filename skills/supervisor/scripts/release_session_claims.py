@@ -249,6 +249,28 @@ def recovery_claims(entry: dict) -> dict:
     return report
 
 
+def native_handoff_verdict(entry: dict, posted_at: str) -> bool:
+    path = Path(entry["transcript"])
+    records = session_record.claim_history.root_records(path, entry["harness"], entry["session_id"], session_record.read_jsonl(path))
+    candidates: list[int] = []
+    possible = False
+    for index, row in enumerate(records):
+        payload, message = row.get("payload") or {}, row.get("message") or {}
+        text = (payload.get("message") or "") if payload.get("type") == "agent_message" else (
+            session_record.text_content(message.get("content")) if row.get("type") == "assistant" else "")
+        possible = possible or "Safe to exit:" in text
+        if payload.get("type") in {"task_complete", "turn_aborted"} or message.get("stop_reason") == "end_turn":
+            if possible and row.get("timestamp") and release.stamp(row["timestamp"]) >= release.stamp(posted_at):
+                candidates.append(index)
+            possible = False
+    for index in reversed(candidates):
+        status = session_record.summarize(records[:index + 1], entry["harness"])
+        message_at = status.get("message_at") or status.get("timestamp")
+        if status["safe_verdict"] and message_at and release.stamp(message_at) >= release.stamp(posted_at):
+            return True
+    return False
+
+
 def recovery_handoff(entry: dict) -> None:
     basis = entry["recovery"]
     action = closure.lease_state(entry["session_id"])
@@ -261,7 +283,8 @@ def recovery_handoff(entry: dict) -> None:
     posted = handoff(reader, {**entry, "handoff_url": basis.get("handoff_url") or entry.get("handoff_url")}, actor)
     body = claim.unquoted_text(posted.get("body") or "")
     status = session_record.summarize([{"type": "assistant", "message": {"content": body, "stop_reason": "end_turn"}}], "claude")
-    if (not status["safe_verdict"] or posted.get("created_at") != posted.get("updated_at")
+    safe = status["safe_verdict"] or "Safe to exit:" not in body and native_handoff_verdict(entry, posted["created_at"])
+    if (not safe or posted.get("created_at") != posted.get("updated_at")
             or not release.related_sessions_match(body, entry["session_id"])
             or not re.search(rf"(?<![\w-]){re.escape(entry['session_id'])}(?![\w-])", body)
             or not entry.get("launch_started_at")
@@ -274,7 +297,7 @@ def recovery_handoff(entry: dict) -> None:
     candidates = [row for row in rows if row["session_id"] == successor] if successor else [
         row for row in rows if row["session_id"] != entry["session_id"]
         and row.get("repository") == entry.get("repository") and row.get("issue") == entry.get("issue")
-        and row.get("launch_started_at") and release.stamp(row["launch_started_at"]) >= release.stamp(posted["created_at"])]
+        and row.get("launch_started_at") and release.stamp(row["launch_started_at"]) > release.stamp(entry["launch_started_at"])]
     if not candidates and successor:
         saved = closure.source_records({successor}).get(successor)
         candidates = [saved] if saved else []
@@ -285,7 +308,7 @@ def recovery_handoff(entry: dict) -> None:
             or not entry.get("repository") or not entry.get("issue")
             or successor.get("repository") != entry["repository"] or successor.get("issue") != entry["issue"]
             or not successor.get("launch_started_at")
-            or release.stamp(successor["launch_started_at"]) < release.stamp(posted["created_at"])):
+            or release.stamp(successor["launch_started_at"]) <= release.stamp(entry["launch_started_at"])):
         raise ValueError("successor row does not match this handoff's work and generation")
     basis["successor_session"] = successor["session_id"]
 
