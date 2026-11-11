@@ -15,7 +15,7 @@ table's instructions. No running-seat inventory is kept or read.
 
 | Seat | First read | Lane rule | Row kinds it takes |
 | --- | --- | --- | --- |
-| milestone | Current milestone blockers at source in DIRECTION order | Never fixes tools or closes records | Milestone work, lead coordination, Client waits and its Director questions |
+| milestone | Current milestone blockers at source in DIRECTION order | Never fixes tools or closes records | Milestone work, lead coordination, Client waits, `ANSWERED` rows, Client and Client-agent comments for any product, and its Director questions |
 | tooling | Current tool stops on the queue, then digest | Never redirects a milestone lead or edits a milestone issue status | Tool defects, refusals, Renovate, train, catalog verification, our helpers and services, and its Director questions |
 | cleanup | Stale, ask-link, closed-dependency, finished-session and watcher rows, then issue trial | Never launches product work; fits none: cleanup sorts it | Record reconciliation, finished sessions, watcher recovery and its Director questions |
 
@@ -25,7 +25,10 @@ Address a seat with `Next actor: agent:supervisor-milestone`,
 Another seat's row becomes
 visible to all after two check intervals without a new status disposition;
 an unknown timestamp stays visible with unknown age. Claim or route at source
-before acting, preserving existing claims and waits. The steps below apply
+before acting, preserving existing claims and waits. Each seat reads every
+comment on the handoff record since its last check, not a keyword search, and
+asks the Director nothing already decided there. A check that skips the digest
+still reads global `next` for rows naming its seat and the `--service-log` tail. The steps below apply
 within the held roles; with no role they all apply.
 
 1. Read the recovery note and reconcile pending local actions at their source.
@@ -104,7 +107,8 @@ within the held roles; with no role they all apply.
    when assigning an unclaimed worker or reconciling its custody. Leads launch
    within their assigned capacity under the [lead brief](brief-rules.md#milestone-lead-briefs).
    There is no separate staffing-comment queue.
-   Route Client and Client-agent comments to the owning worker under the
+   Open and route Client and Client-agent comments to the owning worker in the
+   same check under the
    [Client-reply rule](../../references/talking-with-the-director.md#client-replies).
    Open full source comments before acting; register/present decisions needed
    from this Director through the existing queue rules. Optional routing writes
@@ -169,7 +173,7 @@ within the held roles; with no role they all apply.
    Mention proof covers the latest visible message versions; unknown activity,
    including PR mentions, wakes normally. Other notices settle briefly into
    one exit per burst. `--once` still performs one immediate poll.
-   Re-arm bounded watchers; do not duplicate live services.
+   Read a watcher's notice before re-arming it; do not duplicate live services.
 
 Report a wait only with its primary read: the check's output, production's
 commit, the registry line and the service that acts on it, the anchor's status
