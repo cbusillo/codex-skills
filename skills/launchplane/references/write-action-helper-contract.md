@@ -3222,26 +3222,27 @@ custody, backup, release or receiver prerequisite and proves no target effect.
 
 ## Service refusal diagnostics
 
-All HTTP commands share the same refusal projection. `summary.error_code`
+All HTTP commands in the write-action caller share the same refusal projection. `summary.error_code`
 retains a valid service code; `error_reason` retains a safe structured reason
 or explanatory sentence, and `error_message` retains bounded service prose.
 When supplied by the service, `waiting_on`, `wait_reason`, `next_actor` and
 `next_action` are shown independently. Controller errors use this same path,
-including nested `result.error` and `result.blocking_reason`. Invalid neighboring
+including nested `result.error` and `result.blocking_reason`. Nested codes remain
+controller-only so other commands retain their existing classification inputs. Invalid neighboring
 fields do not discard safe diagnostics. The existing local `status`, exit code
 and recovery `recommendation` remain authoritative caller classifications;
 service prose supplies explanation, never permission or retry clearance.
 
-Prose uses the existing operator-text redaction plus path and address removal. Credential
+Prose uses the shared service-text projection, including path and address removal. Credential
 assignments, token-like values, URLs, paths, host/IP addresses, key blocks and embedded JSON are
-withheld or redacted. Opaque single-word prose is withheld; structured lowercase
-reason, wait and actor codes retain their own validation. Missing, malformed,
-overlong or wholly redacted fields stay omitted and their content remains
-UNKNOWN. Error bodies are bounded to one MiB. No arbitrary details or request
-payload is copied.
+withheld or redacted. Opaque single-word prose identifiers are withheld; structured
+reason, wait and actor codes retain their existing validation. Missing fields
+stay omitted and their content remains UNKNOWN. Supplied explanations that are
+malformed, overlong or wholly redacted set `summary.explanation_withheld: true`;
+their content is omitted. No arbitrary details or request payload is copied.
 
 `testing-rebuild-migrated-upload` also uses this projection for its private GET
-and rejected WebSocket handshake. A WebSocket policy close retains its reason
+and rejected WebSocket handshake, including service-unavailable responses. A WebSocket policy close retains its reason
 when one exists; an empty close supplies no cause. The local
 `migrated_upload_refused` warning remains distinct from any service code in the
 summary. No retry, upload, receipt reconciliation or disposition is implied.

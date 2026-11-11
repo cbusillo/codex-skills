@@ -630,20 +630,6 @@ class ServiceResponseError(ValueError):
         self.response_diagnostics = diagnostics
 
 
-def service_refusal_text(value: object) -> str:
-    if not isinstance(value, str) or len(value.split()) < 2:
-        raise LaunchplaneSafetyError("invalid_response")
-    if any(character in value for character in "{}[]") or "-----BEGIN" in value:
-        return "[redacted]"
-    text = public_operator_text(value, redact_denied_markers=True)
-    text = re.sub(r"(?:[A-Za-z]:)?(?:[\w.~+-]*[/\\])[^\s,;\"'<>]*", "[redacted]", text)
-    return re.sub(
-        r"\b(?:[A-Za-z0-9_-]+\.)+[A-Za-z]{2,63}\b|\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b|(?:[0-9a-fA-F]{0,4}:){2,}[0-9a-fA-F]{0,4}",
-        "[redacted]",
-        text,
-    )
-
-
 def _service_diagnostic_value(key: str, value: object) -> str:
     if key == "trace_id":
         return public_trace_id(value)
@@ -653,15 +639,20 @@ def _service_diagnostic_value(key: str, value: object) -> str:
         projected = public_identifier(value)
         public_summary_string(projected, max_length=128)
         return projected
-    if key in {"error_reason", "waiting_on", "next_actor"} and isinstance(value, str) and value.islower():
+    if key in {"error_reason", "waiting_on", "wait_reason", "next_actor"}:
         try:
-            return public_code(value)
+            code = public_code(value)
         except LaunchplaneSafetyError:
-            return service_refusal_text(value)
-    return service_refusal_text(value)
+            return public_service_text(value)
+        if "_" not in code and "-" not in code and CREDENTIAL_LIKE_WORD_RE.fullmatch(code):
+            raise LaunchplaneSafetyError("unsafe_response_shape")
+        return code
+    if isinstance(value, str) and re.fullmatch(r"[\w-]*[_-][\w-]*", value):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    return public_service_text(value)
 
 
-def service_response_diagnostics(source: object) -> dict[str, object]:
+def service_response_diagnostics(source: object, *, controller: bool = False) -> dict[str, object]:
     if isinstance(source, ServiceResponseError):
         return dict(source.response_diagnostics)
     diagnostics: dict[str, object] = {}
@@ -675,7 +666,8 @@ def service_response_diagnostics(source: object) -> dict[str, object]:
     sources = [source, result] if isinstance(result, dict) else [source]
     errors = [item[key] for item in sources for key in ("error", "blocking_reason") if isinstance(item.get(key), dict)]
     for key, field in (("error_code", "code"), ("error_reason", "reason"), ("error_message", "message")):
-        candidates[key] = [item.get(field) for item in errors]
+        code_sources = errors if controller else [source["error"]] if isinstance(source.get("error"), dict) else []
+        candidates[key] = [item.get(field) for item in (code_sources if key == "error_code" else errors)]
     details = source.get("details")
     if isinstance(details, dict):
         candidates["blocking_deployment_id"] = [details.get("blocking_deployment_id")]
@@ -686,11 +678,15 @@ def service_response_diagnostics(source: object) -> dict[str, object]:
             try:
                 projected = _service_diagnostic_value(key, value)
                 if not projected or projected == "[redacted]":
+                    if value:
+                        diagnostics["explanation_withheld"] = True
                     continue
                 assert_public_safe_shape(projected)
                 diagnostics[key] = projected
                 break
             except LaunchplaneSafetyError:
+                if key not in {"trace_id", "error_code", "blocking_deployment_id"} and value is not None and value != "":
+                    diagnostics["explanation_withheld"] = True
                 continue
     return diagnostics
 
@@ -5319,7 +5315,7 @@ def _require_exact_fields(value: object, fields: set[str]) -> dict[str, Any]:
 
 def service_error_response(content: bytes, status: int) -> dict[str, object]:
     try:
-        parsed = json.loads(content) if len(content) <= 1024 * 1024 else {}
+        parsed = json.loads(content)
     except (UnicodeDecodeError, json.JSONDecodeError):
         parsed = {}
     return _ServiceResponse(parsed if isinstance(parsed, dict) else {}, status)
@@ -5327,7 +5323,7 @@ def service_error_response(content: bytes, status: int) -> dict[str, object]:
 
 def _error_payload_from_http(exc: urllib.error.HTTPError) -> dict[str, object]:
     try:
-        content = exc.read(1024 * 1024 + 1)
+        content = exc.read()
     except (http.client.HTTPException, OSError):
         content = b""
     return service_error_response(content, exc.code)
@@ -5437,7 +5433,8 @@ def summarize_success(
             if operation.endswith("-dry-run") else "Check the independent binding metadata readback."
         ) + FIRST_EMPTY_RETRY_ADVICE
     if operation == "merge-train-controller-run-once":
-        summary.update(_controller_error_diagnostics(provider_payload))
+        summary.update({key: value for key, value in _controller_error_diagnostics(provider_payload).items()
+                        if key in {"http_status", "trace_id", "error_code", "pull_request_number"}})
         if unrecognized:
             # Newer than this skill's pinned schema: dropped from the result, not a failure.
             summary["unrecognized_fields"] = ",".join(unrecognized)
@@ -5644,7 +5641,7 @@ def summarize_success(
 
 
 def _controller_error_diagnostics(provider_payload: dict[str, Any]) -> dict[str, object]:
-    diagnostics = service_response_diagnostics(provider_payload)
+    diagnostics = service_response_diagnostics(provider_payload, controller=True)
     details = provider_payload.get("details")
     number = details.get("pull_request_number") if isinstance(details, dict) else None
     if isinstance(number, int) and not isinstance(number, bool) and number > 0:

@@ -208,9 +208,7 @@ def execute(h: Any, args: argparse.Namespace) -> int:
             output["status"] = "accepted_unverified"
             output["result"] = result or {}
         output["summary"].update(h.service_response_diagnostics(response))
-        for key in ("trace_id", "error_code", "http_status"):
-            if key in diagnostics:
-                output["summary"][("read_back_" if applied else "") + key] = diagnostics[key]
+        output["summary"].update({("read_back_" if applied else "") + key: value for key, value in diagnostics.items()})
         output["summary"]["recommendation"] = RECOVERY
         h.emit(output)
     else:

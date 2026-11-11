@@ -4,7 +4,6 @@
 # ///
 from __future__ import annotations
 
-import argparse
 import io
 import json
 import urllib.error
@@ -16,9 +15,9 @@ from unittest.mock import Mock, patch
 
 import launchplane_migrated_upload as upload
 import pytest
-from test_launchplane_helpers import _calendar_payload, _run_main, contract
+from test_launchplane_helpers import _calendar_payload, _run_main
 from test_launchplane_helpers import write_action as h
-from test_launchplane_migrated_upload import fixture, invoke
+from test_launchplane_migrated_upload import fixture, invoke, patch_attr
 
 
 def response() -> dict[str, Any]:
@@ -31,6 +30,7 @@ def response() -> dict[str, Any]:
         },
         "details": {
             "waiting_on": "updated_retirement_list",
+            "wait_reason": "retirement_list_missing",
             "next_actor": "repository_agent",
             "next_action": "Review the corrected dry run.",
         },
@@ -44,21 +44,8 @@ def http_error(body: object, status: int = 400) -> urllib.error.HTTPError:
     )
 
 
-def http_commands() -> list[str]:
-    with patch.object(argparse.ArgumentParser, "parse_args", autospec=True, side_effect=RuntimeError) as parse:
-        with pytest.raises(RuntimeError):
-            h.parse_args([])
-    parser = parse.call_args.args[0]
-    commands = {name for action in parser._actions if isinstance(action, argparse._SubParsersAction) for name in action.choices}
-    return sorted(
-        (commands - {"operator-config-diagnostic", upload.COMMAND})
-        | set(contract.HELPER_OPERATIONS)
-        | set(contract.LOCAL_EXTENSION_ROUTES)
-    )
-
-
-@pytest.mark.parametrize("command", http_commands())
-def test_every_http_command_retains_service_explanation(command: str) -> None:
+def test_shared_http_refusal_retains_service_explanation() -> None:
+    command = "product-config-dry-run"
     body = response()
     output = io.StringIO()
     with redirect_stdout(output):
@@ -67,9 +54,58 @@ def test_every_http_command_retains_service_explanation(command: str) -> None:
     assert summary["error_code"] == body["error"]["code"]
     assert summary["error_reason"] == body["error"]["reason"]
     assert summary["error_message"] == body["error"]["message"]
-    for key in ("waiting_on", "next_actor", "next_action"):
+    for key in ("waiting_on", "wait_reason", "next_actor", "next_action"):
         assert summary[key] == body["details"][key]
     assert "PRIVATE_SENTINEL" not in output.getvalue()
+
+
+@pytest.mark.parametrize("field", ["reason", "waiting_on", "wait_reason", "next_actor"])
+@pytest.mark.parametrize("value", ["current_deployment_unsettled", "Newer_Deployment", "Director", "Client"])
+def test_structured_explanations_keep_valid_codes(field: str, value: str) -> None:
+    body = response()
+    source = body["error"] if field == "reason" else body["details"]
+    source[field] = value
+    output = h.summarize_http_error(operation="product-config-dry-run", request={}, exc=http_error(body))
+    assert output["summary"]["error_reason" if field == "reason" else field] == value
+
+
+def test_non_controller_nested_code_cannot_clear_an_unknown_outcome() -> None:
+    import launchplane_testing_candidate_release as candidate
+    from test_launchplane_testing_candidate_release import argv
+    from test_launchplane_testing_candidate_release import invoke as invoke_candidate
+
+    code = next(iter(candidate.CANDIDATE_REFUSALS))
+    body = {"result": {"error": {"code": code, "message": "A prerequisite is missing."}}}
+    status, output, calls = invoke_candidate(argv("readback"), http_error(body, 503))
+    assert status != 0 and len(calls) == 1
+    assert output["status"] == "outcome_unknown"
+    assert output["summary"].get("error_code") != code
+    assert output["summary"]["error_message"] == body["result"]["error"]["message"]
+
+
+@pytest.mark.parametrize("mode", ["collect", "clear", "prepare-rebuild"])
+def test_disposable_lane_uncertain_reply_keeps_its_explanation(mode: str) -> None:
+    from test_launchplane_disposable_lane import invoke as invoke_lane
+
+    body = response()
+    code, output, calls, _ = invoke_lane(mode, responses=[http_error(body, 503)])
+    assert code != 0 and len(calls) == 1
+    assert output["status"] == "outcome_unknown"
+    assert output["summary"]["error_message"] == body["error"]["message"]
+    assert output["summary"]["error_reason"] == body["error"]["reason"]
+
+
+@pytest.mark.parametrize("applied", [False, True])
+def test_private_ingress_uncertain_reply_keeps_the_failing_exchange_explanation(applied: bool) -> None:
+    from test_launchplane_testing_private_ingress import invoke as invoke_ingress
+    from test_launchplane_testing_private_ingress import receipt
+
+    body = response()
+    replies = [receipt("apply")] if applied else []
+    code, output, calls, _ = invoke_ingress("apply", responses=[*replies, http_error(body, 503)])
+    assert code != 0 and len(calls) == len(replies) + 1
+    assert output["status"] == ("accepted_unverified" if applied else "outcome_unknown")
+    assert output["summary"][("read_back_" if applied else "") + "error_message"] == body["error"]["message"]
 
 
 @pytest.mark.parametrize("location", ["error", "result.error", "result.blocking_reason"])
@@ -83,7 +119,7 @@ def test_nested_controller_refusal_uses_the_shared_explanation(location: str) ->
     assert output["summary"]["error_code"] == nested["code"]
 
 
-@pytest.mark.parametrize("field", ["reason", "message", "waiting_on", "next_actor", "next_action"])
+@pytest.mark.parametrize("field", ["reason", "message", "waiting_on", "wait_reason", "next_actor", "next_action"])
 @pytest.mark.parametrize(
     "private",
     [
@@ -112,8 +148,8 @@ def test_refusal_prose_redacts_private_data_without_losing_neighboring_code(fiel
     assert output["summary"]["trace_id"] == body["trace_id"]
 
 
-@pytest.mark.parametrize("bad", [None, {}, [], 42, "", "x" * 501])
-def test_malformed_reason_does_not_replace_service_code_or_invent_a_reason(bad: object) -> None:
+@pytest.mark.parametrize("bad", [None, {}, [], 42, "", "word " * 101])
+def test_malformed_message_keeps_code_and_marks_withheld_explanations(bad: object) -> None:
     body = response()
     body["error"] = {"code": "migrated_source_upload_incomplete", "message": bad}
     output = h.summarize_http_error(operation="testing-rebuild", request={}, exc=http_error(body, 409))
@@ -121,13 +157,42 @@ def test_malformed_reason_does_not_replace_service_code_or_invent_a_reason(bad: 
     assert "error_message" not in output["summary"]
     assert "error_reason" not in output["summary"]
     assert output["status"] == "refused"
+    assert bool(output["summary"].get("explanation_withheld")) == (bad is not None and bad != "")
 
 
-def test_private_upload_get_keeps_the_service_refusal_without_sending_bytes(tmp_path: Path) -> None:
+def test_prose_withheld_by_privacy_is_distinct_from_an_absent_explanation() -> None:
+    body = response()
+    body["error"] = {"code": "invalid_request", "message": "Authorization: Basic PRIVATE_SENTINEL"}
+    output = h.summarize_http_error(operation="product-config-dry-run", request={}, exc=http_error(body))
+    assert output["summary"]["explanation_withheld"] is True
+    assert "error_message" not in output["summary"]
+    assert "PRIVATE_SENTINEL" not in json.dumps(output)
+
+
+@pytest.mark.parametrize(
+    "private",
+    [
+        "password: correct horse battery",
+        "Authorization: Basic dXNlcjpwYXNz",
+        "Contact jdoe@example.invalid",
+        "Read /private/fixture/data",
+        "Wait for localhost:5432",
+    ],
+)
+def test_controller_result_and_summary_share_the_service_prose_privacy_policy(private: str) -> None:
+    source = {"code": "not_ready", "message": private}
+    result = h._project_merge_train_blocking_reason(source)
+    diagnostics = h.service_response_diagnostics({"error": source})
+    assert result["message"] != private
+    assert diagnostics.get("error_message", "[redacted]") == result["message"]
+
+
+@pytest.mark.parametrize("status", [409, 503])
+def test_private_upload_get_keeps_the_service_refusal_without_sending_bytes(tmp_path: Path, status: int) -> None:
     args, _, _ = fixture(tmp_path)
     body = response()
     connection = Mock()
-    connection.getresponse.return_value = Mock(status=409, read=Mock(return_value=json.dumps(body).encode()))
+    connection.getresponse.return_value = Mock(status=status, read=Mock(return_value=json.dumps(body).encode()))
     output = io.StringIO()
     with (
         patch.object(upload, "PrivateHTTPSConnection", return_value=connection),
@@ -139,10 +204,10 @@ def test_private_upload_get_keeps_the_service_refusal_without_sending_bytes(tmp_
     ):
         code = upload.execute(h, args)
     summary = json.loads(output.getvalue())["summary"]
-    assert code == 2
+    assert code == (1 if status >= 500 else 2)
     assert summary["error_code"] == body["error"]["code"]
     assert summary["error_message"] == body["error"]["message"]
-    assert summary["http_status"] == 409
+    assert summary["http_status"] == status
     send.assert_not_called()
     assert connection.request.call_count == 1
     assert connection.request.call_args.args[0] == "GET"

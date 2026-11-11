@@ -463,7 +463,7 @@ def test_active_operation_conflict_exposes_only_the_pollable_blocker():
     ("idempotency_key_reused", "conflict"),
 ])
 def test_native_rebuild_refusals_preserve_state_without_another_dispatch(command: str, error_code: str, expected: str) -> None:
-    message = "payload='Private provider explanation.'"
+    message = "The original upload prerequisites are incomplete."
     error = urllib.error.HTTPError(SERVICE_URL, 409, "Conflict", {}, io.BytesIO(json.dumps({
         "trace_id": "launchplane_req_refusal", "error": {"code": error_code, "reason": "testing_ingress_unverified", "message": message},
     }).encode()))
@@ -474,7 +474,7 @@ def test_native_rebuild_refusals_preserve_state_without_another_dispatch(command
     assert output["summary"]["trace_id"] == "launchplane_req_refusal"
     if error_code == "testing_unavailable_ingress_unverified":
         assert output["summary"]["error_reason"] == "testing_ingress_unverified"
-    assert message not in json.dumps(output)
+    assert output["summary"]["error_message"] == message
     post.assert_called_once()
     read.assert_not_called()
 

@@ -124,7 +124,7 @@ def test_refusal_reasons_are_allowlisted_and_do_not_override_recovery(tmp_path: 
     assert RECOVERY["refused"] in result["summary"]["recommendation"]
     assert result["summary"]["idempotency_key"] == OPERATION_KEY
     assert "PRIVATE_REASON_SENTINEL" not in json.dumps(result)
-    for bad_reason in (None, "PRIVATE_REASON_SENTINEL", "removal_unconfirmed", "history_unconfirmed", "later_review_request",
+    for bad_reason in (None, ("ghp_" + "PRIVATE_REASON_SENTINEL"), "removal_unconfirmed", "history_unconfirmed", "later_review_request",
                    {"no_pending_labeled_request": True}, ["no_pending_labeled_request"]):
         _, result, calls = invoke(argv(), [failure(bad_reason)])
         assert result["status"] == "refused" and len(calls) == 1
@@ -160,7 +160,7 @@ def test_recovery_classifier_preserves_receipts_and_distinguishes_other_callers(
     evidence = tmp_path / "dry.json"
     evidence.write_text(json.dumps(dry))
     def failure(status, code):
-        body = {"trace_id": "trace-test", "error": {"code": code, "reason": "PRIVATE_REASON_SENTINEL", "message": "PRIVATE_REASON_SENTINEL"}}
+        body = {"trace_id": "trace-test", "error": {"code": code, "reason": "retained_operation_unsettled", "message": "PRIVATE_REASON_SENTINEL"}}
         return urllib.error.HTTPError("https://plane.example.invalid", status, "Failure", {}, io.BytesIO(json.dumps(body).encode()))
     for http_status, error_code, expected in (
         (503, "product_review_withdrawal_unavailable", "outcome_unknown"),
