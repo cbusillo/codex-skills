@@ -317,25 +317,35 @@ def validate_response(value: object, intent: dict[str, Any]) -> dict[str, Any]:
     return source
 
 
-def execute(h: Any, args: argparse.Namespace) -> int:
+def execute_private_read(
+    h: Any,
+    args: argparse.Namespace,
+    *,
+    command: str,
+    intent_validator: Any,
+    response_validator: Any,
+    result_summary: Any,
+    recommendation: str,
+    invalid_transport_code: str = "invalid_inventory_transport",
+) -> int:
     request = {"payload_source": "private_file"}
     try:
-        intent = validate_intent(h.read_payload_file(args.payload_file))
+        intent = intent_validator(h.read_payload_file(args.payload_file))
         destination = args.result_file
         validate_destination(h, destination)
-        path = h._product_read_path(COMMAND, product=intent["product"])
+        path = h._product_read_path(command, product=intent["product"])
     except (ValueError, OSError):
         h.emit(
             h.unavailable_payload(
-                operation=COMMAND,
+                operation=command,
                 request=request,
                 status="invalid",
                 code="invalid_request",
-                message="The private inventory read selectors or destination are invalid.",
+                message="The private read selectors or destination are invalid.",
             )
         )
         return 2
-    settings = h.prepare_operator_settings(args=args, operation=COMMAND, request=request)
+    settings = h.prepare_operator_settings(args=args, operation=command, request=request)
     if settings is None:
         return 2
     response = None
@@ -348,12 +358,12 @@ def execute(h: Any, args: argparse.Namespace) -> int:
             timeout=args.timeout,
             no_store=True,
         )
-        validated = validate_response(response, intent)
+        validated = response_validator(response, intent)
         try:
             write_staged(h, destination, validated)
         except ValueError:
             payload = h.unavailable_payload(
-                operation=COMMAND,
+                operation=command,
                 request=request,
                 status="unavailable",
                 code="private_result_unavailable",
@@ -361,43 +371,48 @@ def execute(h: Any, args: argparse.Namespace) -> int:
             )
             payload["summary"].update(h.service_response_diagnostics(response))
             payload["summary"]["recommendation"] = (
-                "Preserve any partial private destination and existing holds. No saved application evidence is established."
+                "Preserve any partial private destination and existing holds. No saved evidence is established."
             )
             h.emit(payload)
             return 1
-        payload = h.base_payload(status="ok", operation=COMMAND, request=request)
-        payload["result"] = {
-            "runtime": validated["result"].get("runtime", "unknown"),
-            "private_result_saved": True,
-            "applied": False,
-        }
-        payload["summary"] = {
-            **h.service_response_diagnostics(response),
-            "recommendation": "Read the private current-facts evidence. Historical reconciliation and first sign-in remain unobserved; existing holds remain.",
-        }
+        payload = h.base_payload(status="ok", operation=command, request=request)
+        payload["result"] = {"private_result_saved": True, **result_summary(validated["result"])}
+        payload["summary"] = {**h.service_response_diagnostics(response), "recommendation": recommendation}
         h.emit(payload)
         return 0
     except urllib.error.HTTPError as error:
         try:
-            h.emit_http_error_payload(operation=COMMAND, request=request, exc=error)
+            h.emit_http_error_payload(operation=command, request=request, exc=error)
         finally:
             error.close()
     except h.ServiceResponseError as error:
         h.emit_safety_error_payload(
-            operation=COMMAND, request=request, exc=LaunchplaneSafetyError("invalid_response"), provider_payload=error
+            operation=command, request=request, exc=LaunchplaneSafetyError("invalid_response"), provider_payload=error
         )
     except LaunchplaneSafetyError as error:
-        h.emit_safety_error_payload(operation=COMMAND, request=request, exc=error, provider_payload=response)
+        h.emit_safety_error_payload(operation=command, request=request, exc=error, provider_payload=response)
     except ValueError:
         h.emit(
             h.unavailable_payload(
-                operation=COMMAND,
+                operation=command,
                 request=request,
                 status="invalid",
-                code="invalid_inventory_transport",
-                message="The inventory transport request is invalid; no saved application evidence is established.",
+                code=invalid_transport_code,
+                message="The read transport request is invalid; no saved evidence is established.",
             )
         )
     except (OSError, http.client.HTTPException, urllib.error.URLError) as error:
-        h.emit_read_transport_error(operation=COMMAND, request=request, timeout=args.timeout, exc=error)
+        h.emit_read_transport_error(operation=command, request=request, timeout=args.timeout, exc=error)
     return 1
+
+
+def execute(h: Any, args: argparse.Namespace) -> int:
+    return execute_private_read(
+        h,
+        args,
+        command=COMMAND,
+        intent_validator=validate_intent,
+        response_validator=validate_response,
+        result_summary=lambda result: {"runtime": result.get("runtime", "unknown"), "applied": False},
+        recommendation="Read the private current-facts evidence. Historical reconciliation and first sign-in remain unobserved; existing holds remain.",
+    )

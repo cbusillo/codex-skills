@@ -53,6 +53,9 @@ HELPER_OPERATIONS = {
 }
 
 LOCAL_EXTENSION_ROUTES = {
+    "preview-container-observation": {
+        "method": "GET", "path": "/v1/products/{product}/preview-evidence", "mode": "read",
+    },
     "odoo-inventory-readback": {
         "method": "GET", "path": "/v1/products/{product}/environments/testing/odoo-inventory-readback", "mode": "read",
     },

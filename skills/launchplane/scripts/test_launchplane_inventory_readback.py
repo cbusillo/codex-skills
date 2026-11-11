@@ -134,6 +134,7 @@ def invoke(
     cache_control: str = "private, no-store",
     error: Exception | None = None,
     result_file: Path | None = None,
+    command: str = "odoo-inventory-readback",
 ) -> Invocation:
     (tmp_path / "repo").mkdir(exist_ok=True)
     private = tmp_path / "request.json"
@@ -160,7 +161,7 @@ def invoke(
     ):
         code = helper.main(
             [
-                "odoo-inventory-readback",
+                command,
                 "--payload-file",
                 str(private),
                 "--result-file",
