@@ -190,7 +190,8 @@ def test_held_plan_surfaces_evidence_and_cannot_apply(tmp_path: Path) -> None:
         "provider_evidence_sha256": digest,
         "lifecycle_snapshot_sha256": digest,
         "container_count": 1,
-        "readback": {"copy_native_files_readable": "fail", "copy_custody_matches": "pass"},
+        "readback": {"copy_native_files_readable": "fail", "copy_custody_matches": "pass",
+            "copy_execution_credentials_absent": "fail"},
         "references": [
             {"reason": "source_inputs_preserved", "kind": "retained_volume", "record_id": "source-volume", "record_sha256": ""},
             {"reason": "current_or_recovery_reference", "kind": "future_record", "record_id": "", "record_sha256": digest},
