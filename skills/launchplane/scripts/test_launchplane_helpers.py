@@ -12545,3 +12545,217 @@ def test_native_evidence_rejects_probe_metadata_on_other_items(field: str, value
         broken["native_evidence"][name][field] = value
         status, payload, _ = _read_native_response(broken)
         assert status == 1 and not payload["result"]
+
+
+def _native_binding_response() -> dict[str, Any]:
+    response = _native_evidence_response()
+    evidence = response.pop("native_evidence")
+    response["native_execution_binding"] = {
+        **{name: response["operation"][name] for name in ("operation_id", "product", "context", "instance")},
+        "native_evidence": evidence,
+    }
+    return response
+
+
+def _read_native_binding(
+    response: dict[str, Any], destination: Path, *extra: str,
+) -> tuple[int, dict[str, Any], list[dict[str, Any]]]:
+    return _run_product_read(
+        [
+            "target-replacement-operation-read", "--operation-id", response["operation"]["operation_id"],
+            "--native-execution-binding-file", str(destination), *extra,
+        ],
+        response,
+    )
+
+
+@pytest.mark.parametrize("include_public", [False, True])
+def test_native_binding_writes_only_the_selected_package(tmp_path: Path, include_public: bool) -> None:
+    response = _native_binding_response()
+    binding = response["native_execution_binding"]
+    if include_public:
+        response["native_evidence"] = copy.deepcopy(binding["native_evidence"])
+    destination = tmp_path / "private-execution-binding.json"
+    status, payload, calls = _read_native_binding(
+        response, destination, *(["--include-native-evidence"] if include_public else []),
+    )
+    assert status == 0 and len(calls) == 1, payload
+    expected_query = {"include_native_execution_binding": "true"}
+    if include_public:
+        expected_query["include_native_evidence"] = "true"
+    assert calls[0]["query"] == expected_query
+    assert json.loads(destination.read_text()) == binding
+    assert destination.stat().st_mode & 0o777 == 0o600
+    assert str(destination) not in json.dumps(payload)
+    receipt = payload["result"]["native_execution_binding"]
+    assert receipt["candidate"] == {"availability": "unsupported", "binding": "unverified", "coverage": "not_read"}
+    assert ("native_evidence" in payload["result"]) == include_public
+
+
+@pytest.mark.parametrize("field,value", [
+    ("product", "foreign-product"), ("context", "foreign-context"), ("instance", "production"),
+    ("operation_id", "foreign-operation"), ("schema_version", True), ("raw", {"private": "secret"}),
+    ("candidate", {"selector": {"server_id": "private/server"}}),
+    ("forward_route", {"attempt": True}), ("failure_reference", {"evidence_id": "private/path"}),
+])
+def test_native_binding_rejects_malformed_or_foreign_package(
+    tmp_path: Path, field: str, value: object,
+) -> None:
+    response = _native_binding_response()
+    response["native_execution_binding"][field] = value
+    destination = tmp_path / "binding.json"
+    status, payload, calls = _read_native_binding(response, destination)
+    assert status == 1 and len(calls) == 1 and not payload["result"]
+    assert not destination.exists()
+
+
+def test_native_binding_never_overwrites_or_follows_final_symlink(tmp_path: Path) -> None:
+    response = _native_binding_response()
+    existing = tmp_path / "existing.json"
+    existing.write_text("keep")
+    link = tmp_path / "link.json"
+    link.symlink_to(tmp_path / "missing.json")
+    for destination in (existing, link):
+        status, payload, _ = _read_native_binding(response, destination)
+        assert status != 0 and not payload["result"]
+        assert str(destination) not in json.dumps(payload)
+    assert existing.read_text() == "keep"
+    assert not link.exists() and link.is_symlink()
+
+
+def _native_binding_with_selectors() -> dict[str, Any]:
+    response = _native_binding_response()
+    binding = response["native_execution_binding"]
+    scope = {name: binding[name] for name in ("product", "context")}
+    namespace = "lp-testing-87ce5addeb3ab8b030b831d7c22fb4d6"
+    route_id = "lp-testing-route-c07a5498c78ca329d2ee26d2fb6a42b8"
+    retained = {"availability": "present", "binding": "matched", "coverage": "retained_record_only"}
+    evidence = binding["native_evidence"]
+    evidence["checkpoint"].update(retained)
+    evidence["reservation"].update(retained, attempt=5)
+    evidence["terminal_probe"].update(attempt=4, coverage="checkpoint_probe_only")
+    evidence["forward_route"].update(retained, attempt=3)
+    binding.update(
+        reservation_id="mutation-reservation-1c653114f69d7090f1adf8464e365fffaed6e8a05a9e31db4f9685d070a8e302",
+        candidate={
+            **retained,
+            "selector": {
+                "namespace": namespace,
+                "server_id": "private_server",
+                "project_id": "private_project",
+                "environment_id": "private_environment",
+                "compose_id": "private_compose",
+                "resources_binding_sha256": "a" * 64,
+                "runtime_identity": {
+                    **scope, "instance": binding["instance"], "deployment_record_id": "private_deployment",
+                    "artifact_id": "private_artifact", "source_git_ref": "private_source_ref",
+                    "slot": "", "release_id": "", "database_uuid": "", "image_digest": "",
+                },
+            },
+        },
+        forward_route={
+            **retained,
+            "binding": "unverified",
+            "attempt": 3,
+            "selector": {
+                "server_id": "private_server",
+                "copy_id": namespace,
+                "route_id": route_id,
+                "route_digest": "b" * 64,
+                "document_sha256": "absent",
+                "backend": "https://private-backend.invalid",
+            },
+        },
+        inverse_route={"availability": "not_retained", "coverage": "retained_record_only"},
+        failure_reference={**retained, "stage": "runtime_start", "kind": "unavailable"},
+    )
+    return response
+
+
+def test_native_binding_preserves_partial_selectors_and_redacts_the_receipt(tmp_path: Path) -> None:
+    response = _native_binding_with_selectors()
+    destination = tmp_path / "binding.json"
+    status, payload, calls = _read_native_binding(response, destination)
+    assert status == 0 and len(calls) == 1, payload
+    binding = response["native_execution_binding"]
+    assert json.loads(destination.read_text()) == binding
+    receipt = payload["result"]["native_execution_binding"]
+    assert receipt["binding_sha256"] == hashlib.sha256(destination.read_bytes()).hexdigest()
+    assert receipt["forward_route"]["binding"] == "unverified"
+    assert receipt["inverse_route"]["availability"] == "not_retained"
+    assert receipt["terminal_account"] == "not_retained"
+    assert "private_" not in json.dumps(payload)
+    assert "private-backend.invalid" not in json.dumps(payload)
+    assert binding["candidate"]["selector"]["namespace"] not in json.dumps(payload)
+
+
+@pytest.mark.parametrize("path,value", [
+    (("candidate", "selector", "namespace"), "lp-testing-" + "0" * 32),
+    (("candidate", "selector", "runtime_identity", "context"), "foreign"),
+    (("candidate", "selector", "runtime_identity", "raw"), {}),
+    (("candidate", "selector", "server_id"), "foreign_server"),
+    (("forward_route", "selector", "backend"), "https://private-backend.invalid/invalid-path"),
+    (("forward_route", "selector", "copy_id"), "foreign-copy"),
+    (("forward_route", "attempt"), 4),
+    (("native_evidence", "terminal_probe", "attempt"), 6),
+    (("native_evidence", "operation_attempt"), 2),
+    (("reservation_id",), "foreign-reservation"),
+])
+def test_native_binding_checks_retained_relationships(
+    tmp_path: Path, path: tuple[str, ...], value: object,
+) -> None:
+    response = _native_binding_with_selectors()
+    target = response["native_execution_binding"]
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+    destination = tmp_path / "binding.json"
+    status, payload, calls = _read_native_binding(response, destination)
+    assert status == 1 and len(calls) == 1 and not payload["result"]
+    assert not destination.exists()
+    assert "private-backend.invalid" not in json.dumps(payload)
+
+
+def test_native_binding_requires_requested_package_and_agreement_between_views(tmp_path: Path) -> None:
+    destination = tmp_path / "binding.json"
+    response = _native_evidence_response()
+    status, payload, _ = _read_native_binding(response, destination, "--include-native-evidence")
+    assert status == 1 and not payload["result"]
+    response = _native_binding_response()
+    response["native_evidence"] = copy.deepcopy(response["native_execution_binding"]["native_evidence"])
+    response["native_evidence"]["checkpoint"]["availability"] = "missing"
+    status, payload, _ = _read_native_binding(response, destination, "--include-native-evidence")
+    assert status == 1 and not payload["result"]
+    assert not destination.exists()
+
+
+def test_native_binding_refuses_repo_local_destination(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(repo, target_is_directory=True)
+    destination = alias / "binding.json"
+    with patch.object(write_action, "active_repo_root", return_value=repo):
+        status, payload, _ = _read_native_binding(_native_binding_response(), destination)
+    assert status != 0 and not payload["result"]
+    assert not destination.exists()
+
+
+def test_native_binding_preserves_full_record_authority_refusal(tmp_path: Path) -> None:
+    destination = tmp_path / "binding.json"
+    error = urllib.error.HTTPError(
+        "https://example.invalid", 403, "Forbidden", Message(),
+        io.BytesIO(json.dumps({"error": {
+            "code": "authorization_denied",
+            "message": "Private execution binding requires the existing full-record authority for this operation.",
+        }}).encode()),
+    )
+    status, payload, calls = _run_product_read(
+        ["target-replacement-operation-read", "--operation-id", "example-op",
+         "--native-execution-binding-file", str(destination)],
+        error,
+    )
+    assert status == 1 and len(calls) == 1
+    assert payload["summary"]["http_status"] == 403
+    assert payload["summary"]["error_code"] == "authorization_denied"
+    assert not destination.exists()

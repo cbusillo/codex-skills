@@ -26,11 +26,15 @@ from pathlib import Path
 from typing import Any, cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from launchplane_contract import BOUNDED_READ_RESPONSE_FIELDS  # noqa: E402
+from launchplane_contract import BOUNDED_READ_RESPONSE_FIELDS, NATIVE_EXECUTION_BINDING_FIELD  # noqa: E402
 from launchplane_contract import helper_command_path  # noqa: E402
 from launchplane_contract import internal_helper_path  # noqa: E402
 from launchplane_inventory import project_inventory  # noqa: E402
-from launchplane_native_evidence import project_native_evidence  # noqa: E402
+from launchplane_native_evidence import (  # noqa: E402
+    native_binding_receipt,
+    project_native_evidence,
+    validate_native_execution_binding,
+)
 from launchplane_reply_schema import ReplySchemaError  # noqa: E402
 from launchplane_reply_schema import check_controller_reply  # noqa: E402
 from launchplane_safety import (  # noqa: E402
@@ -6546,7 +6550,7 @@ def _project_target_replacement_recovery(value: object) -> dict[str, object] | N
 
 
 def summarize_target_replacement_operation_read(
-    *, request: dict[str, object], provider_payload: dict[str, Any]
+    *, request: dict[str, object], provider_payload: dict[str, Any], binding_file: str | None = None,
 ) -> dict[str, object]:
     _require_read_fields("target-replacement-operation-read", provider_payload)
     status = public_code(provider_payload.get("status"), default="ok")
@@ -6563,7 +6567,7 @@ def summarize_target_replacement_operation_read(
         )
     elif "native_evidence" in provider_payload:
         raise LaunchplaneSafetyError("unsafe_response_shape")
-    if "native_execution_binding" in provider_payload:
+    if binding_file is None and NATIVE_EXECUTION_BINDING_FIELD in provider_payload:
         raise LaunchplaneSafetyError("unsafe_response_shape")
     payload["result"] = result
     payload["summary"] = {
@@ -6576,6 +6580,17 @@ def summarize_target_replacement_operation_read(
         ),
     }
     assert_public_safe_shape(payload["summary"])
+    if binding_file is not None:
+        binding = validate_native_execution_binding(
+            provider_payload.get(NATIVE_EXECUTION_BINDING_FIELD),
+            operation=_require_dict(provider_payload.get("operation")),
+            operation_id=request.get("operation_id"),
+            public_evidence=result.get("native_evidence"),
+        )
+        result[NATIVE_EXECUTION_BINDING_FIELD] = native_binding_receipt(binding)
+        assert_public_safe_shape(result)
+        from launchplane_testing_state import write_staged
+        write_staged(sys.modules[__name__], binding_file, binding)
     return payload
 
 
@@ -6931,6 +6946,8 @@ def execute_product_read(
     query: Mapping[str, str | list[str]] | None = None,
 ) -> int:
     summarize = PRODUCT_READ_SUMMARIZERS[operation]
+    if operation == "target-replacement-operation-read":
+        summarize = partial(summarize_target_replacement_operation_read, binding_file=args.native_execution_binding_file)
     settings = prepare_operator_settings(args=args, operation=operation, request=request)
     if settings is None:
         return 2
@@ -12257,6 +12274,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     target_replacement_operation_read.add_argument("--operation-id", required=True)
     target_replacement_operation_read.add_argument("--include-native-evidence", action="store_true")
+    target_replacement_operation_read.add_argument(
+        "--native-execution-binding-file",
+        help="Create a new owner-only JSON file outside the active repository with the retained execution binding.",
+    )
 
     target_replacement_plan_read = subparsers.add_parser(
         "target-replacement-plan-read",
@@ -13250,6 +13271,13 @@ def main(argv: list[str]) -> int:
             if args.include_native_evidence:
                 query["include_native_evidence"] = "true"
                 request["include_native_evidence"] = True
+            if args.native_execution_binding_file is not None:
+                destination = args.native_execution_binding_file
+                if destination.strip() in {"", "-"} or "\0" in destination:
+                    raise ValueError("private_request_unavailable")
+                selector = f"include_{NATIVE_EXECUTION_BINDING_FIELD}"
+                query[selector] = "true"
+                request[selector] = True
             return execute_product_read(
                 args=args, operation=args.command, request=request, path=path, query=query
             )
