@@ -112,7 +112,7 @@ def test_idle_live_sessions_with_lapsed_claim_leases_stay_owned() -> None:
 
         with patch.dict('os.environ', {records.LAUNCH_LEDGER_ENV: str(ledger)}), \
                 patch.object(lease, 'state', return_value=lease.EXPIRED), \
-                patch.object(lease, 'read', return_value=None), \
+                patch.object(lease, 'session_is_live', return_value=False), \
                 patch.object(lease, 'uses_live_claims', return_value=False), \
                 patch.object(liveness, 'process_started_at', return_value=born), \
                 patch.object(liveness, 'native_arguments', return_value=['claude', '--session-id', worker, '--', 'brief']):
