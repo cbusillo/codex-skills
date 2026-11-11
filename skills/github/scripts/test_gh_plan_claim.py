@@ -21,7 +21,7 @@ import unittest
 from argparse import Namespace
 from collections.abc import AsyncIterator, Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, chdir, contextmanager
 from datetime import datetime
 from itertools import product
 from pathlib import Path
@@ -202,6 +202,7 @@ class ClaimTests(unittest.TestCase):
         self.enterContext(patch.dict(vars(PLAN), {"next_graph_reader": lambda _repo: None}))
         os.environ["HOME"] = self.enterContext(tempfile.TemporaryDirectory())
         os.environ["CODE_HOME"] = os.environ["HOME"]
+        self.enterContext(chdir(os.environ["HOME"]))
         os.environ.pop("DIRECTION_MARKER", None)
         self.enterContext(patch.object(Path, "home", return_value=Path(os.environ["HOME"])))
         for name in (n for names in github_agent.NATIVE_SESSION_VARS.values() for n in names):
