@@ -276,7 +276,7 @@ def test_malformed404_and_unconfirmed_empty_listing_are_not_absence(
         assert code != 0 and not path.exists()
 
 
-def test_recorded_nonedge_binding_and_display_name_remain_readable(
+def test_recorded_non_edge_binding_and_display_name_remain_readable(
     tmp_path: Path,
 ) -> None:
     response = current()
