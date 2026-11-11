@@ -53,6 +53,10 @@ within the held roles; with no role they all apply.
    the configured Director in other accounts' repositories always use the widened
    mention and Director-wait readers. Outside results stay marked untrusted.
    Keep Client-agent identities in the existing people index.
+   The milestone seat's `LEAD` rows show age and native compaction count from
+   each lead's own transcript; unreadable evidence says UNKNOWN. `LEAD_HANDOFF`
+   repeats at the lead brief's handoff point until an automation-authored handoff
+   naming that session and the Supervisor as next actor is posted on its anchor. No role keeps the old output.
    The digest reads global `next`, sessions, questions,
    radar and live watch output without waiting for the watch process to exit.
    Unanswered comments, registered open queue questions, agent next actions and

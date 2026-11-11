@@ -85,6 +85,8 @@ def report(ledger: Path, capacity_state: Path | None = None) -> dict:
             "handoff_url": entry.get("handoff_url"),
             "issue": session_anchor(entry),
         }
+        if entry.get("worker_cap"):
+            row["lead"] = result.get("lead")
         if "error" in result:
             row.update(error=result["error"], action="inspect_coverage_gap")
         else:

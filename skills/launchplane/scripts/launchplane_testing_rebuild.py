@@ -347,7 +347,7 @@ def execute(h: Any, args: argparse.Namespace) -> int:
         try:
             summary = h.summarize_http_error(operation=COMMAND, request=request, exc=error)["summary"]
             diagnostics = {key: value for key, value in summary.items()
-                           if key in {"trace_id", "error_code", "http_status"}}
+                           if key != "recommendation"}
         finally:
             error.close()
     except h.ServiceResponseError as error:

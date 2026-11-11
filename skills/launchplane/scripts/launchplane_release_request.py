@@ -244,7 +244,6 @@ def _finish(
 ) -> int:
     output = h.base_payload(status=status, operation=COMMAND, request=intent.request)
     summary = dict(diagnostics or {})
-    summary.pop("error_reason", None)
     if intent.key:
         summary["idempotency_key"] = intent.key
     if refusal:
