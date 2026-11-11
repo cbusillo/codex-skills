@@ -18,8 +18,15 @@ from typing import Any, BinaryIO
 from urllib.parse import SplitResult, urlsplit
 
 COMMAND = "testing-rebuild-migrated-upload"
+READ_COMMAND = "testing-rebuild-migrated-state-read"
 PARTS = ("database", "filestore")
 SHA256 = re.compile(r"[a-f0-9]{64}")
+READ_COVERAGE = (
+    "Non-atomic retained part or recorded receipt metadata and recorded candidate/scope holds only. "
+    "A receipt is not fresh physical verification. Empty holds do not establish upload eligibility, retry clearance, "
+    "no effects, restore success or safe release. Authorization, binding, prefix/hash, storage, receipt, "
+    "recovery, production and custody guards remain on their existing paths."
+)
 
 
 def add_parser(subparsers: Any) -> None:
@@ -33,6 +40,12 @@ def add_parser(subparsers: Any) -> None:
         parser.add_argument("--" + name, required=True)
     for name in ("migrated-source-file", "database", "filestore"):
         parser.add_argument("--" + name, required=True, type=Path)
+    parser = subparsers.add_parser(
+        READ_COMMAND, help="Read original-bound migrated-upload metadata and recorded holds without effects."
+    )
+    for name in ("product", "operation-id", "private-address"):
+        parser.add_argument("--" + name, required=True)
+    parser.add_argument("--migrated-source-file", required=True, type=Path)
 
 
 def read_manifest(path: Path, *, product: str) -> dict[str, Any]:
@@ -152,7 +165,7 @@ def private_request(
     try:
         connection.request(
             "GET",
-            origin.path,
+            origin.path + ("?" + origin.query if origin.query else ""),
             headers={"Accept": "application/json", "Authorization": "Bearer " + settings["token"]},
         )
         response = connection.getresponse()
@@ -262,8 +275,10 @@ def check_state(state: dict[str, Any], *, product: str, operation: str, binding:
         product,
         operation,
         binding,
-    ) or type(state.get("receipt_recorded")) is not bool:
+    ):
         raise UploadRefused("migrated_upload_binding_changed")
+    if type(state.get("receipt_recorded")) is not bool:
+        raise UploadRefused("invalid_migrated_upload_response")
     parts = state.get("parts")
     if not isinstance(parts, dict) or set(parts) != set(PARTS):
         raise UploadRefused("invalid_migrated_upload_response")
@@ -282,6 +297,106 @@ def check_state(state: dict[str, Any], *, product: str, operation: str, binding:
         raise UploadRefused("incomplete_migrated_receipt")
 
 
+def project_prerequisites(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != {"candidate_phase", "restore_workflow_started", "holds"}:
+        raise UploadRefused("invalid_migrated_upload_response")
+    if (
+        value["candidate_phase"]
+        not in (
+            "planned",
+            "configuring",
+            "configured",
+            "deploying",
+            "deployed",
+            "restoring",
+            "prepared",
+            "abandoned",
+        )
+        or value["restore_workflow_started"] is not None
+        and type(value["restore_workflow_started"]) is not bool
+        or not isinstance(value["holds"], list)
+        or any(
+            hold not in ("candidate_prepared", "candidate_abandoned", "restore_started", "original_caller_required")
+            for hold in value["holds"]
+        )
+    ):
+        raise UploadRefused("invalid_migrated_upload_response")
+    return {key: value[key] for key in ("candidate_phase", "restore_workflow_started", "holds")}
+
+
+def execute_read(
+    h: Any,
+    args: argparse.Namespace,
+    *,
+    source: dict[str, Any],
+    request: dict[str, str],
+    settings: dict[str, str],
+    route: str,
+) -> int:
+    product, operation, binding = (request[key] for key in ("product", "operation_id", "source_binding_sha256"))
+    try:
+        response = private_request(h, settings, args.private_address, route + "?include_prerequisites=true", timeout=args.timeout)
+        check_state(response, product=product, operation=operation, binding=binding, source=source)
+        result = {
+            **request,
+            "receipt_recorded": response["receipt_recorded"],
+            "parts": {part: {key: response["parts"][part][key] for key in ("complete", "size")} for part in PARTS},
+            "prerequisite_coverage": "unavailable",
+        }
+        if "prerequisites" in response:
+            result["prerequisites"] = project_prerequisites(response["prerequisites"])
+            result["prerequisite_coverage"] = "recorded_candidate_and_scope"
+        h.assert_public_safe_shape(result)
+        output = h.base_payload(status="ok", operation=READ_COMMAND, request=request)
+        code = 0
+        if "prerequisites" not in result:
+            output = h.unavailable_payload(
+                operation=READ_COMMAND,
+                request=request,
+                status="unavailable",
+                code="migrated_upload_prerequisites_unavailable",
+                message="The service omitted prerequisite coverage. Retained metadata does not establish cleared holds.",
+            )
+            code = 1
+        output["result"] = result
+        output["summary"] = {"coverage": READ_COVERAGE}
+        h.emit(output)
+        return code
+    except ssl.SSLCertVerificationError:
+        output = h.unavailable_payload(
+            operation=READ_COMMAND,
+            request=request,
+            status="refused",
+            code="private_operator_certificate_invalid",
+            message="The original-bound read could not verify the private ingress certificate.",
+        )
+        output["summary"] = {}
+        code = 2
+    except ValueError as error:
+        output = h.unavailable_payload(
+            operation=READ_COMMAND,
+            request=request,
+            status="refused",
+            code=str(error) if isinstance(error, UploadRefused) else "invalid_migrated_upload_response",
+            message="The original-bound read was refused or invalid. No upload disposition was established.",
+        )
+        output["summary"] = error.response_diagnostics if isinstance(error, UploadRefused) else {}
+        code = 2
+    except (OSError, http.client.HTTPException) as error:
+        output = h.unavailable_payload(
+            operation=READ_COMMAND,
+            request=request,
+            status="unavailable",
+            code="migrated_upload_state_unavailable",
+            message="The original-bound read is unavailable. No upload disposition was established.",
+        )
+        output["summary"] = error.response_diagnostics if isinstance(error, UploadUnavailable) else {}
+        code = 1
+    output["summary"] = {**output["summary"], "coverage": READ_COVERAGE}
+    h.emit(output)
+    return code
+
+
 def execute(h: Any, args: argparse.Namespace) -> int:
     product, operation = (str(getattr(args, key, "") or "").strip() for key in ("product", "operation_id"))
     if any(h.PRODUCT_READ_PATH_SEGMENT_RE.fullmatch(item) is None for item in (product, operation)):
@@ -293,10 +408,12 @@ def execute(h: Any, args: argparse.Namespace) -> int:
         "operation_id": h.public_identifier(operation),
         "source_binding_sha256": binding,
     }
-    settings = h.prepare_operator_settings(args=args, operation=COMMAND, request=request)
+    settings = h.prepare_operator_settings(args=args, operation=args.command, request=request)
     if settings is None:
         return 2
     route = h.internal_helper_path("testing-rebuild-migrated-state").format(product=product, operation_id=operation)
+    if args.command == READ_COMMAND:
+        return execute_read(h, args, source=source, request=request, settings=settings, route=route)
     validated_private_address(args.private_address)
     private_origin(h, settings, route)
     try:
