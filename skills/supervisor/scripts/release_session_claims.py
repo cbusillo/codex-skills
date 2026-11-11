@@ -840,7 +840,7 @@ def finished_claims(reader, entry, actor, issues, apply):
                 if not body_records or any(r not in source_records for r in body_records):
                     if body_records:
                         retained_status.append(identity)
-                    else:
+                    elif issue.get("state") != "closed":
                         signoffs.append((identity, issue))
             for source in sources:
                 source_identity = {**identity, "claim_comment": source["id"]}

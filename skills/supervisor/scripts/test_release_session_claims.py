@@ -1378,6 +1378,17 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertTrue(report["needs_reconciliation"])
 
+    def test_finish_asks_nothing_of_a_closed_status_that_still_names_the_session(self) -> None:
+        entry = {**self.entry, "_finish_scope": "owner-wide scope"}
+        status = f"## Current Status\nNext actor: agent:{entry['session_id']}\n"
+        structured = github_plan_claim.marker({**SOURCE, "branch": "work/unreleased"})
+        self.pages.side_effect = lambda path, **_kw: []
+        for state, body, refused in (("open", status, True), ("closed", status, False), ("closed", structured, True)):
+            with self.subTest(state=state, structured=body == structured):
+                self.reader.get_json.side_effect = lambda path, **_kw: {"state": state, "body": body}
+                report = helper.finished_claims(self.reader, entry, ACTOR, [("test/a", 1)], False)
+                self.assertEqual(bool(report["issue_refusals"]), refused, report)
+
     def test_finish_asks_nothing_of_an_unreleased_claim_in_a_live_claim_repository(self) -> None:
         self.reader.get_json.side_effect = lambda path, **_kw: {"body": ""}
         self.pages.side_effect = lambda path, **_kw: [self.source]

@@ -298,6 +298,17 @@ class ClaimCloseoutTests(unittest.TestCase):
     def check(self):
         return helper.check_record(self.reader, REPO, 1, SESSION, ACTOR)
 
+    def test_closed_status_naming_the_session_holds_no_ownership(self):
+        self.comments = []
+        for state, refused in (("open", True), ("closed", False)):
+            with self.subTest(state=state):
+                self.issue = {"number": 1, "state": state, "body": f"## Current Status\nNext actor: agent:{SESSION}\n"}
+                if refused:
+                    with self.assertRaises(ValueError):
+                        self.check()
+                else:
+                    self.assertEqual(self.check(), [])
+
     def entry(
         self,
         session: str = SESSION,

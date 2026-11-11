@@ -2318,7 +2318,9 @@ attestation/release and changes no wait, blocker, status or retained artifact.
 A record's verified exact claim release accounts for its unambiguous session
 sign-off. It can also account for a follow-up it explicitly names when the
 configured automation authored that follow-up. Its Next actor must hand work
-away from the session, or the record must be closed. Session routing, legacy
+away from the session, or the record must be closed. A closed record whose
+Current Status still names the session holds no ownership; a structured claim
+record in its body is still reconciled. Session routing, legacy
 claims, conflicting identities and unmatched structured claims still require
 reconciliation. The native claim check uses the same interpretation.
 A confirmed release readback in the source's verified native transcript proves
