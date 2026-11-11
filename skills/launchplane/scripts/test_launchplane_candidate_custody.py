@@ -29,42 +29,7 @@ def seal(evidence: dict[str, Any]) -> dict[str, Any]:
 
 
 def packet() -> dict[str, Any]:
-    return seal(
-        {
-            "version": 1,
-            "observed_at": "2026-11-11T12:00:00Z",
-            "completed_at": "2026-11-11T12:00:01Z",
-            "candidate_sha256": "a" * 64,
-            "server_sha256": "c" * 64,
-            "plan_sha256": PLAN,
-            "checks": {
-                "native_inventory": "unavailable",
-                "source_preserved": "not_reached",
-            },
-            "lifecycle": {
-                "checks": {"lifecycle_acquisition": "pass", "lifecycle_usable": "fail"},
-                "container_count": 2,
-            },
-            "volumes": [
-                {
-                    "role": "ODOO_DB_VOLUME",
-                    "name_sha256": "d" * 64,
-                    "consumers": [
-                        {
-                            "kind": "compose",
-                            "conversion_shape": "null",
-                            "checks": {"conversion_parse": "fail"},
-                        },
-                        {
-                            "kind": "compose",
-                            "server_identity": "missing",
-                            "checks": {"placement": "unavailable"},
-                        },
-                    ],
-                }
-            ],
-        }
-    )
+    return json.loads((Path(__file__).parent / "fixtures" / "candidate-custody-evidence.json").read_text())
 
 
 def test_held_incomplete_packet_is_private_and_does_not_change_release_review(
@@ -106,8 +71,6 @@ def test_held_incomplete_packet_is_private_and_does_not_change_release_review(
     "mutation",
     [
         {"evidence": None},
-        {"product": "other"},
-        {"operation_id": "other"},
         {"trace_id": ""},
         {"trace_id": None},
     ],
@@ -125,7 +88,6 @@ def test_missing_packet_or_wrong_envelope_is_unavailable(tmp_path: Path, mutatio
     [
         {"packet_sha256": "0" * 64},
         {"plan_sha256": "0" * 64},
-        {"completed_at": None},
         {"observed_at": "not-a-date"},
         {"version": True},
         {"checks": {"arbitrary": "pass"}},
@@ -157,6 +119,7 @@ def test_malformed_schema_binding_and_hash_never_saves_or_leaks(tmp_path: Path, 
 
 def test_null_exclusion_hash_and_eligible_review_are_compatible(tmp_path: Path) -> None:
     evidence = packet()
+    evidence["completed_at"] = None
     evidence["endpoint_sha256"] = None
     evidence["lifecycle"]["snapshot_sha256"] = None
     seal(evidence)
@@ -182,6 +145,25 @@ def test_receiver_and_existing_destination_refuse_before_job(tmp_path: Path) -> 
     target.write_text("keep")
     code, _, calls = invoke(args, response(evidence=packet()))
     assert code != 0 and not calls and target.read_text() == "keep"
+
+
+@pytest.mark.parametrize("filename", ["double  spaces.json", "ghp_fictional.json"])
+def test_unsafe_or_normalized_public_reference_refuses_before_job(tmp_path: Path, filename: str) -> None:
+    target = tmp_path / filename
+    code, _, calls = invoke(argv() + ["--custody-evidence-file", str(target)], response(evidence=packet()))
+    assert code != 0 and not calls and not target.exists()
+
+
+def test_save_failure_preserves_safe_trace_and_reports_evidence_unavailable(tmp_path: Path) -> None:
+    import launchplane_testing_state
+
+    target = tmp_path / "custody.json"
+    with patch.object(launchplane_testing_state, "write_staged", side_effect=ValueError("PRIVATE_SENTINEL")):
+        code, result, calls = invoke(argv() + ["--custody-evidence-file", str(target)], response(evidence=packet()))
+    assert code == 1 and result["status"] == "unavailable" and len(calls) == 1 and not target.exists()
+    assert result["summary"]["trace_id"] == "trace-test"
+    assert result["summary"]["error_code"] == "custody_evidence_unavailable"
+    assert "PRIVATE_SENTINEL" not in json.dumps(result)
 
 
 def test_default_ignores_unsolicited_packet_and_keeps_original_projection() -> None:

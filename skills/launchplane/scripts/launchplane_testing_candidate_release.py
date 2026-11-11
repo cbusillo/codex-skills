@@ -99,8 +99,9 @@ def intent(h: Any, args: argparse.Namespace) -> tuple[dict[str, str], dict[str, 
             or request["product"] != args.product
             or request["operation_id"] != args.operation_id
         ):
-            raise ValueError("custody_evidence_receiver_unsupported")
+            raise ValueError("invalid_custody_request")
         destination(h, args.custody_evidence_file)
+        custody_reference(h, args.custody_evidence_file)
         body["include_evidence"] = True
     if args.receiver_operation_id is not None:
         receiver = h.public_identifier(args.receiver_operation_id)
@@ -320,7 +321,15 @@ def without_nulls(value: Any) -> Any:
     return value
 
 
-def retain_custody(h: Any, response: dict[str, Any], request: dict[str, str], path: str) -> dict[str, object]:
+def custody_reference(h: Any, path: str) -> str:
+    reference = str(h.path_with_resolved_parent(Path(path).expanduser()))
+    public_reference = h.public_identifier(reference, pattern=re.compile(r"/[^\x00-\x1f\x7f]+"))
+    if public_reference != reference:
+        raise ValueError("invalid_custody_reference")
+    return public_reference
+
+
+def retain_custody(h: Any, response: dict[str, Any], result: dict[str, object], path: str) -> dict[str, object]:
     from jsonschema import Draft202012Validator, FormatChecker, validators
     from launchplane_testing_state import write_staged
 
@@ -339,12 +348,8 @@ def retain_custody(h: Any, response: dict[str, Any], request: dict[str, str], pa
     if (
         not isinstance(trace, str)
         or not trace
-        or h.public_identifier(trace) != trace
-        or len(trace) > 200
-        or response.get("product") != request["product"]
-        or response.get("operation_id") != request["operation_id"]
+        or h.public_trace_id(trace) != trace
         or packet.get("plan_sha256") != response.get("plan_sha256")
-        or not packet.get("completed_at")
     ):
         raise ValueError("invalid_custody_binding")
     canonical = json.dumps(
@@ -358,21 +363,16 @@ def retain_custody(h: Any, response: dict[str, Any], request: dict[str, str], pa
         raise ValueError("invalid_custody_hash")
     saved = {key: response[key] for key in ("product", "operation_id", "trace_id", "plan_sha256", "status")}
     saved["evidence"] = packet
-    saved["release_review"] = project(h, response, request)
-    reference = str(h.path_with_resolved_parent(Path(path).expanduser()))
-    public_reference = h.public_identifier(reference, pattern=re.compile(r"/[^\x00-\x1f\x7f]+"))
-    if public_reference != reference:
-        raise ValueError("invalid_custody_reference")
+    saved["release_review"] = result
     summary = {
         "status": response["status"],
         "plan_sha256": response["plan_sha256"],
-        "custody_evidence_file": public_reference,
+        "custody_evidence_file": custody_reference(h, path),
         "packet_sha256": packet_hash,
         "outcomes": custody_outcomes(packet),
     }
     h.assert_public_safe_shape(summary)
-    write_staged(h, path, saved)
-    summary["file_sha256"] = hashlib.sha256(Path(reference).read_bytes()).hexdigest()
+    summary["file_sha256"] = write_staged(h, path, saved)
     return summary
 
 
@@ -421,7 +421,7 @@ def finish(
 ) -> int:
     output = h.base_payload(status=status, operation=operation, request=request)
     summary = dict(diagnostics or {})
-    summary["recommendation"] = RECOVERY[status]
+    summary.setdefault("recommendation", RECOVERY[status])
     output["summary"] = summary
     if result is not None:
         output["result"] = result
@@ -453,6 +453,7 @@ def execute(h: Any, args: argparse.Namespace) -> int:
         product=urllib.parse.quote(request["product"], safe=""),
         operation_id=urllib.parse.quote(request["operation_id"], safe=""),
     )
+    response = None
     try:
         response = h.request_launchplane(
             service_url=settings["service_url"],
@@ -461,11 +462,11 @@ def execute(h: Any, args: argparse.Namespace) -> int:
             body=body,
             timeout=args.timeout,
             idempotency_key=getattr(args, "idempotency_key", ""),
-            **({"no_store": True} if body.get("include_evidence") else {}),
+            no_store=bool(body.get("include_evidence")),
         )
         result = project(h, response, request)
         if getattr(args, "custody_evidence_file", None):
-            result = retain_custody(h, response, request, args.custody_evidence_file)
+            result = retain_custody(h, response, result, args.custody_evidence_file)
         status = "held" if result["status"] == "held" else "ok"
         return finish(
             h,
@@ -502,6 +503,18 @@ def execute(h: Any, args: argparse.Namespace) -> int:
             error.close()
     except (ValueError, OSError, http.client.HTTPException, h.ServiceResponseError):
         status = "unavailable" if mode == "dry-run" else "outcome_unknown"
+        if body.get("include_evidence"):
+            return finish(
+                h,
+                operation=operation,
+                request=request,
+                status="unavailable",
+                diagnostics={
+                    **h.service_response_diagnostics(response),
+                    "error_code": "custody_evidence_unavailable",
+                    "recommendation": "The custody evidence could not be verified or saved. Preserve any private destination and existing holds; no saved evidence is established.",
+                },
+            )
         return finish(
             h,
             operation=operation,

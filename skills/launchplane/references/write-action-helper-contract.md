@@ -3192,6 +3192,10 @@ The closed [packet schema](candidate-custody-evidence.schema.json) is pinned fro
 Launchplane source `9b95c990dad027ffa7e13d65870a9887604203ee`,
 `control_plane/contracts/candidate_custody_evidence.py`; schema SHA256 is
 `f8306f78ac1181580b039f58eb362a676732648dd5f62a7c3e4aefcf479144b9`.
+The fictional fixture `scripts/fixtures/candidate-custody-evidence.json` is emitted
+by that exact producer model and canonical sealing implementation, including
+serialized defaults. A missing completion timestamp remains absent or null; the
+packet still requires valid plan and packet digests.
 Packet SHA256 uses sorted compact ASCII-escaped UTF-8 JSON, excluding the
 top-level `packet_sha256` and recursively omitting null object fields. The
 packet's plan digest must equal the enclosing release plan digest.

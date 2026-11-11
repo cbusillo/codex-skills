@@ -1,0 +1,55 @@
+{
+  "checks": {
+    "native_inventory": "unavailable",
+    "source_preserved": "not_reached"
+  },
+  "version": 1,
+  "observed_at": "2026-11-11T12:00:00Z",
+  "completed_at": "2026-11-11T12:00:01Z",
+  "candidate_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "server_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "plan_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "packet_sha256": "b48c94f3838be613fe3998a2305ede55add2cdd1cabdd7834f56763cc6fa5195",
+  "lifecycle": {
+    "checks": {
+      "lifecycle_acquisition": "pass",
+      "lifecycle_usable": "fail"
+    },
+    "container_count": 2,
+    "containers": []
+  },
+  "volumes": [
+    {
+      "checks": {},
+      "role": "ODOO_DB_VOLUME",
+      "name_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "planned_container_sha256": [],
+      "consumers": [
+        {
+          "checks": {
+            "conversion_parse": "fail"
+          },
+          "kind": "compose",
+          "server_identity": "missing",
+          "conversion_shape": "null",
+          "source_path_shape": "missing",
+          "include_shape": "missing",
+          "source_type": "missing",
+          "documents": []
+        },
+        {
+          "checks": {
+            "placement": "unavailable"
+          },
+          "kind": "compose",
+          "server_identity": "missing",
+          "conversion_shape": "missing",
+          "source_path_shape": "missing",
+          "include_shape": "missing",
+          "source_type": "missing",
+          "documents": []
+        }
+      ]
+    }
+  ]
+}
