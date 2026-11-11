@@ -429,6 +429,119 @@ class OperationTests(unittest.TestCase):
                     if outcome == "finish_refused":
                         self.assertNotIn("close", calls)
 
+    def test_lead_handoff_closeout_moves_workers_and_status_actors_to_the_successor(self) -> None:
+        for retained, moved in (([5], ["5"]), ([5, 6], ["5"]), ([6], [])):
+            with self.subTest(retained=retained), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                launched = "2026-01-01T00:00:00+00:00"
+                lead: dict[str, Any] = {
+                    "session_id": "native", "harness": "claude", "supervisor_owned": True, "backend": "tmux",
+                    "tmux_session_id": "terminal", "transcript": "native.jsonl", "pid": 8, "tty": "ttys001",
+                    "repository": "owner/repo", "issue": 1, "worker_cap": 4, "worker_launches": {},
+                    "launch_started_at": launched, "handoff_url": "https://github.com/owner/repo/issues/1#issuecomment-2"}
+                successor = {**lead, "session_id": "successor", "tmux_session_id": "other", "pid": 9, "tty": "ttys002",
+                             "transcript": "successor.jsonl", "launch_started_at": "2026-01-02T00:00:00+00:00", "handoff_url": None}
+                worker = {**lead, "session_id": "worker", "tmux_session_id": "third", "pid": 10, "tty": "ttys003",
+                          "transcript": "worker.jsonl", "worker_cap": None, "lead_session_id": "native", "issue": 7}
+                (root / "native.jsonl").write_text(json.dumps({
+                    "type": "assistant", "sessionId": "native", "timestamp": launched,
+                    "message": {"content": [{"type": "text", "text": "Safe to exit: yes"}], "stop_reason": "end_turn"}}) + "\n")
+                ledger = root / "ledger.json"
+                ledger.write_text(json.dumps([lead, successor, worker]))
+                closed = {**lead, "transcript": str(root / "native.jsonl"), "process_exit_verified": True, "ended_at": launched}
+                args = argparse.Namespace(ledger=ledger, session_id="native", supervisor_session="supervisor", owner="owner",
+                                          exit_seconds=1, handoff_url=lead["handoff_url"], successor_session=None)
+                bodies = {5: "## Current Status\n\nNext actor: agent:native\nNext action: review the slice\n",
+                          6: "## Current Status\n\nSession: native\nNext actor: agent:supervisor\n"}
+                live, updates = True, []
+
+                def command(argv: list[str], **_: Any) -> subprocess.CompletedProcess:
+                    nonlocal live
+                    payload: Any = {"sent": True}
+                    code = 0
+                    if "update-section" in argv:
+                        updates.append((argv[argv.index("update-section") + 1], argv[argv.index("--next-actor") + 1]))
+                        bodies[5] = bodies[5].replace("agent:native", "agent:successor")
+                    elif any(str(word).endswith("check_claims.py") for word in argv):
+                        payload = {"claims_clear": True, "coverage": {"complete": True}}
+                    elif any(str(word).endswith("release_session_claims.py") for word in argv):
+                        naming = [number for number in retained if "native" in bodies[number]]
+                        payload = {"ok": not naming, "needs_reconciliation": bool(naming), "reports": [{
+                            "session_id": "native",
+                            "retained_status_claims": [{"repository": "owner/repo", "issue": number} for number in naming]}]}
+                        code = int(bool(naming))
+                    elif "list" in argv:
+                        payload = [{"session_id": "terminal", "tty": "/dev/ttys001"}] if live else []
+                    elif "read" in argv:
+                        payload = {"dead": False, "screen": [], "input_line": {"style": "dim", "text": ""}}
+                    elif "send" in argv:
+                        live = False
+                    return subprocess.CompletedProcess(argv, code, json.dumps(payload), "")
+
+                class Reader:
+                    def __init__(self, **_: Any) -> None:
+                        pass
+
+                    @staticmethod
+                    def get_json(path: str, **_: Any) -> dict:
+                        return {"body": bodies[int(path.rsplit("/", 1)[-1])]}
+
+                with (patch.object(subprocess, "run", side_effect=command),
+                      patch.object(session_closeout, "GitHubReader", Reader),
+                      patch.object(session_closeout, "native_idle", AsyncMock()),
+                      patch.object(session_closeout.release, "handoff_association", return_value=lead["handoff_url"]),
+                      patch.object(session_closeout.release, "handoff",
+                                   return_value={"body": "Session: native\nSafe to exit: yes", "created_at": launched}),
+                      patch.object(session_closeout.github_identity, "automation_login", return_value="agent[bot]"),
+                      patch.object(session_liveness, "process_absent", side_effect=lambda pid: pid == 8 and not live),
+                      patch.object(session_liveness, "inventory", return_value=[(8, "ttys001", "claude")]),
+                      patch.object(session_liveness, "process_started_at", return_value=datetime.fromisoformat(launched)),
+                      patch_attr(session_closeout.release, "inventory", return_value=[]),
+                      patch.object(session_closeout.closure, "ownership", return_value=nullcontext()),
+                      patch.object(session_closeout.closure, "store_lock", side_effect=lambda *_, **__: nullcontext()),
+                      patch.object(session_closeout.closure, "source_records", return_value={"native": closed}),
+                      patch.object(session_closeout.release, "transcript_roots", return_value=[str(root)]),
+                      patch.object(session_closeout.release, "validate_finished")):
+                    operation = check_operation.Operation(root / "closeout", [str(ledger.resolve()), "native"])
+                    named_otherwise = 6 in retained
+                    if named_otherwise:
+                        with self.assertRaises(check_operation.GateFailed) as failure:
+                            session_closeout.closeout(args, operation)
+                        self.assertEqual(failure.exception.gate, "finish")
+                    else:
+                        session_closeout.closeout(args, operation)
+                self.assertEqual(updates, [(number, "agent:successor") for number in moved])
+                rows = {row["session_id"]: row for row in json.loads(ledger.read_text())}
+                self.assertEqual(rows["worker"]["lead_session_id"], "successor")
+                self.assertEqual("native" in rows, named_otherwise)
+
+    def test_lead_successor_is_the_one_later_lead_on_its_anchor(self) -> None:
+        ledger = self.root / "ledger.json"
+        lead = {"session_id": "native", "supervisor_owned": True, "repository": "owner/repo", "issue": 1,
+                "worker_cap": 4, "launch_started_at": "2026-01-01T00:00:00+00:00"}
+        later = {**lead, "session_id": "successor", "launch_started_at": "2026-01-02T00:00:00+00:00"}
+        worker_on_anchor = {**later, "session_id": "worker", "worker_cap": None}
+        args = argparse.Namespace(ledger=ledger, successor_session=None)
+        with patch.object(session_closeout, "load_ledger", side_effect=lambda _: rows):
+            rows = [lead, worker_on_anchor]
+            self.assertIsNone(session_closeout.handoff_successor(lead, args))
+            self.assertIsNone(session_closeout.handoff_successor({**worker_on_anchor, "worker_cap": None}, args))
+            rows = [lead, later, worker_on_anchor]
+            self.assertEqual(session_closeout.handoff_successor(lead, args), "successor")
+            rows = [lead, later, {**later, "session_id": "third"}]
+            with self.assertRaises(check_operation.GateFailed):
+                session_closeout.handoff_successor(lead, args)
+            self.assertEqual(session_closeout.handoff_successor(lead, argparse.Namespace(ledger=ledger, successor_session="third")),
+                             "third")
+            rows = [lead, {**later, "issue": 2}]
+            with self.assertRaises(check_operation.GateFailed):
+                session_closeout.handoff_successor(lead, argparse.Namespace(ledger=ledger, successor_session="successor"))
+        ledger.write_text(json.dumps([{**lead, "worker_launches": {"batch": 1}}, {"session_id": "worker", "lead_session_id": "native"}]))
+        with patch.object(session_closeout.closure, "store_lock", side_effect=lambda *_, **__: nullcontext()), \
+                self.assertRaises(check_operation.GateFailed):
+            session_closeout.adopt_workers(ledger, "native", "successor")
+        self.assertEqual(json.loads(ledger.read_text())[1]["lead_session_id"], "native")
+
     def test_retired_smokes_reuse_completed_journals_without_process_or_network_probes(self) -> None:
         for harness, recovered in (("claude", False), ("codex", False), ("codex", True)):
             for failure in (None, "quit", "close", "incomplete_quit", "incomplete_close", "uncertain_other", "generation", "retirement", "handoff", "resumed",

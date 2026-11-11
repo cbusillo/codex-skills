@@ -36,6 +36,25 @@ class ResumeTests(unittest.TestCase):
             with self.subTest(harness=harness):
                 self.assert_managed_worker_queue(harness)
 
+    def test_note_to_a_handed_off_lead_is_refused_naming_the_successor(self) -> None:
+        worker, successor = str(uuid.uuid4()), str(uuid.uuid4())
+        ledger = self.root / "launch-ledger.json"
+        ledger.write_text(json.dumps([
+            {"session_id": worker, "harness": "codex", "supervisor_owned": True, "lead_session_id": successor},
+            {"session_id": self.native, "harness": "codex", "supervisor_owned": True, "codex_home": str(self.home)}]))
+        argv = ["codex-session.py", "queue", "--session-id", self.native, "--message", "https://github.com/fixture/repo/issues/7"]
+        output = io.StringIO()
+        with patch.dict(os.environ, {LAUNCH_LEDGER_ENV: str(ledger)}), \
+                patch.dict(github_agent.__dict__, {"ancestor_agent": MagicMock(return_value=None)}):
+            for name in ("CLAUDE_CODE_SESSION_ID", "CLAUDECODE", "CODEX_THREAD_ID", "ANTIGRAVITY_SOURCE_METADATA"):
+                os.environ.pop(name, None)
+            with patch.dict(os.environ, {"CODEX_SESSION_ID": worker}), patch.object(sys, "argv", argv), \
+                    contextlib.redirect_stdout(output):
+                code = SESSION.main()
+        self.assertEqual(code, 1)
+        self.assertIn(successor, output.getvalue())
+        self.assertFalse(self.queue_requests)
+
     def assert_managed_worker_queue(self, harness: str) -> None:
         worker = str(uuid.uuid4())
         ledger = self.root / "launch-ledger.json"

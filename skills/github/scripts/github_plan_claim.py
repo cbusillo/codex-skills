@@ -379,6 +379,12 @@ def legacy_claim_worker(text: str) -> str | None:
     return header[1] if header and has_ownership_assertion(text) else None
 
 
+def status_names_actor(body: str, session: str) -> bool:
+    contexts = [body[span] for name, span in section_ranges(body) if name == "Current Status"]
+    status = "\n\n".join(contexts or [body])
+    return any(actor == f"agent:{session}" for _, actor in next_actor.fields(status))
+
+
 def belongs_to_session(body: str, session: str) -> bool:
     body = unquoted_text(body)
     structured = records(body)
@@ -388,9 +394,7 @@ def belongs_to_session(body: str, session: str) -> bool:
     directive = re.split(r"\n[ \t]*\n", body.strip(), maxsplit=1)[0]
     if not structured and legacy_claim_worker(body) and identity.search(directive):
         return True
-    contexts = [body[span] for name, span in section_ranges(body) if name == "Current Status"]
-    status = "\n\n".join(contexts or [body])
-    if any(actor == f"agent:{session}" for _, actor in next_actor.fields(status)):
+    if status_names_actor(body, session):
         return True
     fields = session_fields(ownership_text(body, strip_quotes=False, keep_link_targets=True),
                             include_quotes=False, current_only=True)
