@@ -6403,25 +6403,25 @@ def _project_lane_status(value: object) -> dict[str, object]:
 
 def _project_preview_sleep_inventory(product: dict[str, Any]) -> dict[str, object]:
     preview = product.get("preview")
-    if preview is None:
-        return {"status": "legacy" if "preview" not in product else "unavailable"}
     preview = _require_dict(preview)
     records_status = preview.get("records_status")
-    if records_status not in {"available", "authorization_denied", "unsupported"}:
+    if not isinstance(records_status, str) or records_status not in {"available", "authorization_denied", "unsupported"}:
         raise LaunchplaneSafetyError("invalid_response")
     result: dict[str, object] = {"context": public_identifier(preview.get("context")) if preview.get("context") else "",
                                 "records_status": records_status}
-    if "inventory" not in preview or preview["inventory"] is None:
-        return {**result, "status": "legacy" if "inventory" not in preview else "unavailable"}
+    if "inventory" not in preview:
+        return result
+    if preview["inventory"] is None:
+        return {**result, "inventory": None}
     inventory = _require_dict(preview["inventory"])
     status = inventory.get("status")
-    if status not in {"empty", "nonempty", "failed", "stale", "unsupported", "unavailable", "missing"}:
+    if not isinstance(status, str) or status not in {"empty", "nonempty", "failed", "stale", "unsupported", "unavailable", "missing"}:
         raise LaunchplaneSafetyError("invalid_response")
     provenance = _require_dict(inventory.get("provenance"))
-    projected_provenance = {key: provenance[key] for key in (
+    projected_provenance = {key: PublicIdentifier(provenance[key]) if isinstance(provenance[key], str) else provenance[key] for key in (
         "source_kind", "source_record_id", "recorded_at", "refreshed_at", "freshness_status", "stale_after",
     ) if key in provenance}
-    if provenance.get("source_kind") not in {"record", "provider", "descriptor", "unsupported"} or provenance.get("freshness_status") not in {
+    if not isinstance(provenance.get("source_kind"), str) or not isinstance(provenance.get("freshness_status"), str) or provenance.get("source_kind") not in {"record", "provider", "descriptor", "unsupported"} or provenance.get("freshness_status") not in {
         "verified", "recorded", "stale", "missing", "unsupported",
     } or any(not isinstance(value, str) for value in projected_provenance.values()):
         raise LaunchplaneSafetyError("invalid_response")
@@ -6430,29 +6430,41 @@ def _project_preview_sleep_inventory(product: dict[str, Any]) -> dict[str, objec
     count = inventory.get("observed_count")
     if not isinstance(rows, list) or not isinstance(slugs, list) or (count is not None and (type(count) is not int or count < 0)):
         raise LaunchplaneSafetyError("invalid_response")
-    if records_status != "available" and (rows or slugs):
+    if records_status == "authorization_denied" and (rows or slugs):
         raise LaunchplaneSafetyError("unsafe_response_shape")
     observations = []
     for value in rows:
         row = _require_dict(value)
         if row.keys() - {"slug", "state", "reason", "evidence"}:
             raise LaunchplaneSafetyError("unsafe_response_shape")
-        if row.get("state") not in {"awake", "asleep", "cannot_sleep", "unknown"}:
+        if not isinstance(row.get("state"), str) or row.get("state") not in {"awake", "asleep", "cannot_sleep", "unknown"}:
             raise LaunchplaneSafetyError("invalid_response")
         item = {"slug": public_identifier(row.get("slug")), "state": row["state"]}
         if "evidence" in row:
             try:
-                item["evidence"] = validate_preview_sleep_evidence(row["evidence"])
+                evidence = dict(validate_preview_sleep_evidence(row["evidence"]))
+                if evidence.get("binding") is not None:
+                    evidence["binding"] = {key: PublicIdentifier(value) for key, value in _require_dict(evidence["binding"]).items()}
+                item["evidence"] = evidence
             except ContractError as exc:
                 raise LaunchplaneSafetyError(exc.code) from None
         observations.append(item)
-    result["inventory"] = {"status": status, "provenance": projected_provenance, "observed_count": count,
-                           "observed_slugs": [public_identifier(slug) for slug in slugs], "sleep_observations": observations}
+    projected_inventory: dict[str, object] = {"status": status, "provenance": projected_provenance}
+    for key, value in (("observed_count", count), ("observed_slugs", [public_identifier(slug) for slug in slugs]),
+                       ("sleep_observations", observations)):
+        if key in inventory:
+            projected_inventory[key] = value
+    result["inventory"] = projected_inventory
     assert_public_safe_shape(result)
     return result
 
 
 def _project_product_status(product: dict[str, Any], *, include_preview_sleep_evidence: bool = False) -> dict[str, object]:
+    if include_preview_sleep_evidence:
+        private: dict[str, object] = {"product": public_identifier(product.get("product"))}
+        if "preview" in product:
+            private["preview_sleep_evidence"] = None if product["preview"] is None else _project_preview_sleep_inventory(product)
+        return private
     environments, warnings = product.get("environments"), product.get("warnings")
     if not isinstance(environments, list) or not isinstance(warnings, list):
         raise LaunchplaneSafetyError("invalid_response")
@@ -6463,8 +6475,6 @@ def _project_product_status(product: dict[str, Any], *, include_preview_sleep_ev
     product_warnings = [public_service_text(value, max_length=16000) for value in warnings]
     result = {"product": public_identifier(product.get("product")), "lanes": lanes, "warnings": product_warnings,
               "warning_text_redacted": product_warnings != [" ".join(str(value).split()) for value in warnings]}
-    if include_preview_sleep_evidence:
-        result["preview_sleep_evidence"] = _project_preview_sleep_inventory(product)
     return result
 
 
@@ -6476,6 +6486,10 @@ def summarize_product_status_read(*, request: dict[str, object], provider_payloa
     selected = [_require_dict(product) for product in products]
     payload = base_payload(status=public_code(provider_payload.get("status")), operation="product-status-read", request=request)
     payload["result"] = {"products": [_project_product_status(product) for product in selected]}
+    payload["summary"] = {"trace_id": public_trace_id(provider_payload["trace_id"]),
+                          "recommendation": "Service-computed Product Ops sidebar status for caller-visible products. Use each tone and description; preserve missing and stale states. No authority to change a lane."}
+    assert_public_safe_shape(payload["result"])
+    assert_public_safe_shape(payload["summary"])
     if request.get("include_preview_sleep_evidence"):
         if evidence_file is None:
             raise LaunchplaneSafetyError("invalid_request")
@@ -6483,10 +6497,6 @@ def summarize_product_status_read(*, request: dict[str, object], provider_payloa
                    "trace_id": public_trace_id(provider_payload["trace_id"])}
         from launchplane_testing_state import write_staged
         write_staged(sys.modules[__name__], evidence_file, private)
-    payload["summary"] = {"trace_id": public_trace_id(provider_payload["trace_id"]),
-                          "recommendation": "Service-computed Product Ops sidebar status for caller-visible products. Use each tone and description; preserve missing and stale states. No authority to change a lane."}
-    assert_public_safe_shape(payload["result"])
-    assert_public_safe_shape(payload["summary"])
     return payload
 
 
@@ -7191,6 +7201,14 @@ def execute_product_read(
         emit_safety_error_payload(
             operation=read_operation, request=request, exc=exc, provider_payload=provider_payload
         )
+        return 1
+    except ValueError:
+        if not request.get("include_preview_sleep_evidence"):
+            raise
+        payload = unavailable_payload(operation=operation, request=request, status="unavailable", code="private_result_unavailable",
+                                      message="A valid response was received, but the private result could not be saved.")
+        _require_dict(payload["summary"]).update(service_response_diagnostics(provider_payload))
+        emit(payload)
         return 1
     except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException) as exc:
         emit_read_transport_error(
@@ -13626,8 +13644,8 @@ def main(argv: list[str]) -> int:
             request: dict[str, object] = {"payload_source": "operator_argument"}
             query = {}
             if args.preview_sleep_evidence_file is not None:
-                if args.preview_sleep_evidence_file.strip() in {"", "-"} or "\0" in args.preview_sleep_evidence_file:
-                    raise ValueError("private_request_unavailable")
+                from launchplane_website_indexing import destination
+                destination(sys.modules[__name__], args.preview_sleep_evidence_file)
                 query["include_preview_sleep_evidence"] = "true"
                 request["include_preview_sleep_evidence"] = True
             return execute_product_read(args=args, operation=args.command, request=request, path=path, query=query)

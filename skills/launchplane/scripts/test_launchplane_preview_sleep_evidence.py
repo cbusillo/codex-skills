@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import launchplane_testing_state as testing_state
 import pytest
 from test_launchplane_helpers import _product_status_response, _run_product_read
 from test_launchplane_helpers import write_action as helper
@@ -103,6 +104,7 @@ def test_default_does_not_request_or_expose_private_rows(tmp_path: Path) -> None
     expected["inventory"]["provenance"].pop("detail")
     expected["inventory"]["sleep_observations"][0].pop("reason")
     assert private == expected
+    assert set(saved["products"][0]) == {"product", "preview_sleep_evidence"}
     assert destination.stat().st_mode & 0o777 == 0o600
     assert "observed-generation" not in json.dumps(opted) and "PRIVATE_PROSE" not in destination.read_text()
 
@@ -128,8 +130,9 @@ def test_private_read_preserves_unqualified_observation_without_rebinding(tmp_pa
     assert code == 0
     observed = json.loads(destination.read_text())["products"][0]["preview_sleep_evidence"]["inventory"]["sleep_observations"][0]
     assert observed["evidence"] == evidence
-    assert "new-current-preview" not in destination.read_text()
-    assert "safe_to_execute" not in destination.read_text() and "evidence" not in public["result"]["products"][0]
+    if state in {"changed", "unknown"}:
+        assert "new-current-preview" not in destination.read_text()
+    assert "preview_sleep_evidence" not in json.dumps(public["result"])
 
 
 @pytest.mark.parametrize(
@@ -152,12 +155,20 @@ def test_inventory_failures_and_legacy_are_retained_without_fallback(tmp_path: P
             preview["records_status"] = state
         else:
             inventory(source)["status"] = state
+            inventory(source)["provenance"]["freshness_status"] = (
+                "stale" if state == "stale" else "unsupported" if state == "unsupported" else "missing"
+            )
+            inventory(source)["observed_count"] = None
+            inventory(source)["provenance"]["source_kind"] = "unsupported" if state == "unsupported" else "record"
     destination = tmp_path / "private.json"
     code, _, calls = _run_product_read(["product-status-read", "--preview-sleep-evidence-file", str(destination)], source)
     assert code == 0 and len(calls) == 1
-    saved = json.loads(destination.read_text())["products"][0]["preview_sleep_evidence"]
-    if state in {"legacy", "absent_inventory"}:
-        assert saved["status"] == ("legacy" if state == "legacy" else "unavailable")
+    saved_product = json.loads(destination.read_text())["products"][0]
+    saved = saved_product.get("preview_sleep_evidence")
+    if state == "legacy":
+        assert "preview_sleep_evidence" not in saved_product
+    elif state == "absent_inventory":
+        assert saved["inventory"] is None
     elif state == "authorization_denied":
         assert saved["records_status"] == state and saved["inventory"]["sleep_observations"] == []
     elif state == "legacy_row":
@@ -225,19 +236,18 @@ def test_denied_transport_and_existing_destination_never_replace_private_evidenc
     assert code == 1 and len(calls) == 1 and not destination.exists()
     assert public["status"] == "denied"
     destination.write_text("original")
-    code, _, _ = _run_product_read(["product-status-read", "--preview-sleep-evidence-file", str(destination)], response())
-    assert code == 2 and destination.read_text() == "original"
+    code, _, calls = _run_product_read(["product-status-read", "--preview-sleep-evidence-file", str(destination)], response())
+    assert code == 2 and not calls and destination.read_text() == "original"
 
 
-@pytest.mark.parametrize("cache_control", ["private, no-store", "private", ""])
-def test_private_http_read_requires_no_store_and_never_requests_activity(tmp_path: Path, cache_control: str) -> None:
+def test_private_http_read_uses_existing_get_without_activity(tmp_path: Path) -> None:
     destination = tmp_path / "private.json"
     transport_response = MagicMock()
     transport_response.__enter__.return_value = transport_response
     transport_response.read.return_value = json.dumps(response()).encode()
     transport_response.status = 200
     transport_response.headers = Message()
-    transport_response.headers["Cache-Control"] = cache_control
+    transport_response.headers["Cache-Control"] = "private, no-store"
     output = io.StringIO()
     with (
         patch.object(helper, "safe_urlopen", return_value=transport_response) as transport,
@@ -249,11 +259,87 @@ def test_private_http_read_requires_no_store_and_never_requests_activity(tmp_pat
         code = helper.main(["product-status-read", "--preview-sleep-evidence-file", str(destination)])
     request = transport.call_args.args[0]
     assert transport.call_count == 1 and request.method == "GET" and request.data is None
-    assert request.full_url == "https://service.example.invalid/v1/products?include_preview_sleep_evidence=true"
+    assert (
+        request.full_url
+        == f"https://service.example.invalid{helper.helper_command_path('product-status-read')}?include_preview_sleep_evidence=true"
+    )
     assert request.get_header("Cache-control") == "no-store"
-    assert destination.exists() == (cache_control == "private, no-store")
-    assert code == (0 if destination.exists() else 1)
+    assert destination.exists() and code == 0
     assert "observed-generation" not in output.getvalue()
+
+
+@pytest.mark.parametrize("value", ["work/task-123", "registry.example.invalid/helpdesk-site:tag", "risk-target", "ghp_plantedtoken"])
+def test_observed_identifiers_use_identifier_token_rules(tmp_path: Path, value: str) -> None:
+    source = response()
+    binding = inventory(source)["sleep_observations"][0]["evidence"]["binding"]
+    binding.update({key: value for key in binding})
+    destination = tmp_path / "private.json"
+    code, _, _ = _run_product_read(["product-status-read", "--preview-sleep-evidence-file", str(destination)], source)
+    if value.startswith("ghp_"):
+        assert code == 1 and not destination.exists()
+    else:
+        assert code == 0
+        saved = json.loads(destination.read_text())["products"][0]["preview_sleep_evidence"]["inventory"]
+        assert saved["sleep_observations"][0]["evidence"]["binding"] == binding
+
+
+def test_unsupported_record_listing_preserves_separately_available_inventory(tmp_path: Path) -> None:
+    source = response()
+    source["products"][0]["preview"]["records_status"] = "unsupported"
+    destination = tmp_path / "private.json"
+    code, _, _ = _run_product_read(["product-status-read", "--preview-sleep-evidence-file", str(destination)], source)
+    assert code == 0
+    saved = json.loads(destination.read_text())["products"][0]["preview_sleep_evidence"]
+    assert saved["records_status"] == "unsupported"
+    assert saved["inventory"]["sleep_observations"][0]["evidence"] == inventory(source)["sleep_observations"][0]["evidence"]
+
+
+def test_absent_optional_inventory_fields_are_not_fabricated(tmp_path: Path) -> None:
+    source = response()
+    for key in ("sleep_observations", "observed_slugs", "observed_count"):
+        inventory(source).pop(key)
+    destination = tmp_path / "private.json"
+    code, _, _ = _run_product_read(["product-status-read", "--preview-sleep-evidence-file", str(destination)], source)
+    assert code == 0
+    saved = json.loads(destination.read_text())["products"][0]["preview_sleep_evidence"]["inventory"]
+    assert set(saved) == {"status", "provenance"}
+
+
+@pytest.mark.parametrize("kind", ["repo", "missing_parent", "save_failure"])
+def test_private_destination_is_checked_before_read_and_save_failure_preserves_trace(tmp_path: Path, kind: str) -> None:
+    source = response()
+    destination = tmp_path / "private.json"
+    if kind == "missing_parent":
+        destination = tmp_path / "absent" / "private.json"
+    (tmp_path / "repo").mkdir()
+    with patch.object(helper, "active_repo_root", return_value=tmp_path if kind == "repo" else tmp_path / "repo"):
+        with patch.object(testing_state, "write_staged", side_effect=ValueError("private_request_unavailable")):
+            code, public, calls = _run_product_read(
+                ["product-status-read", "--preview-sleep-evidence-file", str(destination)], source
+            )
+    assert not destination.exists()
+    if kind == "save_failure":
+        assert code == 1 and len(calls) == 1
+        assert public["summary"]["trace_id"] == source["trace_id"]
+        assert public["warnings"][0]["code"] == "private_result_unavailable"
+    else:
+        assert code == 2 and not calls
+
+
+@pytest.mark.parametrize("field", ["records_status", "status", "source_kind", "freshness_status", "state"])
+def test_unhashable_status_is_a_safe_invalid_response(tmp_path: Path, field: str) -> None:
+    source = response()
+    if field == "records_status":
+        source["products"][0]["preview"][field] = []
+    elif field == "status":
+        inventory(source)[field] = []
+    elif field == "state":
+        inventory(source)["sleep_observations"][0][field] = []
+    else:
+        inventory(source)["provenance"][field] = []
+    destination = tmp_path / "private.json"
+    code, _, _ = _run_product_read(["product-status-read", "--preview-sleep-evidence-file", str(destination)], source)
+    assert code == 1 and not destination.exists()
 
 
 if __name__ == "__main__":

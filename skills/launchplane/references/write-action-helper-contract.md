@@ -635,8 +635,8 @@ installed local helper bindings.
   authority; only the normal background inventory job collects it. There is no
   collection or activity request here. Even complete positive evidence proves
   no wake/import eligibility, health, runtime verification, original custody or
-  effect release. Actual use requires a separately verified deployed compatible
-  producer, this delivered caller and the lead's separate executor assignment.
+  effect release. Compatibility must be established separately from the contents
+  of an older producer response.
 
 - A healthy deployment does not establish a qualified release candidate. Before
   reporting release readiness, match testing's `target.artifact` and observed
