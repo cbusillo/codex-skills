@@ -1205,6 +1205,20 @@ class PrimaryReadTests(unittest.TestCase):
         self.assertIn("replied=UNKNOWN", waits[2])
         self.assertNotIn("ask=", waits[3])
 
+    def test_an_answered_wait_outside_a_milestone_asks_for_an_owner(self) -> None:
+        answered = {"url": "https://github.com/owner/site/issues/317", "waiting_for": "Justin answers the copy questions",
+                    "ask": {"ask_url": "https://github.com/owner/site/issues/317#issuecomment-5", "author": "helper-bot", "replied_since": True}}
+        waiting = {**answered, "url": "https://github.com/owner/site/issues/318", "ask": {**answered["ask"], "replied_since": False}}
+        selection = {"waiting": [answered, waiting], "recorded_waits": [answered]}
+        self.assertFalse([line for line in self.run_digest(selection) if line.startswith("ANSWERED")])
+        primary = routine_check.primary_reads(selection, [], owner_review=Mock(return_value=None), client_release=Mock(),
+                                              production=Mock(), anchor_response=Mock(), checks=Mock())
+        lines = routine_check.digest({"next": selection, "primary": primary}, roles=("milestone",)).splitlines()
+        rows = [line for line in lines if line.startswith("ANSWERED")]
+        self.assertEqual(len(rows), 1)
+        self.assertIn("issues/317:", rows[0])
+        self.assertIn("name an owner", rows[0])
+
     def test_stale_items_repeat_with_their_age_and_evidence(self) -> None:
         stale = {"url": "https://github.com/owner/repo/issues/1", "evidence": [{"kind": "overdue_recheck", "recorded_at": "2026-11-04T00:00:00Z", "matched": "Waiting for proof"}]}
         selection = {"stale_wait_report": {"items": [stale]}}

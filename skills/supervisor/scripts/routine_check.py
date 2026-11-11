@@ -275,6 +275,11 @@ def milestone_waits(selection: dict) -> list[dict]:
             for wait in [*milestone.get("waits", []), *milestone.get("wait_reviews", [])]]
 
 
+def answered_waits(selection: dict) -> list[dict]:
+    rows = [*selection.get("waiting", []), *selection.get("recorded_waits", []), *selection.get("stale_waits", []), *milestone_waits(selection)]
+    return list({pointer(row): row for row in rows if (row.get("ask") or {}).get("replied_since") is True}.values())
+
+
 def request_text(row: dict) -> str:
     queue = row.get("queue") or {}
     waits = (row.get("wait") or queue.get("wait") or {}).get("waits", [])
@@ -437,6 +442,9 @@ def digest(sources: dict[str, dict], *, full: bool = False, roles: tuple[str, ..
         if (age is None or age > ROUTINE_INTERVAL) and (kind == "SUPERVISOR_ACTION" or row["queue"]["next_actor"].casefold() in supervisors):
             lines.append(f"ERROR supervisor_action {pointer(row)}: open {age_text(age) if age else 'for an UNKNOWN time'} with no disposition; "
                          "set another actor, record a wait or claim it on the issue")
+    for row in answered_waits(selection) if "milestone" in roles else []:
+        lines.append(noted(f"ANSWERED {pointer(row)}: {row.get('waiting_for')} replied after {row['ask']['ask_url']}; "
+                           "end the wait and name an owner", row))
     for row in client_wait_rows(selection):
         lines.append(noted(f"CLIENT_WAIT {pointer(row)}: {row.get('title') or row.get('next_action') or ''}", row))
     for row in sorted(primary.get("no_handoff", []), key=lambda entry: entry["since"] or now):

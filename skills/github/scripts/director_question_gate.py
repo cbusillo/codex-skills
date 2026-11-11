@@ -72,6 +72,22 @@ def address_book(owner: str) -> dict[str, frozenset[str]]:
     return {name: frozenset(logins) for name, logins in book.items()}
 
 
+@functools.cache
+def agent_logins(owner: str) -> dict[str, frozenset[str]]:
+    """Map each person's own login to the agent logins that act for them, leaving out the Director's."""
+    resolve_person = radar_module().resolve_person
+    try:
+        _status, people, _sources = resolve_person.load_scoped_people()
+    except resolve_person.PeopleConfigError as error:
+        raise ValueError(f"The people index could not be read, so a wait cannot be checked: {error}") from error
+    agents: dict[str, frozenset[str]] = {}
+    for person in people:
+        own, bots = resolve_person.github_logins(person)
+        if owner.casefold() not in own:
+            agents.update((login, frozenset(bots)) for login in own)
+    return agents
+
+
 def asked_person(owner: str, waiting_for: str) -> AskedPerson | None:
     radar = radar_module()
     director = radar.current_director_wait(waiting_for, director_terms(owner), {owner.casefold()}) is not None
@@ -238,5 +254,7 @@ def ask_status(owner: str, evidence: str, entry: dict[str, Any], *, trusted: set
         return {**status, "found": False}
     ask = thread[position]
     asked = person.logins | ({owner.casefold()} if person.director else set()) or (comment_mentions(ask) - trusted)
+    if not person.director:
+        asked = asked.union(*(agent_logins(owner).get(login, ()) for login in asked)) - trusted
     return {**status, "found": True, "author": ask["author"],
             "replied_since": any(row["author"].casefold() in asked for row in thread[position + 1:])}

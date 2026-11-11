@@ -62,6 +62,7 @@ class DirectorQuestionGateTests(unittest.TestCase):
         self.queue_reads = 0
         for patcher in (patch.object(gate, "director_terms", side_effect=lambda owner: [owner, "Chris", "Director"]),
                         patch.object(gate, "address_book", side_effect=lambda owner: BOOK),
+                        patch.object(gate, "agent_logins", return_value={}),
                         patch.object(github_client, "recorded_client", return_value={"status": "none"}),
                         patch.object(gate, "configured_queue", side_effect=lambda: self.queue),
                         patch.object(github_identity, "configured_bot_logins", return_value=[BOT]),
@@ -204,6 +205,15 @@ class DirectorQuestionGateTests(unittest.TestCase):
         thread.append({"url": link(13), "author": "justin-login", "body": "Done, thanks"})
         status = self.status(wait("Justin creates the guest", link(11)), thread)
         self.assertEqual((status["author"], status["replied_since"]), (BOT, True))
+
+    def test_a_reply_from_the_askeds_agent_counts_and_the_directors_agent_does_not(self) -> None:
+        thread = [{"url": link(11), "author": BOT, "body": "Asking @justin-login"},
+                  {"url": link(12), "author": "director-agent[bot]", "body": "Noted"}]
+        agents = {"justin-login": frozenset({"justin-agent[bot]"})}
+        with patch.object(gate, "agent_logins", return_value=agents):
+            self.assertIs(self.status(wait("Justin creates the guest", link(11)), thread)["replied_since"], False)
+            thread.append({"url": link(13), "author": "justin-agent[bot]", "body": "Answers and final copy"})
+            self.assertIs(self.status(wait("Justin creates the guest", link(11)), thread)["replied_since"], True)
 
     def test_status_is_unknown_when_the_thread_cannot_be_read_and_empty_for_events(self) -> None:
         record = wait("Justin creates the guest", link(11))
