@@ -13,8 +13,9 @@ runs:
         trap 'rm -rf "$directory"' EXIT
         packages=()
         while read -r digest package; do
-          curl --fail --location --silent --show-error --retry 3 \
-            "https://deb.debian.org/debian/pool/main/z/zsh/$package" -o "$directory/$package"
+          curl --fail --location --silent --show-error --retry 3 --retry-all-errors \
+            --connect-timeout 10 --max-time 30 \
+            "https://snapshot.debian.org/archive/debian/20261110T000000Z/pool/main/z/zsh/$package" -o "$directory/$package"
           printf '%s  %s\n' "$digest" "$directory/$package" | sha256sum --check
           packages+=("$directory/$package")
         done <<'PACKAGES'
