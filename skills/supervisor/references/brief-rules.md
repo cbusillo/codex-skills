@@ -36,7 +36,8 @@ Rules for this brief (every Supervisor brief carries them):
   8, do not open another. Fixes that unblock landing or repair failing CI are
   exempt from this cap; their briefs name the repair and exemption.
 - Pace (Director, October 18, 2026): never open PRs faster than they can land.
-  Finish and hand off what you open before starting anything new.
+  Finish and hand off what you open before starting anything new. Choose launch
+  tiers under [Accounts, Pace, And Launch Tier](../SKILL.md#accounts-pace-and-launch-tier).
 - Never use the Director's own Chrome (the ChatGPT for Chrome extension, Claude in
   Chrome, or any automation of his browser) unless the brief is a GUI task
   that names it. Browser and page checks run headless (Playwright or the
