@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import stat
 import urllib.error
 from contextlib import redirect_stdout
@@ -16,6 +17,7 @@ from typing import Any, NamedTuple
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
+import launchplane_inventory_readback as inventory_readback
 import pytest
 from launchplane_inventory_readback import PURCHASER
 from test_launchplane_helpers import write_action as helper
@@ -454,7 +456,7 @@ def test_well_formed_image_drift_is_never_saved(tmp_path: Path, field: str) -> N
 
 
 def test_save_failure_retains_safe_read_diagnostics(tmp_path: Path) -> None:
-    with patch("launchplane_inventory_readback.write_staged", side_effect=ValueError("PRIVATE_SAVE_ERROR")):
+    with patch.object(inventory_readback, "write_staged", side_effect=ValueError("PRIVATE_SAVE_ERROR")):
         code, public, _, destination = invoke(tmp_path)
     assert code != 0
     assert public["summary"]["trace_id"] == response()["trace_id"]
@@ -463,7 +465,7 @@ def test_save_failure_retains_safe_read_diagnostics(tmp_path: Path) -> None:
 
 
 def test_unwritable_private_destination_refuses_before_transport(tmp_path: Path) -> None:
-    with patch("launchplane_website_indexing.os.access", return_value=False):
+    with patch.object(os, "access", return_value=False):
         code, _, transport, _ = invoke(tmp_path)
     assert code != 0
     transport.assert_not_called()
