@@ -304,11 +304,11 @@ def test_current_fact_failures_never_reconcile(cause: str) -> None:
     assert all(call.kwargs["body"]["ingress"]["mode"] == "dry-run" for call in post.call_args_list)
 
 
-@pytest.mark.parametrize("flag", [False, "true", 1, None])
-def test_verification_false_is_omitted_and_non_boolean_is_refused(flag: object) -> None:
+@pytest.mark.parametrize("flag,valid", [(False, True), ("true", False), (1, False), (None, False)])
+def test_verification_false_is_omitted_and_non_boolean_is_refused(flag: object, valid: bool) -> None:
     private = {**ingress_input(), "verify_route_binding": flag}
     code, _, _, post = run(INGRESS_COMMAND, ingress_reads(), [ingress_response()], private=private)
-    if flag is False:
+    if valid:
         assert code == 0 and "verify_route_binding" not in post.call_args.kwargs["body"]["ingress"]
     else:
         assert code != 0
