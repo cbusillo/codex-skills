@@ -286,6 +286,21 @@ def test_shared_read_keeps_malformed_response_diagnostics(args: list[str]) -> No
     read.assert_called_once()
 
 
+def test_operation_read_keeps_malformed_automatic_release_diagnostics() -> None:
+    response = {"trace_id": "launchplane_req_malformed_release", "operation": {
+        "operation_id": "original-operation", "product": "example", "instance": "testing",
+        "status": "failed", "phase": "failed", "attempt": 1, "updated_at": "2026-10-17T00:00:00Z",
+        "candidate_release": {"status": "held", "reasons": None, "plan_sha256": "", "idempotency_key": "automatic"},
+    }}
+    code, output, post, read, _ = invoke(args=[rebuild.READ_COMMAND, "--product", "example",
+        "--operation-id", "original-operation"], read_body=response)
+    assert code == 1
+    assert output["request"]["operation_id"] == response["operation"]["operation_id"]
+    assert output["summary"]["trace_id"] == response["trace_id"]
+    post.assert_not_called()
+    read.assert_called_once()
+
+
 @pytest.mark.parametrize("repository", ["nginx", "example/a--b", "registry.example:5000/a__b/site"])
 def test_generic_image_forms_are_sent_unchanged(repository: str) -> None:
     args = generic_arguments(rebuild.PLAN_COMMAND)
