@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 import subprocess
 import sys
+from types import ModuleType
 
 import github_plan_closure
 
@@ -70,6 +71,13 @@ def process_liveness():
     return session_liveness
 
 
+def claude_process_names_session(liveness: ModuleType, pid: int, session: str) -> bool:
+    argv = liveness.native_arguments(pid)
+    options = argv[1:argv.index("--")] if "--" in argv else argv[1:]
+    selectors = {("--session-id", session), ("--resume", session)}
+    return liveness.harness_family(argv[0]) == "claude" and bool(selectors & set(zip(options, options[1:])))
+
+
 def actor_state(session: str) -> str:
     from github_plan_lease import EXPIRED, LIVE, UNKNOWN
 
@@ -87,6 +95,8 @@ def actor_state(session: str) -> str:
         liveness = process_liveness()
         if liveness.generation_ended(entry):
             return EXPIRED
+        if entry.get("harness") == "claude" and not entry.get("launch_started_at"):
+            return LIVE if claude_process_names_session(liveness, entry["pid"], session) else UNKNOWN
         born = liveness.process_started_at(entry["pid"])
         launched = datetime.fromisoformat(entry["launch_started_at"])
         return LIVE if launched.tzinfo and born == launched else UNKNOWN
