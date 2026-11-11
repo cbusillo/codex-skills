@@ -219,8 +219,7 @@ No login or credential files are read or changed.
 These are interactive zsh functions only. The real binaries on PATH stay intact:
 `command claude`, `command codex`, noninteractive scripts, daemons, bridges and
 IDE plugins keep invoking them directly. Local behavior tests require zsh;
-the validation gate checks for it before starting the suite. Every CI caller
-installs it when absent, with bounded retries for transient package downloads.
+the validation gate checks for it before starting the suite. See [hosted CI setup](.github/workflows/validate-skills.yml).
 On a minimal Ubuntu environment, use
 `sudo apt-get install --yes zsh`; macOS includes it.
 
