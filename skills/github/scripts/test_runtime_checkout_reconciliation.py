@@ -7,6 +7,7 @@
 # ///
 from __future__ import annotations
 
+import io
 import json
 import os
 import runpy
@@ -16,7 +17,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stdout
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -1046,14 +1047,43 @@ def test_session_start_does_not_wait_for_another_reconciliation(tmp_path: Path) 
     assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX lock contention fixture")
+def test_catalog_runtime_retries_busy_lock_without_moving_checkout(tmp_path: Path) -> None:
+    import fcntl
+    fixture = session_fixture(tmp_path)
+    namespace = runpy.run_path(str(fixture.runtime / fixture.helper_relative_path))
+    with (fixture.runtime / ".git/every-code-runtime-reconciliation.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with mock.patch.dict(os.environ, host_environment(fixture)):
+            receipt = namespace["reconcile_runtime_checkout"](fixture.runtime, fixture.repo, None, timeout_seconds=1)
+    assert receipt["status"] == "retryable"
+    assert receipt["runtime_mutated"] is False
+    assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
+
+
+def test_expired_read_budget_keeps_a_conclusive_local_block() -> None:
+    namespace = runpy.run_path(str(SCRIPT))
+    clock = [0.0]
+    def blocked() -> dict[str, Any]:
+        clock[0] = 2.0
+        return namespace["finish"](namespace["base_receipt"](None), "blocked", "runtime_dirty")
+    with mock.patch("time.monotonic", side_effect=lambda: clock[0]):
+        receipt = namespace["reconcile_bounded"](blocked, "owner/catalog", None, 1)
+    assert receipt["status"] == "blocked"
+
+
 def test_automatic_reconciliation_bounds_a_slow_fetch(tmp_path: Path) -> None:
     fixture = session_fixture(tmp_path)
     namespace = runpy.run_path(str(fixture.runtime / fixture.helper_relative_path))
-    reconcile = namespace["reconcile_runtime_checkout"]
-    with mock.patch.dict(os.environ, host_environment(fixture)), mock.patch("subprocess.run", side_effect=stall_git_command("fetch")):
+    output = io.StringIO()
+    argv = [str(fixture.runtime / fixture.helper_relative_path), "--repo", fixture.repo, "--timeout-seconds", "1"]
+    with (mock.patch.dict(os.environ, host_environment(fixture)),
+          mock.patch("subprocess.run", side_effect=stall_git_command("fetch")),
+          mock.patch.object(sys, "argv", argv), redirect_stdout(output)):
         started = time.monotonic()
-        receipt = reconcile(fixture.runtime, fixture.repo, None, timeout_seconds=1)
+        assert namespace["main"]() == 1
         assert time.monotonic() - started < 3
+    receipt = json.loads(output.getvalue())
     assert receipt["status"] == "retryable" and receipt["reason_code"] == "runtime_catchup_timeout"
     assert receipt["runtime_mutated"] is False
     assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
@@ -1203,15 +1233,3 @@ def test_fetch_timeout_with_descendant_holding_output(tmp_path: Path) -> None:
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
-
-
-def test_cli_read_deadline_returns_conclusive_retry_without_runtime_write(tmp_path: Path) -> None:
-    proc = subprocess.run(
-        [sys.executable, str(SCRIPT), "--repo", "owner/catalog", "--timeout-seconds", "0"],
-        text=True, capture_output=True, check=False, timeout=10,
-    )
-    payload = json.loads(proc.stdout)
-    assert proc.returncode == 1
-    assert payload["status"] == "retryable"
-    assert payload["runtime_mutated"] is False
-    assert payload["reason_code"] == "runtime_catchup_timeout"

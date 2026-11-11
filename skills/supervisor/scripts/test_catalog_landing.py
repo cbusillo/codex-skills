@@ -260,7 +260,12 @@ class CatalogLandingTests(unittest.TestCase):
             self.assertEqual(post.call_count, 1)
 
     def test_retryable_runtime_reads_keep_service_polling_without_advancing_cursor(self) -> None:
-        failed = {"ok": False, "status": "retryable", "reason_code": "runtime_catchup_timeout", "runtime_mutated": False}
+        for reason in ("runtime_catchup_timeout", "runtime_reconciliation_busy"):
+            with self.subTest(reason=reason):
+                self.assert_retryable_runtime_polling(reason)
+
+    def assert_retryable_runtime_polling(self, reason: str) -> None:
+        failed = {"ok": False, "status": "retryable", "reason_code": reason, "runtime_mutated": False}
         config = self.root / "catalog.json"
         config.write_text(json.dumps(self.config))
         service = self.root / "services.json"
@@ -400,7 +405,9 @@ class CatalogLandingTests(unittest.TestCase):
               self.assertRaises(GateFailed) as failure):
             operation.run("runtime", ["helper"], retry_read=True)
         self.assertNotIsInstance(failure.exception, landing.RetryableGate)
-        self.assertIn("error", json.loads((self.root / "runtime.json").read_text()))
+        saved = json.loads((self.root / "runtime.json").read_text())
+        self.assertIn("error", saved)
+        self.assertTrue(saved["mutation_uncertain"])
 
     def test_refusal_names_what_the_helper_blocked(self) -> None:
         blocked = {"ok": False, "blocked": ["https://github.com/owner/repo/pull/906: open non-draft PR has no handoff; mark it draft"]}

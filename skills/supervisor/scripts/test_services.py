@@ -47,6 +47,35 @@ class ServicesTests(unittest.TestCase):
     def save(self):
         self.config.write_text(json.dumps(self.data))
 
+    def test_catalog_startup_status_uses_existing_readers_on_both_service_managers(self) -> None:
+        label = f"{services.LABEL_PREFIX}.catalog"
+        for platform, relative, suffix in (("darwin", "Library/LaunchAgents", ".plist"),
+                                          ("linux", ".config/systemd/user", ".service")):
+            with self.subTest(platform=platform):
+                home = self.root / platform
+                installed = home / relative / (label + suffix)
+                with (patch.object(services.sys, "platform", platform),
+                      patch.object(services.Path, "home", return_value=home),
+                      patch.dict(os.environ, {"XDG_CONFIG_HOME": str(home / ".config")}),
+                      patch.object(services, "host_command") as command):
+                    self.assertEqual(services.catalog_service_warning(), "")
+                    command.assert_not_called()
+                    installed.parent.mkdir(parents=True)
+                    installed.write_bytes(plistlib.dumps({"Label": label}) if platform == "darwin" else b"[Service]\n")
+                    for active in (True, False):
+                        stdout = f"state = {'running' if active else 'not running'}\n" if platform == "darwin" else "active" if active else "failed"
+                        command.return_value = subprocess.CompletedProcess([], 0 if active or platform == "darwin" else 3, stdout, "")
+                        self.assertEqual(bool(services.catalog_service_warning()), not active)
+                        self.assertEqual(command.call_args.kwargs["timeout"], 2)
+                    command.side_effect = subprocess.TimeoutExpired("manager", 2)
+                    self.assertTrue(services.catalog_service_warning())
+                    command.side_effect = None
+                    if platform == "darwin":
+                        installed.write_bytes(plistlib.dumps({"StartCalendarInterval": {"Hour": 1}}))
+                        self.assertEqual(services.catalog_service_warning(), "")
+                        installed.write_bytes(plistlib.dumps([]))
+                        self.assertTrue(services.catalog_service_warning())
+
     def test_rendered_job_restarts_clean_deadlines_and_stops_on_failure(self):
         self.fixture.write_text(
             "from pathlib import Path\n"
@@ -254,7 +283,7 @@ class ServicesTests(unittest.TestCase):
         state = {"loaded": False, "active": False}
         operations = []
 
-        def manager(argv: list[str]) -> subprocess.CompletedProcess:
+        def manager(argv: list[str], **_kwargs: Any) -> subprocess.CompletedProcess:
             operations.append(argv)
             if argv[:2] == ["launchctl", "print"]:
                 if not state["loaded"]:

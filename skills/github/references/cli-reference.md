@@ -911,6 +911,13 @@ must advance it; manual catch-up uses the copy from a worktree at the reported t
 A mismatched separate source worktree still fails. Without an updater, retries
 remain visible in the service log; use that manual catch-up route to resume progress.
 
+Optional `--timeout-seconds SECONDS` bounds reads and takes the reconciliation
+lock without waiting. Lock contention and exhausted reads return `retryable`
+with `runtime_mutated: false`; a permanent local-state block keeps its verdict.
+The deadline ends before fast-forward begins, so it never interrupts a checkout
+mutation or its postconditions. Automatic callers keep this deadline inside
+their process timeout; a killed process alone never proves no write.
+
 The JSON receipt reports `synchronized`, `already_current`, `not_applicable`,
 `blocked`, `retryable`, or `failed`, plus stable reason codes and before/fetched/
 after SHAs. Successful or not-applicable results exit `0`, blocked local state

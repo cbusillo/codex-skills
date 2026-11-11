@@ -145,13 +145,13 @@ def reconcile_bounded(
     try:
         receipt = operation()
         deadline = RECONCILIATION_DEADLINE.get()
-        if deadline is not None and time.monotonic() >= deadline:
+        if deadline is not None and time.monotonic() >= deadline and receipt["status"] != "blocked":
             receipt["runtime_mutated"] = False
             receipt["detail"] = None
             return finish(receipt, "retryable", "runtime_catchup_timeout")
         return receipt
     except ReconciliationBusy:
-        return finish(receipt, "blocked", "runtime_reconciliation_busy", applicable=True)
+        return finish(receipt, "retryable", "runtime_reconciliation_busy", applicable=True)
     except (GitCommandError, OSError, ValueError) as exc:
         if timeout_seconds is None:
             raise

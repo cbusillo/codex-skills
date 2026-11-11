@@ -12,7 +12,6 @@ import contextlib
 import io
 import json
 import os
-import plistlib
 import subprocess
 import sys
 import tempfile
@@ -44,23 +43,20 @@ def setUpModule() -> None:
 
 
 class CatalogServiceReminderTests(unittest.TestCase):
-    def test_startup_reads_installed_service_and_warns_only_when_stopped(self) -> None:
-        with tempfile.TemporaryDirectory() as folder:
-            home = Path(folder)
-            job = home / "Library/LaunchAgents/com.codex-skills.supervisor.catalog.plist"
-            with mock.patch.object(Path, "home", return_value=home), mock.patch.object(hook.subprocess, "run") as run:
-                self.assertEqual(hook.catalog_service_warning(), "")
-                run.assert_not_called()
-                job.parent.mkdir(parents=True)
-                job.write_bytes(plistlib.dumps({"Label": "com.codex-skills.supervisor.catalog"}))
-                for state, warned in (("running", False), ("not running", True), ("waiting", True)):
-                    with self.subTest(state=state):
-                        run.return_value = subprocess.CompletedProcess([], 0, f"job = {{\n\tstate = {state}\n}}", "")
-                        self.assertEqual(bool(hook.catalog_service_warning()), warned)
-                run.return_value = subprocess.CompletedProcess([], 113, "", "service not found")
-                self.assertTrue(hook.catalog_service_warning())
-                run.side_effect = subprocess.TimeoutExpired("launchctl", 2)
-                self.assertTrue(hook.catalog_service_warning())
+    def test_startup_surfaces_the_shared_service_readers_warning(self) -> None:
+        sys.path.insert(0, str(HOOK.parents[1]))
+        from skills.supervisor.scripts import services
+        output = io.StringIO()
+        with (mock.patch.object(services, "catalog_service_warning", return_value="fixture stopped service") as read,
+              mock.patch.object(hook, "marker_path", return_value=MARKER),
+              mock.patch.object(hook, "direction_root", return_value=None),
+              mock.patch.object(hook, "session_reminder", return_value=""),
+              mock.patch.object(hook, "memory_reminder", return_value=""),
+              mock.patch.object(hook, "agent_tools_warning", return_value=""),
+              contextlib.redirect_stdout(output)):
+            self.assertEqual(hook.main(), 0)
+        read.assert_called_once()
+        self.assertIn("fixture stopped service", output.getvalue())
 
 
 class AgentToolsReminderTests(unittest.TestCase):

@@ -9,7 +9,6 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
-import plistlib
 import re
 import runpy
 import signal
@@ -45,30 +44,6 @@ REMINDER_LINES = {
     ("turn", "unconfirmed"): "Direction turn unconfirmed",
 }
 RUNTIME_HELPER = Path("skills/github/scripts/reconcile-runtime-checkout.py")
-
-
-def catalog_service_warning() -> str:
-    label = "com.codex-skills.supervisor.catalog"
-    job = Path.home() / "Library/LaunchAgents" / f"{label}.plist"
-    if not job.is_file():
-        return ""
-    try:
-        with job.open("rb") as stream:
-            installed = plistlib.load(stream)
-        result = subprocess.run(
-            ["launchctl", "print", f"gui/{os.getuid()}/{installed['Label']}"],
-            capture_output=True, text=True, timeout=2, check=False,
-        )
-        if result.returncode == 0:
-            state = re.search(r"^\s*state = (.+)$", result.stdout, re.MULTILINE)
-            if state and state[1] == "running":
-                return ""
-            if state:
-                return (f"WARNING: Catalog landing verification stopped ({state[1]}). "
-                        "Inspect the catalog service log and reconcile through supervisor/references/helpers.md before restart.")
-    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
-        pass
-    return f"Catalog landing verification service state unconfirmed; inspect {job}."
 
 
 def agent_tools_warning(catalog: Path, directory: Path, env: Mapping[str, str]) -> str:
@@ -516,13 +491,17 @@ def main(*, skills_only: bool = False, catalog_root: Path | None = None, runtime
             return 0
         # Resolve the runtime catalog from this registered hook, never the task cwd.
         catalog = catalog_root or Path(__file__).resolve().parents[1]
-        service_line = catalog_service_warning()
-        if service_line:
-            print(service_line, flush=True)
         tools_line = agent_tools_warning(catalog, Path.cwd(), os.environ)
         if tools_line:
             print(tools_line, flush=True)
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        try:
+            from skills.supervisor.scripts.services import catalog_service_warning
+            service_line = catalog_service_warning()
+            if service_line:
+                print(service_line, flush=True)
+        except (ImportError, OSError):
+            pass
         try:
             from scripts.catalog_runtime import status_line
             catalog_line = status_line(catalog, observe=True) if (catalog / ".local" / "catalog-install.json").is_file() else ""
