@@ -660,6 +660,16 @@ installed local helper bindings.
   target from the service response before the helper's output bound. A truncated
   unselected read cannot prove that testing is absent. An empty selection describes
   only the returned service list, not records outside it.
+  Use `--select-pr <positive-number>` instead of `--target-key` to match the returned
+  `preview` kind and integer `pull_request_number` within the requested product.
+  The helper filters the existing GET response locally before the 50-row bound
+  and returns the exact service-provided `target_key` through the same safe
+  projection with `selection_status: matched`. If no preview matches, the
+  result contains an empty list and `selection_status: not_found`. An ambiguous
+  match, a product mismatch, or an unusable key fails the selection with a
+  distinct `summary.projection_error_code`.
+  Selection covers only records returned by this GET and establishes no build,
+  original operation, or historical coverage.
   Each target has state, times, counts, delivery id, last error and the
   plan fields the reconciler is known to write: action, reason, hold, commits,
   artifact ids, digests, operation and plan ids, the preview URL's scheme and
