@@ -12814,7 +12814,7 @@ def _first_empty_response(mode: str = "dry-run", purpose: str = "ODOO_DB_PASSWOR
 
 
 def _first_empty_bindings(purpose: str = "ODOO_DB_PASSWORD") -> dict[str, Any]:
-    response = cast(dict[str, Any], _secret_bindings_response())
+    response: dict[str, Any] = _secret_bindings_response()
     binding = response["bindings"][0]
     binding.pop("provider_note")
     binding.update(binding_key=purpose, name=purpose, context="example-site", secret_class="prod_only", sharing_reason=None)
