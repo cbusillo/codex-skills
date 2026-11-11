@@ -366,17 +366,16 @@ ask the Director only when every provider account including use-last is empty.
 Relay expiry notices within 24 hours without treating them as early reset
 authority. Fill productive capacity, soonest expiry first.
 
-Start each kind of work on the cheapest model that has worked for it, step up
-to the provider's next stronger model when a run fails, and now and then try
-one model cheaper on work that keeps passing. With no record yet, start one
-model above the provider's cheapest
-([field report](https://github.com/cbusillo/codex-skills/issues/3727#issuecomment-6714483880)).
-Effort follows the kind of work: medium, high for policy, guidance and hard
-debugging. Leads, authorization, credentials, security, migration and reviews
-of safety changes start on the provider's strongest model at high effort. This
-is a default, not a cap; a Director's recorded tier decisions take precedence.
-Account and quota lessons go to
-[account selection](references/helpers.md#choosing-the-account).
+Start new work, including leads, migration and safety slices, on the provider's
+everyday model; try a cheaper tier when work keeps passing. A failed or looping
+run calls for a re-plan or re-brief, not a step up. Reserve the strongest tier
+for a one-shot plan or diagnosis of very hard, stuck, high-cost work; name that
+reason in the brief. Effort stays high for leads, policy, guidance, authorization,
+credentials, security, migration, reviews of safety changes and hard debugging;
+medium otherwise. A Director's recorded tier decisions take precedence.
+For example, the Director's November 11, 2026 OpenAI prices put strongest-tier
+Astra at about 5 times everyday-tier Sol's input/output price and 10 times its
+cached-input price ([decision and prices](https://github.com/cbusillo/codex-skills/issues/4144)).
 
 ## The Pattern
 
