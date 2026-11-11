@@ -219,6 +219,11 @@ foreign events and duplicate event IDs cannot satisfy that proof. Literal loops
 and callbacks reuse the existing bounded literal expansion; no historical code
 is executed.
 
+This native-effect proof admits direct, unshadowed `Error` calls and construction
+with zero arguments or one plain string literal. Aliases, property access and
+other argument forms stay conditional. This does not extend the legacy data
+checker or loop/callback count proof.
+
 A shell variable assigned once to a literal value at the top level, and a `for`
 loop over literal words, expand into exact claim targets, so
 `for i in 147 148; do ... claim $i; done` checks both records. This applies
