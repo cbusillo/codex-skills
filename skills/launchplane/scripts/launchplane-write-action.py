@@ -290,7 +290,9 @@ GENERIC_WEB_DEPLOY_RECOVERY_APPLY_FIELDS = {
 }
 
 
-def _is_relative_to(path: Path, base: Path) -> bool:
+def _is_relative_to(path: Path, base: Path | None) -> bool:
+    if base is None:
+        return False
     try:
         path.relative_to(base)
         return True
@@ -307,6 +309,7 @@ def active_repo_root() -> Path | None:
             check=True,
             capture_output=True,
             text=True,
+            env={**os.environ, "LC_ALL": "C"},
         )
         root = result.stdout.strip()
         if root:

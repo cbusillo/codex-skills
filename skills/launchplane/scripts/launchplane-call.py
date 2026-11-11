@@ -173,8 +173,9 @@ def call(args: argparse.Namespace, evidence: BinaryIO) -> int:
         raise ValueError("description_disagreement")
     for name, value in pairs(args.path).items():
         path = path.replace("{" + name + "}", urllib.parse.quote(value, safe=""))
+    query = pairs(args.query)
     try:
-        status, raw = exchange(settings, method, path, pairs(args.query), body, args.idempotency_key, args.timeout)
+        status, raw = exchange(settings, method, path, query, body, args.idempotency_key, args.timeout)
         evidence.write(raw)
         evidence.flush()
     except (OSError, ValueError, http.client.HTTPException) as error:

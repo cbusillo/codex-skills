@@ -8,9 +8,9 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
-import os
 import socket
 import stat
+import subprocess
 import sys
 import tempfile
 import threading
@@ -220,14 +220,18 @@ class CallerTests(unittest.TestCase):
         self.assertEqual(len(self.observed), 1)
 
     def test_private_body_and_evidence_work_outside_git(self) -> None:
+        import launchplane_testing_state
+        import launchplane_website_indexing
+
         body = self.root / "body.json"
         body.write_text('{"private":"body-canary"}')
-        previous = Path.cwd()
-        try:
-            os.chdir(self.root.parent)
+        no_repository = subprocess.CalledProcessError(128, "git", stderr="fatal: not a git repository")
+        with patch.object(caller.operator.subprocess, "run", side_effect=no_repository):
             self.assertEqual(self.run_call("outside-git.json", "--body-file", str(body))[0], 0)
-        finally:
-            os.chdir(previous)
+            launchplane_website_indexing.destination(caller.operator, str(self.root / "indexing.json"))
+            staged = self.root / "staged.json"
+            launchplane_testing_state.write_staged(caller.operator, str(staged), {"private": "canary"})
+            self.assertEqual(json.loads(staged.read_text()), {"private": "canary"})
         self.assertEqual(self.observed[0][1]["private"], "body-canary")
 
     def test_private_body_and_evidence_cannot_live_in_the_repository(self) -> None:
