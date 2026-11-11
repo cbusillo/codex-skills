@@ -29,6 +29,7 @@ from github_plan_status import next_actor
 from github_plan_status.next_actor import SUPERVISOR_ACTORS, SUPERVISOR_ROLES
 from question_delivery import run_queue, source_item
 from session_closeout import explicit_session, live_lines
+from session_record import LAUNCH_LEDGER_ENV
 
 if TYPE_CHECKING:
     from skills.github.scripts import github_next_pr, github_read, ready_handoff
@@ -102,7 +103,7 @@ def seat_note(row: dict, roles: tuple[str, ...], now: datetime) -> str | None:
     if not roles:
         return ""
     actor = (row.get("queue", {}).get("next_actor") or "").casefold()
-    if actor == "agent:supervisor":
+    if actor == "agent:supervisor" or row.get("queue", {}).get("next_actor_session_state") in {"expired", "unknown"}:
         return " | UNROUTED"
     role = actor.removeprefix("agent:supervisor-")
     if role not in SUPERVISOR_ROLES or role in roles:
@@ -223,10 +224,11 @@ def coverage_errors(value: Any, scope: str) -> list[str]:
     return []
 
 
-def staffing(owner: str) -> dict:
+def staffing(owner: str, *, ledger: Path | None = None) -> dict:
     helper = Path(__file__).resolve().parents[2] / "github/scripts/gh-plan.py"
     result = subprocess.run(["uv", "run", str(helper), "--repo", f"{owner}/direction", "next",
-                             "--limit", str(sys.maxsize), "--time-budget", "120"], capture_output=True, text=True, timeout=180)
+                             "--limit", str(sys.maxsize), "--time-budget", "120"], capture_output=True, text=True, timeout=180,
+                            env={**os.environ, **({LAUNCH_LEDGER_ENV: str(ledger)} if ledger else {})})
     report = json.loads(result.stdout)
     if not isinstance(report, dict):
         raise ValueError(f"Global next returned no portfolio report for {owner}")
@@ -249,7 +251,7 @@ def refused_read(row: dict) -> str:
 def queue_rows(selection: dict) -> list[tuple[str, dict]]:
     rows: dict[str, tuple[str, dict]] = {}
     actors = supervisor_actors()
-    for field in ("candidates", "excluded", "needs_status", "underway", "waiting", "pr_followthrough"):
+    for field in ("candidates", "excluded", "needs_status", "underway"):
         for row in selection.get(field, []):
             queue = row.get("queue", {})
             if str(row.get("state", "")).casefold() != "open":
@@ -487,10 +489,12 @@ def digest(sources: dict[str, dict], *, full: bool = False, roles: tuple[str, ..
         session_state = row["queue"].get("next_actor_session_state")
         if session_state in {"expired", "unknown"}:
             owner = "UNOWNED" if session_state == "expired" else "UNKNOWN"
-            detail = f"{owner} next_actor={row['queue']['next_actor']} lease={session_state}; {detail}"
+            detail = f"{owner} next_actor={row['queue']['next_actor']}; {detail}"
         if kind == "PRODUCTION_READ_REFUSED":
             detail = f"read=\"{refused_read(row)[:400]}\" next_actor={row['queue']['next_actor']} route={REFUSED_READ_ROUTE}"
         lines.append(noted(f"{kind} {pointer(row)} age={age_text(age) if age else 'UNKNOWN'}: {detail}{routing}", row))
+        if session_state in {"expired", "unknown"}:
+            continue
         if (age is None or age > ROUTINE_INTERVAL) and (kind == "SUPERVISOR_ACTION" or row["queue"]["next_actor"].casefold() in supervisors):
             lines.append(f"ERROR supervisor_action {pointer(row)}: open {age_text(age) if age else 'for an UNKNOWN time'} with no disposition; "
                          "set another actor, record a wait or claim it on the issue")
@@ -655,7 +659,7 @@ def build_readers(args: argparse.Namespace, watch: dict) -> dict[str, Callable[[
         return result
 
     return {
-        "next": lambda: staffing(args.owner),
+        "next": lambda: staffing(args.owner, ledger=args.ledger),
         "sessions": lambda: compact_check.report(args.ledger, args.capacity_state),
         "questions": questions,
         "waits": waits,

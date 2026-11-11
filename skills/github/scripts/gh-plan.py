@@ -5819,6 +5819,23 @@ def decision_wait_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
             and question_evidence_urls(item.get("structured_wait") or (item.get("derived") or {}).get("structured_wait") or {})]
 
 
+def session_actor_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    selected = []
+    for item in items:
+        if str(item.get("state", "")).casefold() != "open":
+            continue
+        discussion = item.get("discussion") or {}
+        trusted = {login.casefold() for login in wait_authors(item["repo"])}
+        status = github_next_queue.current_status(discussion, trusted, body_recorded_at=discussion.get("body_recorded_at"))
+        try:
+            actor = github_plan_next_actor.read(status) or ""
+        except ValueError:
+            continue
+        if actor.startswith("agent:") and github_plan_claim.NATIVE_SESSION_ID.fullmatch(actor[6:]):
+            selected.append(item)
+    return selected
+
+
 def project_local_queue(candidates: list[dict[str, Any]], excluded: list[dict[str, Any]]) -> dict[str, Any]:
     reconciliations = [item for item in excluded if (item.get("queue") or {}).get("reason") == "recorded_decision_requires_reconciliation"]
     candidates = [*candidates, *reconciliations]
@@ -6807,7 +6824,8 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     discoveries.extend(pull_items)
     NEXT_READS.start_phase("ownership")
     queue_context = annotate_next_queue(list({(entry["repo"].casefold(), entry["number"]): entry
-        for entry in [*ranked["candidates"], *discoveries, *ranked["excluded"]]}.values()), args)
+        for entry in [*ranked["candidates"], *discoveries, *decision_wait_items(ranked["excluded"]),
+                      *session_actor_items(ranked["excluded"])]}.values()), args)
     for item in pull_items:
         discussion = item.get("discussion") or {}
         discussion.update(ancestry_complete=True, parents=[])

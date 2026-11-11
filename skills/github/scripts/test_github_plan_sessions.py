@@ -996,6 +996,36 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
             self.assertIsNone(CLOSURE.guarded_launch_endpoint(456, [native[0], "--model", "changed", *native[1:]]))
 
 class AccountHomeTests(unittest.TestCase):
+    def test_actor_liveness_keeps_idle_processes_and_reads_ended_generations(self) -> None:
+        import github_plan_lease
+
+        with tempfile.TemporaryDirectory() as folder:
+            ledger = Path(folder) / 'ledger.json'
+            entry = {'session_id': 'actor', 'harness': 'codex', 'transcript': str(Path(folder) / 'source.jsonl'),
+                     'pid': 123, 'launch_started_at': '2026-10-01T01:00:00+00:00'}
+            ledger.write_text(json.dumps([entry]))
+            records = SESSIONS.native_helpers()[1]
+            shared = SESSIONS.process_liveness()
+            born = datetime.fromisoformat(entry['launch_started_at'])
+            with patch.dict(os.environ, {records.LAUNCH_LEDGER_ENV: str(ledger)}), \
+                    patch.object(shared, 'generation_ended', return_value=False) as ended, \
+                    patch.object(shared, 'process_started_at', return_value=born), \
+                    patch.object(github_plan_lease, 'state', side_effect=AssertionError('idle is not ended')):
+                self.assertEqual(SESSIONS.actor_state('actor'), github_plan_lease.LIVE)
+                ended.return_value = True
+                self.assertEqual(SESSIONS.actor_state('actor'), github_plan_lease.EXPIRED)
+                ended.return_value = False
+                with patch.object(shared, 'process_started_at', side_effect=OSError('unreadable')):
+                    self.assertEqual(SESSIONS.actor_state('actor'), github_plan_lease.UNKNOWN)
+                ledger.write_text('[]')
+                with patch.object(CLOSURE, 'source_records', return_value={'actor': entry}):
+                    ended.return_value = True
+                    self.assertEqual(SESSIONS.actor_state('actor'), github_plan_lease.EXPIRED)
+                with patch.object(CLOSURE, 'source_records', return_value={}):
+                    self.assertEqual(SESSIONS.actor_state('actor'), github_plan_lease.UNKNOWN)
+                ledger.write_text('{malformed')
+                self.assertEqual(SESSIONS.actor_state('actor'), github_plan_lease.UNKNOWN)
+
     def test_plain_install_inventory_uses_current_login_without_account_settings(self) -> None:
         with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"HOME": folder}, clear=True):
             root = Path(folder)

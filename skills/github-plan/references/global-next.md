@@ -176,8 +176,10 @@ from prose or merged PRs.
   recipient needs fresh status, while live peers and retained custody still veto
   duplicate work. Quoted diagnosis cannot attribute a session's ownership.
 - `person:<login>` and `event:<observable>` are `waiting`.
-- Native session actors use the existing host-local session lease. An expired
-  lease makes the next action unowned; missing or unreadable evidence is UNKNOWN.
+- Native session actors use the existing launch ledger and closed-session
+  identities with current process evidence. An ended generation makes the
+  next action unowned; missing or unreadable evidence is UNKNOWN. An idle
+  process stays live regardless of claim lease age.
   The routine digest surfaces both as `SUPERVISOR_ACTION`, including records
   behind waits, claims or PR handoffs. Those waits and custody checks stay intact.
 - A missing, malformed or duplicate field goes in `needs_status`, unless a wait
