@@ -424,6 +424,13 @@ class _SourceEndMismatch(ValueError):
     """This verified End cannot cover the selected generation's actual facts."""
 
 
+def _records_process_exit(closed: dict | None) -> bool:
+    if not closed:
+        return False
+    recovery_time_only = closed.get("closure_kind") == "claim_free_recovery"
+    return closed.get("process_exit_verified") is True and bool(closed.get("ended_at")) and not recovery_time_only
+
+
 def _source_process(entry, saved, context=None, *, recorded=None):
     """Select actual source identity and its recorder-owned exit boundary."""
     from github_plan_sessions import process_liveness
@@ -467,7 +474,7 @@ def _source_process(entry, saved, context=None, *, recorded=None):
     closed = recorded if recorded is not None else (saved if not generation else None)
     if recorded is not None and (recorded.get("process_exit_verified") is not True or not recorded.get("ended_at")):
         raise ValueError("recorded closure lacks a verified process exit boundary")
-    if closed and closed.get("process_exit_verified") is True and closed.get("ended_at"):
+    if _records_process_exit(closed):
         ended = stamp(closed["ended_at"])
         cutoff = stamp(closed["tty_exited_at"]) if closed.get("tty_exited_at") else ended
         if cutoff > ended:
@@ -487,6 +494,9 @@ def _source_process(entry, saved, context=None, *, recorded=None):
             if owner is not None:
                 effective["_tty_owner"] = owner[:2]
                 cutoff = owner[1]
+        if cutoff is None and context is None and (effective.get("recovery")
+                                                    or effective.get("closure_kind") == "claim_free_recovery"):
+            cutoff = _ended_original_activity(effective)
         if cutoff is not None:
             effective["tty_exited_at"] = cutoff.isoformat()
     # A canonical closed-session receipt bounds this exact saved generation.
@@ -497,6 +507,24 @@ def _source_process(entry, saved, context=None, *, recorded=None):
         if cutoff is None:
             cutoff = context.ended_at
     return _SourceProcess(source, saved, effective, cutoff, context)
+
+
+def _ended_original_activity(entry: dict) -> datetime | None:
+    from github_plan_sessions import native_helpers, process_liveness
+    from github_plan_release import stamp
+    liveness = process_liveness()
+    if not liveness.generation_ended(entry):
+        return None
+    session_record = native_helpers()[1]
+    times = [stamp(row["timestamp"]) for row in session_record.read_jsonl(Path(entry["transcript"])) if row.get("timestamp")]
+    if not times:
+        return None
+    booted = liveness.host_boot_time()
+    if booted is not None and max(times) < booted:
+        return max(times)
+    if session_record.session_status(entry)["state"] != "turn_ended" or not isinstance(entry.get("tty"), str):
+        return None
+    return None if liveness.tty_has_orphan(entry["tty"], liveness.inventory()) else max(times)
 
 
 def recheck_source_process(process):
@@ -527,7 +555,7 @@ authenticated_paths = _authenticated_paths
 
 def source_snapshot(entry: dict, process: _SourceProcess | None = None, *, require_verdict: bool = True) -> dict:
     """Only file/process reads; safe to await in a cancellable worker thread."""
-    from github_plan_sessions import configured_homes, observation_homes
+    from github_plan_sessions import configured_homes, native_helpers, observation_homes
     if process is None:
         process = verify_source_process(entry)
     else:
@@ -542,7 +570,7 @@ def source_snapshot(entry: dict, process: _SourceProcess | None = None, *, requi
         raise ValueError("native end proof requires the original owned source identity")
     generation = source.get("resumed_generation")
     home = Path(effective["codex_home"]).expanduser().resolve(strict=True)
-    primary = Path(effective["transcript"]).resolve(strict=True)
+    primary = native_helpers()[1].recorded_transcript(effective["transcript"])
     if generation is None and not any(primary.is_relative_to((home / root).resolve()) for root in ("sessions", "archived_sessions")):
         raise ValueError("native source home and transcript disagree")
     configured = set(configured_homes(strict=True))
@@ -752,8 +780,8 @@ def source_generation(entry: dict, saved: dict | None) -> dict | None:
 
 
 def _cancel_origin(entry, action):
-    from github_plan_sessions import configured_homes
-    primary = Path(entry["transcript"]).resolve(strict=True)
+    from github_plan_sessions import configured_homes, native_helpers
+    primary = native_helpers()[1].recorded_transcript(entry["transcript"])
     configured = set(configured_homes(strict=True))
     known = {Path(value).resolve(strict=True) for value in closure.action_homes(action)["known"]}
     if entry.get("codex_home"):
@@ -803,7 +831,7 @@ def _cancel_quiet(facts, snapshot, home, target):
 
 async def prove_crash_end(entry: dict, *, deadline: float | None = None, process: _TerminationProcess | None = None) -> None:
     import github_plan_termination as termination
-    from github_plan_sessions import observation_homes
+    from github_plan_sessions import native_helpers, observation_homes
     session = entry["session_id"]
     deadline = time.monotonic() + 600 if deadline is None else deadline
     if entry.get("harness") != "codex":
@@ -826,7 +854,8 @@ async def prove_crash_end(entry: dict, *, deadline: float | None = None, process
             raise ValueError("native crash proof requires verified reboot termination")
         termination.require_preboot_action(action, process.rebooted_at)
         reader = lambda lines: termination.native_transcript_records(entry, lines)
-        home, primary = Path(entry["codex_home"]).expanduser().resolve(strict=True), Path(entry["transcript"]).resolve(strict=True)
+        home = Path(entry["codex_home"]).expanduser().resolve(strict=True)
+        primary = native_helpers()[1].recorded_transcript(entry["transcript"])
         observed = observation_homes(strict=True, sources=[entry], actions=[action])
         if not any(primary.is_relative_to((candidate / name).resolve()) for candidate in observed for name in ("sessions", "archived_sessions")):
             raise ValueError("native crash transcript is outside established account roots")

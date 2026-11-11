@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["aiohttp==3.14.5"]
+# dependencies = ["aiohttp==3.14.5", "zstandard==0.25.0"]
 # ///
 """Synthetic native facts and disposable daemon transport; no native client actions."""
 import asyncio
@@ -493,6 +493,22 @@ class NativeQueueTests(unittest.TestCase):
                     self.assertEqual(session_cli.main(), 1)
                 self.assertEqual(json.loads(output.getvalue())["not_sent"], not rejected)
                 self.assertEqual(fixture.mutations, [])
+
+    def test_closure_scan_reads_the_compressed_copy_of_a_recorded_transcript(self) -> None:
+        import uuid
+        import zstandard
+        with ReceiptFixture(str(uuid.uuid4())) as f:
+            compressed = f.transcript.with_name(f.transcript.name + ".zst")
+            compressed.write_bytes(zstandard.ZstdCompressor().compress(f.transcript.read_bytes()))
+            f.transcript.unlink()
+            facts = CLOSURE.transcript_facts(f.session, str(f.transcript), include_status=True)
+            self.assertEqual(list(facts), [str(compressed.resolve())])
+            self.assertTrue(facts[str(compressed.resolve())]["status"]["safe_verdict"])
+            snapshot = NATIVE.source_snapshot(f.entry, require_verdict=False)
+            self.assertEqual(snapshot["path"], str(compressed.resolve()))
+            compressed.write_bytes(compressed.read_bytes()[:-4])
+            with self.assertRaises(OSError):
+                NATIVE.source_snapshot(f.entry, require_verdict=False)
 
     def test_manual_file_deadline_preserves_the_observer_default_and_still_expires(self) -> None:
         from types import SimpleNamespace

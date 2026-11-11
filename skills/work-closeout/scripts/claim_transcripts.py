@@ -29,12 +29,12 @@ from tree_sitter import Language, Node, Parser
 if TYPE_CHECKING:
     from skills.github.scripts import github_comment as comment_cli
     from skills.github.scripts.github_api import ArgumentParsingError
-    from skills.supervisor.scripts.session_record import native_results, read_jsonl
+    from skills.supervisor.scripts.session_record import native_results, read_jsonl, transcript_lines
     from skills.supervisor.scripts.session_record import output_objects as values
 else:
     import github_comment as comment_cli
     from github_api import ArgumentParsingError
-    from session_record import native_results, read_jsonl
+    from session_record import native_results, read_jsonl, transcript_lines
     from session_record import output_objects as values
 
 CLOSED_STDIN_SINCE = (0, 87, 0)
@@ -56,14 +56,13 @@ def read_records(path: Path) -> list[dict]:
     if path.suffix == ".db":
         return read_jsonl(path)
     records = []
-    with path.open(encoding="utf-8") as stream:
-        for line in stream:
-            try:
-                row = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(row, dict):
-                records.append(row)
+    for line in transcript_lines(path):
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            records.append(row)
     return records
 
 
