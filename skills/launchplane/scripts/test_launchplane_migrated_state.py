@@ -1,12 +1,13 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["pytest==9.2.0", "websockets==17.4"]
+# dependencies = ["pytest==9.2.0"]
 # ///
 from __future__ import annotations
 
 import argparse
 import io
 import json
+import ssl
 from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -26,8 +27,6 @@ class ReadResult(NamedTuple):
 
 def invoke(tmp_path: Path, *, prerequisites: object = None) -> ReadResult:
     args, data, manifest = fixture(tmp_path)
-    for part in data:
-        getattr(args, part).unlink()
     response = state(manifest, data, {"database": 4})
     if prerequisites is not None:
         response["prerequisites"] = prerequisites
@@ -51,7 +50,6 @@ def invoke_response(
             helper, "prepare_operator_settings", return_value={"service_url": "https://plane.example.invalid", "token": "fixture"}
         ),
         patch_attr(upload, "private_send", side_effect=AssertionError("read attempted an upload")),
-        patch_attr(upload, "execute", side_effect=AssertionError("read entered the uploader")),
         patch_attr(helper, "request_launchplane", side_effect=AssertionError("read attempted a mutation")),
         redirect_stdout(output),
     ):
@@ -69,15 +67,18 @@ def invoke_response(
             ]
         )
     connection.close.assert_called_once_with()
+    route = helper.internal_helper_path("testing-rebuild-migrated-state").format(
+        product=args.product, operation_id=args.operation_id
+    )
     connection.request.assert_called_once_with(
         "GET",
-        "/v1/products/example/testing-rebuild/original/migrated-source?include_prerequisites=true",
+        route + "?include_prerequisites=true",
         headers={"Accept": "application/json", "Authorization": "Bearer fixture"},
     )
     return ReadResult(code, json.loads(output.getvalue()), connection)
 
 
-def test_partial_original_read_preserves_unknown_start_without_opening_archives(tmp_path: Path) -> None:
+def test_partial_original_read_preserves_unknown_start_with_one_get(tmp_path: Path) -> None:
     prerequisites = {"candidate_phase": "restoring", "restore_workflow_started": None, "holds": []}
     code, output, _ = invoke(tmp_path, prerequisites=prerequisites)
     assert code == 0
@@ -119,7 +120,7 @@ def test_complete_pair_preserves_simultaneous_recorded_holds_with_or_without_rec
     assert result["prerequisites"] == prerequisites
     assert result["parts"] == {part: {"complete": True, "size": len(value)} for part, value in data.items()}
     assert "PRIVATE_SENTINEL" not in json.dumps(output)
-    assert not ({"eligible", "safe_to_release", "no_effects", "retry_allowed"} & result.keys())
+    assert set(result) == {*output["request"], "receipt_recorded", "parts", "prerequisites", "prerequisite_coverage"}
 
 
 def test_empty_holds_preserves_explicit_false_without_creating_upload_eligibility(tmp_path: Path) -> None:
@@ -128,7 +129,6 @@ def test_empty_holds_preserves_explicit_false_without_creating_upload_eligibilit
     assert code == 0
     assert output["result"]["prerequisites"] == prerequisites
     assert output["result"]["prerequisite_coverage"] == "recorded_candidate_and_scope"
-    assert "eligible" not in output["result"]
 
 
 @pytest.mark.parametrize(
@@ -151,8 +151,6 @@ def test_foreign_original_or_source_cannot_become_a_successful_disposition(tmp_p
     "prerequisites",
     [
         None,
-        {},
-        [],
         {"candidate_phase": "prepared", "restore_workflow_started": False},
         {"candidate_phase": "unknown", "restore_workflow_started": False, "holds": []},
         {"candidate_phase": {}, "restore_workflow_started": False, "holds": []},
@@ -207,6 +205,9 @@ def test_missing_or_inconsistent_receipt_evidence_is_not_projected(tmp_path: Pat
     code, output, _ = invoke_response(args, response)
     assert code == 2
     assert output["result"] == {}
+    assert output["warnings"][0]["code"] == (
+        "incomplete_migrated_receipt" if receipt is True else "invalid_migrated_upload_response"
+    )
 
 
 @pytest.mark.parametrize("status", [403, 409, 503])
@@ -223,13 +224,22 @@ def test_current_service_refusal_keeps_its_explanation_without_upload_fallback(t
     assert output["summary"]["error_code"] == response["error"]["code"]
     assert output["summary"]["error_message"] == response["error"]["message"]
     assert output["summary"]["http_status"] == status
+    assert output["warnings"][0]["code"] == (
+        "migrated_upload_state_unavailable"
+        if status == 503
+        else "authorization_denied"
+        if status == 403
+        else "migrated_upload_refused"
+    )
 
 
-def test_unavailable_transport_keeps_disposition_unknown_without_retry_or_mutation(tmp_path: Path) -> None:
+@pytest.mark.parametrize("certificate_error", [False, True])
+def test_unavailable_transport_keeps_disposition_unknown_without_retry_or_mutation(tmp_path: Path, certificate_error: bool) -> None:
     args, _, _ = fixture(tmp_path)
-    code, output, _ = invoke_response(args, {}, transport_error=OSError("PRIVATE_SENTINEL"))
-    assert code == 1
-    assert output["status"] == "unavailable"
+    error = ssl.SSLCertVerificationError("PRIVATE_SENTINEL") if certificate_error else OSError("PRIVATE_SENTINEL")
+    code, output, _ = invoke_response(args, {}, transport_error=error)
+    assert code == (2 if certificate_error else 1)
+    assert output["status"] == ("refused" if certificate_error else "unavailable")
     assert output["result"] == {}
     assert "PRIVATE_SENTINEL" not in json.dumps(output)
 

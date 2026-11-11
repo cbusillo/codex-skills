@@ -275,8 +275,10 @@ def check_state(state: dict[str, Any], *, product: str, operation: str, binding:
         product,
         operation,
         binding,
-    ) or type(state.get("receipt_recorded")) is not bool:
+    ):
         raise UploadRefused("migrated_upload_binding_changed")
+    if type(state.get("receipt_recorded")) is not bool:
+        raise UploadRefused("invalid_migrated_upload_response")
     parts = state.get("parts")
     if not isinstance(parts, dict) or set(parts) != set(PARTS):
         raise UploadRefused("invalid_migrated_upload_response")
@@ -322,7 +324,7 @@ def project_prerequisites(value: object) -> dict[str, Any]:
     return {key: value[key] for key in ("candidate_phase", "restore_workflow_started", "holds")}
 
 
-def execute_read(h: Any, args: argparse.Namespace) -> int:
+def load_bound_source(h: Any, args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, str]]:
     product, operation = (str(getattr(args, key, "") or "").strip() for key in ("product", "operation_id"))
     if any(h.PRODUCT_READ_PATH_SEGMENT_RE.fullmatch(item) is None for item in (product, operation)):
         raise ValueError("invalid_request")
@@ -333,6 +335,12 @@ def execute_read(h: Any, args: argparse.Namespace) -> int:
         "operation_id": h.public_identifier(operation),
         "source_binding_sha256": binding,
     }
+    return source, request
+
+
+def execute_read(h: Any, args: argparse.Namespace) -> int:
+    source, request = load_bound_source(h, args)
+    product, operation, binding = (request[key] for key in ("product", "operation_id", "source_binding_sha256"))
     settings = h.prepare_operator_settings(args=args, operation=READ_COMMAND, request=request)
     if settings is None:
         return 2
@@ -373,6 +381,7 @@ def execute_read(h: Any, args: argparse.Namespace) -> int:
             code="private_operator_certificate_invalid",
             message="The original-bound read could not verify the private ingress certificate.",
         )
+        output["summary"] = {}
         code = 2
     except ValueError as error:
         output = h.unavailable_payload(
@@ -400,16 +409,8 @@ def execute_read(h: Any, args: argparse.Namespace) -> int:
 
 
 def execute(h: Any, args: argparse.Namespace) -> int:
-    product, operation = (str(getattr(args, key, "") or "").strip() for key in ("product", "operation_id"))
-    if any(h.PRODUCT_READ_PATH_SEGMENT_RE.fullmatch(item) is None for item in (product, operation)):
-        raise ValueError("invalid_request")
-    source = load_manifest(args.migrated_source_file, product=product)
-    binding = h.metadata_review_digest(source)
-    request = {
-        "product": h.public_identifier(product),
-        "operation_id": h.public_identifier(operation),
-        "source_binding_sha256": binding,
-    }
+    source, request = load_bound_source(h, args)
+    product, operation, binding = (request[key] for key in ("product", "operation_id", "source_binding_sha256"))
     settings = h.prepare_operator_settings(args=args, operation=COMMAND, request=request)
     if settings is None:
         return 2
