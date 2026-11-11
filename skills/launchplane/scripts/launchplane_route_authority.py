@@ -9,6 +9,7 @@ projection checks, no-op enforcement, and route-binding record CAS.
 """
 from __future__ import annotations
 
+import argparse
 import copy
 import hashlib
 import http.client
@@ -17,7 +18,7 @@ import json
 import re
 import urllib.error
 import urllib.parse
-from typing import Any
+from typing import Any, NamedTuple
 
 DOMAIN = "dokploy-target-repair-domain-authority"
 INGRESS = "ingress-route"
@@ -26,6 +27,13 @@ COMMANDS = {
     INGRESS + "-authority-apply", "route-authority-discover", "route-binding-read",
     "route-binding-dry-run", "route-binding-apply",
 }
+
+
+class Plan(NamedTuple):
+    body: dict[str, Any]
+    public: dict[str, Any]
+    material: dict[str, Any]
+    response: dict[str, Any]
 
 
 def digest(value: Any) -> str:
@@ -98,12 +106,18 @@ class Session:
         self.reads.append(copy.deepcopy(self.provider))
         return self.provider
 
+    def audit(self, audit_id: str, scope: dict[str, str]) -> dict[str, Any]:
+        return self.h._require_dict(self.read(self.h.internal_helper_path("route-authority-audit-read").format(
+            record_id=urllib.parse.quote(audit_id, safe="")),
+            {"product": scope["product"], "context": scope["context"]}).get("record"))
+
     def post(self, command: str, body: dict[str, Any], *, apply: bool = False) -> dict[str, Any]:
         self.provider = None
         self.request["planner_request_sent"] = True
         self.request["authorization_action"] = (
             "dokploy_target.repair_domain_authority" + ("" if apply else ".plan")
             if command.startswith(DOMAIN) else
+            "ingress_route.audit" if body.get("ingress", {}).get("verify_route_binding") else
             "ingress_route.apply" if apply and command.startswith(INGRESS) else
             "ingress_route.plan" if command.startswith(INGRESS) else
             "route_binding.apply" if apply else "route_binding.read")
@@ -147,7 +161,7 @@ class Session:
         return {"state": "present", "record_sha256": sha}, record
 
 
-def _plan(s: Session, kind: str, scope: dict[str, str], ingress: dict[str, Any] | None):
+def _plan(s: Session, kind: str, scope: dict[str, str], ingress: dict[str, Any] | None) -> Plan:
     h, args = s.h, s.args
     s.reads = []
     if kind == "domain":
@@ -158,11 +172,16 @@ def _plan(s: Session, kind: str, scope: dict[str, str], ingress: dict[str, Any] 
         public = h._project_inert_plan(response, body)
         material = {"body": body, "sources": sources}
     elif kind == "ingress":
+        assert ingress is not None
         body = h._ingress_plan_body(ingress, s.read)
-        profile, endpoint = s.reads
+        profile, endpoint = s.reads[:2]
+        if ingress.get("verify_route_binding"):
+            body = _verify_ingress_body(s, body)
         lane = next(lane for lane in profile["profile"]["lanes"]
                     if lane.get("context") == scope["context"] and lane.get("instance") == scope["instance"])
         response = s.post(INGRESS + "-dry-run", body)
+        if ingress.get("verify_route_binding") and response.get("result", {}).get("status") == "planned":
+            raise ValueError("ingress_route_drift")
         public = h._project_inert_plan(response, body)
         host = h._require_dict(response["result"].get("proxy_host"))
         # Bind resolved upstream and all supported options, without exporting them.
@@ -171,16 +190,94 @@ def _plan(s: Session, kind: str, scope: dict[str, str], ingress: dict[str, Any] 
             raise ValueError("tls_ownership_unknown")
         material = {"body": body, "lane": lane, "endpoint": endpoint["record"],
                     "host": _host_material(h, host)}
+        if ingress.get("verify_route_binding"):
+            audit_id = h.public_identifier(response["records"].get("ingress_route_audit_record_id"))
+            audit = s.audit(audit_id, scope)
+            verification = h._require_dict(audit.get("route_verification"))
+            if (audit.get("record_id") != audit_id or audit.get("mode") != "dry-run"
+                or audit.get("dry_run") is not True or audit.get("status") != "unchanged"
+                or any(audit.get(key) != scope[key] for key in ("product", "context"))
+                or verification.get("instance") != scope["instance"]
+                or not re.fullmatch(r"[a-f0-9]{64}", str(verification.get("sources_sha256", "")))
+                or not re.fullmatch(r"[a-f0-9]{64}", str(audit.get("provider_route_sha256", "")))
+                or audit.get("trace_id") != response.get("trace_id")
+                or audit.get("edge_endpoint_key") != body["ingress"]["route"]["edge_endpoint_key"]
+                or set(audit.get("requested_domains", [])) != set(body["ingress"]["route"]["domain_names"])):
+                raise ValueError("ingress_current_observation_required")
+            material["observation"] = audit
+            public.update(verification_usable=True, apply_eligible=False)
     else:
         profile = s.read(h._product_read_path("product-profile-read", product=scope["product"]), {})
         _lane_from_profile(h, profile, scope)
-        expected, _record = s.current(scope)
-        body = {"schema_version": 1, **scope, "mode": "dry-run", "expected_current": expected,
-                "source_label": "operator-reconcile", "reason": args.reason}
-        response = s.post("route-binding-dry-run", body)
-        public, candidate = _binding_result(h, response, body)
-        material = {"body": body, "candidate": candidate}
-    return body, public, material, response
+        body, public, material, response = _plan_binding(s, scope)
+        ingress_path = getattr(args, "ingress_payload_file", None)
+        codes = set(public["finding_codes"])
+        if ingress_path and public["status"] == "blocked" and codes and codes <= {
+            "ingress_audit_missing", "ingress_verification_required"
+        }:
+            verification = h._ingress_plan_input(argparse.Namespace(
+                payload_file=ingress_path, command=INGRESS + "-dry-run", verify_route_binding=True))
+            if any(verification[key] != scope[key] for key in scope):
+                raise ValueError("binding_scope_mismatch")
+            _body, _public, _material, _response = _plan(s, "ingress", scope, verification)
+            body, public, material, response = _plan_binding(s, scope)
+            public["verification_refreshed"] = True
+            return Plan(body, public, material, response)
+    return Plan(body, public, material, response)
+
+
+def _plan_binding(s: Session, scope: dict[str, str]) -> Plan:
+    expected, _record = s.current(scope)
+    body = {"schema_version": 1, **scope, "mode": "dry-run", "expected_current": expected,
+            "source_label": "operator-reconcile", "reason": s.args.reason}
+    response = s.post("route-binding-dry-run", body)
+    public, candidate = _binding_result(s.h, response, body)
+    material = {"body": body, "candidate": candidate}
+    if candidate is not None and getattr(s.args, "ingress_payload_file", None):
+        material["observation_deadline"] = response["result"]["record"]["source"].get("stale_after")
+    return Plan(body, public, material, response)
+
+
+def _verify_ingress_body(s: Session, body: dict[str, Any]) -> dict[str, Any]:
+    h = s.h
+    scope = {key: body[key] for key in ("product", "context", "instance")}
+    observed = h._require_dict(s.read(h.internal_helper_path("dokploy-target-inspect"),
+                                    {key: scope[key] for key in ("context", "instance")}).get("inspect"))
+    tracked = h._require_dict(observed.get("tracked_target"))
+    if (observed.get("status") != "ok" or any(tracked.get(key) != scope[key] for key in ("context", "instance"))
+        or not tracked.get("target_id") or tracked.get("target_id") != observed.get("target_id")
+        or set(h._plan_domains(tracked.get("domains"))) != set(body["ingress"]["route"]["domain_names"])):
+        raise ValueError("ingress_current_target_required")
+    comparison = copy.deepcopy(body)
+    ingress = comparison["ingress"]
+    ingress.update(allow_update=True, allow_enable_disable=True)
+    if ingress["expected_host_id"] is None:
+        ingress.pop("expected_host_id")
+        ingress["require_exact_expected_host_domains"] = False
+    response = s.post(INGRESS + "-dry-run", comparison)
+    result = h._require_dict(response.get("result"))
+    host = h._require_dict(result.get("proxy_host"))
+    records = h._require_dict(response.get("records"))
+    if (response.get("status") != "accepted" or result.get("dry_run") is not True
+        or result.get("status") not in {"planned", "unchanged"}
+        or type(host.get("id")) is not int or host["id"] < 1
+        or body["ingress"]["expected_host_id"] not in {None, host["id"]}
+        or set(h._plan_domains(host.get("domain_names"))) != set(ingress["route"]["domain_names"])
+        or records.get("ingress_provider_domain_comparison") != "requested_domains"
+        or records.get("ingress_provider_domain_count") != len(host["domain_names"])):
+        raise ValueError("ingress_current_host_required")
+    verified = copy.deepcopy(body)
+    verified["ingress"].update(expected_host_id=host["id"], verify_route_binding=True)
+    route = verified["ingress"]["route"]
+    for field in h.INGRESS_PLAN_ROUTE_FIELDS - {"domain_names", "edge_endpoint_key"}:
+        if field not in route:
+            if field not in host:
+                raise ValueError("ingress_current_settings_required")
+            route[field] = host[field]
+    h._validate_ingress_route_options(route)
+    if route.get("enabled") is not True:
+        raise ValueError("ingress_current_settings_required")
+    return verified
 
 
 def _lane_from_profile(h: Any, response: dict[str, Any], scope: dict[str, str]):
@@ -261,9 +358,7 @@ def _readback(s: Session, kind: str, scope: dict[str, str], body: dict[str, Any]
                 and stable_record(observed["provider_target_record"]) == stable_record(material["sources"]["provider_target_record"]))
     if kind == "ingress":
         audit_id = h.public_identifier(response["records"].get("ingress_route_audit_record_id"))
-        audit = h._require_dict(s.read(h.internal_helper_path("route-authority-audit-read").format(
-            record_id=urllib.parse.quote(audit_id, safe="")),
-            {"product": scope["product"], "context": scope["context"]}).get("record"))
+        audit = s.audit(audit_id, scope)
         ingress = body["ingress"]
         operations = copy.deepcopy(response["result"]["operations"])
         limited = (audit.get("expected_host_id") is None and audit.get("provider_host_id") is None
@@ -323,12 +418,12 @@ def execute(h: Any, args: Any) -> int:
                 result["record_sha256"] = expectation["record_sha256"]
         else:
             body, result, material, response = _plan(s, kind, scope, ingress)
-            eligible = (kind != "binding" or result["status"] in {"ready", "unchanged"}) and not (
+            eligible = not (kind == "ingress" and (ingress or {}).get("verify_route_binding")) and (kind != "binding" or result["status"] in {"ready", "unchanged"}) and not (
                 kind == "domain" and body.get("expected_current_provider_target_fingerprint")
             )
             result.update(plan_sha256=digest(material), apply_eligible=eligible)
             if apply:
-                if not eligible or result["plan_sha256"] != expected:
+                if not eligible or result["plan_sha256"] != expected or result.get("verification_refreshed"):
                     payload = h.base_payload(status="stale", operation=args.command, request=request)
                     payload["summary"] = {"recommendation": "Fresh service evidence differs from the reviewed plan. Review a new dry run."}
                     h.emit(payload)
@@ -439,11 +534,16 @@ def execute(h: Any, args: Any) -> int:
                 "plan_lane_not_unique",
                 "plan_endpoint_not_active", "invalid_plan_domains", "invalid_product",
                 "tls_ownership_unknown", "binding_current_mismatch", "binding_source_unverified",
-                "binding_current_unavailable",
+                "binding_current_unavailable", "ingress_current_target_required", "ingress_current_host_required",
+                "ingress_current_settings_required", "ingress_current_observation_required", "ingress_route_drift",
             }:
                 payload = h.unavailable_payload(operation=args.command, request=request, status="invalid",
                     code=code, message="Service evidence did not match the requested plan scope.")
                 payload["summary"].update(error_code=code, **h.service_response_diagnostics(s.provider))
+                if code == "ingress_route_drift":
+                    payload["result"] = {"dry_run": True, "status": "planned", "verification_usable": False, "apply_eligible": False}
+                    payload["records"] = {"ingress_route_audit_record_id": h.public_identifier(
+                        h._require_dict(s.provider)["records"].get("ingress_route_audit_record_id"))}
                 h.emit(payload)
             else:
                 h.emit_safety_error_payload(operation=args.command, request=request,

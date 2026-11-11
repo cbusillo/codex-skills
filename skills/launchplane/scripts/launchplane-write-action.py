@@ -12832,6 +12832,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             binding.add_argument(f"--{field}", required=True)
         if command in {"route-binding-dry-run", "route-binding-apply"}:
             binding.add_argument("--reason", required=True)
+            binding.add_argument("--ingress-payload-file", help="Private current-ingress inputs for missing or expired observation; repeat review after refresh.")
             _add_reviewed_apply_arguments(binding, apply=command.endswith("-apply"))
 
     for command in sorted(DOKPLOY_COMPOSE_DOMAIN_COMMANDS):
@@ -13045,21 +13046,34 @@ def _plan_domains(value: object) -> list[str]:
 
 def _ingress_plan_input(args: argparse.Namespace) -> dict[str, Any]:
     body = read_payload_file(args.payload_file)
-    if body.keys() - {"product", "context", "instance", "route", "expected_host_id", "reason"}:
+    if getattr(args, "verify_route_binding", False):
+        body["verify_route_binding"] = True
+    if body.keys() - {"product", "context", "instance", "route", "expected_host_id", "reason", "verify_route_binding"}:
         raise ValueError("unsupported_ingress_plan_field")
+    if type(body.get("verify_route_binding", False)) is not bool:
+        raise ValueError("invalid_route_verification")
+    if body.get("verify_route_binding") and args.command == "ingress-route-authority-apply":
+        raise ValueError("verification_requires_dry_run")
     for key in ("product", "context", "instance"):
         body[key] = _plan_identifier(body.get(key), key)
     if not PRODUCT_READ_PATH_SEGMENT_RE.fullmatch(body["product"]):
         raise ValueError("invalid_product")
     if not isinstance(body.get("reason"), str) or not body["reason"].strip():
         raise ValueError("reason_required")
-    if type(body.get("expected_host_id")) is not int or body["expected_host_id"] < 1:
+    if not (body.get("verify_route_binding") and "expected_host_id" not in body) and (
+        type(body.get("expected_host_id")) is not int or body["expected_host_id"] < 1
+    ):
         raise ValueError("expected_host_id_required")
     route = body.get("route")
     if not isinstance(route, dict) or route.keys() - INGRESS_PLAN_ROUTE_FIELDS:
         raise ValueError("unsupported_ingress_route_field")
     _plan_domains(route.get("domain_names"))
     route["edge_endpoint_key"] = _plan_identifier(route.get("edge_endpoint_key"), "edge_endpoint_key")
+    _validate_ingress_route_options(route)
+    return body
+
+
+def _validate_ingress_route_options(route: dict[str, Any]) -> None:
     # All route options have value-only scalar types; no arbitrary provider config.
     for key, value in route.items():
         if key in {"domain_names", "edge_endpoint_key"}:
@@ -13075,7 +13089,6 @@ def _ingress_plan_input(args: argparse.Namespace) -> dict[str, Any]:
                 raise ValueError("invalid_ingress_route_option")
         elif type(value) is not bool:
             raise ValueError("invalid_ingress_route_option")
-    return body
 
 
 def _plan_identifier(value: object, field: str) -> str:
@@ -13158,7 +13171,7 @@ def _ingress_plan_body(body: dict[str, Any], read: Any) -> dict[str, Any]:
         raise ValueError("plan_endpoint_not_active")
     return {"product": body["product"], "context": body["context"], "instance": body["instance"],
             "ingress": {"mode": "dry-run", "route": body["route"],
-                        "expected_host_id": body["expected_host_id"],
+                        "expected_host_id": body.get("expected_host_id"),
                         "require_exact_expected_host_domains": True,
                         "allow_create": False, "allow_update": False, "allow_enable_disable": False,
                         "reason": body["reason"]}}
