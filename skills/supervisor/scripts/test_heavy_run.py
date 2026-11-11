@@ -29,7 +29,7 @@ from functools import partial
 from multiprocessing.process import BaseProcess
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import heavy_run
 
@@ -189,6 +189,42 @@ class ResultCollectionTests(unittest.TestCase):
                         self.assertEqual(destination.read_bytes(), reference.read_bytes())
             self.assertEqual(reference.read_bytes(), b"same bytes")
 
+    def test_collection_refuses_transfer_below_free_space_floor_but_still_clones(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            reference = root / "reference"
+            reference.mkdir()
+            (reference / "same").write_bytes(b"same")
+            guest = root / "guest"
+            shutil.copytree(reference, guest)
+            (guest / "changed").write_bytes(b"changed")
+            low = Mock(free=heavy_run.FREE_SPACE_FLOOR + len(b"changed") - 1)
+            requests = io.BytesIO()
+            with (
+                patch.object(heavy_run, "clone_input", side_effect=shutil.copyfile),
+                patch.object(shutil, "disk_usage", return_value=low),
+                self.assertRaises(OSError) as refused,
+            ):
+                heavy_run.receive_result(
+                    io.BytesIO(json.dumps(heavy_run.result_inventory(guest)).encode() + b"\nchanged"),
+                    requests,
+                    root / "refused",
+                    reference,
+                )
+            self.assertEqual(refused.exception.errno, errno.ENOSPC)
+            self.assertEqual(requests.getvalue(), b"")
+            with (
+                patch.object(heavy_run, "clone_input", side_effect=shutil.copyfile),
+                patch.object(shutil, "disk_usage", return_value=low),
+            ):
+                report = heavy_run.receive_result(
+                    io.BytesIO(json.dumps(heavy_run.result_inventory(reference)).encode() + b"\n"),
+                    io.BytesIO(),
+                    root / "cloned",
+                    reference,
+                )
+            self.assertEqual((report["cloned_files"], report["transferred_bytes"]), (1, 0))
+
 
 class InputStagingTests(unittest.TestCase):
     @staticmethod
@@ -282,6 +318,17 @@ class InputStagingTests(unittest.TestCase):
             self.assertEqual(copied.read_bytes(), source.read_bytes())
             self.assertEqual(other.storage["copied_bytes"], source.stat().st_size)
             other.collect_staged_inputs()
+            refused = self.docker(evidence)
+            low = Mock(free=heavy_run.FREE_SPACE_FLOOR + source.stat().st_size - 1)
+            with (
+                patch.object(Path, "stat", autospec=True, side_effect=other_device),
+                patch.object(shutil, "disk_usage", return_value=low),
+                self.assertRaises(OSError) as below_floor,
+            ):
+                refused.stage_input(source)
+            self.assertEqual(below_floor.exception.errno, errno.ENOSPC)
+            self.assertEqual(list(refused.staging_root().rglob("*")), [refused.staging_root() / ".owner"])
+            refused.collect_staged_inputs()
 
     def test_prepare_failures_and_crash_recovery_collect_only_registered_staging(self) -> None:
         def prepare(driver: heavy_run.Docker, original: Path, action: str, requested: dict) -> dict:
