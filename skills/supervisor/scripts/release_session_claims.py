@@ -1312,6 +1312,7 @@ def main():
         ok = not any("error" in r or r.get("issue_refusals") or r.get("pr_claim_handoffs") for r in reports)
         incomplete = [r for r in reports if "error" in r or r.get("issue_refusals") or r.get("pr_claim_handoffs")]
         print(json.dumps({"ok": ok, "reports": reports, "repositories_checked": repos, "discovery": reader.batch_diagnostic,
+                          **({"gate": gate, "error": "claim-release evidence needs reconciliation; inspect per-session reports"} if not ok else {}),
                           "retryable": bool(incomplete) and all(r.get("retryable") is True for r in incomplete),
                           "needs_reconciliation": any(r.get("retained_status_claims") or r.get("issue_refusals") or r.get("pr_claim_handoffs") or "error" in r for r in reports),
                           "coverage": "exact verified inventory claims" if all(e.get("_inventory") for e in entries) else "explicit scope" if args.repo else "accessible repositories under the requested owner",

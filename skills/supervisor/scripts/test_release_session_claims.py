@@ -323,6 +323,8 @@ class ReleaseTests(unittest.TestCase):
             result = json.loads(output.getvalue())
             self.assertFalse(result["ok"])
             self.assertTrue(result["needs_reconciliation"])
+            self.assertTrue(result.get("gate"))
+            self.assertTrue(result.get("error"))
 
     def test_backfill_posting_contention_never_posts(self) -> None:
         log = self.root / "closed.json"
