@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["cryptography==50.0.2", "websockets==17.4"]
+# dependencies = ["cryptography==50.0.2", "jsonschema==4.26.0", "rfc3339-validator==0.1.4", "websockets==17.4"]
 # ///
 """Execute bounded Launchplane operator actions with public-safe output."""
 
@@ -727,6 +727,7 @@ def request_launchplane(
     timeout: float,
     idempotency_key: str = "",
     if_match: str = "",
+    no_store: bool = False,
 ) -> dict[str, Any]:
     data = json.dumps(body, separators=(",", ":")).encode()
     request = urllib.request.Request(build_url(service_url, path), data=data, method="POST")
@@ -737,8 +738,10 @@ def request_launchplane(
         request.add_header("Idempotency-Key", idempotency_key)
     if if_match:
         request.add_header("If-Match", if_match)
+    if no_store:
+        request.add_header("Cache-Control", "no-store")
     with safe_urlopen(request, timeout=timeout) as response:
-        return _read_service_response(response)
+        return _read_service_response(response, private_no_store=no_store)
 
 
 def request_launchplane_read(

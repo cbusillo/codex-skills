@@ -3177,6 +3177,39 @@ volume identity, which can include concurrent activity. A `released` result
 means the reviewed eligible resources are absent. Protected source volumes
 can remain.
 
+Dry run alone accepts `--custody-evidence-file /private/custody.json` to send
+`include_evidence: true` on that same authenticated POST. It rejects a receiver
+and requires a new file outside the checkout, with an existing writable parent.
+The response must carry `Cache-Control: no-store` and fit the existing private
+response limit. Destination, validator and RFC3339 support are qualified before
+the request. No additional service or provider request is made.
+
+The file is created exclusively with mode 0600 and holds the unchanged custody
+packet, exact product/original/trace/plan/status envelope and existing projected
+release-review evidence. Held and incomplete packets are saved too. Missing or
+malformed evidence, an invalid trace or envelope, a different plan binding, an
+incorrect packet digest or a failed save returns unavailable, never success.
+The closed [packet schema](candidate-custody-evidence.schema.json) is pinned from
+Launchplane source `9b95c990dad027ffa7e13d65870a9887604203ee`,
+`control_plane/contracts/candidate_custody_evidence.py`; schema SHA256 is
+`f8306f78ac1181580b039f58eb362a676732648dd5f62a7c3e4aefcf479144b9`.
+The fictional fixture `scripts/fixtures/candidate-custody-evidence.json` is emitted
+by that exact producer model and canonical sealing implementation, including
+serialized defaults. A missing completion timestamp remains absent or null; the
+packet still requires valid plan and packet digests.
+Packet SHA256 uses sorted compact ASCII-escaped UTF-8 JSON, excluding the
+top-level `packet_sha256` and recursively omitting null object fields. The
+packet's plan digest must equal the enclosing release plan digest.
+
+In this mode stdout contains the private file reference, file and packet hashes,
+release status/plan digest and counts of recorded predicate outcomes. It never
+contains the packet or candidate/resource details. Missing checks are not counted
+as passing; outcome counts establish no eligibility. Preserve and review the
+private evidence, including holds and unreached checks. Save stdout separately
+for the existing eligible-plan apply review; the custody file itself does not
+replace `--dry-run-evidence-file`. With no file argument, defaults and the
+apply/readback contract remain unchanged.
+
 Optional candidate `references` retain each holding reason, record kind, safe
 record identifier and record hash. Empty references are omitted. Candidate and
 resource `readback` maps retain the producer's `pass`, `fail`, `unavailable` and

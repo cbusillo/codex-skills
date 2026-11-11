@@ -1,0 +1,82 @@
+{
+  "checks": {
+    "native_inventory": "unavailable",
+    "source_preserved": "not_reached"
+  },
+  "version": 1,
+  "observed_at": "2026-11-11T12:00:00Z",
+  "completed_at": "2026-11-11T12:00:01Z",
+  "candidate_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "server_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "plan_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "packet_sha256": "b6bfa686da04be99286a23449039b9b1757cc2247c18d7626387426d1ad7f921",
+  "lifecycle": {
+    "checks": {
+      "lifecycle_acquisition": "pass",
+      "lifecycle_usable": "fail"
+    },
+    "container_count": 2,
+    "containers": [
+      {
+        "checks": {},
+        "container_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "role": "web",
+        "state": "exited",
+        "volume_roles": []
+      },
+      {
+        "checks": {},
+        "container_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "role": "database",
+        "state": "exited",
+        "volume_roles": []
+      }
+    ]
+  },
+  "volumes": [
+    {
+      "checks": {},
+      "role": "ODOO_DB_VOLUME",
+      "name_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "planned_container_sha256": [],
+      "consumers": [
+        {
+          "checks": {
+            "conversion_parse": "fail"
+          },
+          "kind": "compose",
+          "server_identity": "missing",
+          "conversion_shape": "null",
+          "source_path_shape": "missing",
+          "include_shape": "missing",
+          "source_type": "missing",
+          "documents": [
+            {
+              "checks": {},
+              "resolved_name_sha256": [],
+              "volumes": [
+                {
+                  "checks": {},
+                  "alias_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "name_source": "unavailable"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "checks": {
+            "placement": "unavailable"
+          },
+          "kind": "compose",
+          "server_identity": "missing",
+          "conversion_shape": "missing",
+          "source_path_shape": "missing",
+          "include_shape": "missing",
+          "source_type": "missing",
+          "documents": []
+        }
+      ]
+    }
+  ]
+}

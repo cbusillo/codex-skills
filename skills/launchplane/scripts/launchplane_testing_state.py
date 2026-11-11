@@ -125,16 +125,18 @@ def request_summary(h: Any, intent: dict[str, str]) -> dict[str, object]:
     return request
 
 
-def write_staged(h: Any, path: str, staged: dict[str, Any]) -> None:
-    target = Path(path).expanduser()
+def write_staged(h: Any, path: str, staged: dict[str, Any]) -> str:
+    serialized = json.dumps(staged, ensure_ascii=False, sort_keys=True)
     try:
+        target = Path(path).expanduser()
         resolved = h.path_with_resolved_parent(target)
         if h._is_relative_to(resolved, h.active_repo_root()):
             raise ValueError("repo_local_payload_unsupported")
         descriptor = os.open(resolved, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "w", encoding="utf-8") as output:
-            json.dump(staged, output, ensure_ascii=False, sort_keys=True)
-    except OSError:
+            output.write(serialized)
+        return hashlib.sha256(serialized.encode()).hexdigest()
+    except (OSError, RuntimeError):
         raise ValueError("private_request_unavailable") from None
 
 
