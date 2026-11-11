@@ -122,6 +122,7 @@ class OperationTests(unittest.TestCase):
             return []
 
         with (patch.object(check_operation.Operation, "run", run),
+              patch.object(session_closeout.github_identity, "automation_login", return_value="fixture[bot]"),
               patch.object(session_closeout.closure, "closed_log", return_value=log),
               patch.object(session_closeout.closure, "ownership", return_value=nullcontext()),
               patch.object(session_closeout.session_liveness, "process_absent", return_value=True),
