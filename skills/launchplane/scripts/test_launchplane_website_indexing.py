@@ -202,7 +202,7 @@ def test_indexing_refuses_invalid_or_broad_requests_before_transport(tmp_path: P
     elif invalid == "website":
         indexing["website_id"] = True
     elif invalid == "origin":
-        indexing["public_origin"] = "https://user:credential@example.invalid/path"
+        indexing["public_origin"] = "https://example-user@example.invalid/path"
     elif invalid == "plan":
         indexing["reviewed_plan"] = {**plan(), "plan_sha256": "invalid-digest"}
     result = invoke(tmp_path, mode, body=body)
