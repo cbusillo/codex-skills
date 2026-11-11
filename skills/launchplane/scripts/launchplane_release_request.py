@@ -296,9 +296,10 @@ def _finish_recorded(
         result["invitation_delivery"] = "confirmed" if delivery_confirmed else "unverified"
     if readback:
         result["verified_by_readback"] = True
-    if state.digest != intent.digest:
+    if state.digest and state.digest != intent.digest:
         return _finish(h, intent, "stale", result=result, diagnostics=diagnostics or CHECKLIST_CHANGED_DIAGNOSTICS)
     result.update(_result(h, settings, intent, state, acceptance))
+    result["checklist_digest"] = intent.digest
     if state.refusal == "release_already_decided":
         result["review_decided"] = True
         return _finish(h, intent, "ok", result=result, refusal=state.refusal, diagnostics=diagnostics)
@@ -338,7 +339,7 @@ def _finish_unmatched(
     return _finish(
         h, intent, status, result=_result(h, settings, intent, state, acceptance),
         refusal=state.refusal or refusal, diagnostics=diagnostics,
-        recommendation=RECOVERY["outcome_unknown"] if status == "outcome_unknown" else "",
+        recommendation=RECOVERY.get(status, ""),
     )
 
 

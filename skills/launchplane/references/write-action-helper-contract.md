@@ -3071,7 +3071,9 @@ confirm Client delivery: it returns `accepted_unverified` with
 Current prerequisites remain visible alongside the request ID. A matching
 request that has since received a decision returns `ok`, `review_decided: true`
 and `refusal_reason: release_already_decided`, directing observation of that
-outcome; other prerequisites return `refused`. This preserves Director-standing
+outcome, including if the Client requested changes. That success means the
+request was recorded, never that the Client accepted it. Other prerequisites
+return `refused`. This preserves Director-standing
 success after its worker has recorded acceptance, without advising a new release.
 
 `stale` means the checklist changed; the old request identity is retained without

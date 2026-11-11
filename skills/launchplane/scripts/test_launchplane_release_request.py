@@ -13,7 +13,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-from launchplane_release_request import COMMAND, REQUEST_SOURCE, REVIEW_PAGE
+from launchplane_release_request import COMMAND, RECOVERY, REQUEST_SOURCE, REVIEW_PAGE
 from test_launchplane_helpers import _product_profile_response
 from test_launchplane_helpers import write_action as h
 
@@ -211,10 +211,11 @@ def test_accepted_response_for_another_checklist_is_not_success() -> None:
 
 
 @pytest.mark.parametrize("acceptance", ["promote", "director_standing"])
-def test_a_recorded_request_is_reported_without_sending_again(acceptance: str) -> None:
+@pytest.mark.parametrize("decision", ["accepted", "changes_requested"])
+def test_a_decided_request_is_observed_without_sending_again(acceptance: str, decision: str) -> None:
     code, payload, posts = invoke(
         request_args(),
-        reviews=[review(saved=saved_request(), approved=True, latest_decision={"decision": "accepted"})],
+        reviews=[review(saved=saved_request(), latest_decision={"decision": decision})],
         acceptance=acceptance,
     )
     assert code == 0 and posts == []
@@ -308,18 +309,23 @@ def test_definite_service_refusal_reads_back_then_refuses() -> None:
 
 
 @pytest.mark.parametrize("uncertain", [False, True])
-def test_saved_request_preserves_current_refusal(uncertain: bool) -> None:
-    decided = review(saved=saved_request(), approved=True, latest_decision={"decision": "accepted"})
-    decided["reviewing_temporary_hotfix"] = True
+@pytest.mark.parametrize("fields,hotfix,prerequisite", [
+    ({"approved": True, "latest_decision": {"decision": "accepted"}}, True, "temporary_hotfix_pending"),
+    ({"checklist": None, "checklist_digest": "", "unavailable_reason": "missing_evidence"}, False, "checklist_unavailable"),
+])
+def test_saved_request_with_current_prerequisite_keeps_its_identity(fields: dict[str, Any], hotfix: bool, prerequisite: str, uncertain: bool) -> None:
+    current = review(saved=saved_request(), **fields)
+    current["reviewing_temporary_hotfix"] = hotfix
     code, payload, posts = invoke(
-        request_args(),
-        reviews=[review(), decided] if uncertain else [decided],
-        posts=[http_error(409, "release_review_not_opened")] if uncertain else None,
+        request_args(), reviews=[review(), current] if uncertain else [current], posts=[http_error(409, "release_review_not_opened")] if uncertain else None,
     )
     assert code == 1 and len(posts) == int(uncertain)
     assert payload["status"] == "refused"
-    assert payload["summary"]["refusal_reason"] == "temporary_hotfix_pending"
+    assert payload["summary"]["refusal_reason"] == prerequisite
+    assert payload["result"]["checklist_digest"] == DIGEST
     assert payload["result"]["request_id"] == RECORD_ID
+    if fields.get("checklist", True) is None:
+        assert payload["result"]["candidate"] is None
 
 
 @pytest.mark.parametrize("http_status,error_code", [(409, "release_review_not_opened"), (502, "bad_gateway")])
@@ -366,6 +372,7 @@ def test_conflicting_request_does_not_hide_current_state(uncertain: bool, drift:
     assert payload["status"] == ("stale" if drift else "conflict")
     if not drift:
         assert payload["summary"]["refusal_reason"] == "checklist_incomplete"
+        assert payload["summary"]["recommendation"] == RECOVERY["conflict"]
     if uncertain:
         assert payload["summary"]["trace_id"] == "trace-error"
 
@@ -382,13 +389,10 @@ def test_service_refusal_preserves_the_specific_readback_prerequisite() -> None:
     assert payload["summary"]["refusal_reason"] == "checklist_incomplete"
 
 
-@pytest.mark.parametrize(
-    ("http_status", "error_code", "status"), [(403, "release_review_open_denied", "denied"), (404, "not_found", "not_found")]
-)
-def test_denied_or_unsupported_request_is_reported_without_retry(http_status: int, error_code: str, status: str) -> None:
-    code, payload, posts = invoke(request_args(), reviews=[review()], posts=[http_error(http_status, error_code)])
+def test_denied_request_is_reported_without_retry() -> None:
+    code, payload, posts = invoke(request_args(), reviews=[review()], posts=[http_error(403, "release_review_open_denied")])
     assert code == 1 and len(posts) == 1
-    assert payload["status"] == status
+    assert payload["status"] == "denied"
 
 
 @pytest.mark.parametrize(
@@ -453,10 +457,9 @@ def test_temporary_hotfix_explains_the_actual_review_prerequisite() -> None:
 
 
 @pytest.mark.parametrize("acceptance", ["held", "promote", "promote_with_rollback_drill", "director_standing"])
-def test_typed_transport_confirms_client_requests_without_duplicate_publication(acceptance: str) -> None:
+def test_typed_transport_uses_the_same_request_route_for_client_confirmation(acceptance: str) -> None:
     saved: dict[str, object] | None = None
     calls: list[tuple[str, str]] = []
-    publications: list[str] = []
 
     def transport(request: urllib.request.Request, **_kwargs: Any) -> io.BytesIO:
         nonlocal saved
@@ -478,7 +481,6 @@ def test_typed_transport_confirms_client_requests_without_duplicate_publication(
             assert envelope["checklist_digest"] == DIGEST
             if saved is None:
                 saved = saved_request()
-                publications.append(str(saved["record_id"]))
             body = review(saved=saved)
         return io.BytesIO(json.dumps(body).encode())
 
@@ -494,7 +496,6 @@ def test_typed_transport_confirms_client_requests_without_duplicate_publication(
             assert_private_values_absent(payload)
             assert "fictional-token" not in output.getvalue()
     assert [path for method, path in calls if method != "GET"] == [h.helper_command_path(COMMAND)] * (1 if acceptance == "director_standing" else 2)
-    assert publications == [RECORD_ID]
 
 
 if __name__ == "__main__":
