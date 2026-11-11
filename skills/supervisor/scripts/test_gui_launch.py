@@ -105,6 +105,19 @@ class GuiLaunchTests(unittest.TestCase):
         self.assertNotIn("gui", choices[0])
         self.assertFalse(self.state.exists())
 
+    def test_launch_result_records_the_claimed_anchor_for_closeout(self) -> None:
+        self.args.computer_use = None
+        claimed = "Anchor and claim: https://github.com/fixture/repo/issues/7\n"
+        for extra, expected in (("Read-only anchor: https://github.com/fixture/other/issues/3\n",
+                                 {"repository": "fixture/repo", "issue": 7}),
+                                ("Anchor and claim: https://github.com/fixture/repo/issues/8\n", {})):
+            with self.subTest(extra=extra), patch.object(account_choice, "select", return_value=dict(self.choice)):
+                self.brief.write_text(claimed + extra + "Fix the launcher." + RULES)
+                _, choices = iterm_tab.prepare_launches(self.args)
+                result = iterm_tab.build_launch_result(argparse.Namespace(), {"session_id": "terminal"}, choices[0])
+                self.assertEqual({key: result[key] for key in ("repository", "issue") if key in result}, expected)
+                self.assertFalse({"repository", "issue"} & result["account"].keys())
+
     def test_source_only_computer_use_mentions_keep_the_source_route(self) -> None:
         self.args.computer_use = "unused"
         self.brief.write_text("Fix Computer Use plugin discovery." + RULES)

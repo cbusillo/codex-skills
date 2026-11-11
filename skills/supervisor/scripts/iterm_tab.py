@@ -1384,7 +1384,7 @@ def launch_resume_source(brief: str) -> str | None:
     return resume[1] if resume else None
 
 
-def check_launch_issue(brief: str, *, wait_resolved: str | None = None, command_text: str | None = None, agent_override: str | None = None) -> bool:
+def launch_anchors(brief: str) -> list[tuple[str, str]]:
     labels = re.findall(r"(?mi)^\s*(?:[-*] )?(?:\*\*)?(Read-only anchor|Anchor(?: and claim)?):(?:\*\*)?[^\S\n]*([^\n]*)", brief)
     anchors = []
     for mode, value in labels:
@@ -1393,6 +1393,19 @@ def check_launch_issue(brief: str, *, wait_resolved: str | None = None, command_
             anchors.append((mode, match[1]))
         elif not re.search(r"https://github\.com/[\w.-]+/[\w.-]+/pull/[1-9]\d*", value):
             raise ValueError("An explicit issue anchor needs its full https://github.com/OWNER/REPO/issues/N URL")
+    return anchors
+
+
+def ledger_anchor(brief: str) -> dict:
+    claimed = {anchor for mode, anchor in launch_anchors(brief) if mode.casefold() != "read-only anchor"}
+    if len(claimed) != 1:
+        return {}
+    owner, repo, _issues, number = claimed.pop().split("/")[3:7]
+    return {"repository": f"{owner}/{repo}", "issue": int(number)}
+
+
+def check_launch_issue(brief: str, *, wait_resolved: str | None = None, command_text: str | None = None, agent_override: str | None = None) -> bool:
+    anchors = launch_anchors(brief)
     if not anchors:
         return False
     override_used = False
@@ -1614,7 +1627,8 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
         probes = {}
         # Validate command/account/trust inputs for the whole batch first.
         # Live preflight follows; its reusable marketplace links are persistent.
-        for text, choice, brief in zip(command_texts, choices, briefs):
+        for text, choice, brief, header in zip(command_texts, choices, briefs, headers):
+            choice.update(ledger_anchor(header))
             with preparation_read():
                 with_account(text, choice, brief)
                 check_codex_project(text, choice)
@@ -1798,7 +1812,7 @@ def build_launch_result(args: argparse.Namespace, identity: dict, choice: dict |
     result = {**lead_metadata(args), **identity}
     if choice:
         result["account"] = account_choice.public(choice)
-        for key in ("native_receipt", "file_native", "claude_native"):
+        for key in ("native_receipt", "file_native", "claude_native", "repository", "issue"):
             if key in choice:
                 result[key] = choice[key]
         if choice.get("provider") == "openai":
