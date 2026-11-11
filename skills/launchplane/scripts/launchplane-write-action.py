@@ -3749,7 +3749,8 @@ def _project_reconcile_request(
 
 
 def _project_reconcile_requests(
-    provider_payload: dict[str, Any], *, target_key: str | None = None
+    provider_payload: dict[str, Any], *,
+    target_key: str | None = None, preview_pr: int | None = None, requested_product: str | None = None,
 ) -> dict[str, object]:
     """Each target's last reconcile decision, bounded. Odd fields are dropped and unusable
     requests omitted, with counts and field paths; a secret-looking value fails the read."""
@@ -3761,11 +3762,27 @@ def _project_reconcile_requests(
             item for item in requests
             if isinstance(item, dict) and item.get("target_key") == target_key
         ]
+    if preview_pr is not None:
+        if provider_payload.get("product") != requested_product:
+            raise LaunchplaneSafetyError("reconcile_product_mismatch")
+        requests = [
+            item for item in requests
+            if isinstance(item, dict) and item.get("target_kind") == "preview"
+            and type(item.get("pull_request_number")) is int and item["pull_request_number"] == preview_pr
+        ]
+        if any(item.get("product", requested_product) != requested_product for item in requests):
+            raise LaunchplaneSafetyError("reconcile_product_mismatch")
+        if len(requests) > 1:
+            raise LaunchplaneSafetyError("preview_pr_ambiguous")
     drops = _FieldDrops()
     projected_requests: list[dict[str, object]] = []
     omitted_request_count = 0
     for request_value in requests[:RECONCILE_MAX_REQUESTS]:
         projected_request = _project_reconcile_request(request_value, drops)
+        if preview_pr is not None and (
+            projected_request is None or projected_request["target_key"] != request_value["target_key"]
+        ):
+            raise LaunchplaneSafetyError("preview_target_key_unusable")
         if projected_request is None:
             omitted_request_count += 1
         else:
@@ -3778,6 +3795,8 @@ def _project_reconcile_requests(
         "dropped_field_count": drops.count,
         "dropped_field_paths": sorted(drops.paths),
     }
+    if preview_pr is not None:
+        projected["selection_status"] = "matched" if projected_requests else "not_found"
     assert_public_safe_shape(projected)
     return projected
 
@@ -6407,8 +6426,12 @@ def summarize_reconcile_requests_read(
     status = public_code(provider_payload.get("status"), default="ok")
     payload = base_payload(status=status, operation="reconcile-requests-read", request=request)
     target_key = request.get("target_key")
+    preview_pr = request.get("pull_request_number")
     payload["result"] = _project_reconcile_requests(
-        provider_payload, target_key=public_identifier(target_key) if target_key is not None else None
+        provider_payload,
+        target_key=public_identifier(target_key) if target_key is not None else None,
+        preview_pr=_positive_int(preview_pr) if preview_pr is not None else None,
+        requested_product=public_identifier(request["product"]) if preview_pr is not None else None,
     )
     payload["summary"] = {
         "launchplane_status": status,
@@ -12201,7 +12224,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Read what the event reconciler last decided for each of a product's targets.",
     )
     reconcile_requests_read.add_argument("--product", required=True)
-    reconcile_requests_read.add_argument("--target-key", help="Select an exact target before bounding the output.")
+    reconcile_target = reconcile_requests_read.add_mutually_exclusive_group()
+    reconcile_target.add_argument("--target-key", help="Select an exact target before bounding the output.")
+    reconcile_target.add_argument(
+        "--select-pr", type=positive_decimal_id, help="Select one returned preview by PR number before bounding the output."
+    )
 
     product_secret_bindings_read = subparsers.add_parser(
         "product-secret-bindings-read",
@@ -13188,12 +13215,15 @@ def main(argv: list[str]) -> int:
             )
         if args.command in {"reconcile-requests-read", "product-secret-bindings-read", "generic-web-deploy-recovery-reference-read"}:
             path = _product_read_path(args.command, product=args.product)
-            request = {
+            request: dict[str, object] = {
                 "product": _request_identifier(args.product),
                 "payload_source": "operator_argument",
             }
-            if args.command == "reconcile-requests-read" and args.target_key is not None:
-                request["target_key"] = _request_identifier(args.target_key)
+            if args.command == "reconcile-requests-read":
+                if args.target_key is not None:
+                    request["target_key"] = _request_identifier(args.target_key)
+                elif args.select_pr is not None:
+                    request["pull_request_number"] = int(args.select_pr)
             query: dict[str, str | list[str]] = {}
             if args.command == "product-secret-bindings-read":
                 if not args.include_resolution and (args.integration is not None or args.scope is not None):

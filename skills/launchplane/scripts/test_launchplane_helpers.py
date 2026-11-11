@@ -4558,6 +4558,93 @@ def _reconcile_requests_response() -> dict[str, object]:
     }
 
 
+def test_reconcile_preview_pr_selects_exact_returned_key_before_the_bound() -> None:
+    argv = ["reconcile-requests-read", "--product", "example-product"]
+    preview = cast(list[dict[str, Any]], _reconcile_requests_response()["requests"])[0]
+    target_key = "opaque-target-record"
+    preview = {**preview, "target_key": target_key, "pull_request_number": 1}
+    older = [
+        {**preview, "target_key": f"older-target-{number}", "pull_request_number": number}
+        for number in range(2, 2 + write_action.RECONCILE_MAX_REQUESTS)
+    ]
+    response = {
+        **_reconcile_requests_response(),
+        "requests": [
+            *older,
+            {**preview, "target_kind": "testing", "target_key": "testing-target"},
+            {**preview, "pull_request_number": True, "target_key": "boolean-pr"},
+            {**preview, "pull_request_number": "1", "target_key": "string-pr"},
+            preview,
+        ],
+    }
+    default_status, default, default_calls = _run_product_read(argv, response)
+    assert default_status == 0
+    assert default["result"]["requests_truncated"] is True
+    assert [row["target_key"] for row in default["result"]["requests"]] == [row["target_key"] for row in older]
+
+    exact_status, exact, exact_calls = _run_product_read(argv + ["--target-key", target_key], response)
+    status, selected, calls = _run_product_read(argv + ["--select-pr", "1"], response)
+    assert status == exact_status == 0
+    assert calls == exact_calls == default_calls
+    assert len(calls) == 1
+    assert selected["result"] == {**exact["result"], "selection_status": "matched"}
+    assert selected["result"]["requests_truncated"] is False
+    (row,) = selected["result"]["requests"]
+    assert row["target_key"] == target_key
+    assert row["pull_request_number"] == 1
+    assert row["last_plan"]["action"] == "apply"
+    assert "Private customer migration" not in json.dumps(selected)
+
+
+@pytest.mark.parametrize(
+    ("product", "rows", "code"),
+    [
+        ("example-product", [{}, {"target_key": "other-target"}], "preview_pr_ambiguous"),
+        ("other-product", [{}], "reconcile_product_mismatch"),
+        ("example-product", [{}, {"product": "other-product"}], "reconcile_product_mismatch"),
+        ("example-product", [{"target_key": "unusable key"}], "preview_target_key_unusable"),
+    ],
+)
+def test_reconcile_preview_pr_refuses_without_one_bound_target(
+    product: str, rows: list[dict[str, object]], code: str
+) -> None:
+    response = {
+        **_reconcile_requests_response(),
+        "product": product,
+        "requests": [
+            {"target_key": "opaque-target-record", "target_kind": "preview", "pull_request_number": 7, **row}
+            for row in rows
+        ],
+    }
+    argv = ["reconcile-requests-read", "--product", "example-product", "--select-pr", "7"]
+    status, payload, calls = _run_product_read(argv, response)
+    assert len(calls) == 1
+    assert status == 1
+    assert payload["summary"]["projection_error_code"] == code
+    assert "opaque-target-record" not in json.dumps(payload)
+
+
+@pytest.mark.parametrize("options", [["--select-pr", "0"], ["--select-pr", "7", "--target-key", "opaque-target-record"]])
+def test_reconcile_preview_pr_rejects_invalid_selectors_before_the_get(options: list[str]) -> None:
+    argv = ["reconcile-requests-read", "--product", "example-product", *options]
+    with pytest.raises(SystemExit) as error:
+        _run_product_read(argv, _reconcile_requests_response())
+    assert error.value.code == 2
+
+
+def test_reconcile_preview_pr_reports_no_matching_preview_without_a_service_error() -> None:
+    response = {
+        **_reconcile_requests_response(),
+        "requests": [{"target_key": "testing-target", "target_kind": "testing", "pull_request_number": 7}],
+    }
+    argv = ["reconcile-requests-read", "--pr", "example-product", "--select-pr", "7"]
+    status, payload, calls = _run_product_read(argv, response)
+    assert len(calls) == 1
+    assert status == 0
+    assert payload["result"]["selection_status"] == "not_found"
+    assert payload["result"]["requests"] == []
+
+
 def test_reconcile_requests_read_keeps_the_decision_and_drops_the_rest() -> None:
     argv = ["reconcile-requests-read", "--product", "example-product"]
     status, payload, calls = _run_product_read(argv, _reconcile_requests_response())
