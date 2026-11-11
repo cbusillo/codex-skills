@@ -12759,3 +12759,415 @@ def test_native_binding_preserves_full_record_authority_refusal(tmp_path: Path) 
     assert payload["summary"]["http_status"] == 403
     assert payload["summary"]["error_code"] == "authorization_denied"
     assert not destination.exists()
+
+
+def _first_empty_payload(purpose: str = "ODOO_DB_PASSWORD") -> dict[str, Any]:
+    return {
+        "product": "example-product",
+        "context": "example-site",
+        "instance": "prod",
+        "reason": "Fictional original preparation",
+        "odoo_first_empty": "runtime_credentials",
+        "secrets": [{"binding_key": purpose, "generate": "odoo_first_empty", "secret_class": "prod_only"}],
+    }
+
+
+def _first_empty_response(mode: str = "dry-run", purpose: str = "ODOO_DB_PASSWORD") -> dict[str, Any]:
+    response = _public_hosts_response(mode=mode)
+    result = response["result"]
+    result.pop("public_hosts")
+    result["odoo_first_empty"] = {
+        "intent": "runtime_credentials",
+        "plan_sha256": hashlib.sha256(purpose.encode()).hexdigest(),
+        "data": "empty",
+        "provenance": "service:original-target-storage",
+        "applied": mode == "apply",
+    }
+    result["runtime_environment"].update(keys=[], changed_keys=[], unchanged_keys=[], env_value_count_after=9)
+    result["runtime_key_safety"] = {
+        "required": True,
+        "status": "pass",
+        "target": {
+            "context": "example-site",
+            "instance": "prod",
+            "environment_class": "prod",
+        },
+        "checked_binding_keys": [purpose],
+        "findings": [],
+    }
+    result["provider_key_adoption"] = []
+    result["secrets"] = [
+        {
+            "action": "created",
+            "scope": "context_instance",
+            "integration": "runtime_environment",
+            "name": purpose,
+            "binding_key": purpose,
+            "context": "example-site",
+            "instance": "prod",
+            "secret_id": "fictional-secret-record" if mode == "apply" else "",
+            "secret_class": "prod_only",
+        }
+    ]
+    result["summary"]["secret_change_count"] = 1
+    return response
+
+
+def _first_empty_bindings(purpose: str = "ODOO_DB_PASSWORD") -> dict[str, Any]:
+    response = _secret_bindings_response()
+    binding = response["bindings"][0]
+    binding.pop("provider_note")
+    binding.update(binding_key=purpose, name=purpose, context="example-site", secret_class="prod_only", sharing_reason=None)
+    response["bindings"] = [binding]
+    population = write_action.BINDING_COPY_POPULATION
+    response["coverage"] = {
+        "population": population,
+        "status": "complete",
+        "source": "complete",
+        "authorization": "complete",
+        "exclusions": sorted(write_action.BINDING_COVERAGE_EXCLUSIONS[population]),
+    }
+    return response
+
+
+def _first_empty_review(directory: Path, purpose: str = "ODOO_DB_PASSWORD") -> tuple[str, dict[str, Any]]:
+    path = _write_json(directory, "first-empty.json", _first_empty_payload(purpose))
+    status, evidence, posts, reads = _run_main(
+        ["product-config-dry-run", "--payload-file", path],
+        post=_first_empty_response(purpose=purpose),
+    )
+    assert status == 0 and len(posts) == 1 and not reads, evidence
+    return path, evidence
+
+
+@pytest.mark.parametrize("purpose", ["ODOO_DB_PASSWORD", "ODOO_MASTER_PASSWORD"])
+def test_first_empty_main_binds_review_and_replays_original_request_with_independent_readback(tmp_path: Path, purpose: str) -> None:
+    path, evidence = _first_empty_review(tmp_path, purpose)
+    saved = _write_json(tmp_path, "review.json", evidence)
+    digest = evidence["result"]["odoo_first_empty"]["plan_sha256"]
+    response = _first_empty_response("apply", purpose)
+    for replayed in (False, True):
+        response.update(replayed=replayed, original_trace_id="launchplane_req_original")
+        status, output, posts, reads = _run_main(
+            ["product-config-apply", "--payload-file", path, *_reviewed_apply_argv(digest, saved, key="original-key")],
+            post=response,
+            read=_first_empty_bindings(purpose),
+        )
+        assert status == 0 and len(posts) == len(reads) == 1, output
+        assert posts[0]["idempotency_key"] == "original-key"
+        assert posts[0]["body"]["reviewed_plan_sha256"] == digest
+        assert output["result"]["odoo_first_empty"] == response["result"]["odoo_first_empty"]
+        assert output["result"]["read_back_matches"] is True
+        assert reads[0]["path"] == f"/v1/products/{response['result']['product']}/secret-bindings"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"odoo_first_empty": "data_policy"},
+        {"odoo_first_empty": None},
+        {"odoo_first_empty": []},
+        {"secrets": []},
+        {"instance": "testing"},
+        {"context": ""},
+        {"schema_version": True},
+        {"runtime_env": {}},
+        {"runtime_environment": {}},
+        {"public_hosts": []},
+        {"odoo_business_hours": {"operation": "clear"}},
+        {"disable_secret_bindings": [{}]},
+        {"data": "empty"},
+    ],
+)
+def test_first_empty_invalid_or_downgraded_intent_never_posts(tmp_path: Path, change: dict[str, object]) -> None:
+    body = {**_first_empty_payload(), **change}
+    path = _write_json(tmp_path, "invalid.json", body)
+    status, _, posts, reads = _run_main(["product-config-dry-run", "--payload-file", path])
+    assert status == 2 and not posts and not reads
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"value": "invented-refused-input"},
+        {"value": ""},
+        {"ciphertext": "invented-private-output"},
+        {"generate": "testing_local"},
+        {"scope": "context"},
+        {"context": "foreign"},
+        {"instance": "testing"},
+        {"integration": "other"},
+        {"name": "OTHER_PURPOSE"},
+        {"secret_class": "testing"},
+        {"copy_from": {"context": "other", "instance": "prod", "version_id": "other"}},
+        {"adopt_from_provider": True},
+        {"value_source": "supplied"},
+    ],
+)
+def test_first_empty_refuses_caller_values_or_foreign_secret_metadata(tmp_path: Path, change: dict[str, object]) -> None:
+    body = _first_empty_payload()
+    body["secrets"][0].update(change)
+    path = _write_json(tmp_path, "invalid.json", body)
+    status, _, posts, reads = _run_main(["product-config-dry-run", "--payload-file", path])
+    assert status == 2 and not posts and not reads
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"product": "different"},
+        {"context": "different"},
+        {"reason": "Different reason"},
+        {"source_label": "other-source"},
+        {"confirmation": "other-confirmation"},
+        {"secrets": [{"binding_key": "ODOO_MASTER_PASSWORD", "generate": "odoo_first_empty", "secret_class": "prod_only"}]},
+    ],
+)
+def test_first_empty_changed_review_subject_never_posts(tmp_path: Path, change: dict[str, object]) -> None:
+    path, evidence = _first_empty_review(tmp_path)
+    saved = _write_json(tmp_path, "review.json", evidence)
+    _write_json(tmp_path, "first-empty.json", {**_first_empty_payload(), **change})
+    digest = evidence["result"]["odoo_first_empty"]["plan_sha256"]
+    status, _, posts, reads = _run_main(["product-config-apply", "--payload-file", path, *_reviewed_apply_argv(digest, saved)])
+    assert status == 2 and not posts and not reads
+
+
+def test_first_empty_canonical_apply_keeps_null_and_generated_metadata(tmp_path: Path) -> None:
+    path, evidence = _first_empty_review(tmp_path)
+    saved = _write_json(tmp_path, "review.json", evidence)
+    digest = evidence["result"]["odoo_first_empty"]["plan_sha256"]
+    canonical = {
+        **_first_empty_payload(),
+        "schema_version": 1,
+        "mode": "apply",
+        "source_label": "product-config-api",
+        "confirmation": "",
+        "reviewed_plan_sha256": digest,
+    }
+    canonical["secrets"][0].update(
+        scope="context_instance",
+        integration="runtime_environment",
+        name="ODOO_DB_PASSWORD",
+        value=None,
+        context=canonical["context"],
+        instance="prod",
+        description="",
+        sharing_reason=None,
+        value_source="generated",
+    )
+    _write_json(tmp_path, "first-empty.json", canonical)
+    status, output, posts, _ = _run_main(
+        ["product-config-apply", "--payload-file", path, *_reviewed_apply_argv(digest, saved)],
+        post=_first_empty_response("apply"),
+        read=_first_empty_bindings(),
+    )
+    assert status == 0, output
+    assert posts[0]["body"] == canonical
+    assert "runtime_env" not in posts[0]["body"]
+    canonical["reviewed_plan_sha256"] = hashlib.sha256(b"different plan").hexdigest()
+    _write_json(tmp_path, "first-empty.json", canonical)
+    status, _, posts, reads = _run_main(["product-config-apply", "--payload-file", path, *_reviewed_apply_argv(digest, saved)])
+    assert status == 2 and not posts and not reads
+
+
+def test_first_empty_schema_defaults_and_ordinary_omission_remain_distinct(tmp_path: Path) -> None:
+    path = _write_json(tmp_path, "request.json", _first_empty_payload())
+    full = _first_empty_response()
+    response = copy.deepcopy(full)
+    response["result"]["odoo_first_empty"] = {"plan_sha256": full["result"]["odoo_first_empty"]["plan_sha256"]}
+    status, output, _, _ = _run_main(["product-config-dry-run", "--payload-file", path], post=response)
+    assert status == 0 and output["result"]["odoo_first_empty"] == full["result"]["odoo_first_empty"]
+    ordinary = _public_hosts_response()
+    ordinary["result"].pop("public_hosts")
+    for value in (None, "omitted"):
+        ordinary["result"]["odoo_first_empty"] = value
+        if value == "omitted":
+            ordinary["result"].pop("odoo_first_empty")
+        projected = write_action.summarize_success(operation="product-config-dry-run", request={}, provider_payload=ordinary)
+        assert "odoo_first_empty" not in projected["result"]
+    for ordinary in (_public_hosts_response(), _calendar_response()):
+        ordinary["result"]["odoo_first_empty"] = full["result"]["odoo_first_empty"]
+        with pytest.raises(safety.LaunchplaneSafetyError):
+            write_action.summarize_success(operation="product-config-dry-run", request={}, provider_payload=ordinary)
+
+
+@pytest.mark.parametrize(
+    "section,change",
+    [
+        ("odoo_first_empty", {"applied": False}),
+        ("odoo_first_empty", {"applied": "true"}),
+        ("odoo_first_empty", {"intent": "data_policy"}),
+        ("odoo_first_empty", {"data": "unknown"}),
+        ("odoo_first_empty", {"provenance": "caller"}),
+        ("odoo_first_empty", {"plan_sha256": "0" * 64}),
+        ("odoo_first_empty", {"value_hash": "private-output"}),
+        ("runtime_environment", {"action": "updated"}),
+        ("runtime_key_safety", {"target": {"context": "foreign", "instance": "prod", "environment_class": "prod"}}),
+        ("summary", {"runtime_changed_key_count": 1}),
+        ("secret", {"scope": "context"}),
+        ("secret", {"context": "foreign"}),
+        ("secret", {"instance": "testing"}),
+        ("secret", {"name": "OTHER_PURPOSE"}),
+        ("secret", {"action": "rotated"}),
+        ("secret", {"binding_key": "OTHER_PURPOSE"}),
+        ("secret", {"value": "private-output"}),
+        ("secret", {"ciphertext": "private-output"}),
+        ("secret", {"value_source": "private-output"}),
+    ],
+)
+def test_first_empty_mismatched_or_unsafe_apply_stays_unverified(
+    tmp_path: Path,
+    section: str,
+    change: dict[str, object],
+) -> None:
+    path, evidence = _first_empty_review(tmp_path)
+    saved = _write_json(tmp_path, "review.json", evidence)
+    digest = evidence["result"]["odoo_first_empty"]["plan_sha256"]
+    response = _first_empty_response("apply")
+    subject = response["result"]["secrets"][0] if section == "secret" else response["result"][section]
+    subject.update(change)
+    status, output, posts, reads = _run_main(
+        ["product-config-apply", "--payload-file", path, *_reviewed_apply_argv(digest, saved)],
+        post=response,
+    )
+    assert status == 1 and output["status"] == "accepted_unverified" and len(posts) == 1 and not reads
+    assert not output["result"] and "private-output" not in json.dumps(output)
+
+
+@pytest.mark.parametrize(
+    "damage", ["missing", "wrong_product", "wrong_lane", "version", "duplicate", "scoped", "unknown", "unsafe", "unavailable"]
+)
+def test_first_empty_independent_readback_never_upgrades_partial_or_mismatched_metadata(tmp_path: Path, damage: str) -> None:
+    path, evidence = _first_empty_review(tmp_path)
+    saved = _write_json(tmp_path, "review.json", evidence)
+    digest = evidence["result"]["odoo_first_empty"]["plan_sha256"]
+    response = _first_empty_bindings()
+    if damage == "missing":
+        response["bindings"] = []
+    elif damage == "wrong_product":
+        response["product"] = "other-product"
+    elif damage == "wrong_lane":
+        response["bindings"][0]["context"] = "other-site"
+    elif damage == "version":
+        response["bindings"][0]["version_id"] = ""
+    elif damage == "duplicate":
+        response["bindings"] *= 2
+    elif damage == "scoped":
+        response["coverage"].update(status="scoped", authorization="scoped")
+    elif damage == "unknown":
+        response.pop("coverage")
+    elif damage == "unsafe":
+        response["bindings"][0]["ciphertext"] = "private-output"
+    status, output, posts, reads = _run_main(
+        ["product-config-apply", "--payload-file", path, *_reviewed_apply_argv(digest, saved)],
+        post=_first_empty_response("apply"),
+        read=TimeoutError() if damage == "unavailable" else response,
+    )
+    assert status == 1 and output["status"] == "accepted_unverified" and len(posts) == len(reads) == 1
+    assert output["result"].get("read_back_matches") is not True
+    assert "private-output" not in json.dumps(output)
+
+
+@pytest.mark.parametrize(
+    "code,http_status",
+    [
+        ("invalid_request", 400),
+        ("authorization_denied", 403),
+        ("first_empty_qualification_required", 409),
+        ("mutation_in_progress", 409),
+        ("mutation_reconciliation_required", 409),
+        ("service_unavailable", 503),
+    ],
+)
+def test_first_empty_actual_packet_refusals_keep_original_apply_key_without_retry(
+    tmp_path: Path, code: str, http_status: int
+) -> None:
+    path, evidence = _first_empty_review(tmp_path, "ODOO_MASTER_PASSWORD")
+    saved = _write_json(tmp_path, "review.json", evidence)
+    digest = evidence["result"]["odoo_first_empty"]["plan_sha256"]
+    error = urllib.error.HTTPError(
+        "https://example.invalid",
+        http_status,
+        "Refused",
+        Message(),
+        io.BytesIO(
+            json.dumps(
+                {
+                    "trace_id": "launchplane_req_original",
+                    "error": {"code": code, "message": "private-output"},
+                }
+            ).encode()
+        ),
+    )
+    status, output, posts, reads = _run_main(
+        ["product-config-apply", "--payload-file", path, *_reviewed_apply_argv(digest, saved, key="original-key")],
+        post=error,
+    )
+    assert status == 1 and len(posts) == 1 and not reads and posts[0]["idempotency_key"] == "original-key"
+    assert output["summary"]["error_code"] == code
+    assert output["request"]["expected_plan_digest"] == digest
+    assert "private-output" not in json.dumps(output)
+
+
+@pytest.mark.parametrize("failure", [TimeoutError(), {}, {"status": "accepted", "result": {}}])
+def test_first_empty_uncertain_apply_preserves_request_and_key_with_one_post(tmp_path: Path, failure: object) -> None:
+    path, evidence = _first_empty_review(tmp_path)
+    saved = _write_json(tmp_path, "review.json", evidence)
+    digest = evidence["result"]["odoo_first_empty"]["plan_sha256"]
+    status, output, posts, reads = _run_main(
+        ["product-config-apply", "--payload-file", path, *_reviewed_apply_argv(digest, saved, key="original-key")],
+        post=failure,
+    )
+    assert status == 1 and output["status"] in {"outcome_unknown", "accepted_unverified"}
+    assert len(posts) == 1 and not reads and posts[0]["idempotency_key"] == "original-key"
+    assert posts[0]["body"]["reviewed_plan_sha256"] == digest
+
+
+@pytest.mark.parametrize("damage", ["missing", "duplicate", "product", "adoption", "hosts", "generated", "extra_purpose"])
+def test_first_empty_result_must_report_only_the_selected_complete_change(tmp_path: Path, damage: str) -> None:
+    path = _write_json(tmp_path, "request.json", _first_empty_payload())
+    response = _first_empty_response()
+    result = response["result"]
+    if damage == "missing":
+        result.pop("odoo_first_empty")
+    elif damage == "duplicate":
+        result["secrets"] *= 2
+    elif damage == "product":
+        result["product"] = "different"
+    elif damage == "adoption":
+        result["provider_key_adoption"] = [{"key": "ODOO_WORKERS", "disposition": "adopted"}]
+    elif damage == "hosts":
+        result["public_hosts"] = _public_hosts_response()["result"]["public_hosts"]
+    elif damage == "extra_purpose":
+        result["runtime_key_safety"]["checked_binding_keys"].append("OTHER_PURPOSE")
+    else:
+        result["secrets"][0]["value_source"] = "generated"
+    status, output, posts, reads = _run_main(["product-config-dry-run", "--payload-file", path], post=response)
+    assert len(posts) == 1 and not reads
+    assert (status == 0) == (damage == "generated"), output
+
+
+@pytest.mark.parametrize(
+    "damage", ["digest", "evidence_mode", "evidence_intent", "evidence_secrets", "duplicate_input", "missing_intent"]
+)
+def test_first_empty_apply_requires_matching_accepted_review_and_generation_intent(tmp_path: Path, damage: str) -> None:
+    path, evidence = _first_empty_review(tmp_path)
+    digest = evidence["result"]["odoo_first_empty"]["plan_sha256"]
+    if damage == "digest":
+        digest = hashlib.sha256(b"another plan").hexdigest()
+    elif damage == "evidence_mode":
+        evidence["request"]["mode"] = "apply"
+    elif damage == "evidence_intent":
+        evidence["request"].pop("odoo_first_empty")
+    elif damage == "evidence_secrets":
+        evidence["result"]["secrets"] = [None]
+    else:
+        body = _first_empty_payload()
+        if damage == "duplicate_input":
+            body["secrets"] *= 2
+        else:
+            body.pop("odoo_first_empty")
+        _write_json(tmp_path, "first-empty.json", body)
+    saved = _write_json(tmp_path, "review.json", evidence)
+    status, _, posts, reads = _run_main(["product-config-apply", "--payload-file", path, *_reviewed_apply_argv(digest, saved)])
+    assert status == 2 and not posts and not reads
