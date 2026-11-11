@@ -175,18 +175,34 @@ class WorktreeTests(unittest.TestCase):
         self.assert_refused(self.run_helper("--task-only", self.repo, "other", self.initial), task="other")
         self.assertFalse((root / self.repo.name / "other").exists())
 
-    def test_creation_retires_finished_work_before_portable_or_host_creation(self) -> None:
-        for helper in (None, self.base / "host"):
-            events = []
-            with mock.patch.dict(dev_worktree.os.environ, self.env, clear=True), \
-                    mock.patch.object(dev_worktree, "configuration", return_value=(self.base, helper)), \
-                    mock.patch.object(dev_worktree, "retire_finished", side_effect=lambda *_: events.append("retire")), \
-                    mock.patch.object(dev_worktree, "sweep_evidence", side_effect=lambda *_, **_kwargs: events.append("evidence")), \
-                    mock.patch.object(dev_worktree, "refresh_primary", side_effect=lambda *_: events.append("refresh")), \
-                    mock.patch.object(dev_worktree, "create", side_effect=lambda *_: events.append("create")), \
-                    mock.patch.object(dev_worktree.os, "execve", side_effect=lambda *_: events.append("create")):
-                dev_worktree.main([str(self.repo), "new-task", self.initial])
-            self.assertEqual(events[:4], ["refresh", "retire", "evidence", "create"])
+    def test_creation_scopes_broad_retirement_for_portable_and_host_routes(self) -> None:
+        root = self.base / "tasks"
+        for managed in (False, True):
+            for task_only in (False, True):
+                with self.subTest(managed=managed, task_only=task_only):
+                    task = f"scope-{managed}-{task_only}"
+                    foreign = self.base / f"finished-foreign-{task}"
+                    foreign.mkdir()
+                    helper = self.base / "host" if managed else None
+
+                    def host_create(_path: str, argv: list[str], _environment: dict[str, str]) -> None:
+                        dev_worktree.create(*argv[1:], root)
+                        raise SystemExit(0)
+
+                    with mock.patch.dict(os.environ, self.env, clear=True), \
+                            mock.patch.object(dev_worktree, "configuration", return_value=(root, helper)), \
+                            mock.patch.object(dev_worktree, "refresh_primary"), \
+                            mock.patch.object(dev_worktree, "retire_finished", side_effect=lambda *_: foreign.rmdir()), \
+                            mock.patch.object(os, "execve", side_effect=host_create):
+                        args = [*(["--task-only"] if task_only else []), str(self.repo), task, self.initial]
+                        if managed:
+                            with self.assertRaises(SystemExit) as ended:
+                                dev_worktree.main(args)
+                            self.assertEqual(ended.exception.code, 0)
+                        else:
+                            self.assertEqual(dev_worktree.main(args), 0)
+                    self.assertEqual(foreign.exists(), task_only)
+                    self.assertEqual(self.git("rev-parse", "HEAD", repo=root / self.repo.name / task), self.initial)
 
     def test_unavailable_sweep_does_not_prevent_creation(self) -> None:
         for outcome in (subprocess.CompletedProcess([], 2, "", "unavailable"), FileNotFoundError("missing helper")):
