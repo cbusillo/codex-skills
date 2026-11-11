@@ -269,7 +269,7 @@ def finish(
     diagnostics: dict[str, object] | None = None,
 ) -> int:
     output = h.base_payload(status=status, operation=operation, request=request)
-    summary = {key: value for key, value in (diagnostics or {}).items() if key != "error_reason"}
+    summary = dict(diagnostics or {})
     summary["recommendation"] = RECOVERY[status]
     output["summary"] = summary
     if result is not None:

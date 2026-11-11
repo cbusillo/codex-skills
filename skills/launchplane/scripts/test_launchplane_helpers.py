@@ -3549,7 +3549,7 @@ def test_path_check_refuses_bad_selector_and_surfaces_read_denial() -> None:
     denied = urllib.error.HTTPError(
         "https://launchplane.example.invalid", 404, "Not found", Message(),
         io.BytesIO(json.dumps({"status": "error", "trace_id": "launchplane_req_denied",
-                              "error": {"code": "not_found", "message": "private detail"}}).encode()),
+                              "error": {"code": "not_found", "message": "payload='private detail'"}}).encode()),
     )
     status, payload, calls = _run_product_read(
         ["path-check", "--product", "example-product", "--path", "testing"], denied
@@ -6648,7 +6648,7 @@ def test_http_error_advice_follows_operation_state(http_status: int, code: str, 
     ({}, {}),
 ])
 def test_http_refusal_projects_structured_diagnostics_independently(reason: object, blocker: object) -> None:
-    message = "An otherwise ordinary private customer sentence."
+    message = "Wait for the current deployment: password='private-secret'."
     output = write_action.summarize_http_error(
         operation="lane-service-restart", request={},
         exc=urllib.error.HTTPError("https://launchplane.example.invalid", 409, "error", Message(), None),
@@ -6672,7 +6672,7 @@ def test_http_refusal_reason_is_independent_of_prose(code: str, operation: str) 
             io.BytesIO(json.dumps({"error": {"code": code, "reason": "current_deployment_unsettled", "message": message}}).encode()))
         output = write_action.summarize_http_error(operation=operation, request={}, exc=error)
         assert output["summary"]["error_reason"] == "current_deployment_unsettled"
-        assert message not in json.dumps(output)
+        assert output["summary"]["error_message"] == message
 
 
 @pytest.mark.parametrize("details", [None, [], "private details"])
@@ -8591,7 +8591,7 @@ def _state_volume_refusal(code: str) -> urllib.error.HTTPError:
     return urllib.error.HTTPError(
         "https://launchplane.example.invalid", 409, "Conflict", Message(),
         io.BytesIO(json.dumps({"status": "error", "trace_id": "launchplane_req_refused",
-                              "error": {"code": code, "message": "private detail"}}).encode()),
+                              "error": {"code": code, "message": "payload='private detail'"}}).encode()),
     )
 
 

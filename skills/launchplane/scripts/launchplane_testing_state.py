@@ -225,7 +225,7 @@ def read_back(h: Any, args: argparse.Namespace, settings: dict[str, str], intent
                 **{
                     "read_back_" + key: value
                     for key, value in diagnostics.items()
-                    if key in {"http_status", "trace_id", "error_code"}
+                    if key != "recommendation"
                 },
             }
         finally:
@@ -324,7 +324,7 @@ def execute_apply(h: Any, args: argparse.Namespace) -> int:
                 h.emit(refusal)
                 return 1
             summary = h.summarize_http_error(operation=APPLY_COMMAND, request=request, exc=error)["summary"]
-            diagnostics = {key: value for key, value in summary.items() if key in {"trace_id", "http_status", "error_code"}}
+            diagnostics = {key: value for key, value in summary.items() if key != "recommendation"}
         finally:
             error.close()
     except (
