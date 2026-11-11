@@ -8,19 +8,20 @@ from __future__ import annotations
 
 import argparse
 import http.client
-from pathlib import Path
 import re
 import urllib.error
+from pathlib import Path
 from typing import Any
 
 from launchplane_migrated_upload import COMMAND as UPLOAD_COMMAND
+from launchplane_migrated_upload import READ_COMMAND as MIGRATED_READ_COMMAND
 from launchplane_testing_candidate_release import project_automatic_release
 
 COMMAND = "testing-rebuild-submit"
 PLAN_COMMAND = "testing-rebuild-dry-run"
 READ_COMMAND = "testing-rebuild-operation-read"
 
-COMMANDS = frozenset({COMMAND, PLAN_COMMAND, READ_COMMAND, UPLOAD_COMMAND})
+COMMANDS = frozenset({COMMAND, PLAN_COMMAND, READ_COMMAND, UPLOAD_COMMAND, MIGRATED_READ_COMMAND})
 COPY_SOURCES = {
     "empty": "empty",
     "production": "production_restore",
@@ -297,6 +298,9 @@ def rejection(h: Any, request: dict[str, object], error: urllib.error.HTTPError)
 
 def execute(h: Any, args: argparse.Namespace) -> int:
     from launchplane_migrated_upload import execute as upload
+    if args.command == MIGRATED_READ_COMMAND:
+        from launchplane_migrated_upload import execute_read as read_migrated_state
+        return read_migrated_state(h, args)
     if args.command == UPLOAD_COMMAND:
         return upload(h, args)
     if args.command == READ_COMMAND:

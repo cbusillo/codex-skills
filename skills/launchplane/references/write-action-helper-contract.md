@@ -889,6 +889,32 @@ installed local helper bindings.
   A recorded upload receipt is still not a successful testing restore. Continue
   reading the same normal rebuild operation until its actual result is known.
 
+  For an effect-free original-bound read, use
+  `testing-rebuild-migrated-state-read --product PRODUCT --operation-id ID
+  --private-address PRIVATE_IP --migrated-source-file MANIFEST`. It validates the
+  same original manifest and uses the existing private TLS GET with
+  `include_prerequisites=true`. It opens neither archive, sends no bytes and never
+  reconciles a receipt or falls back to the uploader. Returned product, original
+  operation and source digest must match; part sizes/completion and receipt
+  consistency use the uploader's existing binding checks.
+
+  The result carries those identities, `receipt_recorded`, and each part's
+  `complete` and byte `size`. Its optional closed `prerequisites` object contains
+  `candidate_phase`, nullable `restore_workflow_started`, and all simultaneous
+  `holds` (`candidate_prepared`, `candidate_abandoned`, `restore_started`,
+  `original_caller_required`). Null start remains unknown. An older producer
+  omitting the object returns unavailable prerequisite coverage and exit 1,
+  while retaining valid part metadata. A refused, malformed or unbound response
+  supplies no disposition; the shared service diagnostics retain the actual
+  refusal's explanation without inferring a historical cause.
+
+  Coverage is non-atomic retained-file metadata, or recorded receipt metadata,
+  and recorded candidate/scope holds only. A receipt is not fresh physical byte
+  verification. Empty holds do not establish upload eligibility, retry clearance,
+  no effects, restore success or safe release. Fresh authorization and binding,
+  prefix/hash, storage reserve, receipt verification and operation, recovery,
+  production and custody guards remain on their existing paths.
+
   Use the saved receipt's `result.plan_sha256` as `--expected-plan-digest`.
   The existing reviewed-evidence loader checks the exact intent, reason and
   returned preflight digest before loading admin configuration. A fingerprint
@@ -3255,5 +3281,5 @@ and rejected WebSocket handshake, including service-unavailable responses. A Web
 when one exists; an empty close supplies no cause. The local
 `migrated_upload_refused` warning remains distinct from any service code in the
 summary. No retry, upload, receipt reconciliation or disposition is implied.
-The existing migrated-source state GET alone does not expose every upload
-prerequisite. It cannot prove that another upload may start.
+The opt-in original-bound state read above exposes recorded candidate/scope
+holds; it cannot prove that another upload may start.
