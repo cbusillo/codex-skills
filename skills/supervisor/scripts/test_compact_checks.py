@@ -538,15 +538,22 @@ class OperationTests(unittest.TestCase):
             rows = [lead, {**later, "issue": 2}]
             with self.assertRaises(check_operation.GateFailed):
                 session_closeout.handoff_successor(lead, argparse.Namespace(ledger=ledger, successor_session="successor"))
+            with patch.object(session_closeout.closure, "source_records", return_value={"retired": {**later, "session_id": "retired"}}):
+                rows = [lead]
+                with self.assertRaises(check_operation.GateFailed):
+                    session_closeout.handoff_successor(lead, argparse.Namespace(ledger=ledger, successor_session="retired"))
+                self.assertIsNone(session_closeout.handoff_successor(
+                    {**lead, "recovery": {"kind": "handoff", "successor_session": "retired"}}, args))
             rows = [lead, later, worker_on_anchor]
             for source, selected in ((worker_on_anchor, "successor"), (lead, "worker")):
                 with self.assertRaises(check_operation.GateFailed):
                     session_closeout.handoff_successor(source, argparse.Namespace(ledger=ledger, successor_session=selected))
-        ledger.write_text(json.dumps([{**lead, "worker_launches": {"batch": 1}}, {"session_id": "worker", "lead_session_id": "native"}]))
-        with patch.object(session_closeout.closure, "store_lock", side_effect=lambda *_, **__: nullcontext()), \
-                self.assertRaises(check_operation.GateFailed):
-            session_closeout.adopt_workers(ledger, "native", "successor")
-        self.assertEqual(json.loads(ledger.read_text())[1]["lead_session_id"], "native")
+        for source_lead, present in (({**lead, "worker_launches": {"batch": 1}}, [later]), (lead, [])):
+            ledger.write_text(json.dumps([source_lead, *present, {"session_id": "worker", "lead_session_id": "native"}]))
+            with patch.object(session_closeout.closure, "store_lock", side_effect=lambda *_, **__: nullcontext()), \
+                    self.assertRaises(check_operation.GateFailed):
+                session_closeout.adopt_workers(ledger, "native", "successor")
+            self.assertEqual(json.loads(ledger.read_text())[-1]["lead_session_id"], "native")
 
     def test_retired_smokes_reuse_completed_journals_without_process_or_network_probes(self) -> None:
         for harness, recovered in (("claude", False), ("codex", False), ("codex", True)):

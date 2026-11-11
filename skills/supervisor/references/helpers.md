@@ -1402,7 +1402,8 @@ to bypass registration. Pilot leads
 launched before this change are relaunched with `--worker-cap` to allocate them.
 Leads use the existing closeout helper with their own native id as
 `--supervisor-session`. A lead's handoff ends in its closeout with
-`--successor-session <new-id>`, or the one later lead row on the same anchor.
+`--successor-session <new-id>`, or the one later lead row on the same anchor;
+the successor must be a lead still in the active ledger.
 After the handoff is verified and before quit, closeout moves the lead's worker
 rows to the successor; it refuses while the lead has unsettled launches. After
 exit, open records whose Current Status actor is `agent:<old-id>` get the

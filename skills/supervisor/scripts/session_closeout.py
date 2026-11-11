@@ -253,12 +253,14 @@ def handoff_successor(entry: dict, args: argparse.Namespace) -> str | None:
         return None
     if not selected and not entry.get("launch_started_at"):
         return None
-    candidates = [row for row in release.successor_candidates(entry, load_ledger(args.ledger), selected)
-                  if row.get("worker_cap")]
-    if not selected and not candidates:
+    rows = load_ledger(args.ledger)
+    active = {row["session_id"] for row in rows}
+    candidates = [row for row in release.successor_candidates(entry, rows, selected)
+                  if row.get("worker_cap") and row["session_id"] in active]
+    if not candidates and (recovery or not selected):
         return None
     require(len(candidates) == 1, "successor",
-            "a handed-off lead needs one matching successor lead; select --successor-session")
+            "a handed-off lead needs one active matching successor lead; select --successor-session")
     try:
         release.require_successor(entry, candidates[0])
     except ValueError as error:
@@ -272,6 +274,8 @@ def adopt_workers(ledger: Path, source: str, successor: str) -> None:
         leads = [row for row in rows if row.get("session_id") == source]
         require(len(leads) == 1 and not leads[0].get("worker_launches"), "successor",
                 "source lead has unsettled worker launches; recover them before its handoff closes")
+        require(any(row.get("session_id") == successor for row in rows), "successor",
+                "successor left the active ledger; select a current successor")
         workers = [row for row in rows if row.get("lead_session_id") == source]
         for row in workers:
             row["lead_session_id"] = successor
