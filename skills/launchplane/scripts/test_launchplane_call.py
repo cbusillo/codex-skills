@@ -5,6 +5,7 @@
 # ///
 from __future__ import annotations
 
+import errno
 import importlib.util
 import io
 import json
@@ -218,6 +219,20 @@ class CallerTests(unittest.TestCase):
         self.assertEqual(output["status"], "outcome_unknown")
         self.assertNotIn("canary", json.dumps(output))
         self.assertEqual(len(self.observed), 1)
+
+        class FullDisk(io.RawIOBase):
+            def writable(self) -> bool:
+                return True
+
+            def write(self, data: Any) -> int:
+                raise OSError(errno.ENOSPC, "private-disk-canary")
+
+        with patch.object(caller, "open_evidence", return_value=io.BufferedWriter(FullDisk())):
+            code, output = self.run_call("flush-full.json", "--mode", "apply")
+        self.assertEqual(code, 1)
+        self.assertEqual(output["status"], "outcome_unknown")
+        self.assertNotIn("canary", json.dumps(output))
+        self.assertEqual(len(self.observed), 2)
 
     def test_private_body_and_evidence_work_outside_git(self) -> None:
         import launchplane_testing_state

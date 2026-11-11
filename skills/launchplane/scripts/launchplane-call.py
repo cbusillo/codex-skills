@@ -179,11 +179,15 @@ def call(args: argparse.Namespace, evidence: BinaryIO) -> int:
         evidence.write(raw)
         evidence.flush()
     except (OSError, ValueError, http.client.HTTPException) as error:
-        print(json.dumps({"status": "outcome_unknown" if method not in {"GET", "HEAD", "OPTIONS"} else "unavailable"}))
         try:
             evidence.write(json.dumps({"transport_error": type(error).__name__, "detail": str(error)}).encode())
         except OSError:
-            return 1
+            pass
+        try:
+            evidence.close()
+        except OSError:
+            pass
+        print(json.dumps({"status": "outcome_unknown" if method not in {"GET", "HEAD", "OPTIONS"} else "unavailable"}))
         return 1
     unknown = method not in {"GET", "HEAD", "OPTIONS"} and (status >= 500 or status == 408)
     try:
