@@ -246,17 +246,19 @@ def verify_handoff(entry: dict, args: argparse.Namespace, operation: Operation, 
 
 
 def handoff_successor(entry: dict, args: argparse.Namespace) -> str | None:
-    if entry.get("recovery", {}).get("kind") == "handoff":
-        return entry["recovery"]["successor_session"]
-    selected = getattr(args, "successor_session", None)
-    if not selected and not (entry.get("worker_cap") and entry.get("launch_started_at")):
+    recovery = entry.get("recovery", {}).get("kind")
+    selected = entry["recovery"]["successor_session"] if recovery == "handoff" else getattr(args, "successor_session", None)
+    if recovery == "gone" or not entry.get("worker_cap"):
+        require(not selected or bool(recovery), "successor", "only a lead's handoff moves ownership to a successor")
         return None
-    candidates = release.successor_candidates(entry, load_ledger(args.ledger), selected)
-    if not selected:
-        candidates = [row for row in candidates if row.get("worker_cap")]
-        if not candidates:
-            return None
-    require(len(candidates) == 1, "successor", "a handed-off lead needs one matching successor; select --successor-session")
+    if not selected and not entry.get("launch_started_at"):
+        return None
+    candidates = [row for row in release.successor_candidates(entry, load_ledger(args.ledger), selected)
+                  if row.get("worker_cap")]
+    if not selected and not candidates:
+        return None
+    require(len(candidates) == 1, "successor",
+            "a handed-off lead needs one matching successor lead; select --successor-session")
     try:
         release.require_successor(entry, candidates[0])
     except ValueError as error:
@@ -495,6 +497,8 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
             )
         wait_for_exit()
     ready(entry, args.supervisor_session)
+    require(all(step.get("complete") is True for gate, step in operation.state["steps"].items() if gate.startswith("repoint-")),
+            "repoint", "a Current Status re-point is uncertain; read that issue back before rerunning")
     finish_command = [
             "uv", "run",
             str(SCRIPTS / "release_session_claims.py"),

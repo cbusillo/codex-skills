@@ -430,8 +430,8 @@ class OperationTests(unittest.TestCase):
                         self.assertNotIn("close", calls)
 
     def test_lead_handoff_closeout_moves_workers_and_status_actors_to_the_successor(self) -> None:
-        for retained, moved in (([5], ["5"]), ([5, 6], ["5"]), ([6], [])):
-            with self.subTest(retained=retained), tempfile.TemporaryDirectory() as directory:
+        for retained, moved, uncertain in (([5], ["5"], False), ([5, 6], ["5"], False), ([6], [], False), ([5], [], True)):
+            with self.subTest(retained=retained, uncertain=uncertain), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 launched = "2026-01-01T00:00:00+00:00"
                 lead: dict[str, Any] = {
@@ -503,11 +503,13 @@ class OperationTests(unittest.TestCase):
                       patch.object(session_closeout.release, "transcript_roots", return_value=[str(root)]),
                       patch.object(session_closeout.release, "validate_finished")):
                     operation = check_operation.Operation(root / "closeout", [str(ledger.resolve()), "native"])
-                    named_otherwise = 6 in retained
+                    named_otherwise = 6 in retained or uncertain
+                    if uncertain:
+                        operation.state["steps"]["repoint-owner-repo-5"] = {"complete": False}
                     if named_otherwise:
                         with self.assertRaises(check_operation.GateFailed) as failure:
                             session_closeout.closeout(args, operation)
-                        self.assertEqual(failure.exception.gate, "finish")
+                        self.assertEqual(failure.exception.gate, "repoint" if uncertain else "finish")
                     else:
                         session_closeout.closeout(args, operation)
                 self.assertEqual(updates, [(number, "agent:successor") for number in moved])
@@ -536,6 +538,10 @@ class OperationTests(unittest.TestCase):
             rows = [lead, {**later, "issue": 2}]
             with self.assertRaises(check_operation.GateFailed):
                 session_closeout.handoff_successor(lead, argparse.Namespace(ledger=ledger, successor_session="successor"))
+            rows = [lead, later, worker_on_anchor]
+            for source, selected in ((worker_on_anchor, "successor"), (lead, "worker")):
+                with self.assertRaises(check_operation.GateFailed):
+                    session_closeout.handoff_successor(source, argparse.Namespace(ledger=ledger, successor_session=selected))
         ledger.write_text(json.dumps([{**lead, "worker_launches": {"batch": 1}}, {"session_id": "worker", "lead_session_id": "native"}]))
         with patch.object(session_closeout.closure, "store_lock", side_effect=lambda *_, **__: nullcontext()), \
                 self.assertRaises(check_operation.GateFailed):
