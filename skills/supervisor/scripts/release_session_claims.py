@@ -319,6 +319,10 @@ def validate_recovery(entry: dict, supervisor_session: str, *, before_exit: bool
     kind = entry.get("recovery", {}).get("kind")
     if kind not in {"gone", "handoff"}:
         raise ValueError("unknown session recovery basis")
+    action = closure.lease_state(entry["session_id"])
+    if (action.get("action_pending") and action.get("action_kind") != "routed"
+            and not native_handoff_verdict(entry, action["action_at"])):
+        raise ValueError("opaque native action still needs its later Safe verdict or original reconciliation")
     status = session_record.session_status(entry)
     if status["background_tasks"] or status.get("realtime_coverage") is False:
         raise ValueError("recovery has background work or incomplete native lifecycle coverage")

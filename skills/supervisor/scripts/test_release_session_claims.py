@@ -72,7 +72,7 @@ class ReleaseTests(unittest.TestCase):
                      "launch_started_at": "2026-01-01T00:00:01Z"}
         posted: dict[str, Any] = {**comment(99, f"Session: {source['session_id']}\nSafe to exit: yes"),
                   "issue_url": "https://api.github.com/repos/test/a/issues/1"}
-        for variant in ("qualified", "native_verdict", "no_native_verdict", "pre_handoff_verdict", "missing", "mismatch", "old_successor", "wrong_author", "conditional", "edited", "no_admission", "owned_worker", "active"):
+        for variant in ("qualified", "native_verdict", "no_native_verdict", "pre_handoff_verdict", "opaque_action", "missing", "mismatch", "old_successor", "wrong_author", "conditional", "edited", "no_admission", "owned_worker", "active"):
             rows = [source] if variant == "missing" else [source, {**successor, "issue": 2 if variant == "mismatch" else 1}]
             if variant == "owned_worker":
                 rows.append({**self.entry, "session_id": "worker", "lead_session_id": source["session_id"]})
@@ -82,7 +82,7 @@ class ReleaseTests(unittest.TestCase):
             verdict = "conditional" if variant == "conditional" else "yes"
             handoff = {**posted, "body": f"Session: {source['session_id']}\nSafe to exit: {verdict}",
                        "user": {"login": "foreign" if variant == "wrong_author" else ACTOR}}
-            if variant in {"native_verdict", "pre_handoff_verdict", "no_native_verdict"}:
+            if variant in {"native_verdict", "pre_handoff_verdict", "no_native_verdict", "opaque_action"}:
                 handoff["body"] = f"Session: {source['session_id']}\nCoordination custody has transferred to the successor."
                 prior = [dict(row) for row in records]
                 if variant != "no_native_verdict":
@@ -104,7 +104,9 @@ class ReleaseTests(unittest.TestCase):
                 self.transcript.write_text(self.transcript.read_text() + json.dumps({
                     "timestamp": "2026-01-01T00:03:00Z", "type": "event_msg", "payload": {"type": "task_started", "turn_id": "new"}}) + "\n")
             with (self.subTest(variant=variant),
-                  patch_attribute(closure, "lease_state", return_value={"successor_admitted": variant != "no_admission"}),
+                  patch_attribute(closure, "lease_state", return_value={"successor_admitted": variant != "no_admission",
+                      **({"action_pending": True, "action_kind": "opaque", "action_at": "2026-01-01T00:01:30Z"}
+                         if variant == "opaque_action" else {})}),
                   patch_attribute(identity, "automation_login", return_value=ACTOR),
                   patch.object(helper, "GitHubReader", return_value=self.reader),
                   patch_attribute(self.reader, "get_json", return_value=handoff),
