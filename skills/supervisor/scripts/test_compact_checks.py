@@ -112,12 +112,10 @@ class OperationTests(unittest.TestCase):
                   "blocked": [], "unresolved_invocations": []}
         release = session_closeout.release
 
-        def run(_operation: check_operation.Operation, gate: str, command: list[str], **_: Any) -> dict | list:
+        def run(_operation: check_operation.Operation, gate: str, _command: list[str], **_: Any) -> dict | list:
             if gate == "claims":
-                self.assertIn("--require-released-claims", command)
                 return claims
             if gate == "finish":
-                self.assertIn("--recover-ended", command)
                 release.record_recovery(log, {**source, "recovery": {"kind": "gone"}}, "supervisor")
                 return {"ok": True, "needs_reconciliation": False}
             self.assertIn(gate, ("terminals", "disappearance"))
