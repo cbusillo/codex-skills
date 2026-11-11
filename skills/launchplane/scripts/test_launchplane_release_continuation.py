@@ -4,10 +4,12 @@
 # dependencies = ["pytest==9.2.0"]
 # ///
 """Continuation apply binds its saved review; readback binds the continued operation."""
+import http.client
 import io
 import json
 import urllib.error
 from contextlib import redirect_stdout
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -34,7 +36,7 @@ def continuation(status="ready", **changes):
     return {**body, **changes}
 
 
-def operation(status="pending", **changes):
+def operation(status="pending", **changes) -> dict[str, Any]:
     view = {
         "operation_id": "promotion-op-1", "product": "site", "context": "site", "instance": "prod", "attempt": 0,
         "created_at": "2026-11-11T17:00:00Z", "started_at": "", "updated_at": "2026-11-11T21:00:00Z",
@@ -49,7 +51,7 @@ PRIVATE_PROSE = "The owner asked us to hold this until the staff finish inventor
 
 def http_error(status, code):
     body = {"trace_id": "trace-err", "error": {"code": code, "message": PRIVATE_PROSE, "reason": PRIVATE_PROSE}}
-    return urllib.error.HTTPError(SERVICE, status, "Failure", {}, io.BytesIO(json.dumps(body).encode()))
+    return urllib.error.HTTPError(SERVICE, status, "Failure", http.client.HTTPMessage(), io.BytesIO(json.dumps(body).encode()))
 
 
 def invoke(args, posts=(), reads=(), service=SERVICE):

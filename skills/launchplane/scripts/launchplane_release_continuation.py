@@ -87,7 +87,7 @@ def _evidence(path: str, operation: str | set[str]) -> dict[str, Any]:
         raise ValueError("continuation_evidence_mismatch") from None
 
 
-def project_continuation(h: Any, response: object, request: dict[str, object], *, apply: bool) -> dict[str, object]:
+def project_continuation(h: Any, response: object, request: dict[str, str], *, apply: bool) -> dict[str, object]:
     source = h._require_dict(response)
     if set(source) != CONTINUATION_FIELDS or source["decision_record_id"] != request["decision_record_id"]:
         raise h.LaunchplaneSafetyError("invalid_response")
@@ -107,7 +107,7 @@ def project_continuation(h: Any, response: object, request: dict[str, object], *
     }
 
 
-def project_operation(h: Any, response: object, request: dict[str, object]) -> dict[str, object]:
+def project_operation(h: Any, response: object, request: dict[str, str]) -> dict[str, object]:
     """The promotion family's view only; rollback or replacement views fail closed."""
     source = h._require_dict(response)
     operation = h._require_dict(source.get("operation"))
@@ -129,29 +129,30 @@ def project_operation(h: Any, response: object, request: dict[str, object]) -> d
     result = operation["result"]
     if result is not None:
         result = h._require_dict(result)
-        projected["result"] = {key: result.get(key, "skipped") for key in RESULT_STATUSES}
-        if any(value not in RESULT_STATUSES[key] for key, value in projected["result"].items()):
+        steps: dict[str, object] = {key: result.get(key, "skipped") for key in RESULT_STATUSES}
+        if any(value not in RESULT_STATUSES[key] for key, value in steps.items()):
             raise h.LaunchplaneSafetyError("invalid_response")
-        projected["result"].update({key: h.public_identifier(result[key]) for key in RESULT_IDS if result.get(key)})
+        steps.update({key: h.public_identifier(result[key]) for key in RESULT_IDS if result.get(key)})
+        projected["result"] = steps
     h.assert_public_safe_shape(projected)
     return projected
 
 
-def finish(h: Any, *, operation: str, request: dict[str, object], status: str,
+def finish(h: Any, *, operation: str, request: dict[str, str], status: str,
            result: dict[str, object] | None = None, diagnostics: dict[str, object] | None = None) -> int:
     output = h.base_payload(status=status, operation=operation, request=request)
     summary = {key: value for key, value in (diagnostics or {}).items() if key in PRINTED_DIAGNOSTICS}
-    summary["recommendation"] = RECOVERY.get(status, RECOVERY["refused"])
-    warnings = [] if status == "ok" else [h.warning(str(summary.get("error_code", status)), summary["recommendation"])]
+    recommendation = RECOVERY.get(status, RECOVERY["refused"])
+    warnings = [] if status == "ok" else [h.warning(str(summary.get("error_code", status)), recommendation)]
     if result is not None:
         output["result"] = result
         if result.get("provider_mutation") is False and operation == APPLY:
-            summary["recommendation"] += f" provider_mutation=false covers this call only; read back with {READ}."
+            recommendation += f" provider_mutation=false covers this call only; read back with {READ}."
         if result.get("apply_authorized") is False:
             warnings.append(h.warning("apply_not_authorized", "This identity can review but not apply this continuation."))
         if result.get("status") == "reconciliation_required":
             warnings.append(h.warning("reconciliation_required", "Effects are unknown and fenced. Do not continue or retry; use the existing reconciliation."))
-    output["summary"] = summary
+    output["summary"] = {**summary, "recommendation": recommendation}
     output["warnings"] = warnings
     for value in output.values():
         h.assert_public_safe_shape(value)
@@ -159,7 +160,7 @@ def finish(h: Any, *, operation: str, request: dict[str, object], status: str,
     return 0 if status == "ok" else 1
 
 
-def _bind(h: Any, args: argparse.Namespace) -> tuple[dict[str, object], dict[str, object]]:
+def _bind(h: Any, args: argparse.Namespace) -> tuple[dict[str, str], dict[str, object]]:
     """The public request binding and the service body."""
     if args.command == READ:
         evidence = _evidence(args.continuation_evidence_file, {REVIEW, APPLY})
@@ -168,7 +169,7 @@ def _bind(h: Any, args: argparse.Namespace) -> tuple[dict[str, object], dict[str
             "context": h.public_identifier(args.context),
             "operation_id": h.public_identifier(evidence["result"].get("operation_id")),
             "decision_record_id": h.public_identifier(evidence["request"].get("decision_record_id")),
-            "service_url_sha256": evidence["request"].get("service_url_sha256"),
+            "service_url_sha256": str(evidence["request"].get("service_url_sha256")),
         }
         return request, {}
     reason = args.reason.strip()
@@ -212,7 +213,7 @@ def execute(h: Any, args: argparse.Namespace) -> int:
     timeout = getattr(args, "timeout", 30)
     try:
         if operation == READ:
-            path = h.helper_command_path(READ).format(operation_id=urllib.parse.quote(str(request["operation_id"]), safe=""))
+            path = h.helper_command_path(READ).format(operation_id=urllib.parse.quote(request["operation_id"], safe=""))
             response = h.request_launchplane_read(
                 service_url=settings["service_url"], path=path, settings=settings,
                 query={"product": request["product"], "context": request["context"]}, timeout=timeout, no_store=True,
@@ -220,8 +221,8 @@ def execute(h: Any, args: argparse.Namespace) -> int:
             result = project_operation(h, response, request)
         else:
             path = h.helper_command_path(operation).format(
-                product=urllib.parse.quote(str(request["product"]), safe=""),
-                decision_record_id=urllib.parse.quote(str(request["decision_record_id"]), safe=""),
+                product=urllib.parse.quote(request["product"], safe=""),
+                decision_record_id=urllib.parse.quote(request["decision_record_id"], safe=""),
             )
             response = h.request_launchplane(service_url=settings["service_url"], path=path, settings=settings, body=body, timeout=timeout)
             result = project_continuation(h, response, request, apply=operation == APPLY)
