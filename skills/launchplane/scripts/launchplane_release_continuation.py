@@ -143,7 +143,7 @@ def finish(h: Any, *, operation: str, request: dict[str, str], status: str,
     output = h.base_payload(status=status, operation=operation, request=request)
     summary = {key: value for key, value in (diagnostics or {}).items() if key in PRINTED_DIAGNOSTICS}
     recommendation = RECOVERY.get(status, RECOVERY["refused"])
-    warnings = [] if status == "ok" else [h.warning(str(summary.get("error_code", status)), recommendation)]
+    warnings = [] if status == "ok" else [h.warning(summary.get("error_code", status), recommendation)]
     if result is not None:
         output["result"] = result
         if result.get("provider_mutation") is False and operation == APPLY:
