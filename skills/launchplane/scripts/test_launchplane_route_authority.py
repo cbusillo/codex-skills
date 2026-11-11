@@ -13,15 +13,23 @@ import urllib.error
 from contextlib import redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Any
 from unittest.mock import patch
 
 import pytest
-
-from test_launchplane_inert_planners import (
-    DOMAINS, DOMAIN_COMMAND, INGRESS_COMMAND, assert_private_dropped,
-    domain_response, ingress_input, ingress_reads, ingress_response, inspection, fingerprint_fixture,
-)
 from test_launchplane_helpers import write_action as h
+from test_launchplane_inert_planners import (
+    DOMAIN_COMMAND,
+    DOMAINS,
+    INGRESS_COMMAND,
+    assert_private_dropped,
+    domain_response,
+    fingerprint_fixture,
+    ingress_input,
+    ingress_reads,
+    ingress_response,
+    inspection,
+)
 
 SCOPE = {"product": "shop", "context": "shop", "instance": "prod"}
 
@@ -57,7 +65,7 @@ def binding_record():
                    "stale_after": "2026-10-15T21:00:00Z"}}
 
 
-def binding_response(mode="dry-run", status="ready", current=""):
+def binding_response(mode: str = "dry-run", status: str = "ready", current: str = "") -> dict[str, Any]:
     return {"status": "accepted", "trace_id": "launchplane_req_binding", "records": {
         **SCOPE, "route_binding_status": "created" if mode == "apply" else "planned_create"},
         "result": {"mode": mode, "status": status, "operation": "create", "findings": [],
@@ -79,6 +87,8 @@ def run(command, reads, posts=(), evidence=None, private=None, extra=()):
             argv = [command, *[arg for key, value in SCOPE.items() for arg in ("--" + key, value)]]
             if command.endswith(("dry-run", "apply")):
                 argv += ["--reason", "private reason"]
+                if private is not None and command == "route-binding-dry-run":
+                    argv += ["--ingress-payload-file", str(payload_path)]
         if command.endswith("-apply"):
             evidence_path = root / "review.json"
             evidence_path.write_text(json.dumps(evidence))
@@ -187,18 +197,190 @@ def ingress_plan():
     return run(INGRESS_COMMAND, ingress_reads(), [ingress_response()])[1]
 
 
+def test_current_verification_uses_audit_action_without_apply_key() -> None:
+    private = ingress_input()
+    private["verify_route_binding"] = True
+    code, output, _, post = run(INGRESS_COMMAND, verification_reads(), verification_posts(), private=private)
+    assert code == 0
+    assert post.call_args.kwargs["body"]["ingress"]["verify_route_binding"] is True
+    assert post.call_args.kwargs["idempotency_key"] == ""
+    assert output["result"]["apply_eligible"] is False
+
+
+def observed_host_response() -> dict[str, Any]:
+    response: dict[str, Any] = ingress_response()
+    host = response["result"]["proxy_host"]
+    host.update({key: False for key in h.INGRESS_PLAN_ROUTE_FIELDS - {
+        "domain_names", "edge_endpoint_key", "certificate_id", "access_list_id",
+        "npmplus_x_frame_options", "npmplus_auth_request", "enabled"}})
+    host.update(access_list_id=0, npmplus_x_frame_options="SAMEORIGIN", npmplus_auth_request="none", enabled=True)
+    return response
+
+
+def verification_reads() -> list[dict[str, Any]]:
+    tracked = inspection()
+    tracked["inspect"]["tracked_target"]["domains"] = DOMAINS
+    audit = audit_readback("dry-run")
+    audit["record"].update(idempotency_key="",
+                           provider_route_sha256="b" * 64,
+                           route_verification={"instance": SCOPE["instance"], "sources_sha256": "c" * 64})
+    return [*ingress_reads(), tracked, audit]
+
+
+def verification_posts() -> list[Any]:
+    return [observed_host_response(), observed_host_response()]
+
+
+def blocked_binding(code: str) -> dict[str, Any]:
+    response = binding_response(status="blocked")
+    response["result"]["findings"] = [{"code": code, "detail": "PRIVATE_SENTINEL"}]
+    return response
+
+
+@pytest.mark.parametrize("finding", ["ingress_audit_missing", "ingress_verification_required"])
+def test_missing_history_or_expired_sources_verify_then_review_without_ingress_apply(finding: str) -> None:
+    private = ingress_input()
+    private.pop("expected_host_id")
+    reads = [profiles(), *absent(), *verification_reads(), *absent()]
+    posts = [blocked_binding(finding), *verification_posts(), binding_response()]
+    code, plan, _, post = run("route-binding-dry-run", reads, posts, private=private)
+    assert code == 0 and plan["result"]["verification_refreshed"] is True
+    comparison = post.call_args_list[1].kwargs["body"]["ingress"]
+    assert "verify_route_binding" not in comparison and "expected_host_id" not in comparison
+    assert comparison["mode"] == "dry-run"
+    observation = post.call_args_list[2].kwargs["body"]["ingress"]
+    assert observation["verify_route_binding"] is True
+    assert observation["require_exact_expected_host_domains"] is True
+    assert all(observation[key] is False for key in ("allow_create", "allow_update", "allow_enable_disable"))
+    assert all(call.kwargs["idempotency_key"] == "" for call in post.call_args_list)
+    readback = {"status": "ok", "record": binding_record()}
+    code, output, _, post = run("route-binding-apply", [profiles(), *absent(), readback],
+        [binding_response(), binding_response("apply")], plan, private=private)
+    assert code == 0 and output["result"]["read_back_matches"] is True
+    assert all("ingress" not in call.kwargs["body"] for call in post.call_args_list)
+
+
+def test_expiry_during_review_returns_to_dry_run_without_observation_or_apply() -> None:
+    code, output, _, post = run("route-binding-apply", [profiles(), *absent()],
+        [blocked_binding("ingress_verification_required")], binding_plan())
+    assert code != 0 and output["status"] == "stale" and post.call_count == 1
+    assert post.call_args.kwargs["body"]["mode"] == "dry-run"
+
+
+@pytest.mark.parametrize("codes", [["ingress_audit_unresolved"], ["ingress_verification_required", "ingress_audit_unresolved"]])
+def test_pending_original_blocks_refresh_even_with_an_observation_finding(codes: list[str]) -> None:
+    response = blocked_binding(codes[0])
+    response["result"]["findings"] = [{"code": code} for code in codes]
+    code, output, _, post = run("route-binding-dry-run", [profiles(), *absent()], [response], private=ingress_input())
+    assert code == 0 and output["result"]["apply_eligible"] is False
+    assert output["result"]["finding_codes"] == codes and post.call_count == 1
+
+
+@pytest.mark.parametrize("cause", ["domains", "target", "scope", "settings", "host", "ambiguous", "unavailable", "drift", "audit"])
+def test_current_fact_failures_never_reconcile(cause: str) -> None:
+    reads, posts = verification_reads(), verification_posts()
+    if cause == "domains":
+        reads[2]["inspect"]["tracked_target"]["domains"] = ["other.example.invalid"]
+    elif cause == "target":
+        reads[2]["inspect"]["target_id"] = "other"
+    elif cause == "scope":
+        reads[2]["inspect"]["tracked_target"]["instance"] = "other"
+    elif cause == "settings":
+        posts[0]["result"]["proxy_host"].pop("ssl_forced")
+    elif cause == "host":
+        posts[0]["result"]["proxy_host"]["id"] += 1
+    elif cause in {"ambiguous", "unavailable"}:
+        posts[0] = http_error(400 if cause == "ambiguous" else 403, "invalid_request" if cause == "ambiguous" else "authorization_denied")
+    elif cause == "drift":
+        posts[1]["result"]["status"] = "planned"
+        posts[1]["result"]["operations"][0].update(action="update", requires_apply=True, change_categories=["tls"])
+    else:
+        reads[3]["record"]["route_verification"]["instance"] = "other"
+    private: dict[str, Any] = {**ingress_input(), "verify_route_binding": True}
+    code, output, _, post = run("route-binding-dry-run", [profiles(), *absent(), *reads],
+        [blocked_binding("ingress_audit_missing"), *posts], private=private)
+    expected = {"domains": "ingress_current_target_required", "target": "ingress_current_target_required",
+                "scope": "ingress_current_target_required", "settings": "ingress_current_settings_required",
+                "host": "ingress_current_host_required", "ambiguous": "invalid_request",
+                "unavailable": "authorization_denied", "drift": "ingress_route_drift",
+                "audit": "ingress_current_observation_required"}
+    assert code != 0 and output["summary"]["error_code"] == expected[cause]
+    assert sum("ingress" not in call.kwargs["body"] for call in post.call_args_list) == 1
+    if cause == "drift":
+        assert output["result"]["status"] == "planned" and output["result"]["verification_usable"] is False
+        assert output["records"]["ingress_route_audit_record_id"] == posts[1]["records"]["ingress_route_audit_record_id"]
+
+
+@pytest.mark.parametrize("flag,valid", [(False, True), ("true", False), (1, False), (None, False)])
+def test_verification_false_is_omitted_and_non_boolean_is_refused(flag: object, valid: bool) -> None:
+    private = {**ingress_input(), "verify_route_binding": flag}
+    code, _, _, post = run(INGRESS_COMMAND, ingress_reads(), [ingress_response()], private=private)
+    if valid:
+        assert code == 0 and "verify_route_binding" not in post.call_args.kwargs["body"]["ingress"]
+    else:
+        assert code != 0
+        post.assert_not_called()
+
+
+@pytest.mark.parametrize("missing", ["records", "id", "result"])
+def test_malformed_planned_observation_keeps_the_json_failure_envelope(missing: str) -> None:
+    posts = verification_posts()
+    posts[1]["result"]["status"] = "planned"
+    if missing == "records":
+        posts[1].pop("records")
+    elif missing == "id":
+        posts[1]["records"]["ingress_route_audit_record_id"] = "invalid id"
+    else:
+        posts[1]["result"] = []
+    code, output, _, _ = run(INGRESS_COMMAND, verification_reads(), posts,
+                            private={**ingress_input(), "verify_route_binding": True})
+    assert code != 0 and output["status"] == "invalid"
+    assert output["warnings"][0]["code"] != "ingress_route_drift"
+
+
+def test_known_full_settings_skip_the_discovery_comparison() -> None:
+    private: dict[str, Any] = {**ingress_input(), "verify_route_binding": True}
+    host = observed_host_response()["result"]["proxy_host"]
+    private["route"].update({key: host[key] for key in h.INGRESS_PLAN_ROUTE_FIELDS - {"edge_endpoint_key"}})
+    code, output, _, post = run(INGRESS_COMMAND, verification_reads(), [observed_host_response()], private=private)
+    assert code == 0 and output["result"]["verification_usable"] is True
+    assert post.call_count == 1
+
+
+@pytest.mark.parametrize("cause", ["scope", "path"])
+def test_continuation_input_is_validated_before_service_calls(cause: str) -> None:
+    private = ingress_input()
+    if cause == "scope":
+        private["product"] = "foreign"
+        extra = ()
+    else:
+        extra = ("--ingress-payload-file", "/missing/fictional-ingress.json")
+    code, output, get, post = run("route-binding-dry-run", [], private=private, extra=extra)
+    assert code != 0
+    assert output["warnings"][0]["code"] == ("binding_scope_mismatch" if cause == "scope" else "invalid_payload_path")
+    get.assert_not_called()
+    post.assert_not_called()
+
+
+def test_commit_time_expiry_returns_the_supported_review_continuation() -> None:
+    code, output, _, post = run("route-binding-apply", [profiles(), *absent()],
+        [binding_response(), http_error(409, "ingress_verification_required")], binding_plan())
+    assert code != 0 and post.call_count == 2
+    assert "--ingress-payload-file" in output["summary"]["recommendation"]
+
+
 def ingress_apply_response():
     response = ingress_response()
     response["result"]["dry_run"] = False
     return response
 
 
-def audit_readback():
-    response = ingress_apply_response()
+def audit_readback(mode: str = "apply") -> dict[str, Any]:
+    response = ingress_response()
     private = ingress_input()
     return {"status": "ok", "trace_id": "launchplane_req_read", "record": {
         "record_id": response["records"]["ingress_route_audit_record_id"],
-        "product": "shop", "context": "shop", "mode": "apply", "dry_run": False,
+        "product": "shop", "context": "shop", "mode": mode, "dry_run": mode == "dry-run",
         "status": "unchanged", "edge_endpoint_key": private["route"]["edge_endpoint_key"],
         "expected_host_id": private["expected_host_id"], "provider_host_id": private["expected_host_id"],
         "requested_domains": DOMAINS, "tls_owner": "provider", "provider_certificate_ref": "8",

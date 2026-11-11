@@ -1467,6 +1467,29 @@ No existing route binding or audit is required; this supports planning the
 missing-authority case. The service records the dry run's own audit evidence;
 the helper retains that record id as proof metadata.
 
+To record a current observation without historical apply evidence, add the
+boolean `verify_route_binding: true` to this private payload. False is omitted
+from the service request; ordinary callers keep their behavior. In this mode
+`expected_host_id` may be omitted: the helper first reads the existing exact
+target inspection and checks the full tracked domains, then uses the same
+ingress job's ordinary dry-run comparison to obtain the unique existing host
+and any omitted scalar TLS/route settings. This comparison may plan changes
+but cannot apply them. An explicit expected host or setting is never replaced.
+The helper then submits the exact-host verification dry run, with every
+mutation flag false, under the existing `ingress_route.audit` action. No apply
+confirmation or provider-write key is used. Missing/inaccessible target, host,
+edge or settings remain prerequisites of those existing jobs; display names
+never supply identity, edge or TLS ownership.
+
+Only an unchanged response with non-mutating operations and a matching
+dry-run audit containing `route_verification.instance`, `sources_sha256` and
+`provider_route_sha256` is usable. The service computes the provider digest
+before redaction; the helper neither exports raw config nor recomputes that
+digest from a redacted host. A planned observation returns
+`ingress_route_drift`, its audit id and `verification_usable: false`; stop and
+review the existing route plan. A verification receipt is never eligible for
+`ingress-route-authority-apply`.
+
 Output uses the existing envelope, retaining bounded status, scope, counts,
 agreement booleans, the ingress audit record id and service trace. Domains,
 host and target ids, endpoint keys, upstream configuration, certificate refs,
@@ -1503,6 +1526,27 @@ credential or provider write. Source validation uses offline tests only.
   `route-binding-apply` uses the same scope and reason. Coordinates come only
   from the service's candidate, never caller-supplied domains or provider ids.
   Blocked/conflict plans are diagnostic evidence and never apply eligible.
+
+For the supported verification-to-reconciliation continuation, pass
+`--ingress-payload-file <private-file>` to `route-binding-dry-run`. It uses the same ingress input above and opts into
+verification only when reconcile reports solely `ingress_audit_missing` or
+`ingress_verification_required`. It compares current facts, records an
+unchanged observation, rereads the current binding and replans reconcile.
+Review that new helper JSON, then use `route-binding-apply` with the ordinary
+reviewed-apply arguments below. An apply that needs fresh verification returns
+`stale` without writing; repeat `route-binding-dry-run` with the private ingress
+file and review the fresh plan. Other findings, including pending
+original effects, custody, ambiguity and source/artifact/deployment mismatch,
+are returned unchanged without refresh or bypass. No raw call is needed.
+
+A still-current observation is reused without a new audit or a new clock.
+The service checks its exact sources and 24-hour observation deadline on each
+reconcile and at commit, with the existing original-key and current-record CAS
+rules. Changed or expired evidence requires fresh verification and review. Current
+observations supersede older apply history; planned drift never permits apply.
+Delivered compatible service and an installed compatible helper are both
+required. These commands do not qualify runtime/indexing eligibility or assign
+any real target, deployment, original, provider, health or data action.
 
 Each apply requires `--reviewed-dry-run`, `--expected-plan-digest`,
 `--dry-run-evidence-file` (saved helper JSON outside repositories), and a stable
