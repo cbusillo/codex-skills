@@ -1301,7 +1301,7 @@ POST. That check is not server-enforced compare-and-swap.
 
 Order for a new lane on an existing product: record the Client, create the
 provider target, add the lane record with the stable-lane repair workflow, set
-the lane's secrets with `product-config-dry-run` and `-apply`, then write the
+the lane's secrets with the generic caller for `apply_product_config`, then write the
 backup policy for production.
 
 ### Client
@@ -1986,249 +1986,27 @@ admin operation.
 
 ## Product Config
 
-For helper-driven product-config work, agents should start with intent
-preflight. This validates authorization and managed-secret binding policy
-without accepting plaintext values. For business-hours policy, use the standalone
-inspection flow below instead:
+Use [the generic caller](agent-operator-contract.md#generic-caller) with
+`apply_product_config`. Its live request schema owns configuration payloads,
+including public hosts, business hours, first-empty preparation and secret
+copy references. The catalog keeps no request builder, response field list or
+apply-review check for this operation.
 
-```sh
-uv run scripts/launchplane-write-action.py \
-  product-config-preflight \
-  --product example-product \
-  --context example-testing \
-  --instance web \
-  --source-url https://github.com/example/repo/issues/123 \
-  --reason "Preflight product-config change for issue 123." \
-  --secret-binding EXAMPLE_API_TOKEN
-```
+Read the service's [configuration boundary](https://github.com/cbusillo/launchplane/blob/main/docs/config-boundary.md),
+[secrets contract](https://github.com/cbusillo/launchplane/blob/main/docs/secrets.md)
+and [operations guide](https://github.com/cbusillo/launchplane/blob/main/docs/operations.md)
+for the selected intent and recovery. Plaintext values come only from an
+explicit private admin payload file; never put them in arguments, stdin,
+chat, Git or public evidence. Obtain target and source references from service
+records or explicit scoped admin input. Configuration storage and runtime
+sync are separate operations.
 
-The helper calls `POST /v1/agent/write-intents/evaluate` with
-`intent: "product_config_apply"` and `mode: "dry_run"`. It reports only status,
-trace id, record id, reason code, safe-to-execute, next action, binding keys,
-and runtime key-safety finding codes.
-
-Ad hoc plaintext secret entry should use the signed-in Launchplane UI. The
-helper does not accept plaintext secrets as CLI arguments, stdin, issue text, PR
-text, or chat text.
-
-When a trusted local admin already has an explicit private payload file outside
-the repo, the helper can submit the documented product-config route:
-
-```sh
-uv run scripts/launchplane-write-action.py \
-  product-config-dry-run \
-  --payload-file /private/path/product-config-request.json \
-  --idempotency-key example-product-config-dry-run-123
-
-uv run scripts/launchplane-write-action.py \
-  product-config-apply \
-  --payload-file /private/path/product-config-request.json \
-  --reviewed-dry-run \
-  --idempotency-key example-product-config-apply-123
-```
-
-The payload file is explicit private admin input. Do not commit it, paste it,
-log it, or summarize its raw contents. It must live outside the active
-repository or worktree so checked-in config and examples cannot quietly become
-write payloads. Local admin apply still requires a prior matching dry-run
-recorded by Launchplane, from the same file under its own stable key; reusing
-the dry-run key is refused with `409 idempotency_key_reused`. Keep each mode's
-original key for reconciliation or an unchanged retry, and never change keys
-to bypass a conflict or an uncertain outcome.
-
-A secret stored for one exact lane (scope `context_instance`) may carry
-`secret_class` in the payload, the writer's key-safety classification for that
-lane, for example `testing` for a development-store credential on a testing
-lane. Launchplane refuses a class the lane does not allow. The redacted secret
-results echo the stored `secret_class` alongside `action`, `integration`, and
-`binding_key`.
-
-### Public hostnames
-
-The private payload may set `public_hosts` for an exact owned prod compose lane.
-Use the same product-config dry-run/apply commands above. Launchplane's
-[product-config reference](https://github.com/cbusillo/launchplane/blob/main/docs/service-boundary.md#public-hostnames-on-the-prod-compose-target)
-owns hostname semantics, the current-target/provider dry-run requirement,
-additive reconciliation, and explicit managed-name removals. Omission preserves
-the configuration; `[]` clears only the managed public names.
-
-The optional result `public_hosts` projects hostname lists `before`, `after`,
-`added`, `updated`, `removed`, `unchanged`, `read_back_hosts`, plus `plan_digest`,
-`runtime_port`, `https`, `service_name`, `certificate_type`, and `verified`.
-The helper also reports `resolved_base_url`, derived from the first validated
-`after` host under
-[Launchplane's public-base-URL rule](https://github.com/cbusillo/launchplane/blob/main/control_plane/contracts/public_hosts.py).
-It is `""` for an explicitly empty host list; absent `public_hosts` evidence
-omits the whole block. No origin URL or arbitrary response URL is copied.
-This is intended configuration in a dry run and verified host configuration in
-an apply read-back, not proof that a deployment has rendered the URL. The generic
-target-replacement plan's `base_url` remains redacted without public-host provenance.
-Unknown fields, non-hostname values, malformed digests/ports, and inconsistent
-verification are refused. Existing responses without this result remain valid.
-Apply's verified read-back proves provider route configuration, not public HTTP
-reachability. No target-setup grant, DNS/TLS change, Client release or separate
-target-inspection permission is needed to consume this result. On a stale plan
-or partial provider outcome, keep the original request and key and review a
-new dry-run under a new key before retrying; never infer success from the
-previous request's transport outcome.
-
-### Odoo business-hours policy
-
-The same `product-config-dry-run` and `product-config-apply` commands support a
-standalone `odoo_business_hours` section on an exact Odoo prod lane. Reuse the
-existing service route and current identity. Task scope still owns authority;
-this capability does not grant configuration or release permission.
-
-Use a private payload with product, context, `instance: "prod"`, reason and an
-optional source label. The calendar section selects `operation: "inspect"`,
-`"set"` or `"clear"`. Inspect is dry-run only; it returns bounded permitted-company
-references and safe private labels. An optional company ID narrows inspection.
-Set requires an explicit company ID and its observed `expected_calendar_id`.
-An optional `private_endpoint_key` references an existing endpoint; URLs and
-credentials are not accepted. Clear removes the selection. Runtime settings,
-secrets, binding removals and public-host changes cannot be mixed into this
-request. Odoo remains the timetable authority; no hours or calendar ID persist
-in the stored policy.
-
-Save the complete dry-run output. Set/clear apply additionally requires
-`--expected-plan-digest` from `result.odoo_business_hours.plan_digest` and
-`--dry-run-evidence-file`, alongside `--reviewed-dry-run` and the apply's own
-`--idempotency-key`. The helper binds the exact request, reason, source label,
-scope and selection to that saved review and supplies `reviewed_plan_sha256`;
-do not put that field in the private payload. A new runtime/endpoint authority
-plan must be reviewed explicitly even when the chosen company stays the same.
-
-The calendar result distinguishes current runtime qualification from persisted
-policy. An accepted apply that matches the reviewed plan performs an independent
-profile GET and reports `read_back` and
-`read_back_matches`. The policy contains only company ID and endpoint reference.
-`product-profile-read` preserves a present `odoo_business_hours: null`, a typed
-policy, or omission as separate wire states. The producer may omit its unset
-optional default. The apply readback accepts that default only from a matching,
-complete typed profile response; missing/malformed/failed reads remain unknown.
-No explicit-null observation is invented from omission.
-
-Unsafe company labels are omitted and marked `label_omitted`; keep inspection
-labels in private evidence. Unknown calendar/policy fields, malformed identities/digests and
-inconsistent scope or selection fail projection. The result's company scope is
-the permitted-company set, bounded to 128 companies, not database-wide visibility.
-Runtime identity projects only the required lane, deployment, artifact and
-source references; other runtime metadata is omitted.
-Window `next_release_at` is normalized to UTC. The producer's release prose is
-omitted from configuration output; use the observed closing time.
-
-A calendar qualification failure retains its service code and trace and calls
-for inspecting/correcting company, calendar, endpoint and current authority.
-The helper never retries automatically. An interrupted apply is
-`outcome_unknown`; an unreadable or mismatched accepted result/readback is
-`accepted_unverified`, both exit 1. Read the stored policy and retain the original
-payload, saved review and idempotency key before deciding recovery. Neither
-state proves no write. A committed clear receipt and a later profile read are
-separate evidence. Source delivery does not configure a product, activate a
-live release policy or prove a release drill.
-
-### First-empty Odoo runtime credentials
-
-The existing product-config commands accept the standalone `odoo_first_empty:
-"runtime_credentials"` intent for an exact product/context/prod and selected
-generated runtime purposes. Each secret requests `generate: "odoo_first_empty"`
-and `secret_class: "prod_only"`. The service owns purpose eligibility, original
-target/storage qualification, binding absence and same-caller canonical dry-run
-markers. The withdrawn `data_policy` intent is unsupported. No lasting empty-data
-policy or permission is created; all data, Live, backup, held-release and bootstrap
-protections remain with the service.
-
-Save the accepted dry-run helper output. Apply requires `--reviewed-dry-run`,
-`--dry-run-evidence-file`, `--expected-plan-digest` and the original
-`--idempotency-key`. Review binds the canonical metadata, selected purposes,
-product/context/prod, source label, reason and confirmation, plus the returned
-plan digest. A digest alone does not replace the service's same-caller marker.
-Both the caller form and producer-normalized canonical form are supported;
-canonical null value and generated metadata are preserved and empty runtime
-input is omitted. Caller values, copying, adoption, foreign scopes, unrelated
-changes and unknown fields are refused before HTTP.
-
-Only this intent emits optional `result.odoo_first_empty`: intent, plan_sha256,
-data, provenance and applied, with the actual producer's typed defaults when
-omitted. Its `data` describes that plan's observation, never later disposal
-authority. Ordinary/calendar responses do not acquire this result. After an
-aligned apply or stored replay, an independent existing secret-bindings GET
-must show complete service and projection coverage and one matching exact-lane
-name/class/version row per selected purpose. It proves current binding metadata,
-not credential values, generation or current empty storage. Missing, scoped,
-unsafe or mismatched reads remain `accepted_unverified`, exit 1.
-
-No automatic retry or replanning occurs. Running, reconciliation-required,
-transport-loss and unreadable-result outcomes retain the original request,
-review and key. Absent bindings do not prove effects absent. Use supported
-original-operation reconciliation before any retry. Completed replay is the
-service's stored response, without a new generation or storage probe. Installed
-service and caller compatibility must both qualify before a real request.
-
-### Copying a managed runtime secret
-
-A product-config secret entry may carry `copy_from` instead of `value` to copy
-one of the product's own stable-lane runtime secrets into the payload's target
-lane inside the service:
-
-```json
-{
-  "binding_key": "EXAMPLE_SYNC_API_TOKEN",
-  "copy_from": {
-    "context": "example-product",
-    "instance": "prod",
-    "version_id": "<version_id from product-secret-bindings-read>"
-  },
-  "secret_class": "shared_safe",
-  "sharing_reason": {
-    "kind": "read_only_source",
-    "reason": "Testing reads the same source.",
-    "evidence": "Who verified the permissions, when, and what they saw."
-  }
-}
-```
-
-`copy_from` has exactly `context`, `instance` and `version_id`; the helper
-refuses an entry that also carries a non-null `value` (`secret_copy_with_value`)
-or a malformed reference (`invalid_secret_copy_from`) before sending anything.
-As in the service, a `null` `copy_from` means no copy, and a `null` `value`
-beside `copy_from` means no value. The
-source binding key is the destination binding key, and the destination must be
-lane-exact. A declared `secret_class` and a sharing reason with evidence are
-required; Launchplane does not check token permissions, so a person verifies
-them and the evidence records it.
-
-Take `version_id` from `product-secret-bindings-read`, then dry-run and apply
-with the same file as above. The redacted secret results show `copy_from`
-(context, instance and version id) with `action`, `binding_key`,
-`secret_class` and `sharing_reason`, through dry-run, apply and replay.
-
-Refusals come from the service and appear only as `error_code`: a source
-outside the product's stable lanes, missing, ambiguous, or whose declared class
-does not allow the destination lane is `secret_copy_refused`; a rotated source
-is `secret_copy_source_changed` (read the metadata again and review a fresh
-dry-run); missing `secret.read` on the source is `authorization_denied`. Do not
-relabel the destination to get past a class refusal. A writer authorized for
-the source lane can reclassify a source verified as shareable by targeting
-that same lane with `copy_from` pointing at its own current version and the new
-class, reason and evidence. Reading a source and writing testing never
-authorizes that production-lane write; testing-only access is not authority to
-write production. A copy updates Launchplane records only; live runtime sync or
-deployment stays a separate operation.
-
-Unsupported secret source shapes must fail closed in caller guidance. Do not
-translate committed secret references, provider env lookups, stdin/stdout
-transport, arbitrary secret ids, or "reuse current value" requests into a
-product-config request; the only supported reuse is `copy_from` above.
-
-Unsupported runtime-authority shapes must also fail closed. Do not translate
-checked-in product maps, workflow defaults, copied provider route payloads,
-repository bindings, branch bindings, tenant/domain lists, lanes, provider target
-ids, authz grants, or admin identities into product-config requests unless
-they came from Launchplane records or explicit scoped admin input.
-
-For refused or unsupported operations, follow
-[Blocked Work Continuation](../SKILL.md#blocked-work-continuation).
+Run dry-run, review its private full response, then apply the same intent with
+its original idempotency key. Launchplane requires a matching dry run and any
+intent-specific reviewed digest before writing. Refusals are the service's
+own answer. On uncertainty preserve the request, review and key and use the
+service's original-operation recovery before any retry. Use a fresh dry run
+and relevant metadata read for configuration readback.
 
 ## Merge-Train Policy Import
 
@@ -2606,21 +2384,9 @@ provider dictionary pass-through:
   they conflict with (an empty list means a conflict with the base). Dry-run
   probes can omit `held_out`. Unknown probe or held-out fields, malformed PR
   numbers, and unsafe values fail closed, including on `update_branch` results.
-- `product-config-preflight`, `product-config-dry-run`, and
-  `product-config-apply` may emit only intent status, reason code,
+- `product-config-preflight` may emit only intent status, reason code,
   safe-to-execute, next action, managed binding keys, runtime key-safety finding
-  codes, and product-config/intent record ids. Secret results also show a
-  copied secret's `copy_from` (context, instance and version id); any other
-  field in it is refused. First-empty requests also emit the closed typed
-  `odoo_first_empty` result and independently checked binding metadata above.
-  Schema-v2 runtime retirement
-  responses also expose the before/after lists of retired provider key names.
-  Each list is bounded, unique, and restricted to uppercase environment key
-  names; nonempty lists require instance scope. Nested record metadata is
-  validated but not emitted. Older responses may omit these fields. Runtime
-  values and unknown response fields remain rejected; this response support
-  does not change authorization, private-file, review, or apply requirements.
-  Keep these bounds aligned with the service's runtime-retirement contract.
+  codes, and product-config/intent record ids.
 - `merge-train-policy-import-dry-run` and
   `merge-train-policy-import-apply` may emit only active-policy identity and
   digest, candidate record identity, digest, status, target count, replay state,

@@ -26,7 +26,7 @@ For operation authority and the installed client's HTTP bindings, read
 - **Verification**: Always perform a `dry-run` and inspect redacted evidence
   before applying changes.
 - **Reason**: Apply operations require a concrete non-empty reason.
-- **Helper**: Use `scripts/launchplane-write-action.py` and
+- **Helper**: Use the [generic caller](agent-operator-contract.md#generic-caller) for product-config and `scripts/launchplane-write-action.py` for the remaining installed operations, with
   `references/write-action-helper-contract.md` for bounded terminal helper
   calls. Do not open-code Launchplane write routes in skill guidance.
 - **Merge Train**: Use

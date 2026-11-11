@@ -15,7 +15,7 @@ from unittest.mock import Mock, patch
 
 import launchplane_migrated_upload as upload
 import pytest
-from test_launchplane_helpers import _calendar_payload, _run_main
+from test_launchplane_helpers import _run_main
 from test_launchplane_helpers import write_action as h
 from test_launchplane_migrated_upload import fixture, invoke
 
@@ -45,7 +45,7 @@ def http_error(body: object, status: int = 400) -> urllib.error.HTTPError:
 
 
 def test_shared_http_refusal_retains_service_explanation() -> None:
-    command = "product-config-dry-run"
+    command = "product-expected-config-dry-run"
     body = response()
     output = io.StringIO()
     with redirect_stdout(output):
@@ -65,7 +65,7 @@ def test_structured_explanations_keep_valid_codes(field: str, value: str) -> Non
     body = response()
     source = body["error"] if field == "reason" else body["details"]
     source[field] = value
-    output = h.summarize_http_error(operation="product-config-dry-run", request={}, exc=http_error(body))
+    output = h.summarize_http_error(operation="product-expected-config-dry-run", request={}, exc=http_error(body))
     assert output["summary"]["error_reason" if field == "reason" else field] == value
 
 
@@ -141,7 +141,7 @@ def test_refusal_prose_redacts_private_data_without_losing_neighboring_code(fiel
     body = response()
     source = body["error"] if field in {"reason", "message"} else body["details"]
     source[field] = "Waiting: " + private
-    output = h.summarize_http_error(operation="product-config-dry-run", request={}, exc=http_error(body))
+    output = h.summarize_http_error(operation="product-expected-config-dry-run", request={}, exc=http_error(body))
     rendered = json.dumps(output)
     assert "PRIVATE_SENTINEL" not in rendered
     assert output["summary"]["error_code"] == body["error"]["code"]
@@ -163,7 +163,7 @@ def test_malformed_message_keeps_code_and_marks_withheld_explanations(bad: objec
 def test_prose_withheld_by_privacy_is_distinct_from_an_absent_explanation() -> None:
     body = response()
     body["error"] = {"code": "invalid_request", "message": "Authorization: Basic PRIVATE_SENTINEL"}
-    output = h.summarize_http_error(operation="product-config-dry-run", request={}, exc=http_error(body))
+    output = h.summarize_http_error(operation="product-expected-config-dry-run", request={}, exc=http_error(body))
     assert output["summary"]["explanation_withheld"] is True
     assert "error_message" not in output["summary"]
     assert "PRIVATE_SENTINEL" not in json.dumps(output)
@@ -226,14 +226,6 @@ def test_upload_emits_shared_diagnostics_without_changing_refusal_or_retrying(tm
     transport.assert_called_once()
 
 
-def test_product_config_dispatch_reports_the_service_correction(tmp_path: Path) -> None:
-    path = tmp_path / "request.json"
-    path.write_text(json.dumps(_calendar_payload()))
-    body = response()
-    code, output, posts, reads = _run_main(["product-config-dry-run", "--payload-file", str(path)], post=http_error(body))
-    assert code == 1 and len(posts) == 1 and not reads
-    assert output["summary"]["error_message"] == body["error"]["message"]
-    assert output["summary"]["error_code"] == body["error"]["code"]
 
 
 @pytest.mark.parametrize("processor", ["withdrawal", "candidate_release", "release_request"])
