@@ -12946,6 +12946,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         domain.add_argument("--payload-file", required=True, help="Private local JSON payload file.")
         _add_reviewed_apply_arguments(domain, apply=command.endswith("-apply"))
 
+    from launchplane_empty_automation import add_parser as add_empty_automation_parser
+    add_empty_automation_parser(subparsers)
+
     for mode in ("dry-run", "apply"):
         source = subparsers.add_parser(
             f"dokploy-target-complete-compose-source-{mode}",
@@ -13926,6 +13929,9 @@ def main(argv: list[str]) -> int:
                 request=request,
                 body=body,
             )
+        from launchplane_empty_automation import COMMANDS as EMPTY_AUTOMATION_COMMANDS, execute as execute_empty_automation
+        if args.command in EMPTY_AUTOMATION_COMMANDS:
+            return execute_empty_automation(sys.modules[__name__], args)
         if args.command == DOKPLOY_APPLICATION_READBACK_COMMAND:
             body, request = dokploy_application_body(args, mode="readback")
             return execute_post(

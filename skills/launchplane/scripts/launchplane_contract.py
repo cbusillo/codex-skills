@@ -413,6 +413,21 @@ LOCAL_EXTENSION_ROUTES = {
         "path": "/v1/dokploy-targets/setup",
         "mode": "apply",
     },
+    "dokploy-target-disable-empty-compose-auto-deploy-dry-run": {
+        "method": "POST",
+        "path": "/v1/dokploy-targets/setup",
+        "mode": "dry-run",
+    },
+    "dokploy-target-disable-empty-compose-auto-deploy-apply": {
+        "method": "POST",
+        "path": "/v1/dokploy-targets/setup",
+        "mode": "apply",
+    },
+    "dokploy-target-disable-empty-compose-auto-deploy-readback": {
+        "method": "POST",
+        "path": "/v1/dokploy-targets/setup",
+        "mode": "readback",
+    },
     "dokploy-target-complete-compose-source-dry-run": {
         "method": "POST",
         "path": "/v1/dokploy-targets/setup",
