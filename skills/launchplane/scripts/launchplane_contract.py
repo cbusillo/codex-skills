@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 
 OPERATION_PATHS = {
+    "write_odoo_post_deploy": "/v1/drivers/odoo/post-deploy",
     "prepare_testing_private_ingress": "/v1/products/{product}/testing-private-ingress",
     "record_disposable_lane_safety": "/v1/disposable-lanes/observations",
     "prepare_testing_replacement_resources": "/v1/products/{product}/testing-replacement-resources",
@@ -28,6 +29,7 @@ OPERATION_PATHS = {
 }
 
 HELPER_OPERATIONS = {
+    **{"odoo-website-indexing-" + mode: "write_odoo_post_deploy" for mode in ("dry-run", "apply", "readback")},
     **{"testing-replacement-resources-" + mode: "prepare_testing_replacement_resources"
        for mode in ("dry-run", "apply", "readback", "release")},
     "agent-context": "read_agent_context",
