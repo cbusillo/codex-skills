@@ -633,6 +633,9 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.assertFalse(helper.check([self.receipt_entry()])["claims_clear"])
         self.enterContext(patch_attr(helper.github_plan_lease, "uses_live_claims", return_value=True))
         self.assertTrue(helper.check([self.receipt_entry()])["claims_clear"])
+        self.assertFalse(helper.check([self.receipt_entry()], require_released_claims=True)["claims_clear"])
+        self.comments.append(self.release)
+        self.assertTrue(helper.check([self.receipt_entry()], require_released_claims=True)["claims_clear"])
 
     def test_own_open_pr_without_a_current_head_handoff_refuses_with_its_remedies(self) -> None:
         handoffs: Any = importlib.import_module("ready_handoff")

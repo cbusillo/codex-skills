@@ -234,6 +234,153 @@ def transcript_roots(harness: str, configured: Path | None, explicit: list[Path]
     return list(dict.fromkeys(roots))
 
 
+def recovery_claims(entry: dict) -> dict:
+    result = subprocess.run(["uv", "run", str(GITHUB.parents[1] / "work-closeout/scripts/check_claims.py"),
+                             "--session", entry["session_id"], "--transcript", entry["transcript"],
+                             "--require-released-claims"], capture_output=True, text=True, timeout=660)
+    report = json.loads(result.stdout)
+    if not isinstance(report, dict):
+        raise ValueError("recovery claim check returned no report object")
+    if (result.returncode or report.get("ok") is not True or report.get("claims_clear") is not True
+            or report.get("coverage", {}).get("complete") is not True
+            or report.get("session_ids") != [entry["session_id"]]
+            or report.get("blocked") != [] or report.get("unresolved_invocations") != []):
+        raise ValueError(f"recovery claim coverage is incomplete or a claim remains: {report.get('error') or report.get('blocked') or report.get('unresolved_invocations')}")
+    return report
+
+
+def native_handoff_verdict(entry: dict, posted_at: str) -> bool:
+    path = Path(entry["transcript"])
+    records = session_record.claim_history.root_records(path, entry["harness"], entry["session_id"], session_record.read_jsonl(path))
+    candidates: list[int] = []
+    possible = False
+    for index, row in enumerate(records):
+        payload, message = row.get("payload") or {}, row.get("message") or {}
+        text = (payload.get("message") or "") if payload.get("type") == "agent_message" else (
+            session_record.text_content(message.get("content")) if row.get("type") == "assistant" else "")
+        possible = possible or "Safe to exit:" in text
+        if payload.get("type") in {"task_complete", "turn_aborted"} or message.get("stop_reason") == "end_turn":
+            if possible and row.get("timestamp") and release.stamp(row["timestamp"]) >= release.stamp(posted_at):
+                candidates.append(index)
+            possible = False
+    for index in reversed(candidates):
+        status = session_record.summarize(records[:index + 1], entry["harness"])
+        message_at = status.get("message_at") or status.get("timestamp")
+        if status["safe_verdict"] and message_at and release.stamp(message_at) >= release.stamp(posted_at):
+            return True
+    return False
+
+
+def recovery_handoff(entry: dict) -> None:
+    basis = entry["recovery"]
+    action = closure.lease_state(entry["session_id"])
+    if action.get("successor_admitted") is not True:
+        raise ValueError("source generation has no recorded successor admission")
+    actor = github_identity.automation_login()
+    if not actor:
+        raise ValueError("configured automation identity is unknown")
+    reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 60)
+    posted = handoff(reader, {**entry, "handoff_url": basis.get("handoff_url") or entry.get("handoff_url")}, actor)
+    body = claim.unquoted_text(posted.get("body") or "")
+    status = session_record.summarize([{"type": "assistant", "message": {"content": body, "stop_reason": "end_turn"}}], "claude")
+    safe = status["safe_verdict"] or "Safe to exit:" not in body and native_handoff_verdict(entry, posted["created_at"])
+    if (not safe or posted.get("created_at") != posted.get("updated_at")
+            or not release.related_sessions_match(body, entry["session_id"])
+            or not re.search(rf"(?<![\w-]){re.escape(entry['session_id'])}(?![\w-])", body)
+            or not entry.get("launch_started_at")
+            or release.stamp(posted["created_at"]) < release.stamp(entry["launch_started_at"])):
+        raise ValueError("recovery needs an unchanged automation-authored Safe handoff for this generation")
+    rows = session_record.load_ledger(Path(basis["ledger"]))
+    if any(row.get("lead_session_id") == entry["session_id"] for row in rows):
+        raise ValueError("source still owns worker rows; preserve its session")
+    successor = basis.get("successor_session")
+    candidates = [row for row in rows if row["session_id"] == successor] if successor else [
+        row for row in rows if row["session_id"] != entry["session_id"]
+        and row.get("repository") == entry.get("repository") and row.get("issue") == entry.get("issue")
+        and row.get("launch_started_at") and release.stamp(row["launch_started_at"]) > release.stamp(entry["launch_started_at"])]
+    if not candidates and successor:
+        saved = closure.source_records({successor}).get(successor)
+        candidates = [saved] if saved else []
+    if len(candidates) != 1:
+        raise ValueError("recovery needs one matching successor row; select --successor-session")
+    successor = candidates[0]
+    if (successor["session_id"] == entry["session_id"] or successor.get("supervisor_owned") is not True
+            or not entry.get("repository") or not entry.get("issue")
+            or successor.get("repository") != entry["repository"] or successor.get("issue") != entry["issue"]
+            or not successor.get("launch_started_at")
+            or release.stamp(successor["launch_started_at"]) <= release.stamp(entry["launch_started_at"])):
+        raise ValueError("successor row does not match this handoff's work and generation")
+    basis["successor_session"] = successor["session_id"]
+
+
+def validate_recovery(entry: dict, supervisor_session: str, *, before_exit: bool = False) -> dict:
+    if entry.get("supervisor_owned") is not True or entry["session_id"] == supervisor_session:
+        raise ValueError("recovery requires another explicitly Supervisor-owned session")
+    kind = entry.get("recovery", {}).get("kind")
+    if kind not in {"gone", "handoff"}:
+        raise ValueError("unknown session recovery basis")
+    action = closure.lease_state(entry["session_id"])
+    if (before_exit and action.get("action_pending") and action.get("action_kind") != "routed"
+            and not native_handoff_verdict(entry, action["action_at"])):
+        raise ValueError("opaque native action still needs its later Safe verdict or original reconciliation")
+    status = session_record.session_status(entry)
+    if status["background_tasks"] or status.get("realtime_coverage") is False:
+        raise ValueError("recovery has background work or incomplete native lifecycle coverage")
+    if kind == "handoff":
+        recovery_handoff(entry)
+        if status["state"] != "turn_ended":
+            raise ValueError("handed-off source still has unfinished native work")
+    if not before_exit:
+        native_closure.verify_source_process(entry)
+        if entry["harness"] == "codex" and entry.get("codex_home"):
+            proof = asyncio.run(native_closure.prove_end(entry, require_verdict=False))
+            native_closure.require_proof_quiet(proof)
+            snapshots = {path: {key: value for key, value in snapshot.items() if key != "status"}
+                         for path, snapshot in proof["snapshot"]["transcripts"].items()}
+        else:
+            if closure.action_pending(entry["session_id"]):
+                raise ValueError("recovery cannot prove the pending native action without its source home")
+            snapshots = {str(Path(entry["transcript"]).resolve()): [list(value) for value in session_record.transcript_revision(Path(entry["transcript"]))]}
+        previous = entry["recovery"].get("transcripts", snapshots)
+        if json.loads(json.dumps(previous)) != json.loads(json.dumps(snapshots)):
+            raise ValueError("source transcript changed after recovery proof")
+        entry["recovery"]["transcripts"] = snapshots
+    elif kind != "handoff":
+        raise ValueError("a live source needs a qualified handoff before recovery")
+    recovery_claims(entry)
+    if session_record.session_status(entry) != status:
+        raise ValueError("source transcript changed during recovery")
+    if not before_exit:
+        native_closure.verify_source_process(entry)
+    return status
+
+
+def record_recovery(path: Path, entry: dict, supervisor_session: str, *, persist: bool = True) -> dict:
+    with closure.ownership(entry["session_id"], create=persist):
+        original, saved = _saved_closure(path, entry["session_id"], create=persist)
+        native_closure.source_generation(entry, saved)
+        status = validate_recovery(entry, supervisor_session)
+        closed = {**entry, "closure_kind": "claim_free_recovery",
+                  "ended_at": saved["ended_at"] if saved and saved.get("closure_kind") == "claim_free_recovery" else datetime.now(UTC).isoformat(),
+                  "process_exit_verified": True, "session_outcome": status["session_outcome"]}
+        closed.pop("verdict_at", None)
+        closed = {key: value for key, value in closed.items() if not key.startswith("_")}
+        with closure.store_lock(path, create=persist):
+            rows = json.loads(path.read_text()) if path.exists() else []
+            if closure.selected_source_rows(rows, entry["session_id"]) != original:
+                raise ValueError("source closure changed during recovery")
+            if persist:
+                closure.replace_rows([row for row in rows if row.get("session_id") != entry["session_id"]] + [closed], path=path)
+        return closed
+
+
+def validate_finished(entry: dict, supervisor_session: str) -> dict:
+    if entry.get("closure_kind") == "claim_free_recovery":
+        closure_ended_at(entry, supervisor_session)
+        return validate_recovery(entry, supervisor_session)
+    return validate_closure(entry, supervisor_session)
+
+
 @contextmanager
 def _closure_guard(path, entry, *, create=False):
     shared = path.resolve() == closure.closed_log().resolve()
@@ -946,6 +1093,8 @@ def preview_guards(entry, *, reader, repo, number, source_id, related, prs, body
 
 
 def closure_attestation(entry):
+    if entry.get("closure_kind") == "claim_free_recovery":
+        raise ValueError("claim-free recovery is custody, not a Safe verdict or claim-release attestation")
     body = (f"Closed session {entry['session_id']}\nEnded at: {entry['ended_at']}\nSafe to exit: yes\n\n"
             f"Handoff context ({entry.get('_handoff_provenance', 'Supervisor transcript-verified ledger')}): {entry['handoff_url']}\n")
     if entry.get("_inventory"):
@@ -1018,16 +1167,24 @@ def main():
     parser.add_argument("--repo", action="append", help="scope disposable trials; omission discovers all owner repositories")
     parser.add_argument("--checkout-root", type=Path, help="existing per-repository checkouts; required only for backfill")
     parser.add_argument("--confirm-session-ended", action="store_true")
+    parser.add_argument("--recover-ended", action="store_true", help="Record claim-free ended custody without inventing a final verdict")
+    parser.add_argument("--successor-session", help="Exact successor row for a handed-off generation")
+    parser.add_argument("--handoff-url", help="Posted Safe handoff for handed-off recovery")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--deadline-seconds", type=int, default=600)
     parser.add_argument("--account-config", type=Path)
     parser.add_argument("--transcript-root", type=Path, action="append", default=[])
     args = parser.parse_args()
     reports = []
+    gate = "arguments"
     lock_stream = None
     try:
         if args.mode == "backfill" and args.checkout_root is None:
             raise ValueError("backfill requires --checkout-root for canonical release preflight")
+        if args.mode != "finish" and (args.recover_ended or args.successor_session or args.handoff_url):
+            raise ValueError("recovery options belong to finish")
+        if (args.successor_session or args.handoff_url) and not args.recover_ended:
+            raise ValueError("successor and handoff options require --recover-ended")
         if args.closed_log is None:
             if args.mode != "finish":
                 raise ValueError("backfill requires an explicit --closed-log")
@@ -1040,6 +1197,7 @@ def main():
         if not actor:
             raise ValueError("requires the configured automation identity")
         if args.mode == "finish":
+            gate = "identity"
             if not args.ledger or not args.session_id:
                 raise ValueError("finish requires --ledger and one --session-id")
             entries = [{k: v for k, v in e.items() if not k.startswith("_")}
@@ -1047,6 +1205,19 @@ def main():
             if len(entries) != 1:
                 raise ValueError("native session must match exactly one ledger entry")
             entries[0]["_transcript_roots"] = transcript_roots(entries[0]["harness"], args.account_config, args.transcript_root, entries[0])
+            gate = "closure"
+            if args.recover_ended:
+                entry = entries[0]
+                if args.handoff_url:
+                    entry["handoff_url"] = args.handoff_url
+                basis = {"kind": "handoff", "ledger": str(args.ledger.resolve()),
+                         "successor_session": args.successor_session} if args.successor_session else {"kind": "gone"}
+                saved = closure.source_records({entry["session_id"]}).get(entry["session_id"])
+                entry["recovery"] = saved["recovery"] if saved and saved.get("closure_kind") == "claim_free_recovery" else basis
+                closed = record_recovery(args.closed_log, entry, args.supervisor_session, persist=args.apply)
+                print(json.dumps({"ok": True, "needs_reconciliation": False, "reports": [{
+                    "session_id": entry["session_id"], "status": closed["closure_kind"], "dry_run": not args.apply}]}))
+                return 0
             # record_closure verifies exit against the saved closure on retry,
             # or a fresh observation time for a new closure. A ledger timestamp
             # alone is not proof that this generation has already ended.
@@ -1057,6 +1228,7 @@ def main():
             entries[0]["_finish"] = True
             entries[0]["_finish_scope"] = "explicit scope" if args.repo else "accessible repositories under the requested owner"
         else:
+            gate = "closed_log"
             rows = json.loads(args.closed_log.read_text())
             if isinstance(rows, list) and rows and isinstance(rows[0], dict) and "safe_exit_yes" in rows[0]:
                 roots = {h: transcript_roots(h, args.account_config, args.transcript_root) for h in ("codex", "claude")}
@@ -1079,6 +1251,13 @@ def main():
                 entries = [e for e in entries if e["session_id"] == args.session_id]
             if not entries:
                 raise ValueError("closed-session log has no matching records")
+        recovered = [e for e in entries if e.get("closure_kind") == "claim_free_recovery"]
+        reports.extend({"session_id": e["session_id"], "status": "not_releasable", "claims": []} for e in recovered)
+        entries = [e for e in entries if e not in recovered]
+        if recovered and not entries:
+            print(json.dumps({"ok": True, "reports": reports, "needs_reconciliation": False}))
+            return 0
+        gate = "verification"
         entries = [{**e,
                     "_transcript_roots": e.get("_transcript_roots") or transcript_roots(e["harness"], args.account_config, args.transcript_root, e),
                     "_read_deadline_seconds": args.deadline_seconds} for e in entries]
@@ -1090,7 +1269,8 @@ def main():
                 verified.append(entry)
             except (ValueError, KeyError, TypeError, OSError) as error:
                 inventory_rows: list[dict[str, Any]] = entry.get("_inventory_claims", [])
-                reports.append({"session_id": entry["session_id"], "error": str(error), "released": False,
+                reports.append({"session_id": entry["session_id"], "gate": gate,
+                                "error": str(error) or type(error).__name__, "released": False,
                                 "retryable": isinstance(error, closure.LeaseBusy),
                                 "inventory_claims": [{"repository": r["repo"], "issue": r["issue"],
                                     "claim_comment": r["claim_comment_id"], "status": "preserved"}
@@ -1110,6 +1290,7 @@ def main():
                              if not args.repo or r["repo"] in args.repo})
             repos = sorted({r for r, _ in issues})
         else:
+            gate = "discovery"
             issues, repos = discover(reader, args.owner, entries, args.repo)
         if args.mode == "backfill" and args.apply:
             lock_stream = os.fdopen(os.open(str(args.closed_log) + ".release.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600), "w")
@@ -1118,18 +1299,20 @@ def main():
             except BlockingIOError as error:
                 raise closure.LeaseBusy("another backfill is posting releases for this log") from error
         for entry in entries:
+            gate = "claims"
             try:
                 reports.append(release_session(reader, entry, actor, args.supervisor_session, issues,
                                                 args.checkout_root, args.apply))
             except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError,
                     GitHubReadError, GitHubReadShapeError, CommentError) as error:
                 report = error.report if isinstance(error, PartialRelease) else {"session_id": entry["session_id"]}
-                reports.append({**report, "error": str(error),
+                reports.append({**report, "gate": gate, "error": str(error) or type(error).__name__,
                                 "retryable": isinstance(error, closure.LeaseBusy),
                                 "next_action": "inspect records before retry"})
         ok = not any("error" in r or r.get("issue_refusals") or r.get("pr_claim_handoffs") for r in reports)
         incomplete = [r for r in reports if "error" in r or r.get("issue_refusals") or r.get("pr_claim_handoffs")]
         print(json.dumps({"ok": ok, "reports": reports, "repositories_checked": repos, "discovery": reader.batch_diagnostic,
+                          **({"gate": gate, "error": "claim-release evidence needs reconciliation; inspect per-session reports"} if not ok else {}),
                           "retryable": bool(incomplete) and all(r.get("retryable") is True for r in incomplete),
                           "needs_reconciliation": any(r.get("retained_status_claims") or r.get("issue_refusals") or r.get("pr_claim_handoffs") or "error" in r for r in reports),
                           "coverage": "exact verified inventory claims" if all(e.get("_inventory") for e in entries) else "explicit scope" if args.repo else "accessible repositories under the requested owner",
@@ -1158,8 +1341,10 @@ def main():
             json.dumps(
                 {
                     "ok": False,
-                    "error": str(error),
-                    "completed_sessions": reports,
+                    "error": str(error) or type(error).__name__,
+                    "gate": gate,
+                    "completed_sessions": reports or ([{"session_id": args.session_id, "gate": gate,
+                                                        "error": str(error) or type(error).__name__}] if args.session_id else []),
                     "retryable": retryable,
                     "retry_at": read.get("retry_at"),
                     "next_action": (
