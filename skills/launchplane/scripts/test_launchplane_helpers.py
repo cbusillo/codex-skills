@@ -12117,6 +12117,17 @@ def test_trusted_automation_proposal_refuses_differing_dependency_bot_rows() -> 
     assert (exit_code, output["warnings"][0]["code"], posted) == (2, "dependency_bot_rows_differ", [])
 
 
+def test_trusted_automation_proposal_refuses_malformed_dependency_bots_anywhere() -> None:
+    for malformed in (7, [7]):
+        read_payload = _active_merge_train_policy_read({"owner/alpha": [], "owner/beta": []})
+        policies = cast(dict[str, Any], read_payload["record"])["policy"]["policies"]
+        policies[1]["enqueue"]["dependency_update_bots"] = malformed
+        exit_code, _output, posted = _run_merge_train_proposal(
+            _trusted_automation_argv("add", "owner/alpha"), read_payload
+        )
+        assert (exit_code, posted) == (1, [])
+
+
 def test_trusted_automation_proposal_remove_drops_the_ids_dependency_bot_row() -> None:
     _, _, posted = _run_merge_train_proposal(
         _trusted_automation_argv("remove", "owner/alpha"),

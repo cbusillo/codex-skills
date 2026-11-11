@@ -9007,12 +9007,16 @@ def trusted_automation_proposal_body(
 
 
 def _dependency_bot_row(targets: list[Any], user_id: int) -> dict[str, Any] | None:
-    rows = {
-        json.dumps(bot, sort_keys=True)
-        for value in targets
-        for bot in _require_dict(_require_dict(value).get("enqueue") or {}).get("dependency_update_bots") or []
-        if isinstance(bot, dict) and bot.get("github_user_id") == user_id
-    }
+    rows: set[str] = set()
+    for value in targets:
+        bots = _require_dict(_require_dict(value).get("enqueue") or {}).get("dependency_update_bots") or []
+        if not isinstance(bots, list):
+            raise LaunchplaneSafetyError("invalid_response")
+        rows.update(
+            json.dumps(bot, sort_keys=True)
+            for bot in map(_require_dict, bots)
+            if bot.get("github_user_id") == user_id
+        )
     if len(rows) > 1:
         raise ValueError("dependency_bot_rows_differ")
     return json.loads(rows.pop()) if rows else None
