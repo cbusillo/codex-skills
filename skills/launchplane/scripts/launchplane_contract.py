@@ -652,3 +652,71 @@ def bounded_read_path(command: str) -> str:
     if route is None or route["method"] != "GET":
         raise ContractError("unknown_bounded_read")
     return route["path"]
+
+
+PREVIEW_SLEEP_BINDING_FIELDS = frozenset({
+    "product", "context", "instance", "preview_id", "generation_id", "provider_target_id",
+    "artifact_id", "source_git_ref", "image_reference",
+})
+PREVIEW_SLEEP_BOOLEAN_FIELDS = frozenset({"running", "healthy"})
+PREVIEW_SLEEP_RECEIPT_BOOLEANS = frozenset({
+    "sleep_present", "wake_present", "identity_agrees", "mode_agrees", "sleep_agrees", "wake_agrees",
+})
+PREVIEW_SLEEP_ENUMS = {
+    "coverage": {"complete", "partial", "unavailable", "not_attempted", "legacy"},
+    "freshness": {"fresh", "stale", "invalid", "unknown"},
+    "gateway_mode": {"awake", "asleep", "unknown"},
+    "phase": {"awake", "asleep", "stopping", "waking", "inconsistent", "unknown"},
+    "current_binding": {"current", "changed", "unknown"},
+}
+
+
+def _closed_response_object(value: object, fields: set[str] | frozenset[str]) -> dict[str, object]:
+    if not isinstance(value, dict) or value.keys() - fields:
+        raise ContractError("unsafe_response_shape")
+    return value
+
+
+def _response_enum(value: object, allowed: set[str]) -> None:
+    if not isinstance(value, str) or value not in allowed:
+        raise ContractError("invalid_response")
+
+
+def _nullable_response_booleans(value: dict[str, object], fields: frozenset[str]) -> None:
+    if any(item is not None and type(item) is not bool for key, item in value.items() if key in fields):
+        raise ContractError("invalid_response")
+
+
+def validate_preview_sleep_evidence(value: object) -> dict[str, object]:
+    evidence = _closed_response_object(value, {
+        *PREVIEW_SLEEP_ENUMS, "completed_at", "binding", "activity_requested", "active_connections", "services", "receipts",
+    })
+    for field, allowed in PREVIEW_SLEEP_ENUMS.items():
+        if field in evidence:
+            _response_enum(evidence[field], allowed)
+    completed = evidence.get("completed_at", "")
+    if not isinstance(completed, str) or len(completed) > 64:
+        raise ContractError("invalid_response")
+    _nullable_response_booleans(evidence, frozenset({"activity_requested"}))
+    count = evidence.get("active_connections")
+    if count is not None and (type(count) is not int or count < 0):
+        raise ContractError("invalid_response")
+    binding = evidence.get("binding")
+    if binding is not None:
+        binding = _closed_response_object(binding, PREVIEW_SLEEP_BINDING_FIELDS)
+        if binding.keys() != PREVIEW_SLEEP_BINDING_FIELDS or any(
+            not isinstance(item, str) or not 1 <= len(item) <= 512 or re.fullmatch(r"\S+", item) is None
+            for item in binding.values()
+        ):
+            raise ContractError("invalid_response")
+    if "services" in evidence:
+        services = _closed_response_object(evidence["services"], {"web", "database", "script_runner"})
+        for service in services.values():
+            state = _closed_response_object(service, PREVIEW_SLEEP_BOOLEAN_FIELDS)
+            _nullable_response_booleans(state, PREVIEW_SLEEP_BOOLEAN_FIELDS)
+    if "receipts" in evidence:
+        receipts = _closed_response_object(evidence["receipts"], {*PREVIEW_SLEEP_RECEIPT_BOOLEANS, "persisted_state"})
+        _nullable_response_booleans(receipts, PREVIEW_SLEEP_RECEIPT_BOOLEANS)
+        if "persisted_state" in receipts:
+            _response_enum(receipts["persisted_state"], {"observed", "missing", "invalid", "unavailable", "unknown"})
+    return evidence
