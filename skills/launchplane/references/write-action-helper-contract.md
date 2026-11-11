@@ -3160,7 +3160,7 @@ These commands add no grants and never call a provider directly.
 
 `odoo-website-indexing-dry-run`, `odoo-website-indexing-apply` and
 `odoo-website-indexing-readback` use only the typed `website_indexing` branch
-of `POST /v1/drivers/odoo/post-deploy`. They reuse the private operator
+of `POST /v1/drivers/odoo/post-deploy`. They reuse the private admin
 configuration, authenticated transport and `product_config.plan`/`apply`
 authority. They expose no maintenance, deployment or state toggle. The
 [producer contract](https://github.com/cbusillo/launchplane/blob/main/docs/odoo-website-settings.md#prelaunch-crawler-protection)
