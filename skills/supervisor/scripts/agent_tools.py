@@ -158,6 +158,38 @@ def chrome_server(home: Path | None) -> dict:
     return server
 
 
+def browser_connection_problem(observations: set[str]) -> str:
+    reasons = {
+        "signed_out": "the browser server reports no signed-in CLI account; the Director owns sign-in",
+        "account_mismatch": "the CLI token account differs from its saved login; the extension account is unverified",
+        "bridge_down": "the browser server reports a failed bridge connection; check its network/bridge logs",
+        "extension_unregistered": "the bridge returned no registered extension; extension account/organization and running state are unknown; "
+                                  "ask the Director to inspect the existing Agents extension's connection error",
+        "unknown": "the server supplied no recognized connection evidence; inspect its logs and the existing extension's connection state",
+    }
+    reason = next((key for key in reasons if key in observations), "unknown")
+    return f"no Chrome browser connected ({reason}): {reasons[reason]}"
+
+
+def observe_browser_log(line: bytes, observations: set[str]) -> None:
+    if b"Not connecting: nobody is signed in" in line:
+        observations.add("signed_out")
+    if b"OAuth token in use resolves to a different claude.ai account" in line:
+        observations.add("account_mismatch")
+    if b"[Claude in Chrome] Bridge WebSocket error" in line or b"[Claude in Chrome] Connection timeout" in line:
+        observations.add("bridge_down")
+    marker = b"[Claude in Chrome] Bridge received: "
+    if marker not in line:
+        return
+    try:
+        message = json.loads(line.split(marker, 1)[1])
+    except ValueError:
+        return
+    if isinstance(message, dict) and message.get("type") == "extensions_list" and message.get("extensions") == []:
+        observations.discard("bridge_down")
+        observations.add("extension_unregistered")
+
+
 def connected_browsers(server: dict, timeout: float = 15.0) -> list[dict]:
     """Start the configured server once and call only its browser listing."""
     args, extra_env = server.get("args", []), server.get("env") or {}
@@ -165,17 +197,35 @@ def connected_browsers(server: dict, timeout: float = 15.0) -> list[dict]:
             or not isinstance(extra_env, dict)):
         raise ValueError(f"{CHROME_SERVER} has invalid args or env")
     argv = [server["command"], *args]
+    if "--claude-in-chrome-mcp" in args and "--debug-to-stderr" not in args:
+        argv.append("--debug-to-stderr")
     env = {**os.environ, **{key: str(value) for key, value in extra_env.items()}}
     try:
         process = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                   stderr=subprocess.DEVNULL, env=env,
+                                   stderr=subprocess.PIPE, env=env,
                                    start_new_session=True)
     except OSError as error:
         raise ValueError(f"{CHROME_SERVER} did not start ({type(error).__name__})") from None
     deadline = time.monotonic() + timeout
-    stdin, stdout = process.stdin, process.stdout
-    assert stdin is not None and stdout is not None
+    stdin, stdout, stderr = process.stdin, process.stdout, process.stderr
+    assert stdin is not None and stdout is not None and stderr is not None
     buffer = b""
+    diagnostic_buffer = b""
+    discard_diagnostic_line = False
+    observations: set[str] = set()
+    streams = [stderr, stdout]
+
+    def capture_diagnostics(chunk: bytes) -> None:
+        nonlocal diagnostic_buffer, discard_diagnostic_line
+        lines = (diagnostic_buffer + chunk).split(b"\n")
+        diagnostic_buffer = lines.pop()
+        for line in lines:
+            if not discard_diagnostic_line and len(line) <= 65536:
+                observe_browser_log(line, observations)
+            discard_diagnostic_line = False
+        if len(diagnostic_buffer) > 65536:
+            diagnostic_buffer = b""
+            discard_diagnostic_line = True
 
     def cleanup_refused() -> None:
         # Waiting does not retry a refused signal. Reap an exited child, bounded
@@ -195,13 +245,19 @@ def connected_browsers(server: dict, timeout: float = 15.0) -> list[dict]:
         send({"jsonrpc": "2.0", "id": message_id, "method": method, "params": params})
         while (remaining := deadline - time.monotonic()) > 0:
             if b"\n" not in buffer:
-                ready, _, _ = select.select([stdout], [], [], remaining)
+                ready, _, _ = select.select(streams, [], [], remaining)
                 if not ready:
                     break
-                chunk = os.read(stdout.fileno(), 65536)
-                if not chunk:
+                for stream in ready:
+                    chunk = os.read(stream.fileno(), 65536)
+                    if not chunk:
+                        streams.remove(stream)
+                    elif stream is stderr:
+                        capture_diagnostics(chunk)
+                    else:
+                        buffer += chunk
+                if stdout not in streams and b"\n" not in buffer:
                     break
-                buffer += chunk
                 if len(buffer) > 1024 * 1024:
                     raise ValueError(f"{CHROME_SERVER} reply exceeded 1 MiB")
                 continue
@@ -214,7 +270,8 @@ def connected_browsers(server: dict, timeout: float = 15.0) -> list[dict]:
                 if "error" in message or not isinstance(message.get("result"), dict):
                     raise ValueError(f"{CHROME_SERVER} {method} failed")
                 return message
-        raise ValueError(f"{CHROME_SERVER} gave no {method} reply within {timeout:g}s")
+        raise ValueError(f"{CHROME_SERVER} gave no {method} reply within {timeout:g}s; "
+                         + browser_connection_problem(observations))
 
     try:
         call(1, "initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
@@ -237,6 +294,7 @@ def connected_browsers(server: dict, timeout: float = 15.0) -> list[dict]:
             pass
         except PermissionError:
             stdout.close()
+            stderr.close()
             cleanup_refused()
         try:
             process.wait(timeout=1)
@@ -250,6 +308,7 @@ def connected_browsers(server: dict, timeout: float = 15.0) -> list[dict]:
             process.wait()
         finally:
             stdout.close()
+            stderr.close()
     if reply["result"].get("isError"):
         raise ValueError(f"{CHROME_SERVER} {LIST_TOOL} failed; check the pinned account's connection")
     content = (reply.get("result") or {}).get("content") or []
@@ -260,4 +319,6 @@ def connected_browsers(server: dict, timeout: float = 15.0) -> list[dict]:
         raise ValueError(f"{CHROME_SERVER} {LIST_TOOL} returned no browser list") from None
     if not isinstance(browsers, list) or not all(isinstance(browser, dict) for browser in browsers):
         raise ValueError(f"{CHROME_SERVER} {LIST_TOOL} returned no browser list")
+    if not browsers:
+        raise ValueError(browser_connection_problem(observations))
     return browsers

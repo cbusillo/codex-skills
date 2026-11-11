@@ -1669,7 +1669,12 @@ With `.local/chrome.toml` present, Claude launches reject `--chrome` and export
 Use `mcp__catalog-chrome__*` on the pinned Agents route. Preflight checks the
 selected home and project and calls only `list_connected_browsers`, once per
 server in a batch. Empty, failed, malformed and timed-out replies cannot pass
-a required-browser launch. Unrequested Computer Use settings are not a launch
+a required-browser launch. The same probe consumes native debug stderr without
+retaining or printing it. It reports observed CLI sign-in/account failures,
+bridge failures and empty extension rosters, with `unknown` when the vendor
+trace cannot distinguish the cause. An empty roster does not establish the
+extension's account, organization, running state or a need to restart Chrome.
+Unrequested Computer Use settings are not a launch
 warning; enabling it and using Claude Computer Use remain Chris's actions.
 Codex is the default for screen work. Under Q475, run Claude Computer Use only
 in a visible iTerm tab with Chris's approval for that session, never under the
