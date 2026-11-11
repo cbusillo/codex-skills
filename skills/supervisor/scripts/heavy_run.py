@@ -627,12 +627,14 @@ class Docker:
             self.free_before = shutil.disk_usage(root).free
             self.storage.update(cloned_files=0, copied_files=0, copied_bytes=0)
         destination = root / str(len(list(root.iterdir())) - 1)
+        device = root.stat().st_dev
+        require_free_space(root, sum(path.stat().st_size for path in paths if path.is_file() and path.stat().st_dev != device))
         for path in paths:
             target = destination / path.relative_to(source)
             if path.is_dir():
                 target.mkdir(mode=0o700)
                 continue
-            if path.stat().st_dev == root.stat().st_dev:
+            if path.stat().st_dev == device:
                 clone_input(path, target)
                 self.storage["cloned_files"] += 1
             else:

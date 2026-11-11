@@ -311,7 +311,8 @@ is transferred and counted instead. Other clone errors preserve evidence and
 fail collection. Without a reference, the adapter keeps its full-transfer path.
 Before requesting any bytes, the receiver refuses with `ENOSPC` and the shortfall
 when the transfer would leave less than `FREE_SPACE_FLOOR` free on the
-destination volume; clone-only collections still proceed.
+destination volume; clone-only collections still proceed. `stage_input` applies
+the same floor to its cross-volume copies.
 
 The adapter's runbook owns reference selection, transport, publication and
 installation. Collection reports `cloned_files`, `transferred_files`,

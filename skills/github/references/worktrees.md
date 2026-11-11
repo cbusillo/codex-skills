@@ -85,10 +85,10 @@ Age uses modification timestamps; moved/extracted inputs with preserved timestam
 Active work and its working inputs, including inputs a run only reads, belong
 in task evidence; evidence unwritten for 30 days means a tool or cleanup failed.
 On one volume, clone instead of copying (`cp -c`, `cp --reflink`, or
-[heavy_run.py](../../supervisor/scripts/heavy_run.py)'s `clone_input`). The tool
-that made a failed attempt's evidence releases it once the cause is on its issue;
-keep at most the last passing pair per product as reference. Anything else kept
-names its reason and expiry. Measure the volume's free space (`df`), never `du`,
+[heavy_run.py](../../supervisor/scripts/heavy_run.py)'s `clone_input`). Only the
+tool that made a failed attempt's evidence releases it, and only after the cause
+is recorded on its issue. Keep at most a product's last passing input and result
+as reference. Anything else kept names its reason and expiry. Measure the volume's free space (`df`), never `du`,
 which counts cloned blocks once per folder.
 
 Retained storage holds only history, evidence an open issue or doc relies on,
