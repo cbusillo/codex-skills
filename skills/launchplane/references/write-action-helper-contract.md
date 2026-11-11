@@ -2002,7 +2002,7 @@ records or explicit scoped admin input. Configuration storage and runtime
 sync are separate operations.
 
 Run dry-run, review its private full response, then apply the same intent with
-its original idempotency key. Launchplane requires a matching dry run and any
+its own stable key, distinct from the dry run's key. Launchplane requires a matching dry run and any
 intent-specific reviewed digest before writing. Refusals are the service's
 own answer. On uncertainty preserve the request, review and key and use the
 service's original-operation recovery before any retry. Use a fresh dry run

@@ -25,6 +25,7 @@ assert SPEC is not None and SPEC.loader is not None
 operator: Any = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(operator)
 SAFE_OUTPUT = "x-launchplane-safe-output"
+GENERIC_SURFACE = "generic_caller"
 WITHHELD = object()
 HTTP_METHODS = {"get", "post", "put", "patch", "delete", "head", "options"}
 
@@ -91,15 +92,20 @@ def service_output(payload: Any, schema: dict[str, Any], document: dict[str, Any
     output["http_status"] = status
     if not isinstance(payload, dict):
         return output
-    for key in ("status", "trace_id"):
-        if isinstance(payload.get(key), str):
-            output[key] = payload[key]
+    if isinstance(payload.get("status"), str):
+        output["status"] = operator.public_code(payload["status"])
+    diagnostics = operator.service_response_diagnostics(payload)
+    if diagnostics.get("trace_id"):
+        output["trace_id"] = diagnostics["trace_id"]
     for key in ("error", "refusal"):
         value = payload.get(key)
         if isinstance(value, str):
-            output[key] = value
+            output[key] = operator.public_service_text(value)
         elif isinstance(value, dict):
-            output[key] = {field: value[field] for field in ("code", "message", "reason") if isinstance(value.get(field), str)}
+            diagnostics = operator.service_response_diagnostics({"error": value})
+            output[key] = {
+                field: diagnostics["error_" + field] for field in ("code", "message", "reason") if diagnostics.get("error_" + field)
+            }
     return output
 
 
@@ -157,14 +163,20 @@ def call(args: argparse.Namespace, evidence: BinaryIO) -> int:
     status, raw = exchange(settings, "GET", "/openapi.json", {}, None, "", args.timeout)
     if status != 200:
         evidence.write(raw)
-        print(json.dumps(service_output(json.loads(raw), {}, {}, status)))
+        try:
+            payload = json.loads(raw)
+        except (ValueError, UnicodeDecodeError):
+            payload = {}
+        print(json.dumps(service_output(payload, {}, {}, status)))
         return 1
     document = json.loads(raw)
     contract = document["x-launchplane-agent-contract"]["operations"]
     method, path, operation = find_operation(document, args.operation_id)
-    for entry in contract:
-        if entry["operation_id"] == args.operation_id and (entry["method"], entry["path"]) != (method, path):
-            raise ValueError("description_disagreement")
+    entries = [entry for entry in contract if entry["operation_id"] == args.operation_id]
+    if len(entries) != 1 or GENERIC_SURFACE not in entries[0]["supported_surfaces"]:
+        raise ValueError("generic_caller_not_supported")
+    if (entries[0]["method"], entries[0]["path"]) != (method, path):
+        raise ValueError("description_disagreement")
     for name, value in pairs(args.path).items():
         path = path.replace("{" + name + "}", urllib.parse.quote(value, safe=""))
     try:
@@ -175,15 +187,20 @@ def call(args: argparse.Namespace, evidence: BinaryIO) -> int:
         return 1
     evidence.write(raw)
     evidence.flush()
+    unknown = method not in {"GET", "HEAD", "OPTIONS"} and (status >= 500 or status == 408)
     try:
         payload = json.loads(raw)
-    except (ValueError, UnicodeDecodeError):
-        print(json.dumps({"http_status": status, "status": "unverified"}))
+        response = operation.get("responses", {}).get(str(status), operation.get("responses", {}).get("default", {}))
+        response = resolve_schema(response, document)
+        schema = response.get("content", {}).get("application/json", {}).get("schema", {})
+        output = service_output(payload, schema, document, status)
+    except (ValueError, UnicodeDecodeError, TypeError, KeyError, AttributeError):
+        output = {"http_status": status, "status": "accepted_unverified" if 200 <= status < 300 else "unverified"}
+        print(json.dumps({**output, **({"status": "outcome_unknown"} if unknown else {})}))
         return 1
-    response = operation.get("responses", {}).get(str(status), operation.get("responses", {}).get("default", {}))
-    response = resolve_schema(response, document)
-    schema = response.get("content", {}).get("application/json", {}).get("schema", {})
-    print(json.dumps(service_output(payload, schema, document, status)))
+    if unknown:
+        output["status"] = "outcome_unknown"
+    print(json.dumps(output))
     return 0 if 200 <= status < 300 else 1
 
 
@@ -207,7 +224,15 @@ def main() -> int:
         with open_evidence(args.response_file) as evidence:
             try:
                 return call(args, evidence)
-            except (OSError, ValueError, KeyError, TypeError, LaunchplaneSafetyError, http.client.HTTPException) as error:
+            except (
+                OSError,
+                ValueError,
+                KeyError,
+                TypeError,
+                AttributeError,
+                LaunchplaneSafetyError,
+                http.client.HTTPException,
+            ) as error:
                 evidence.write(json.dumps({"caller_error": type(error).__name__, "detail": str(error)}).encode())
                 print(json.dumps({"status": "unavailable"}))
                 return 1

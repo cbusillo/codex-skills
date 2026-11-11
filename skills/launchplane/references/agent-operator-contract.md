@@ -45,7 +45,10 @@ their installation proves no live workflow outcome.
 `launchplane-call.py` reads the configured service's `/openapi.json` on every
 invocation, including its `x-launchplane-agent-contract.operations` extension.
 It resolves the operation ID, method, path and safe response fields from that
-live description. It has no per-operation request checks or response field lists.
+live description. Only operations whose producer-declared `supported_surfaces`
+includes `generic_caller` use this path; the service qualifies each operation
+before its legacy wrapper is removed. The caller has no per-operation request
+checks or response field lists.
 Product-config uses this caller; the other installed wrappers remain in place.
 
 ```sh
@@ -71,8 +74,9 @@ and scalar fields marked `x-launchplane-safe-output: true`. A marked container
 does not authorize its contents; unmarked, unknown and unsupported schema
 branches stay private. The complete operation response goes to the named
 private file. Its status is the service's answer, not a separate qualification.
-On transport loss retain the original body, evidence and key and reconcile the
-original operation before retrying. The caller never retries or replans.
+On transport loss or an HTTP 408/5xx apply response, the outcome is unknown.
+A malformed reply is unverified. Retain the original body, evidence and apply
+key and reconcile the original operation before retrying. The caller never retries or replans.
 
 Launchplane owns request validation, authority, matching dry-run enforcement,
 idempotency and operation-specific recovery. Read its live request schema and

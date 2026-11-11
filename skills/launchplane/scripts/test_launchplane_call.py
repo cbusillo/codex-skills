@@ -41,6 +41,9 @@ class CallerTests(unittest.TestCase):
         }
         self.response_status = 202
         self.disconnect = False
+        self.generic_surface = True
+        self.raw_reply: bytes | None = None
+        self.malformed_reply_schema = False
         self.observed: list[tuple[str, Any]] = []
         self.properties = {"safe": {"type": "boolean", caller.SAFE_OUTPUT: True}, "private": {"type": "string"}}
         fixture = self
@@ -64,7 +67,14 @@ class CallerTests(unittest.TestCase):
                         }
                     },
                     "x-launchplane-agent-contract": {
-                        "operations": [{"operation_id": "fixture_operation", "method": "POST", "path": fixture.route}]
+                        "operations": [
+                            {
+                                "operation_id": "fixture_operation",
+                                "method": "POST",
+                                "path": fixture.route,
+                                "supported_surfaces": [caller.GENERIC_SURFACE] if fixture.generic_surface else [],
+                            }
+                        ]
                     },
                     "components": {
                         "schemas": {
@@ -75,6 +85,8 @@ class CallerTests(unittest.TestCase):
                         }
                     },
                 }
+                if fixture.malformed_reply_schema:
+                    document["components"]["schemas"]["Reply"]["properties"] = []
                 self.send_response(200)
                 self.end_headers()
                 self.wfile.write(json.dumps(document).encode())
@@ -88,7 +100,7 @@ class CallerTests(unittest.TestCase):
                     return
                 self.send_response(fixture.response_status)
                 self.end_headers()
-                self.wfile.write(json.dumps(fixture.payload).encode())
+                self.wfile.write(fixture.raw_reply if fixture.raw_reply is not None else json.dumps(fixture.payload).encode())
 
             do_GET = do_get
             do_POST = do_post
@@ -162,6 +174,47 @@ class CallerTests(unittest.TestCase):
         self.assertEqual(output["error"], {key: self.payload["error"][key] for key in ("code", "message", "reason")})
         self.assertNotIn("canary", json.dumps(output))
         self.assertEqual(json.loads((self.root / "refused.json").read_bytes()), self.payload)
+        self.payload["error"]["message"] = "Authorization: Basic PRIVATE_SENTINEL"
+        code, output = self.run_call("redacted-refusal.json")
+        self.assertEqual(code, 1)
+        self.assertNotIn("PRIVATE_SENTINEL", json.dumps(output))
+        self.assertEqual(json.loads((self.root / "redacted-refusal.json").read_bytes()), self.payload)
+
+    def test_unqualified_operation_never_reaches_the_service(self) -> None:
+        self.generic_surface = False
+        self.assertEqual(self.run_call("not-qualified.json")[0], 1)
+        self.assertFalse(self.observed)
+
+    def test_gateway_error_keeps_unknown_outcome_and_original_reply(self) -> None:
+        for status, raw in ((408, b"private-gateway-canary"), (504, None)):
+            with self.subTest(status=status):
+                self.response_status = status
+                self.raw_reply = raw
+                code, output = self.run_call(f"gateway-{status}.json", "--mode", "apply", "--idempotency-key", "original-key")
+                self.assertEqual(code, 1)
+                self.assertEqual(output["status"], "outcome_unknown")
+                self.assertNotIn("canary", json.dumps(output))
+                self.assertEqual((self.root / f"gateway-{status}.json").read_bytes(), raw or json.dumps(self.payload).encode())
+        self.assertEqual(len(self.observed), 2)
+
+    def test_malformed_projection_keeps_the_complete_apply_reply(self) -> None:
+        self.malformed_reply_schema = True
+        code, output = self.run_call("malformed.json", "--mode", "apply")
+        self.assertEqual(code, 1)
+        self.assertEqual(output["status"], "accepted_unverified")
+        self.assertEqual(json.loads((self.root / "malformed.json").read_bytes()), self.payload)
+
+    def test_private_body_and_evidence_cannot_live_in_the_repository(self) -> None:
+        repository = self.root.parent.parent / "source"
+        repository.mkdir()
+        body = repository / "private.json"
+        body.write_text('{"private":"body-canary"}')
+        with patch.object(caller.operator, "active_repo_root", return_value=repository):
+            self.assertEqual(self.run_call("repo-body.json", "--body-file", str(body))[0], 1)
+            evidence = repository / "task-evidence"
+            evidence.mkdir()
+            self.assertEqual(self.run_call(str(evidence / "reply.json"))[0], 1)
+        self.assertFalse(self.observed)
 
     def test_lost_apply_reply_keeps_unknown_outcome_without_retry(self) -> None:
         self.disconnect = True
@@ -178,6 +231,12 @@ class CallerTests(unittest.TestCase):
         self.assertEqual(self.run_call("link.json")[0], 1)
         self.assertEqual(target.read_text(), "original")
         self.assertFalse(self.observed)
+        outside = self.root / "outside"
+        outside.mkdir()
+        alias = self.root / "alias"
+        alias.symlink_to(outside, target_is_directory=True)
+        self.assertEqual(self.run_call(str(alias / "new.json"))[0], 1)
+        self.assertFalse((outside / "new.json").exists())
 
 
 if __name__ == "__main__":
