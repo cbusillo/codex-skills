@@ -29,6 +29,8 @@ COMPUTER_USE = "computer-use"
 # Documented: 0 starts a session with the built-in Chrome server off; it outranks the setting.
 CHROME_ENV = "CLAUDE_CODE_ENABLE_CFC"
 LIST_TOOL = "list_connected_browsers"
+CHROME_MCP_FLAG = "--claude-in-chrome-mcp"
+CHROME_DEBUG_FLAG = "--debug-to-stderr"
 CODEX_PLUGINS = {"chrome", "browser", "computer-use"}
 CODEX_BROWSER_PLUGINS = CODEX_PLUGINS - {COMPUTER_USE}
 BUNDLED_MARKETPLACE = Path(".tmp/bundled-marketplaces/openai-bundled")
@@ -162,10 +164,10 @@ def browser_connection_problem(observations: set[str]) -> str:
     reasons = {
         "signed_out": "the browser server reports no signed-in CLI account; the Director owns sign-in",
         "account_mismatch": "the CLI token account differs from its saved login; the extension account is unverified",
-        "bridge_down": "the browser server reports a failed bridge connection; check its network/bridge logs",
         "extension_unregistered": "the bridge returned no registered extension; extension account/organization and running state are unknown; "
                                   "ask the Director to inspect the existing Agents extension's connection error",
-        "unknown": "the server supplied no recognized connection evidence; inspect its logs and the existing extension's connection state",
+        "bridge_down": "the browser server reports a failed bridge connection; network reachability needs agent diagnosis",
+        "unknown": "the server supplied no recognized connection evidence; extension account/organization and bridge state are unverified",
     }
     reason = next((key for key in reasons if key in observations), "unknown")
     return f"no Chrome browser connected ({reason}): {reasons[reason]}"
@@ -178,6 +180,8 @@ def observe_browser_log(line: bytes, observations: set[str]) -> None:
         observations.add("account_mismatch")
     if b"[Claude in Chrome] Bridge WebSocket error" in line or b"[Claude in Chrome] Connection timeout" in line:
         observations.add("bridge_down")
+    if b"[Claude in Chrome] Connection successful" in line or b"[Claude in Chrome] Already connected and authenticated" in line:
+        observations.discard("bridge_down")
     marker = b"[Claude in Chrome] Bridge received: "
     if marker not in line:
         return
@@ -197,8 +201,8 @@ def connected_browsers(server: dict, timeout: float = 15.0) -> list[dict]:
             or not isinstance(extra_env, dict)):
         raise ValueError(f"{CHROME_SERVER} has invalid args or env")
     argv = [server["command"], *args]
-    if "--claude-in-chrome-mcp" in args and "--debug-to-stderr" not in args:
-        argv.append("--debug-to-stderr")
+    if CHROME_MCP_FLAG in args and CHROME_DEBUG_FLAG not in args:
+        argv.append(CHROME_DEBUG_FLAG)
     env = {**os.environ, **{key: str(value) for key, value in extra_env.items()}}
     try:
         process = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -270,14 +274,22 @@ def connected_browsers(server: dict, timeout: float = 15.0) -> list[dict]:
                 if "error" in message or not isinstance(message.get("result"), dict):
                     raise ValueError(f"{CHROME_SERVER} {method} failed")
                 return message
-        raise ValueError(f"{CHROME_SERVER} gave no {method} reply within {timeout:g}s; "
-                         + browser_connection_problem(observations))
+        raise ValueError(f"{CHROME_SERVER} gave no {method} reply within {timeout:g}s; browser state unknown")
 
     try:
         call(1, "initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
                                "clientInfo": {"name": "agent-tools-check", "version": "1"}})
         send({"jsonrpc": "2.0", "method": "notifications/initialized"})
         reply = call(2, "tools/call", {"name": LIST_TOOL, "arguments": {}})
+        drain_deadline = min(deadline, time.monotonic() + 0.1)
+        while stderr in streams and (remaining := drain_deadline - time.monotonic()) > 0:
+            ready, _, _ = select.select([stderr], [], [], remaining)
+            if not ready:
+                break
+            chunk = os.read(stderr.fileno(), 65536)
+            if not chunk:
+                break
+            capture_diagnostics(chunk)
     except (OSError, ValueError) as error:
         raise ValueError(str(error) if isinstance(error, ValueError) else
                          f"{CHROME_SERVER} closed early ({type(error).__name__})") from None

@@ -87,18 +87,18 @@ for line in sys.stdin:
         return {"command": sys.executable, "args": ["-u", "-c", script], "env": {"FIXTURE": "selected"}}
 
     def test_listing_handles_notifications_and_uses_server_environment(self):
-        server = self.server("assert os.environ['FIXTURE']=='selected'\nassert '--debug-to-stderr' in sys.argv\n"
+        server = self.server("assert os.environ['FIXTURE']=='selected'\n"
                              "result={'content':[{'type':'text','text':'[{\"id\":\"fixture\"}]'}]}")
-        server["args"].append("--claude-in-chrome-mcp")
+        server["args"].append(agent_tools.CHROME_MCP_FLAG)
         self.assertEqual(agent_tools.connected_browsers(server, timeout=2), [{"id": "fixture"}])
 
     def test_server_request_with_same_id_is_not_a_reply(self):
         server = self.server("print(json.dumps({'jsonrpc':'2.0','id':msg['id'],'method':'ping'}),flush=True)\nresult={'content':[{'type':'text','text':'[]'}]}")
-        with self.assertRaisesRegex(ValueError, "unknown"):
+        with self.assertRaisesRegex(ValueError, "^no Chrome browser connected \\(unknown\\)"):
             agent_tools.connected_browsers(server, timeout=2)
 
     def test_empty_list_is_distinct_from_failed_or_malformed_tool(self):
-        with self.assertRaisesRegex(ValueError, "unknown"):
+        with self.assertRaisesRegex(ValueError, "^no Chrome browser connected \\(unknown\\)"):
             agent_tools.connected_browsers(
                 self.server("result={'content':[{'type':'text','text':'[]'}]}"), timeout=2)
         for result in ({"isError": True, "content": [{"type": "text", "text": "private"}]},
@@ -117,6 +117,8 @@ for line in sys.stdin:
              '[Claude in Chrome] Bridge received: {"type":"extensions_list","extensions":[]}',
              "extension_unregistered"),
             ("[Claude in Chrome] Bridge WebSocket error after 2ms: private", "bridge_down"),
+            ('[Claude in Chrome] Bridge received: {"type":"extensions_list","extensions":[]}\n'
+             '[Claude in Chrome] Bridge WebSocket error after 2ms: private', "extension_unregistered"),
             ("The OAuth token in use resolves to a different claude.ai account than the persisted Claude Code login.",
              "account_mismatch"),
             ("[Claude in Chrome] Not connecting: nobody is signed in", "signed_out"),
@@ -132,10 +134,17 @@ for line in sys.stdin:
 
     def test_stderr_flood_cannot_block_listing_or_leak_into_diagnostic(self) -> None:
         server = self.server("sys.stderr.write('private'*200000);sys.stderr.flush()\n"
-                             "result={'content':[{'type':'text','text':'[]'}]}")
-        with self.assertRaisesRegex(ValueError, "unknown") as error:
-            agent_tools.connected_browsers(server, timeout=2)
-        self.assertNotIn("private", str(error.exception))
+                             "result={'content':[{'type':'text','text':'[{\"id\":\"fixture\"}]'}]}")
+        self.assertEqual(agent_tools.connected_browsers(server, timeout=2), [{"id": "fixture"}])
+
+    def test_native_trace_arriving_after_reply_still_explains_empty_roster(self) -> None:
+        trace = json.loads((Path(__file__).parent / "fixtures/claude-empty-roster.json").read_text())
+        behavior = ("import threading\n"
+                    f"def delayed_trace():\n    time.sleep(0.02)\n    sys.stderr.write({trace['trace']!r});sys.stderr.flush()\n"
+                    "threading.Thread(target=delayed_trace).start()\n"
+                    "result={'content':[{'type':'text','text':'[]'}]}")
+        with self.assertRaisesRegex(ValueError, "^no Chrome browser connected \\(extension_unregistered\\)"):
+            agent_tools.connected_browsers(self.server(behavior), timeout=2)
 
     def test_partial_line_eof_rpc_error_and_missing_executable_are_bounded(self):
         for behavior in ("sys.stdout.write('{');sys.stdout.flush();time.sleep(30)",

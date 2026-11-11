@@ -16,6 +16,8 @@ import sys
 import ctypes
 from typing import NamedTuple
 
+from agent_tools import CHROME_DEBUG_FLAG, CHROME_MCP_FLAG
+
 
 class ClaudeArguments(NamedTuple):
     candidates: list[str]
@@ -326,8 +328,8 @@ def process_arguments(pid, command):
         helper_role = (len(native) > 1 and native[1] in {
             "--type=gpu-process", "--type=utility", "--type=renderer"}
             and sum(arg.startswith("--type") for arg in native[1:]) == 1)
-        browser_helper = (not uncertain and len(argv) == 2
-                          and harness_family(argv[0]) == "claude" and argv[1] == "--claude-in-chrome-mcp")
+        browser_helper = (not uncertain and bool(argv) and harness_family(argv[0]) == "claude"
+                          and argv[1:] in ([CHROME_MCP_FLAG], [CHROME_MCP_FLAG, CHROME_DEBUG_FLAG]))
         if not argv or framework_helper and helper_role or browser_helper:
             # Never clear an earlier candidate using a replacement process.
             # ps rewrites prompt control characters; compare only the complete

@@ -1090,8 +1090,6 @@ def check_claude_tools(command_text, choice, without_browser=False, probes=None,
                     probes[key] = error
             if isinstance(probes[key], ValueError):
                 raise probes[key]
-            if not probes[key]:
-                raise ValueError(agent_tools.browser_connection_problem(set()))
             tools["browsers"] = len(probes[key])
         except ValueError as error:
             if require_browser:
