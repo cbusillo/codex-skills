@@ -7,10 +7,10 @@ from __future__ import annotations
 import argparse
 import http.client
 import json
-from pathlib import Path
 import re
 import urllib.error
 import urllib.parse
+from pathlib import Path
 from typing import Any
 
 PREFIX = "testing-candidate-release-"
@@ -131,6 +131,39 @@ def optional_identifier(h: Any, value: object) -> str:
     return "" if value == "" else h.public_identifier(value)
 
 
+def project_readback(h: Any, value: object) -> dict[str, str]:
+    result = {}
+    for predicate, outcome in h._require_dict(value).items():
+        if not isinstance(outcome, str) or outcome not in {"pass", "fail", "unavailable", "skipped"}:
+            raise ValueError("invalid_response")
+        result[h.public_identifier(predicate)] = outcome
+    return result
+
+
+def project_reference(h: Any, value: object) -> dict[str, str]:
+    row = h._require_dict(value)
+    return {
+        "reason": h.public_identifier(row.get("reason")),
+        "kind": h.public_identifier(row.get("kind")),
+        "record_id": optional_identifier(h, row.get("record_id", "")),
+        "record_sha256": digest_field(row.get("record_sha256", ""), allow_empty=True),
+    }
+
+
+def project_automatic_release(h: Any, value: object) -> dict[str, object]:
+    row = h._require_dict(value)
+    status = row.get("status")
+    reasons = array(row.get("reasons", []))
+    if not isinstance(status, str) or status not in {"released", "absent", "held", "unknown"} or len(reasons) > 32:
+        raise ValueError("invalid_response")
+    return {
+        "status": status,
+        "reasons": [h.public_identifier(reason) for reason in reasons],
+        "plan_sha256": digest_field(row.get("plan_sha256", ""), allow_empty=True),
+        "idempotency_key": h.public_identifier(row.get("idempotency_key")),
+    }
+
+
 def project_resource(h: Any, value: object) -> dict[str, object]:
     row = h._require_dict(value)
     result: dict[str, object] = {
@@ -140,6 +173,8 @@ def project_resource(h: Any, value: object) -> dict[str, object]:
         "reason": optional_identifier(h, row.get("reason")),
         "backing_sha256": digest_field(row.get("backing_sha256", ""), allow_empty=True),
     }
+    if readback := project_readback(h, row.get("readback", {})):
+        result["readback"] = readback
     if row.get("free_bytes") is not None:
         result["free_bytes"] = integer(row["free_bytes"])
     return result
@@ -183,7 +218,7 @@ def project_candidate(h: Any, value: object, request: dict[str, str]) -> dict[st
         "provider_evidence_sha256",
         "lifecycle_snapshot_sha256",
     )
-    return {
+    result: dict[str, object] = {
         **{key: h.public_identifier(row.get(key)) for key in identities},
         **{key: digest_field(row.get(key, ""), allow_empty=True) for key in digests},
         "target_id": optional_identifier(h, row.get("target_id")),
@@ -194,6 +229,12 @@ def project_candidate(h: Any, value: object, request: dict[str, str]) -> dict[st
         "resources": [project_resource(h, item) for item in array(row.get("resources", []))],
         "physical_readback": project_physical(h, row.get("physical_readback", {})),
     }
+
+    if references := [project_reference(h, item) for item in array(row.get("references", []))]:
+        result["references"] = references
+    if readback := project_readback(h, row.get("readback", {})):
+        result["readback"] = readback
+    return result
 
 
 def project_capacity(h: Any, value: object) -> dict[str, object]:
@@ -232,6 +273,11 @@ def project(h: Any, response: object, request: dict[str, str]) -> dict[str, obje
         "reclaimable_bytes": None if size is None else integer(size),
         "failure_code": optional_identifier(h, source.get("error_code")),
     }
+    if source.get("reason_code") is not None:
+        reason = h.public_identifier(source["reason_code"])
+        if len(reason) > 200:
+            raise ValueError("invalid_response")
+        projected["reason_code"] = reason
     if source.get("replayed") is True:
         projected["replayed"] = True
     if "candidates" in source:
