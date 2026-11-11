@@ -387,14 +387,17 @@ def status_names_actor(body: str, session: str) -> bool:
 
 def belongs_to_session(body: str, session: str) -> bool:
     body = unquoted_text(body)
+    return status_names_actor(body, session) or declares_session(body, session)
+
+
+def declares_session(body: str, session: str) -> bool:
+    body = unquoted_text(body)
     structured = records(body)
     if any(owner["session"] == session for owner in structured):
         return True
     identity = re.compile(rf"(?<![\w-]){re.escape(session)}(?![\w-])")
     directive = re.split(r"\n[ \t]*\n", body.strip(), maxsplit=1)[0]
     if not structured and legacy_claim_worker(body) and identity.search(directive):
-        return True
-    if status_names_actor(body, session):
         return True
     fields = session_fields(ownership_text(body, strip_quotes=False, keep_link_targets=True),
                             include_quotes=False, current_only=True)

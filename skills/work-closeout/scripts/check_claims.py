@@ -116,7 +116,8 @@ def check_record(
     body_records = [r for r in claim.records(issue.get("body") or "") if r["session"] == session]
     if any(r not in [r for c in sources for r in claim.records(c.get("body") or "")] for r in body_records):
         raise ValueError(f"{repo}#{number}: status ownership has no matching source claim")
-    if not body_records and issue.get("state") != "closed" and claim.belongs_to_session(issue.get("body") or "", session):
+    if (not body_records and claim.belongs_to_session(issue.get("body") or "", session)
+            and (issue.get("state") != "closed" or claim.declares_session(issue.get("body") or "", session))):
         if signoffs is None:
             raise ValueError(f"{repo}#{number}: status-only ownership needs reconciliation")
         signoffs[repo, number, session] = issue, actor

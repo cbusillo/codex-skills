@@ -1383,8 +1383,10 @@ class ReleaseTests(unittest.TestCase):
         status = f"## Current Status\nNext actor: agent:{entry['session_id']}\n"
         structured = github_plan_claim.marker({**SOURCE, "branch": "work/unreleased"})
         self.pages.side_effect = lambda path, **_kw: []
-        for state, body, refused in (("open", status, True), ("closed", status, False), ("closed", structured, True)):
-            with self.subTest(state=state, structured=body == structured):
+        legacy = f"Claimed by trial\nSession: {entry['session_id']}\n\n" + status
+        for state, body, refused in (("open", status, True), ("closed", status, False), ("closed", structured, True),
+                                     ("closed", legacy, True)):
+            with self.subTest(state=state, body=body):
                 self.reader.get_json.side_effect = lambda path, **_kw: {"state": state, "body": body}
                 report = helper.finished_claims(self.reader, entry, ACTOR, [("test/a", 1)], False)
                 self.assertEqual(bool(report["issue_refusals"]), refused, report)

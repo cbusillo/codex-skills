@@ -300,9 +300,11 @@ class ClaimCloseoutTests(unittest.TestCase):
 
     def test_closed_status_naming_the_session_holds_no_ownership(self):
         self.comments = []
-        for state, refused in (("open", True), ("closed", False)):
-            with self.subTest(state=state):
-                self.issue = {"number": 1, "state": state, "body": f"## Current Status\nNext actor: agent:{SESSION}\n"}
+        status = f"## Current Status\nNext actor: agent:{SESSION}\n"
+        legacy = f"Claimed by trial\nSession: {SESSION}\n\n" + status
+        for state, body, refused in (("open", status, True), ("closed", status, False), ("closed", legacy, True)):
+            with self.subTest(state=state, body=body):
+                self.issue = {"number": 1, "state": state, "body": body}
                 if refused:
                     with self.assertRaises(ValueError):
                         self.check()
