@@ -425,9 +425,10 @@ class _SourceEndMismatch(ValueError):
 
 
 def _records_process_exit(closed: dict | None) -> bool:
-    recovery_time_only = bool(closed) and closed.get("closure_kind") == "claim_free_recovery"
-    return (bool(closed) and closed.get("process_exit_verified") is True and bool(closed.get("ended_at"))
-            and not recovery_time_only)
+    if not closed:
+        return False
+    recovery_time_only = closed.get("closure_kind") == "claim_free_recovery"
+    return closed.get("process_exit_verified") is True and bool(closed.get("ended_at")) and not recovery_time_only
 
 
 def _source_process(entry, saved, context=None, *, recorded=None):
