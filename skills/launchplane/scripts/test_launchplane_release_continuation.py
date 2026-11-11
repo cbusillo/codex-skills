@@ -44,8 +44,11 @@ def operation(status="pending", **changes):
     return {"status": "accepted", "trace_id": "trace-read", "operation": {**view, **changes}}
 
 
+PRIVATE_PROSE = "The owner asked us to hold this until the staff finish inventory counts"
+
+
 def http_error(status, code):
-    body = {"trace_id": "trace-err", "error": {"code": code, "message": "PRIVATE_REASON_SENTINEL"}}
+    body = {"trace_id": "trace-err", "error": {"code": code, "message": PRIVATE_PROSE, "reason": PRIVATE_PROSE}}
     return urllib.error.HTTPError(SERVICE, status, "Failure", {}, io.BytesIO(json.dumps(body).encode()))
 
 
@@ -110,7 +113,7 @@ def test_stale_review_and_refusals_are_not_success(tmp_path):
     code, result, _, _ = invoke(argv("apply", evidence), [http_error(409, "odoo_original_effects_not_proven_absent")])
     assert code != 0 and result["status"] == "refused"
     assert result["summary"]["error_code"] == "odoo_original_effects_not_proven_absent"
-    assert "PRIVATE_REASON_SENTINEL" not in json.dumps(result)
+    assert PRIVATE_PROSE not in json.dumps(result)
 
 
 UNMATCHED = {"changed_digest": {"review_digest": "f" * 64}, "changed_operation": {"operation_id": "other-op"}}

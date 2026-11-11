@@ -41,6 +41,7 @@ RESULT_STATUSES = {
     )},
 }
 RESULT_IDS = ("artifact_id", "backup_record_id", "promotion_record_id", "deployment_record_id")
+PRINTED_DIAGNOSTICS = frozenset({"http_status", "trace_id", "error_code"})
 RECOVERY = {
     "ok": "Only the original operation continues; acceptance and promotion permission are unchanged.",
     "stale_review": "The reviewed evidence changed. Review again and apply only the new digest.",
@@ -139,7 +140,7 @@ def project_operation(h: Any, response: object, request: dict[str, object]) -> d
 def finish(h: Any, *, operation: str, request: dict[str, object], status: str,
            result: dict[str, object] | None = None, diagnostics: dict[str, object] | None = None) -> int:
     output = h.base_payload(status=status, operation=operation, request=request)
-    summary = dict(diagnostics or {})
+    summary = {key: value for key, value in (diagnostics or {}).items() if key in PRINTED_DIAGNOSTICS}
     summary["recommendation"] = RECOVERY.get(status, RECOVERY["refused"])
     warnings = [] if status == "ok" else [h.warning(str(summary.get("error_code", status)), summary["recommendation"])]
     if result is not None:
