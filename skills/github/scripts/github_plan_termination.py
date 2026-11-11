@@ -208,7 +208,7 @@ def _verify_queue_source(record, session, *, latest_pid=None):
 
 def _physical_exit(process, independent_harness):
     native_helpers()[1].verify_process_exit(process.physical, rows=inventory(), ended_at=process.cutoff,
-                                           independent_harness=independent_harness)
+                                           independent_harness=independent_harness, rebooted_at=process.rebooted_at)
 
 
 def _recheck_queue_process(process):

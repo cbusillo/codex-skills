@@ -527,14 +527,13 @@ def require_source_not_resumed(session: str | None, candidates: list[str]) -> No
 
 def verify_process_exit(entry, *, rows=None, ended_at=None, started_at=None,
                         independent_harness=None, replacement_owner=None, require_tty=False,
-                        scope="session"):
-    """Share process facts; physical terminal cleanup does not establish session closure.
-
-    `ended_at` is a proven bound on the source process's exit: a process born
-    after it, even one holding a recorded PID, is not the source or its work.
-    """
+                        scope="session", rebooted_at=None):
+    """Share process facts; physical terminal cleanup does not establish session closure."""
     if scope not in {"session", "terminal"}:
         raise ValueError("unknown process verification scope")
+    if rebooted_at is not None and (scope != "session" or ended_at != rebooted_at
+                                   or rebooted_at > datetime.now(timezone.utc)):
+        raise ValueError("reboot proof requires a verified session exit cutoff")
     rows = inventory() if rows is None else rows
     started_at = started_at or process_started_at
     tty = entry.get("tty")
@@ -551,14 +550,8 @@ def verify_process_exit(entry, *, rows=None, ended_at=None, started_at=None,
     same_tty = [row for row in rows if row[1] == tty]
     if require_tty and not same_tty:
         raise ValueError("no process rows match the terminal TTY; inventory is uncertain")
-    def born_after_exit(pid):
-        try:
-            return ended_at is not None and ended_at < started_at(pid) <= datetime.now(timezone.utc)
-        except (OSError, ValueError, TypeError, subprocess.SubprocessError):
-            return False
-
     for pid, process_tty, command in rows:
-        if pid in pids and not born_after_exit(pid):
+        if pid in pids and rebooted_at is None:
             raise ValueError("source PID (possibly reused) or work on its TTY remains; preserve claims and verify native identity")
         argv, command_kind, exact_resume = [], None, None
         if scope == "session":

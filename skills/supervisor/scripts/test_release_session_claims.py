@@ -164,7 +164,7 @@ class ReleaseTests(unittest.TestCase):
         cases = (  # entry, live process births, host boot, recovered
             ("newer occupant", source, {456: later}, None, True),
             ("newer occupant after reboot", source, {456: later}, last + timedelta(hours=1), True),
-            ("recorded PID reused after its launch", launched, {source["pid"]: later}, None, True),
+            ("recorded PID still present after its launch", launched, {source["pid"]: later}, None, False),
             ("older occupant may be its work", source, {456: earlier}, None, False),
             ("source process alive", source, {source["pid"]: earlier}, None, False),
             ("source alive without launch time", source, {source["pid"]: later}, None, False),

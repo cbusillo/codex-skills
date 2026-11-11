@@ -489,7 +489,8 @@ def _source_process(entry, saved, context=None, *, recorded=None):
             if owner is not None:
                 effective["_tty_owner"] = owner[:2]
                 cutoff = owner[1]
-        if cutoff is None and context is None:
+        if cutoff is None and context is None and (effective.get("recovery")
+                                                    or effective.get("closure_kind") == "claim_free_recovery"):
             cutoff = _ended_original_activity(effective)
         if cutoff is not None:
             effective["tty_exited_at"] = cutoff.isoformat()
