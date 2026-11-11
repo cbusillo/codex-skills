@@ -406,7 +406,7 @@ def public_service_text(value: object, *, max_length: int = 500) -> str:
     )
     text = re.sub(r"(?i)\bBasic\s+[A-Za-z0-9+/]+=*", "[redacted]", text)
     text = re.sub(r"[^\s<>\"'@]+@[^\s<>\"']+", "[redacted]", text)
-    text = re.sub(r"(?:[A-Za-z]:)?(?:[\w.~+-]*[/\\])[^\s,;\"'<>]*", "[redacted]", text)
+    text = re.sub(r"(?:[A-Za-z]:)?[\w.~+-]*[/\\][^\s,;\"'<>]*", "[redacted]", text)
     text = re.sub(r"(?:[0-9a-fA-F]{0,4}:){2,}[0-9a-fA-F]{0,4}", _redact_service_ipv6, text)
     return re.sub(
         r"\b(?:[\w-]+\.)+[^\W\d_]{2,63}\b|\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b|\blocalhost(?::[0-9]+)?\b",

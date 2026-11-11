@@ -17,7 +17,7 @@ import launchplane_migrated_upload as upload
 import pytest
 from test_launchplane_helpers import _calendar_payload, _run_main
 from test_launchplane_helpers import write_action as h
-from test_launchplane_migrated_upload import fixture, invoke, patch_attr
+from test_launchplane_migrated_upload import fixture, invoke
 
 
 def response() -> dict[str, Any]:
