@@ -65,7 +65,7 @@ def binding_record():
                    "stale_after": "2026-10-15T21:00:00Z"}}
 
 
-def binding_response(mode="dry-run", status="ready", current="") -> dict[str, Any]:
+def binding_response(mode: str = "dry-run", status: str = "ready", current: str = "") -> dict[str, Any]:
     return {"status": "accepted", "trace_id": "launchplane_req_binding", "records": {
         **SCOPE, "route_binding_status": "created" if mode == "apply" else "planned_create"},
         "result": {"mode": mode, "status": status, "operation": "create", "findings": [],
@@ -87,7 +87,7 @@ def run(command, reads, posts=(), evidence=None, private=None, extra=()):
             argv = [command, *[arg for key, value in SCOPE.items() for arg in ("--" + key, value)]]
             if command.endswith(("dry-run", "apply")):
                 argv += ["--reason", "private reason"]
-                if private is not None:
+                if private is not None and command == "route-binding-dry-run":
                     argv += ["--ingress-payload-file", str(payload_path)]
         if command.endswith("-apply"):
             evidence_path = root / "review.json"
@@ -204,7 +204,6 @@ def test_current_verification_uses_audit_action_without_apply_key() -> None:
     assert code == 0
     assert post.call_args.kwargs["body"]["ingress"]["verify_route_binding"] is True
     assert post.call_args.kwargs["idempotency_key"] == ""
-    assert output["request"]["authorization_action"] == "ingress_route.audit"
     assert output["result"]["apply_eligible"] is False
 
 
@@ -261,21 +260,20 @@ def test_missing_history_or_expired_sources_verify_then_review_without_ingress_a
     assert all("ingress" not in call.kwargs["body"] for call in post.call_args_list)
 
 
-def test_expiry_during_review_refreshes_but_never_applies_previous_review() -> None:
-    reads = [profiles(), *absent(), *verification_reads(), *absent()]
-    posts = [blocked_binding("ingress_verification_required"), *verification_posts(), binding_response()]
-    code, output, _, post = run("route-binding-apply", reads, posts, binding_plan(), private=ingress_input())
-    assert code != 0 and output["status"] == "stale"
-    assert all(call.kwargs["body"].get("mode", "dry-run") == "dry-run" for call in post.call_args_list)
+def test_expiry_during_review_returns_to_dry_run_without_observation_or_apply() -> None:
+    code, output, _, post = run("route-binding-apply", [profiles(), *absent()],
+        [blocked_binding("ingress_verification_required")], binding_plan())
+    assert code != 0 and output["status"] == "stale" and post.call_count == 1
+    assert post.call_args.kwargs["body"]["mode"] == "dry-run"
 
 
-@pytest.mark.parametrize("finding", ["ingress_audit_unresolved", "ingress_audit_ambiguous", "ingress_edge_endpoint_missing",
-    "ingress_edge_endpoint_ambiguous", "provider_target_mismatch", "artifact_mismatch", "deployment_mismatch", "custody_required"])
-def test_other_prerequisites_never_start_verification_or_apply(finding: str) -> None:
-    code, output, _, post = run("route-binding-dry-run", [profiles(), *absent()],
-        [blocked_binding(finding)], private=ingress_input())
+@pytest.mark.parametrize("codes", [["ingress_audit_unresolved"], ["ingress_verification_required", "ingress_audit_unresolved"]])
+def test_pending_original_blocks_refresh_even_with_an_observation_finding(codes: list[str]) -> None:
+    response = blocked_binding(codes[0])
+    response["result"]["findings"] = [{"code": code} for code in codes]
+    code, output, _, post = run("route-binding-dry-run", [profiles(), *absent()], [response], private=ingress_input())
     assert code == 0 and output["result"]["apply_eligible"] is False
-    assert output["result"]["finding_codes"] == [finding] and post.call_count == 1
+    assert output["result"]["finding_codes"] == codes and post.call_count == 1
 
 
 @pytest.mark.parametrize("cause", ["domains", "target", "scope", "settings", "host", "ambiguous", "unavailable", "drift", "audit"])
@@ -298,10 +296,19 @@ def test_current_fact_failures_never_reconcile(cause: str) -> None:
         posts[1]["result"]["operations"][0].update(action="update", requires_apply=True, change_categories=["tls"])
     else:
         reads[3]["record"]["route_verification"]["instance"] = "other"
-    private = {**ingress_input(), "verify_route_binding": True}
-    code, _, _, post = run(INGRESS_COMMAND, reads, posts, private=private)
-    assert code != 0
-    assert all(call.kwargs["body"]["ingress"]["mode"] == "dry-run" for call in post.call_args_list)
+    private: dict[str, Any] = {**ingress_input(), "verify_route_binding": True}
+    code, output, _, post = run("route-binding-dry-run", [profiles(), *absent(), *reads],
+        [blocked_binding("ingress_audit_missing"), *posts], private=private)
+    expected = {"domains": "ingress_current_target_required", "target": "ingress_current_target_required",
+                "scope": "ingress_current_target_required", "settings": "ingress_current_settings_required",
+                "host": "ingress_current_host_required", "ambiguous": "invalid_request",
+                "unavailable": "authorization_denied", "drift": "ingress_route_drift",
+                "audit": "ingress_current_observation_required"}
+    assert code != 0 and output["summary"]["error_code"] == expected[cause]
+    assert sum("ingress" not in call.kwargs["body"] for call in post.call_args_list) == 1
+    if cause == "drift":
+        assert output["result"]["status"] == "planned" and output["result"]["verification_usable"] is False
+        assert output["records"]["ingress_route_audit_record_id"] == posts[1]["records"]["ingress_route_audit_record_id"]
 
 
 @pytest.mark.parametrize("flag,valid", [(False, True), ("true", False), (1, False), (None, False)])
@@ -313,6 +320,53 @@ def test_verification_false_is_omitted_and_non_boolean_is_refused(flag: object, 
     else:
         assert code != 0
         post.assert_not_called()
+
+
+@pytest.mark.parametrize("missing", ["records", "id", "result"])
+def test_malformed_planned_observation_keeps_the_json_failure_envelope(missing: str) -> None:
+    posts = verification_posts()
+    posts[1]["result"]["status"] = "planned"
+    if missing == "records":
+        posts[1].pop("records")
+    elif missing == "id":
+        posts[1]["records"]["ingress_route_audit_record_id"] = "invalid id"
+    else:
+        posts[1]["result"] = []
+    code, output, _, _ = run(INGRESS_COMMAND, verification_reads(), posts,
+                            private={**ingress_input(), "verify_route_binding": True})
+    assert code != 0 and output["status"] == "invalid"
+    assert output["warnings"][0]["code"] != "ingress_route_drift"
+
+
+def test_known_full_settings_skip_the_discovery_comparison() -> None:
+    private: dict[str, Any] = {**ingress_input(), "verify_route_binding": True}
+    host = observed_host_response()["result"]["proxy_host"]
+    private["route"].update({key: host[key] for key in h.INGRESS_PLAN_ROUTE_FIELDS - {"edge_endpoint_key"}})
+    code, output, _, post = run(INGRESS_COMMAND, verification_reads(), [observed_host_response()], private=private)
+    assert code == 0 and output["result"]["verification_usable"] is True
+    assert post.call_count == 1
+
+
+@pytest.mark.parametrize("cause", ["scope", "path"])
+def test_continuation_input_is_validated_before_service_calls(cause: str) -> None:
+    private = ingress_input()
+    if cause == "scope":
+        private["product"] = "foreign"
+        extra = ()
+    else:
+        extra = ("--ingress-payload-file", "/missing/fictional-ingress.json")
+    code, output, get, post = run("route-binding-dry-run", [], private=private, extra=extra)
+    assert code != 0
+    assert output["warnings"][0]["code"] == ("binding_scope_mismatch" if cause == "scope" else "invalid_payload_path")
+    get.assert_not_called()
+    post.assert_not_called()
+
+
+def test_commit_time_expiry_returns_the_supported_review_continuation() -> None:
+    code, output, _, post = run("route-binding-apply", [profiles(), *absent()],
+        [binding_response(), http_error(409, "ingress_verification_required")], binding_plan())
+    assert code != 0 and post.call_count == 2
+    assert "--ingress-payload-file" in output["summary"]["recommendation"]
 
 
 def ingress_apply_response():

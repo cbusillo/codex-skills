@@ -12832,7 +12832,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             binding.add_argument(f"--{field}", required=True)
         if command in {"route-binding-dry-run", "route-binding-apply"}:
             binding.add_argument("--reason", required=True)
-            binding.add_argument("--ingress-payload-file", help="Private current-ingress inputs for missing or expired observation; repeat review after refresh.")
+            if command == "route-binding-dry-run":
+                binding.add_argument("--ingress-payload-file", help="Private current-ingress inputs for missing or expired observation.")
             _add_reviewed_apply_arguments(binding, apply=command.endswith("-apply"))
 
     for command in sorted(DOKPLOY_COMPOSE_DOMAIN_COMMANDS):
@@ -13044,9 +13045,11 @@ def _plan_domains(value: object) -> list[str]:
     return value
 
 
-def _ingress_plan_input(args: argparse.Namespace) -> dict[str, Any]:
-    body = read_payload_file(args.payload_file)
-    if getattr(args, "verify_route_binding", False):
+def _ingress_plan_input(
+    args: argparse.Namespace, *, payload_file: str | None = None, verify_route_binding: bool = False,
+) -> dict[str, Any]:
+    body = read_payload_file(payload_file or args.payload_file)
+    if verify_route_binding:
         body["verify_route_binding"] = True
     if body.keys() - {"product", "context", "instance", "route", "expected_host_id", "reason", "verify_route_binding"}:
         raise ValueError("unsupported_ingress_plan_field")

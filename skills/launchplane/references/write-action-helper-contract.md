@@ -1528,22 +1528,21 @@ credential or provider write. Source validation uses offline tests only.
   Blocked/conflict plans are diagnostic evidence and never apply eligible.
 
 For the supported verification-to-reconciliation continuation, pass
-`--ingress-payload-file <private-file>` to `route-binding-dry-run` and
-`route-binding-apply`. It uses the same ingress input above and opts into
+`--ingress-payload-file <private-file>` to `route-binding-dry-run`. It uses the same ingress input above and opts into
 verification only when reconcile reports solely `ingress_audit_missing` or
 `ingress_verification_required`. It compares current facts, records an
 unchanged observation, rereads the current binding and replans reconcile.
-Review that new helper JSON using the ordinary reviewed-apply arguments below.
-An apply that needs fresh verification returns `stale` for a new dry-run
-review and performs no reconciliation apply. Other findings, including pending
+Review that new helper JSON, then use `route-binding-apply` with the ordinary
+reviewed-apply arguments below. An apply that needs fresh verification returns
+`stale` without writing; repeat `route-binding-dry-run` with the private ingress
+file and review the fresh plan. Other findings, including pending
 original effects, custody, ambiguity and source/artifact/deployment mismatch,
 are returned unchanged without refresh or bypass. No raw call is needed.
 
 A still-current observation is reused without a new audit or a new clock.
 The service checks its exact sources and 24-hour observation deadline on each
 reconcile and at commit, with the existing original-key and current-record CAS
-rules. The continuation also binds that deadline into its review digest.
-Changed or expired evidence requires fresh verification and review. Current
+rules. Changed or expired evidence requires fresh verification and review. Current
 observations supersede older apply history; planned drift never permits apply.
 Delivered compatible service and an installed compatible helper are both
 required. These commands do not qualify runtime/indexing eligibility or assign
