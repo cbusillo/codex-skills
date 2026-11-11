@@ -894,7 +894,8 @@ app_auth_for_command() {
 			return 2
 		fi
 		require_installation=1
-	elif [ -n "$target_repo" ] && is_write_command "$@"; then
+	elif [ -n "$target_repo" ] && is_write_command "$@" && ! verify_read_command "$@" 2>/dev/null; then
+		# A GraphQL query is a POST but a read, so it keeps the App reader.
 		require_installation=1
 	fi
 	set -- app-auth

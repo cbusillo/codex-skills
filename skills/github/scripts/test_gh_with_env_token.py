@@ -589,6 +589,18 @@ def test_app_installation_follows_the_target_repository() -> None:
             assert result.returncode == 0, (args, result.stderr)
             assert result.stdout == f"{token}\n", (args, result.stdout)
 
+        # Repository-scoped GraphQL (GitHubReader sets GH_REPO): a query is a
+        # read and keeps the App reader without an installation; a mutation is not.
+        for query, token in {
+            "query=query { repository(owner:\"x\",name:\"y\") { id } }": "token:--repo second-owner/site",
+            "query=mutation { addStar(input:{starrableId:\"x\"}) { clientMutationId } }":
+                "token:--repo second-owner/site --require-installation",
+        }.items():
+            result = run_wrapper(env_file, unused, identity, "api", "graphql", "-f", query,
+                                 gh_command=fake_gh, extra_env={"GH_REPO": "second-owner/site"})
+            assert result.returncode == 0, (query, result.stderr)
+            assert result.stdout == f"{token}\n", (query, result.stdout)
+
         refused = run_wrapper(
             env_file, unused, identity,
             "api", "repos/other-owner/uncovered/issues/1/comments", "--method", "POST", "-f", "body=x",
