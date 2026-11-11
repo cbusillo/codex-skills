@@ -3378,3 +3378,44 @@ when one exists; an empty close supplies no cause. The local
 summary. No retry, upload, receipt reconciliation or disposition is implied.
 The opt-in original-bound state read above exposes recorded candidate/scope
 holds; it cannot prove that another upload may start.
+
+### Preview container observation
+
+`preview-container-observation --payload-file <private-request.json> --result-file
+<new-private-result.json>` reads `GET /v1/products/{product}/preview-evidence`
+through the existing authenticated read transport with request and response
+`Cache-Control: no-store`. Its private request has exactly `product`,
+`pr_number` (positive integer), `source_git_ref` (40 lowercase hex digits),
+`image_digest` (`sha256:` plus 64 lowercase hex digits), `preview_id`,
+`generation_id`, `target_id`, and `mode: "container_observation"`, plus exactly
+one nonempty `original_reservation_id` (`mutation-reservation-` plus 64 lowercase
+hex digits) or `plan_id` (`odoo-preview-plan-` plus letters, digits, `_` or `-`,
+128 characters total at most). The unused original/plan field may be omitted
+or empty. Product uses the existing product identifier validation. Preview,
+generation and target selectors are nonempty, at most 256 characters; target
+uses letters, digits, `_` and `-`. No selector is discovered or substituted.
+The read uses the existing `preview.read` authority and a 180-second default
+timeout; installation supplies no new authority.
+
+The closed response follows the
+[reviewed producer models](https://github.com/cbusillo/launchplane/blob/fc2a03fdf64d11fd922ebea7c1e2ff150eb235ec/control_plane/preview_evidence.py).
+It retains the service trace and exact binding, observation times, current
+binding (`current`, `changed`, `unavailable`), and the separate container ID,
+selection, existence, Config/State validity, Running, coverage, identity and
+image agreement fields. The caller validates every nested field and the exact
+requested binding. With a controller plan, the response's resolved original
+reservation is retained rather than substituted into the request.
+
+The new result file is private (0600), outside the repository and never
+overwrites an existing path. It retains only the validated closed envelope,
+without adding defaults or changing missing and null fields. Unknown,
+missing_or_unavailable, missing, ambiguous, invalid and not_reached stay
+distinct. Empty inventory cannot establish absence. Config/State bodies,
+environment, unrelated records and raw errors are rejected. Stdout carries
+safe diagnostics and a save receipt; `runtime_verification` stays
+`not_performed` and `import_eligibility` stays `not_evaluated`, even when
+individual identity/image observations are verified or Running is false.
+A successful HTTP read is no aggregate runtime or import qualification.
+Existing operational holds and any separate assignment needed for a real
+observation remain in force. Legacy inventory and disposable-lane callers
+retain their existing behavior.
