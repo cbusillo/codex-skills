@@ -27,6 +27,7 @@ from typing import Any, cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from launchplane_contract import BOUNDED_READ_RESPONSE_FIELDS, NATIVE_EXECUTION_BINDING_FIELD  # noqa: E402
+from launchplane_contract import ContractError, validate_preview_sleep_evidence  # noqa: E402
 from launchplane_contract import helper_command_path  # noqa: E402
 from launchplane_contract import internal_helper_path  # noqa: E402
 from launchplane_inventory import project_inventory  # noqa: E402
@@ -6400,7 +6401,58 @@ def _project_lane_status(value: object) -> dict[str, object]:
     return projected
 
 
-def _project_product_status(product: dict[str, Any]) -> dict[str, object]:
+def _project_preview_sleep_inventory(product: dict[str, Any]) -> dict[str, object]:
+    preview = product.get("preview")
+    if preview is None:
+        return {"status": "legacy" if "preview" not in product else "unavailable"}
+    preview = _require_dict(preview)
+    records_status = preview.get("records_status")
+    if records_status not in {"available", "authorization_denied", "unsupported"}:
+        raise LaunchplaneSafetyError("invalid_response")
+    result: dict[str, object] = {"context": public_identifier(preview.get("context")) if preview.get("context") else "",
+                                "records_status": records_status}
+    if "inventory" not in preview or preview["inventory"] is None:
+        return {**result, "status": "legacy" if "inventory" not in preview else "unavailable"}
+    inventory = _require_dict(preview["inventory"])
+    status = inventory.get("status")
+    if status not in {"empty", "nonempty", "failed", "stale", "unsupported", "unavailable", "missing"}:
+        raise LaunchplaneSafetyError("invalid_response")
+    provenance = _require_dict(inventory.get("provenance"))
+    projected_provenance = {key: provenance[key] for key in (
+        "source_kind", "source_record_id", "recorded_at", "refreshed_at", "freshness_status", "stale_after",
+    ) if key in provenance}
+    if provenance.get("source_kind") not in {"record", "provider", "descriptor", "unsupported"} or provenance.get("freshness_status") not in {
+        "verified", "recorded", "stale", "missing", "unsupported",
+    } or any(not isinstance(value, str) for value in projected_provenance.values()):
+        raise LaunchplaneSafetyError("invalid_response")
+    rows = inventory.get("sleep_observations", [])
+    slugs = inventory.get("observed_slugs", [])
+    count = inventory.get("observed_count")
+    if not isinstance(rows, list) or not isinstance(slugs, list) or (count is not None and (type(count) is not int or count < 0)):
+        raise LaunchplaneSafetyError("invalid_response")
+    if records_status != "available" and (rows or slugs):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    observations = []
+    for value in rows:
+        row = _require_dict(value)
+        if row.keys() - {"slug", "state", "reason", "evidence"}:
+            raise LaunchplaneSafetyError("unsafe_response_shape")
+        if row.get("state") not in {"awake", "asleep", "cannot_sleep", "unknown"}:
+            raise LaunchplaneSafetyError("invalid_response")
+        item = {"slug": public_identifier(row.get("slug")), "state": row["state"]}
+        if "evidence" in row:
+            try:
+                item["evidence"] = validate_preview_sleep_evidence(row["evidence"])
+            except ContractError as exc:
+                raise LaunchplaneSafetyError(exc.code) from None
+        observations.append(item)
+    result["inventory"] = {"status": status, "provenance": projected_provenance, "observed_count": count,
+                           "observed_slugs": [public_identifier(slug) for slug in slugs], "sleep_observations": observations}
+    assert_public_safe_shape(result)
+    return result
+
+
+def _project_product_status(product: dict[str, Any], *, include_preview_sleep_evidence: bool = False) -> dict[str, object]:
     environments, warnings = product.get("environments"), product.get("warnings")
     if not isinstance(environments, list) or not isinstance(warnings, list):
         raise LaunchplaneSafetyError("invalid_response")
@@ -6409,11 +6461,14 @@ def _project_product_status(product: dict[str, Any]) -> dict[str, object]:
         lane = _require_dict(value)
         lanes.append({"environment": public_identifier(lane.get("environment")), **_project_lane_status(lane.get("lane_status"))})
     product_warnings = [public_service_text(value, max_length=16000) for value in warnings]
-    return {"product": public_identifier(product.get("product")), "lanes": lanes, "warnings": product_warnings,
-            "warning_text_redacted": product_warnings != [" ".join(str(value).split()) for value in warnings]}
+    result = {"product": public_identifier(product.get("product")), "lanes": lanes, "warnings": product_warnings,
+              "warning_text_redacted": product_warnings != [" ".join(str(value).split()) for value in warnings]}
+    if include_preview_sleep_evidence:
+        result["preview_sleep_evidence"] = _project_preview_sleep_inventory(product)
+    return result
 
 
-def summarize_product_status_read(*, request: dict[str, object], provider_payload: dict[str, Any]) -> dict[str, object]:
+def summarize_product_status_read(*, request: dict[str, object], provider_payload: dict[str, Any], evidence_file: str | None = None) -> dict[str, object]:
     _require_read_fields("product-status-read", provider_payload, required=frozenset({"status", "trace_id", "products"}))
     products = provider_payload["products"]
     if not isinstance(products, list):
@@ -6421,6 +6476,13 @@ def summarize_product_status_read(*, request: dict[str, object], provider_payloa
     selected = [_require_dict(product) for product in products]
     payload = base_payload(status=public_code(provider_payload.get("status")), operation="product-status-read", request=request)
     payload["result"] = {"products": [_project_product_status(product) for product in selected]}
+    if request.get("include_preview_sleep_evidence"):
+        if evidence_file is None:
+            raise LaunchplaneSafetyError("invalid_request")
+        private = {"products": [_project_product_status(product, include_preview_sleep_evidence=True) for product in selected],
+                   "trace_id": public_trace_id(provider_payload["trace_id"])}
+        from launchplane_testing_state import write_staged
+        write_staged(sys.modules[__name__], evidence_file, private)
     payload["summary"] = {"trace_id": public_trace_id(provider_payload["trace_id"]),
                           "recommendation": "Service-computed Product Ops sidebar status for caller-visible products. Use each tone and description; preserve missing and stale states. No authority to change a lane."}
     assert_public_safe_shape(payload["result"])
@@ -7090,6 +7152,8 @@ def execute_product_read(
     summarize = PRODUCT_READ_SUMMARIZERS[operation]
     if operation == "target-replacement-operation-read":
         summarize = partial(summarize_target_replacement_operation_read, binding_file=args.native_execution_binding_file)
+    if operation == "product-status-read":
+        summarize = partial(summarize_product_status_read, evidence_file=getattr(args, "preview_sleep_evidence_file", None))
     settings = prepare_operator_settings(args=args, operation=operation, request=request)
     if settings is None:
         return 2
@@ -7102,6 +7166,7 @@ def execute_product_read(
             settings=settings,
             query=query or {},
             timeout=args.timeout,
+            **({"no_store": True} if request.get("include_preview_sleep_evidence") else {}),
         )
         payload = summarize(request=request, provider_payload=provider_payload)
         if operation == "merge-train-policy-read" and request.get("include_config_authority"):
@@ -12536,7 +12601,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     for argument in ("--product", "--context", "--instance"):
         testing_hold_read.add_argument(argument, required=True)
 
-    subparsers.add_parser("product-status-read", help="Read every lane's service-computed Product Ops sidebar tone, reasons and product warnings.")
+    product_status = subparsers.add_parser("product-status-read", help="Read every lane's service-computed Product Ops sidebar tone, reasons and product warnings.")
+    product_status.add_argument("--preview-sleep-evidence-file", help="Opt in to persisted preview sleep evidence; save only to a new private file outside the repository.")
 
     product_environment_read = subparsers.add_parser(
         "product-environment-read",
@@ -13557,8 +13623,14 @@ def main(argv: list[str]) -> int:
             return execute_lane_config_read(args=args, operation=args.command, request=request)
         if args.command == "product-status-read":
             path = _product_read_path(args.command)
-            request = {"payload_source": "operator_argument"}
-            return execute_product_read(args=args, operation=args.command, request=request, path=path)
+            request: dict[str, object] = {"payload_source": "operator_argument"}
+            query = {}
+            if args.preview_sleep_evidence_file is not None:
+                if args.preview_sleep_evidence_file.strip() in {"", "-"} or "\0" in args.preview_sleep_evidence_file:
+                    raise ValueError("private_request_unavailable")
+                query["include_preview_sleep_evidence"] = "true"
+                request["include_preview_sleep_evidence"] = True
+            return execute_product_read(args=args, operation=args.command, request=request, path=path, query=query)
         if args.command == "product-environment-read":
             path = _product_read_path(
                 args.command, product=args.product, environment=args.environment

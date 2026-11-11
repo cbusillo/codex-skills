@@ -622,6 +622,22 @@ installed local helper bindings.
   prose is redacted with `text_redacted` or `warning_text_redacted` disclosed.
   This read grants no authority to change a lane or clear an incident.
 
+  `--preview-sleep-evidence-file <new-private-file>` opts in on that same GET
+  with `include_preview_sleep_evidence=true`, requiring the producer's no-store
+  response. The existing exclusive mode-0600 file writer retains validated
+  preview inventory status/provenance, records status and exact observed evidence
+  outside the repository; stdout keeps the ordinary sidebar projection. Free-form
+  inventory detail and observation reason are omitted from the private projection.
+  Closed evidence objects reject unknown fields. Null, false, missing, stale,
+  failed, denied and legacy remain distinct; current references never replace an
+  observed binding. No fallback or additional read is made.
+  This reads persisted evidence under the existing product and preview.read
+  authority; only the normal background inventory job collects it. There is no
+  collection or activity request here. Even complete positive evidence proves
+  no wake/import eligibility, health, runtime verification, original custody or
+  effect release. Actual use requires a separately verified deployed compatible
+  producer, this delivered caller and the lead's separate executor assignment.
+
 - A healthy deployment does not establish a qualified release candidate. Before
   reporting release readiness, match testing's `target.artifact` and observed
   runtime identity from `product-environment-read` to the exact candidate, and
