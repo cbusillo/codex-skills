@@ -109,6 +109,126 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
             row["ordinal"] = index
         return rows
 
+    @classmethod
+    def recorded_waited_claim(cls, command: str = COMMAND) -> list[dict]:
+        earlier = invocation(
+            'text(await tools.exec_command({cmd:"cat baseline.txt"}));',
+            "Script running with cell ID cell-a\n",
+        )
+        for row in earlier:
+            row["payload"]["call_id"] = "yielded"
+        wait = [
+            {
+                "payload": {
+                    "type": "function_call",
+                    "name": "wait",
+                    "call_id": "wait",
+                    "arguments": '{"cell_id":"cell-a"}',
+                }
+            },
+            {
+                "payload": {
+                    "type": "function_call_output",
+                    "call_id": "wait",
+                    "output": [
+                        {
+                            "type": "input_text",
+                            "text": "Script completed\nWall time 0.1 seconds\nOutput:\n",
+                        }
+                    ],
+                }
+            },
+        ]
+        rows = cls.recorded_parallel_completion(command)
+        rows[0]["payload"]["input"] = (
+            f"text(await tools.exec_command({{cmd:{json.dumps(command)}}}));"
+            'text(await tools.exec_command({cmd:"gh-plan.py claim --help"}));'
+        )
+        rows[2]["payload"]["output"].extend(
+            {"type": "input_text", "text": json.dumps(result)} for result in ({"session_id": 123}, {"exit_code": 0})
+        )
+        rows = [*earlier, *wait, *rows]
+        for index, row in enumerate(rows):
+            row["ordinal"] = index
+        return rows
+
+    def test_completed_native_wait_ends_only_its_unambiguous_cell(self) -> None:
+        for kind in (
+            "ended",
+            "list-header",
+            "repeat-wait",
+            "different-cell",
+            "missing",
+            "running",
+            "unknown",
+            "overlap",
+            "duplicate-cell",
+            "early",
+            "foreign-output",
+            "namespaced",
+            "custom",
+            "duplicate-key",
+            "numeric-cell",
+            "duplicate-terminal",
+            "terminated",
+            "yielded-claim",
+        ):
+            with self.subTest(kind=kind):
+                rows = self.recorded_waited_claim()
+                if kind == "list-header":
+                    rows[1]["payload"]["output"] = [{"type": "input_text", "text": rows[1]["payload"]["output"]}]
+                elif kind == "repeat-wait":
+                    extra = copy.deepcopy(rows[2:4])
+                    for row in extra:
+                        row["payload"]["call_id"] = "first-wait"
+                    extra[1]["payload"]["output"] = "Script running with cell ID cell-a\n"
+                    rows[2:2] = extra
+                elif kind == "different-cell":
+                    rows[2]["payload"]["arguments"] = '{"cell_id":"other"}'
+                elif kind == "missing":
+                    rows.pop(3)
+                elif kind == "running":
+                    rows[3]["payload"]["output"] = "Script running with cell ID cell-a\n"
+                elif kind == "unknown":
+                    rows[3]["payload"]["output"] = "finished"
+                elif kind == "overlap":
+                    rows.insert(3, rows.pop(4))
+                elif kind == "duplicate-cell":
+                    extra = copy.deepcopy(rows[:2])
+                    for row in extra:
+                        row["payload"]["call_id"] = "duplicate"
+                    rows[2:2] = extra
+                elif kind == "early":
+                    rows.insert(1, rows.pop(2))
+                elif kind == "foreign-output":
+                    rows[3]["payload"]["call_id"] = "foreign"
+                elif kind == "namespaced":
+                    rows[2]["payload"]["name"] = "other.wait"
+                elif kind == "custom":
+                    rows[2]["payload"]["type"] = "custom_tool_call"
+                elif kind == "duplicate-key":
+                    rows[2]["payload"]["arguments"] = '{"cell_id":"other","cell_id":"cell-a"}'
+                elif kind == "numeric-cell":
+                    rows[2]["payload"]["arguments"] = '{"cell_id":123}'
+                elif kind == "duplicate-terminal":
+                    extra = copy.deepcopy(rows[2:4])
+                    for row in extra:
+                        row["payload"]["call_id"] = "second-wait"
+                    rows[4:4] = extra
+                elif kind == "terminated":
+                    rows[2]["payload"]["arguments"] = '{"cell_id":"cell-a","terminate":true}'
+                elif kind == "yielded-claim":
+                    rows[0]["payload"]["input"] = f"text(await tools.exec_command({{cmd:{json.dumps(COMMAND)}}}));"
+                for index, row in enumerate(rows):
+                    row["ordinal"] = index
+                report = check_claims.history.literal_targets(rows, SESSION)
+                self.assertEqual(report["targets"], {("test/a", 5)})
+                self.assertEqual(
+                    not report["unresolved_invocations"],
+                    kind in {"ended", "list-header", "repeat-wait"},
+                    report,
+                )
+
     def test_mixed_parse_failure_requires_complete_zero_effect_proof(self) -> None:
         source = self.recorded_mixed_parse_failure()[0]["payload"]["input"]
         for variation in (
@@ -572,6 +692,14 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
         snapshot = stored + 'const cmd=load("c");text(await tools.exec_command({cmd:"sleep 1"}));'
         snapshot += "text(await tools.exec_command({cmd}));"
         self.assertFalse(check_claims.history.literal_targets(invocation(snapshot), SESSION)["unresolved_invocations"])
+        for overlapping in (False, True):
+            with self.subTest(overlapping=overlapping):
+                rows = self.recorded_waited_claim()[:4]
+                rows[0]["payload"]["input"] = stored + execute
+                if overlapping:
+                    rows[3:3] = other
+                report = check_claims.history.literal_targets(rows, SESSION)
+                self.assertEqual(bool(report["unresolved_invocations"]), overlapping, report)
 
     def test_read_only_discovery_cells_do_not_create_claim_uncertainty(self) -> None:
         reads = [
