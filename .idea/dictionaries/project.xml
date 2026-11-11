@@ -105,6 +105,7 @@
       <w>wnohang</w>
       <w>wnowait</w>
       <w>wtype</w>
+      <w>xmlids</w>
       <w>zdotdir</w>
       <w>zmodload</w>
       <w>zparseopts</w>

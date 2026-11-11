@@ -129,7 +129,7 @@ def destination(h: Any, path: str) -> None:
     target = h.path_with_resolved_parent(Path(path).expanduser())
     if h._is_relative_to(target, h.active_repo_root()):
         raise ValueError("repo_local_payload_unsupported")
-    if not target.parent.is_dir() or os.path.lexists(target):
+    if not target.parent.is_dir() or not os.access(target.parent, os.W_OK | os.X_OK) or os.path.lexists(target):
         raise ValueError("private_request_unavailable")
 
 

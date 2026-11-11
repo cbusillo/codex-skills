@@ -90,7 +90,6 @@ def response() -> dict[str, Any]:
                         "stock_move_rows",
                         "done_stock_move_rows",
                     ),
-                    None,
                 ),
                 "internal_quantity": "0",
             },
@@ -286,14 +285,14 @@ def test_missing_no_store_refuses_before_private_save(tmp_path: Path, cache_cont
 
 
 @pytest.mark.parametrize("returned", [b"PRIVATE_INVALID", {"result": {}}])
-def test_malformed_or_oversize_response_fails_without_disclosure(tmp_path: Path, returned: object) -> None:
+def test_malformed_response_fails_without_disclosure(tmp_path: Path, returned: object) -> None:
     code, _, _, destination = invoke(tmp_path, returned=returned)
     assert code != 0
     assert not destination.exists()
 
 
 def test_http_error_does_not_save_or_disclose_private_body(tmp_path: Path) -> None:
-    error = urllib.error.HTTPError("https://PRIVATE_HOST", 403, "PRIVATE_REASON", {}, io.BytesIO(b"PRIVATE_ERROR"))
+    error = urllib.error.HTTPError("https://PRIVATE_HOST", 403, "PRIVATE_REASON", Message(), io.BytesIO(b"PRIVATE_ERROR"))
     code, public, _, destination = invoke(tmp_path, error=error)
     assert code != 0
     assert public["status"] == "denied"
@@ -436,6 +435,48 @@ def test_application_binding_and_nested_types_fail_closed(tmp_path: Path, change
     code, _, _, destination = invoke(tmp_path, returned=returned)
     assert code != 0
     assert not destination.exists()
+
+
+@pytest.mark.parametrize("field", ["digest", "reference-only", "reference-with-digest"])
+def test_well_formed_image_drift_is_never_saved(tmp_path: Path, field: str) -> None:
+    returned = response()
+    identity = returned["result"]["evidence"]["identity"]
+    different = "sha256:" + "c" * 64
+    if field == "digest":
+        identity["image_digest"] = different
+    else:
+        identity["image_reference"] = "registry.example.invalid/fictional@" + different
+        if field == "reference-only":
+            del identity["image_digest"]
+    code, _, _, destination = invoke(tmp_path, returned=returned)
+    assert code != 0
+    assert not destination.exists()
+
+
+def test_save_failure_retains_safe_read_diagnostics(tmp_path: Path) -> None:
+    with patch("launchplane_inventory_readback.write_staged", side_effect=ValueError("PRIVATE_SAVE_ERROR")):
+        code, public, _, destination = invoke(tmp_path)
+    assert code != 0
+    assert public["summary"]["trace_id"] == response()["trace_id"]
+    assert public["summary"]["http_status"] == 200
+    assert not destination.exists()
+
+
+def test_unwritable_private_destination_refuses_before_transport(tmp_path: Path) -> None:
+    with patch("launchplane_website_indexing.os.access", return_value=False):
+        code, _, transport, _ = invoke(tmp_path)
+    assert code != 0
+    transport.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "error", [TimeoutError("PRIVATE_TIMEOUT"), urllib.error.URLError("PRIVATE_CONNECTION"), ValueError("PRIVATE_HEADER")]
+)
+def test_transport_failures_do_not_claim_private_save_failure(tmp_path: Path, error: Exception) -> None:
+    code, public, _, destination = invoke(tmp_path, error=error)
+    assert code != 0
+    assert not destination.exists()
+    assert all(warning["code"] != "private_result_unavailable" for warning in public["warnings"])
 
 
 if __name__ == "__main__":

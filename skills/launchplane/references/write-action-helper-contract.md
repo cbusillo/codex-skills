@@ -41,8 +41,9 @@ The private JSON requires exactly `product`, `context`, `deployment_record_id`,
 are refused before transport. The helper sends `part_ids` as repeated query
 keys. It does not discover or substitute any expected binding input.
 
-The transport requests and requires `Cache-Control: no-store`, accepts at most
-one MiB, and retains existing redirect and TLS protections. Complete typed
+For successful responses the transport requests and requires
+`Cache-Control: no-store` and accepts at most one MiB. It retains existing
+redirect and TLS protections and shared error diagnostics. Complete typed
 results are saved only to a new mode-0600 file outside the active repository,
 using the existing private evidence writer. The closed response and all nested
 fields are checked before saving; unexpected fields or mismatched runtime,

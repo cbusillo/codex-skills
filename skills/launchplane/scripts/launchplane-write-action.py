@@ -13024,11 +13024,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     remediation.add_argument("--reviewed-dry-run", action="store_true")
     args = parser.parse_args(argv)
     import launchplane_website_indexing
-    from launchplane_inventory_readback import COMMAND as inventory_readback_command, TIMEOUT_SECONDS as inventory_readback_timeout
+    import launchplane_inventory_readback
     from launchplane_disposable_lane import TIMEOUTS as disposable_lane_timeouts
     args.timeout = getattr(
         args, "timeout",
-        inventory_readback_timeout if args.command == inventory_readback_command
+        launchplane_inventory_readback.TIMEOUT_SECONDS if args.command == launchplane_inventory_readback.COMMAND
         else launchplane_website_indexing.TIMEOUT_SECONDS if args.command in launchplane_website_indexing.COMMANDS
         else disposable_lane_timeouts[args.command] if args.command in disposable_lane_timeouts
         else PREFLIGHT_TIMEOUT_SECONDS if args.command == PREFLIGHT
@@ -13266,9 +13266,9 @@ def _project_inert_plan(provider: dict[str, Any], body: dict[str, Any]) -> dict[
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     try:
-        from launchplane_inventory_readback import COMMAND as inventory_readback_command, execute as execute_inventory_readback
-        if args.command == inventory_readback_command:
-            return execute_inventory_readback(sys.modules[__name__], args)
+        import launchplane_inventory_readback
+        if args.command == launchplane_inventory_readback.COMMAND:
+            return launchplane_inventory_readback.execute(sys.modules[__name__], args)
         import launchplane_website_indexing
         if args.command in launchplane_website_indexing.COMMANDS:
             return launchplane_website_indexing.execute(sys.modules[__name__], args)

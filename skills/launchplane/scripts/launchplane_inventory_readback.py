@@ -349,7 +349,22 @@ def execute(h: Any, args: argparse.Namespace) -> int:
             no_store=True,
         )
         validated = validate_response(response, intent)
-        write_staged(h, destination, validated)
+        try:
+            write_staged(h, destination, validated)
+        except ValueError:
+            payload = h.unavailable_payload(
+                operation=COMMAND,
+                request=request,
+                status="unavailable",
+                code="private_result_unavailable",
+                message="A valid response was received, but the private result could not be saved.",
+            )
+            payload["summary"].update(h.service_response_diagnostics(response))
+            payload["summary"]["recommendation"] = (
+                "Preserve any partial private destination and existing holds. No saved application evidence is established."
+            )
+            h.emit(payload)
+            return 1
         payload = h.base_payload(status="ok", operation=COMMAND, request=request)
         payload["result"] = {
             "runtime": validated["result"].get("runtime", "unknown"),
@@ -378,9 +393,9 @@ def execute(h: Any, args: argparse.Namespace) -> int:
             h.unavailable_payload(
                 operation=COMMAND,
                 request=request,
-                status="unavailable",
-                code="private_result_unavailable",
-                message="The private result could not be saved. Retain existing evidence and holds; no application outcome is established.",
+                status="invalid",
+                code="invalid_inventory_transport",
+                message="The inventory transport request is invalid; no saved application evidence is established.",
             )
         )
     except (OSError, http.client.HTTPException, urllib.error.URLError) as error:
