@@ -219,8 +219,9 @@ No login or credential files are read or changed.
 These are interactive zsh functions only. The real binaries on PATH stay intact:
 `command claude`, `command codex`, noninteractive scripts, daemons, bridges and
 IDE plugins keep invoking them directly. Local behavior tests require zsh;
-the validation gate checks for it before starting the suite. Every CI caller
-installs it when absent. On a minimal Ubuntu environment, use
+the validation gate checks for it before starting the suite. The [hosted zsh setup](.github/actions/setup-zsh/action.yml)
+uses an installed shell or checksum-pinned Debian artifacts, without contacting Ubuntu mirrors.
+On a minimal Ubuntu environment, use
 `sudo apt-get install --yes zsh`; macOS includes it.
 
 ### Walking a new person through setup

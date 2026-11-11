@@ -46,15 +46,14 @@ jobs:
         id: package
         run: uv run scripts/pep723_proposal.py package "$RUNNER_TEMP/pep723-candidate"
 
+      - name: Ensure zsh for interactive shell behavior tests
+        if: steps.package.outputs.changed == 'true'
+        timeout-minutes: 5
+        uses: ./.github/actions/setup-zsh
+
       - name: Validate the candidate repository
         if: steps.package.outputs.changed == 'true'
-        run: |
-          set -euo pipefail
-          if ! command -v zsh >/dev/null; then
-            sudo apt-get update
-            sudo apt-get install --yes --no-install-recommends zsh
-          fi
-          ./scripts/validate-skills.sh
+        run: ./scripts/validate-skills.sh
 
       - name: Upload the validated candidate
         if: steps.package.outputs.changed == 'true'

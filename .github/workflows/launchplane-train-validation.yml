@@ -27,11 +27,9 @@ jobs:
           cache-dependency-glob: "**/*.py"
           python-version: ${{ matrix.python-version }}
 
+      - name: Ensure zsh for interactive shell behavior tests
+        timeout-minutes: 5
+        uses: ./.github/actions/setup-zsh
+
       - name: Validate skill files
-        run: |
-          set -euo pipefail
-          if ! command -v zsh >/dev/null; then
-            sudo apt-get update
-            sudo apt-get install --yes --no-install-recommends zsh
-          fi
-          ./scripts/validate-skills.sh
+        run: ./scripts/validate-skills.sh
