@@ -82,14 +82,24 @@ and deletion requires symlink-resistant support. Renaming then remeasuring
 preserves observed concurrent refreshes and reused original names. Age-based
 expiry cannot lock writers: already-open files can change after measurement.
 Age uses modification timestamps; moved/extracted inputs with preserved timestamps keep their old age.
-Keep needed inputs and ongoing work in retained storage.
+Active work and its working inputs, including inputs a run only reads, belong
+in task evidence; evidence unwritten for 30 days means a tool or cleanup failed.
+On one volume, clone instead of copying (`cp -c`, `cp --reflink`, or
+[heavy_run.py](../../supervisor/scripts/heavy_run.py)'s `clone_input`). The tool
+that made a failed attempt's evidence releases it once the cause is on its issue;
+keep at most the last passing pair per product as reference. Anything else kept
+names its reason and expiry. Measure the volume's free space (`df`), never `du`,
+which counts cloned blocks once per folder.
 
-Retained items use `<retainedRoot>/<group>/<repo>/<item>`, with a one-line note
-naming why, the relying issue/doc where applicable, and the deletion condition:
+Retained storage holds only history, evidence an open issue or doc relies on,
+and the only copy of some work; an item with another copy, such as a backup
+snapshot, is not retained. Retained items use `<retainedRoot>/<group>/<repo>/<item>`,
+with a one-line note naming why, the relying issue/doc where applicable, and
+the deletion condition:
 
 - `history/`: history; delete when the Director decides.
-- `evidence/`: open-issue/doc evidence, including parked test inputs; delete
-  when no open issue or doc relies on it.
+- `evidence/`: open-issue/doc evidence; delete when no open issue or doc relies
+  on it.
 - `recovery/`: only work/rollback copy; delete when adopted, discarded or replaced.
 
 The sweep never scans retained storage or migrates contents. Live tool state

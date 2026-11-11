@@ -29,7 +29,7 @@ from functools import partial
 from multiprocessing.process import BaseProcess
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import heavy_run
 
@@ -188,6 +188,35 @@ class ResultCollectionTests(unittest.TestCase):
                         self.assertEqual(report["transferred_bytes"], reference.stat().st_size)
                         self.assertEqual(destination.read_bytes(), reference.read_bytes())
             self.assertEqual(reference.read_bytes(), b"same bytes")
+
+    def test_collection_refuses_transfer_below_free_space_floor_but_still_clones(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            reference = root / "reference"
+            reference.mkdir()
+            (reference / "same").write_bytes(b"same")
+            guest = root / "guest"
+            shutil.copytree(reference, guest)
+            (guest / "changed").write_bytes(b"changed")
+            low = Mock(free=heavy_run.FREE_SPACE_FLOOR + len(b"changed") - 1)
+            requests = io.BytesIO()
+            with patch.object(shutil, "disk_usage", return_value=low), self.assertRaises(OSError) as refused:
+                heavy_run.receive_result(
+                    io.BytesIO(json.dumps(heavy_run.result_inventory(guest)).encode() + b"\nchanged"),
+                    requests,
+                    root / "refused",
+                    reference,
+                )
+            self.assertEqual(refused.exception.errno, errno.ENOSPC)
+            self.assertEqual(requests.getvalue(), b"")
+            with patch.object(shutil, "disk_usage", return_value=low):
+                report = heavy_run.receive_result(
+                    io.BytesIO(json.dumps(heavy_run.result_inventory(reference)).encode() + b"\n"),
+                    io.BytesIO(),
+                    root / "cloned",
+                    reference,
+                )
+            self.assertEqual((report["cloned_files"], report["transferred_bytes"]), (1, 0))
 
 
 class InputStagingTests(unittest.TestCase):
