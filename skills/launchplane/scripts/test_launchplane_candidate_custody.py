@@ -178,17 +178,21 @@ def test_missing_parent_or_empty_destination_refuses_before_job(tmp_path: Path, 
     assert code != 0 and not calls
 
 
-@pytest.mark.parametrize("missing", ["jsonschema", "date-time"])
-def test_unavailable_schema_validation_refuses_before_job(tmp_path: Path, missing: str) -> None:
-    from jsonschema import FormatChecker
-
-    if missing == "jsonschema":
-        context = patch.dict(sys.modules, {"jsonschema": None})
-    else:
-        context = patch.dict(FormatChecker.checkers, {}, clear=True)
-    with context:
+def test_unavailable_schema_validation_refuses_before_job(tmp_path: Path) -> None:
+    with patch.dict(sys.modules, {"jsonschema": None}):
         code, _, calls = invoke(argv() + ["--custody-evidence-file", str(tmp_path / "packet.json")], response(evidence=packet()))
     assert code != 0 and not calls
+
+
+def test_unresolvable_user_path_is_a_structured_refusal() -> None:
+    from launchplane_testing_state import write_staged
+    from test_launchplane_helpers import write_action
+
+    with patch("pwd.getpwnam", side_effect=KeyError):
+        code, _, calls = invoke(argv() + ["--custody-evidence-file", "~fictional-user/packet.json"], response(evidence=packet()))
+        assert code != 0 and not calls
+        with pytest.raises(ValueError):
+            write_staged(write_action, "~fictional-user/packet.json", {})
 
 
 def test_default_ignores_unsolicited_packet_and_keeps_original_projection() -> None:

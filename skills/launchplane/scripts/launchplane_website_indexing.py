@@ -128,7 +128,7 @@ def destination(h: Any, path: str) -> None:
         raise ValueError("private_request_unavailable")
     try:
         target = h.path_with_resolved_parent(Path(path).expanduser())
-    except OSError:
+    except (OSError, RuntimeError):
         raise ValueError("private_request_unavailable") from None
     if h._is_relative_to(target, h.active_repo_root()):
         raise ValueError("repo_local_payload_unsupported")

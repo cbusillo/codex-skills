@@ -323,7 +323,10 @@ def without_nulls(value: Any) -> Any:
 
 
 def custody_reference(h: Any, path: str) -> str:
-    reference = str(h.path_with_resolved_parent(Path(path).expanduser()))
+    try:
+        reference = str(h.path_with_resolved_parent(Path(path).expanduser()))
+    except (OSError, RuntimeError):
+        raise ValueError("invalid_custody_reference") from None
     public_reference = h.public_identifier(reference, pattern=re.compile(r"/[^\x00-\x1f\x7f]+"))
     if public_reference != reference:
         raise ValueError("invalid_custody_reference")
@@ -450,7 +453,7 @@ def finish(
 def execute(h: Any, args: argparse.Namespace) -> int:
     operation = args.command
     request, body = intent(h, args)
-    evidence_file = getattr(args, "custody_evidence_file", None)
+    evidence_file: str | None = getattr(args, "custody_evidence_file", None)
     evidence_reference = custody_reference(h, evidence_file) if evidence_file is not None else ""
     evidence_validator = custody_validator() if evidence_file is not None else None
     mode = request["mode"]
