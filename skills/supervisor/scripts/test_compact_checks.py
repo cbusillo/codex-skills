@@ -747,8 +747,12 @@ class OperationTests(unittest.TestCase):
         launch = {"session_id": "owned-terminal", "tty": "/dev/ttys001", "backend": "tmux"}
         agent = ["/tools/claude", "--session-id", native["session_id"]]
         helper = ["/tools/claude", "--claude-in-chrome-mcp"]
+        diagnostic = [*helper, iterm_tab.agent_tools.CHROME_DEBUG_FLAG]
         for label, child, command, available, success in (
             ("helper", helper, " ".join(helper), True, True),
+            ("diagnostic", diagnostic, " ".join(diagnostic), True, True),
+            ("diagnostic-extra", [*diagnostic, "--session-id", "other"],
+             " ".join([*diagnostic, "--session-id", "other"]), True, False),
             ("two-agents", agent, " ".join(agent), True, False),
             ("unavailable", helper, " ".join(helper), False, False),
             ("mismatch", helper, "/other/claude --claude-in-chrome-mcp", True, False),

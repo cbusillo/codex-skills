@@ -71,7 +71,8 @@ class ClaudeToolTests(unittest.TestCase):
 
 
 class BrowserProbeTests(unittest.TestCase):
-    def server(self, behavior):
+    @staticmethod
+    def server(behavior: str) -> dict:
         script = '''import json, os, sys, time
 for line in sys.stdin:
     msg=json.loads(line)
@@ -87,16 +88,22 @@ for line in sys.stdin:
         return {"command": sys.executable, "args": ["-u", "-c", script], "env": {"FIXTURE": "selected"}}
 
     def test_listing_handles_notifications_and_uses_server_environment(self):
-        server = self.server("assert os.environ['FIXTURE']=='selected'\nresult={'content':[{'type':'text','text':'[{\"id\":\"fixture\"}]'}]}")
+        server = self.server("assert os.environ['FIXTURE']=='selected'\n"
+                             "result={'content':[{'type':'text','text':'[{\"id\":\"fixture\"}]'}]}")
+        server["args"].append(agent_tools.CHROME_MCP_FLAG)
         self.assertEqual(agent_tools.connected_browsers(server, timeout=2), [{"id": "fixture"}])
 
     def test_server_request_with_same_id_is_not_a_reply(self):
         server = self.server("print(json.dumps({'jsonrpc':'2.0','id':msg['id'],'method':'ping'}),flush=True)\nresult={'content':[{'type':'text','text':'[]'}]}")
-        self.assertEqual(agent_tools.connected_browsers(server, timeout=2), [])
+        with self.assertRaisesRegex(ValueError, r"\(unknown\)") as error:
+            agent_tools.connected_browsers(server, timeout=2)
+        self.assertNotIn("gave no", str(error.exception))
 
     def test_empty_list_is_distinct_from_failed_or_malformed_tool(self):
-        self.assertEqual(agent_tools.connected_browsers(
-            self.server("result={'content':[{'type':'text','text':'[]'}]}"), timeout=2), [])
+        with self.assertRaisesRegex(ValueError, r"\(unknown\)") as error:
+            agent_tools.connected_browsers(
+                self.server("result={'content':[{'type':'text','text':'[]'}]}"), timeout=2)
+        self.assertNotIn("gave no", str(error.exception))
         for result in ({"isError": True, "content": [{"type": "text", "text": "private"}]},
                        {"content": [{"type": "text", "text": "private"}]},
                        {"content": [{"type": "text", "text": "{}"}]},
@@ -104,6 +111,52 @@ for line in sys.stdin:
             with self.subTest(result=result), self.assertRaises(ValueError) as error:
                 agent_tools.connected_browsers(self.server("result=" + repr(result)), timeout=2)
             self.assertNotIn("private", str(error.exception))
+
+    def test_empty_listing_explains_native_bridge_evidence_without_echoing_private_logs(self) -> None:
+        cases = (
+            ('[Claude in Chrome] Bridge received: {"type":"extensions_list","extensions":[],"recently_closed":[]}',
+             "extension_unregistered"),
+            ('[Claude in Chrome] Bridge WebSocket error after 2ms: private\n'
+             '[Claude in Chrome] Bridge received: {"type":"extensions_list","extensions":[]}',
+             "extension_unregistered"),
+            ("[Claude in Chrome] Bridge WebSocket error after 2ms: private", "bridge_down"),
+            ('[Claude in Chrome] Bridge received: {"type":"extensions_list","extensions":[]}\n'
+             '[Claude in Chrome] Bridge WebSocket error after 2ms: private', "extension_unregistered"),
+            ("The OAuth token in use resolves to a different claude.ai account than the persisted Claude Code login.",
+             "account_mismatch"),
+            ("[Claude in Chrome] Not connecting: nobody is signed in", "signed_out"),
+            ("private unrecognized vendor failure", "unknown"),
+        )
+        for log, reason in cases:
+            behavior = (f"sys.stderr.write({log!r}+'\\n');sys.stderr.flush()\n"
+                        "result={'content':[{'type':'text','text':'[]'}]}")
+            with self.subTest(reason=reason), self.assertRaises(ValueError) as error:
+                agent_tools.connected_browsers(self.server(behavior), timeout=2)
+            self.assertIn(f"({reason})", str(error.exception))
+            self.assertNotIn("private", str(error.exception))
+
+    def test_stderr_flood_cannot_block_listing(self) -> None:
+        server = self.server("sys.stderr.write('private'*200000);sys.stderr.flush()\n"
+                             "result={'content':[{'type':'text','text':'[{\"id\":\"fixture\"}]'}]}")
+        self.assertEqual(agent_tools.connected_browsers(server, timeout=2), [{"id": "fixture"}])
+
+    def test_native_trace_arriving_after_reply_still_explains_empty_roster(self) -> None:
+        trace = json.loads((Path(__file__).parent / "fixtures/claude-empty-roster.json").read_text())
+        behavior = ("import threading\n"
+                    f"def delayed_trace():\n    time.sleep(0.02)\n    sys.stderr.write({trace['trace']!r});sys.stderr.flush()\n"
+                    "threading.Thread(target=delayed_trace).start()\n"
+                    "result={'content':[{'type':'text','text':'[]'}]}")
+        with self.assertRaisesRegex(ValueError, r"\(extension_unregistered\)"):
+            agent_tools.connected_browsers(self.server(behavior), timeout=2)
+
+    def test_tool_error_and_timeout_preserve_observed_connection_cause(self) -> None:
+        log = "[Claude in Chrome] Not connecting: nobody is signed in"
+        for outcome in ("result={'isError':True,'content':[{'type':'text','text':'private'}]}", "time.sleep(30)"):
+            behavior = f"sys.stderr.write({log!r}+'\\n');sys.stderr.flush()\n" + outcome
+            with self.subTest(outcome=outcome), self.assertRaisesRegex(ValueError, r"\(signed_out\)") as error:
+                agent_tools.connected_browsers(self.server(behavior), timeout=0.4)
+            self.assertNotIn("private", str(error.exception))
+            self.assertNotIn("no Chrome browser connected", str(error.exception))
 
     def test_partial_line_eof_rpc_error_and_missing_executable_are_bounded(self):
         for behavior in ("sys.stdout.write('{');sys.stdout.flush();time.sleep(30)",

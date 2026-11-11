@@ -1176,7 +1176,7 @@ class ProviderLaunchTests(unittest.TestCase):
                 probe.assert_called_with(server)
                 self.assertEqual(choice["tools"]["warnings"], [])
                 self.assertEqual(choice["tools"]["browsers"], 1)
-                probe.return_value = []
+                probe.side_effect = ValueError("fixture connection diagnostic")
                 with self.assertRaises(ValueError):
                     iterm_tab.check_claude_tools(command, choice, require_browser=True)
                 iterm_tab.check_claude_tools(command, choice)
@@ -1202,7 +1202,7 @@ class ProviderLaunchTests(unittest.TestCase):
                   patch.dict(sys.modules, {"iterm2": SimpleNamespace()}),
                   patch.object(agent_tools, "claude_problems", return_value=[]),
                   patch.object(agent_tools, "chrome_server", return_value={"command": "fixture"}),
-                  patch.object(agent_tools, "connected_browsers", return_value=[]),
+                  patch.object(agent_tools, "connected_browsers", side_effect=ValueError("fixture connection diagnostic")),
                   patch.object(account_choice, "select", return_value=choice),
                   patch.object(account_choice, "prepare_launch") as prepare,
                   patch.object(account_choice, "record_launch") as receipt,
