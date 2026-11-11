@@ -11953,7 +11953,9 @@ def test_service_prose_with_marker_named_settings_remains_safe_and_reviewable() 
     write_action.assert_public_safe_shape(projected)
 
 
-def _active_merge_train_policy_read(trusted: dict[str, list[int]]) -> dict[str, object]:
+def _active_merge_train_policy_read(
+    trusted: dict[str, list[int]], bots: dict[str, list[dict[str, object]]] | None = None
+) -> dict[str, object]:
     return {
         "status": "ok",
         "trace_id": "launchplane_req_" + "d" * 32,
@@ -11971,7 +11973,15 @@ def _active_merge_train_policy_read(trusted: dict[str, list[int]]) -> dict[str, 
                         "repository": repository,
                         "base_branch": "main",
                         "github_token": {"env_var": "PRIVATE_GITHUB_TOKEN"},
-                        "enqueue": {"label_required": True, "trusted_automation_github_user_ids": ids},
+                        "enqueue": {
+                            "label_required": True,
+                            "trusted_automation_github_user_ids": ids,
+                            **(
+                                {"dependency_update_bots": (bots or {})[repository]}
+                                if repository in (bots or {})
+                                else {}
+                            ),
+                        },
                     }
                     for repository, ids in trusted.items()
                 ],
@@ -12066,6 +12076,57 @@ def test_trusted_automation_proposal_remove_drops_only_that_id() -> None:
 
     record = cast(dict[str, Any], posted[0]["request"])["record"]
     assert record["policy"]["policies"][0]["enqueue"]["trusted_automation_github_user_ids"] == [49699333]
+
+
+_RENOVATE_ROW: dict[str, object] = {
+    "github_user_id": 29139614,
+    "metadata_format": "renovate_metadata",
+    "allowed_update_types": ["digest", "minor", "patch"],
+}
+
+
+def test_trusted_automation_proposal_add_copies_the_ids_dependency_bot_row() -> None:
+    read_payload = _active_merge_train_policy_read(
+        {"owner/alpha": [29139614], "owner/beta": [], "owner/gamma": [29139614]},
+        bots={"owner/gamma": [_RENOVATE_ROW]},
+    )
+    exit_code, output, posted = _run_merge_train_proposal(
+        _trusted_automation_argv("add", "owner/alpha", "owner/beta", "owner/gamma"), read_payload
+    )
+
+    assert exit_code == 0
+    record = cast(dict[str, Any], posted[0]["request"])["record"]
+    enqueue = {target["repository"]: target["enqueue"] for target in record["policy"]["policies"]}
+    assert {name: value["dependency_update_bots"] for name, value in enqueue.items()} == {
+        name: [_RENOVATE_ROW] for name in ("owner/alpha", "owner/beta", "owner/gamma")
+    }
+    assert enqueue["owner/beta"]["trusted_automation_github_user_ids"] == [29139614]
+    assert output["request"]["changed_repositories"] == ["owner/alpha", "owner/beta"]
+
+
+def test_trusted_automation_proposal_refuses_differing_dependency_bot_rows() -> None:
+    other = {**_RENOVATE_ROW, "allowed_update_types": ["patch"]}
+    exit_code, output, posted = _run_merge_train_proposal(
+        _trusted_automation_argv("add", "owner/alpha"),
+        _active_merge_train_policy_read(
+            {"owner/alpha": [], "owner/beta": [29139614], "owner/gamma": [29139614]},
+            bots={"owner/beta": [_RENOVATE_ROW], "owner/gamma": [other]},
+        ),
+    )
+
+    assert (exit_code, output["warnings"][0]["code"], posted) == (2, "dependency_bot_rows_differ", [])
+
+
+def test_trusted_automation_proposal_remove_drops_the_ids_dependency_bot_row() -> None:
+    _, _, posted = _run_merge_train_proposal(
+        _trusted_automation_argv("remove", "owner/alpha"),
+        _active_merge_train_policy_read(
+            {"owner/alpha": [29139614, 49699333]}, bots={"owner/alpha": [_RENOVATE_ROW]}
+        ),
+    )
+
+    enqueue = cast(dict[str, Any], posted[0]["request"])["record"]["policy"]["policies"][0]["enqueue"]
+    assert (enqueue["trusted_automation_github_user_ids"], enqueue["dependency_update_bots"]) == ([49699333], [])
 
 
 def test_trusted_automation_proposal_refuses_unknown_repository_and_no_op_without_posting() -> None:

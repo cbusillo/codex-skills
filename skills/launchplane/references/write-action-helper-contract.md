@@ -3042,9 +3042,13 @@ supports the descriptor; source delivery does not activate it or grant access.
 `merge-train-trusted-automation-propose --change add|remove --github-user-id ID
 --repo OWNER/REPO ... --reason TEXT --source-event-id ID` builds the
 `managed-merge-train-policy-import` envelope itself. It reads the active policy
-through the `merge-train-policy-read` route, changes only
+through the `merge-train-policy-read` route, changes
 `enqueue.trusted_automation_github_user_ids` on the named repositories' targets,
-and submits the result through the same proposal route and output. The record,
+and submits the result through the same proposal route and output. When the
+active policy already makes that id a dependency bot elsewhere, an add gives each
+named target that same `dependency_update_bots` row; differing rows stop with
+`dependency_bot_rows_differ`. A remove also drops the id's dependency rows, since
+a dependency bot must stay trusted. The output lists `changed_repositories`. The record,
 including credential-routing fields, stays in memory and is never written to
 disk. The candidate's `policy_sha256` is left for the service to compute, and
 its `record_id` is `merge-train-policy-<updated_at>-proposal`. The request in the

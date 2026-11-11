@@ -8961,8 +8961,11 @@ def trusted_automation_proposal_body(
 ) -> dict[str, object]:
     record, policy, targets = _active_merge_train_policy(args, provider_payload)
     requested = {repository.casefold() for repository in cast(list[str], request["repositories"])}
+    user_id: int = args.github_user_id
+    adding = request["change"] == "add"
+    bot_row = _dependency_bot_row(targets, user_id) if adding else None
     matched: set[str] = set()
-    changed_target_count = 0
+    changed_repositories: list[str] = []
     for value in targets:
         target = _require_dict(value)
         repository = target.get("repository")
@@ -8971,19 +8974,48 @@ def trusted_automation_proposal_body(
         matched.add(repository.casefold())
         enqueue = _require_dict(target.get("enqueue"))
         current = enqueue.get("trusted_automation_github_user_ids") or []
-        if not isinstance(current, list) or not all(isinstance(user_id, int) for user_id in current):
+        bots = enqueue.get("dependency_update_bots") or []
+        legacy = enqueue.get("dependency_update_github_user_ids") or []
+        if not all(isinstance(entry, list) for entry in (current, bots, legacy)) or not all(
+            isinstance(entry, int) for entry in (*current, *legacy)
+        ):
             raise LaunchplaneSafetyError("invalid_response")
-        user_id = int(str(request["github_user_id"]))
-        candidate = sorted({*current, user_id}) if request["change"] == "add" else [entry for entry in current if entry != user_id]
-        if candidate != current:
+        has_bot = any(_require_dict(bot).get("github_user_id") == user_id for bot in bots)
+        candidate = sorted({*current, user_id}) if adding else [entry for entry in current if entry != user_id]
+        # Trust carries the bot row this id already has elsewhere, and dependency
+        # bots must stay trusted, so removal drops this id's dependency rows too.
+        if adding:
+            candidate_bots = [*bots, copy.deepcopy(bot_row)] if bot_row is not None and not has_bot else bots
+            candidate_legacy = legacy
+        else:
+            candidate_bots = [bot for bot in bots if _require_dict(bot).get("github_user_id") != user_id]
+            candidate_legacy = [entry for entry in legacy if entry != user_id]
+        if (candidate, candidate_bots, candidate_legacy) != (current, bots, legacy):
             enqueue["trusted_automation_github_user_ids"] = candidate
-            changed_target_count += 1
+            if candidate_bots != bots:
+                enqueue["dependency_update_bots"] = candidate_bots
+            if candidate_legacy != legacy:
+                enqueue["dependency_update_github_user_ids"] = candidate_legacy
+            changed_repositories.append(repository)
     if requested - matched:
         raise ValueError("repository_not_enrolled")
-    if not changed_target_count:
+    if not changed_repositories:
         raise ValueError("policy_unchanged")
-    request["changed_target_count"] = changed_target_count
+    request["changed_target_count"] = len(changed_repositories)
+    request["changed_repositories"] = changed_repositories
     return _merge_train_proposal_envelope(args=args, request=request, active_record=record, policy=policy)
+
+
+def _dependency_bot_row(targets: list[Any], user_id: int) -> dict[str, Any] | None:
+    rows = {
+        json.dumps(bot, sort_keys=True)
+        for value in targets
+        for bot in _require_dict(_require_dict(value).get("enqueue") or {}).get("dependency_update_bots") or []
+        if isinstance(bot, dict) and bot.get("github_user_id") == user_id
+    }
+    if len(rows) > 1:
+        raise ValueError("dependency_bot_rows_differ")
+    return json.loads(rows.pop()) if rows else None
 
 
 MERGE_TRAIN_PROPOSALS = {
