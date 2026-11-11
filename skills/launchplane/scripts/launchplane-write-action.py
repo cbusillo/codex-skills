@@ -8982,8 +8982,6 @@ def trusted_automation_proposal_body(
             raise LaunchplaneSafetyError("invalid_response")
         has_bot = any(_require_dict(bot).get("github_user_id") == user_id for bot in bots)
         candidate = sorted({*current, user_id}) if adding else [entry for entry in current if entry != user_id]
-        # Trust carries the bot row this id already has elsewhere, and dependency
-        # bots must stay trusted, so removal drops this id's dependency rows too.
         if adding:
             candidate_bots = [*bots, copy.deepcopy(bot_row)] if bot_row is not None and not has_bot else bots
             candidate_legacy = legacy
