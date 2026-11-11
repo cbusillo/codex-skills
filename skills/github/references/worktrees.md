@@ -77,19 +77,26 @@ new units after five seconds; a started unit may take longer and finishes. Failu
 and report without blocking creation. Missing roots are empty sweeps; idle
 computers keep expired evidence until new work starts.
 Preview: `<catalog>/skills/github/scripts/dev-worktree sweep-evidence`; add
-`--apply` to expire. Unreadable units are kept, symlinks are not followed,
-and deletion requires symlink-resistant support. Renaming then remeasuring
-preserves observed concurrent refreshes and reused original names. Age-based
-expiry cannot lock writers: already-open files can change after measurement.
-Age uses modification timestamps; moved/extracted inputs with preserved timestamps keep their old age.
-Keep needed inputs and ongoing work in retained storage.
+`--apply` to expire. Unreadable units are kept and symlinks are not followed.
+Age uses modification timestamps, so preserved timestamps keep their old age;
+files already open can still change after measurement.
+Active work and its inputs, including inputs a run only reads, belong in task
+evidence; evidence unwritten for 30 days means a tool or cleanup failed. On one
+volume, clone instead of copying (`cp -c`, `cp --reflink`, or
+[heavy_run.py](../../supervisor/scripts/heavy_run.py)'s `clone_input`). Only the
+tool that made a failed attempt's evidence releases it, after the cause is
+recorded on its issue. Keep at most a product's last passing input and result
+as reference; anything else kept names its reason and expiry. Measure free space
+on the volume (`df`), never `du`, which counts cloned blocks once per folder.
 
-Retained items use `<retainedRoot>/<group>/<repo>/<item>`, with a one-line note
-naming why, the relying issue/doc where applicable, and the deletion condition:
+Retained storage holds only history, evidence an open issue or doc relies on,
+and the only copy of some work; an item with another copy, such as a backup
+snapshot, is not retained. Each item lives at `<retainedRoot>/<group>/<repo>/<item>`
+with a one-line note naming why, any relying issue/doc, and when to delete it:
 
 - `history/`: history; delete when the Director decides.
-- `evidence/`: open-issue/doc evidence, including parked test inputs; delete
-  when no open issue or doc relies on it.
+- `evidence/`: open-issue/doc evidence; delete when no open issue or doc relies
+  on it.
 - `recovery/`: only work/rollback copy; delete when adopted, discarded or replaced.
 
 The sweep never scans retained storage or migrates contents. Live tool state

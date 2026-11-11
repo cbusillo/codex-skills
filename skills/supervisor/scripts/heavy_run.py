@@ -39,6 +39,7 @@ STATE_PATH = Path(".local/state/codex-skills/heavy-run")
 MIN_NANO_CPUS = 10**7
 MIN_MEMORY = 6 * 1024**2
 STAGING_PREFIX = ".heavy-inputs-"
+FREE_SPACE_FLOOR = 20 * 1024**3
 CLONE_NOFOLLOW = 1
 CLONE_NOOWNERCOPY = 2
 CLONE_NOFOLLOW_ANY = 8
@@ -191,6 +192,16 @@ def send_result(root: Path, stream: BinaryIO, requests: BinaryIO) -> None:
     stream.flush()
 
 
+def require_free_space(volume: Path, needed: int) -> None:
+    shortfall = needed + FREE_SPACE_FLOOR - shutil.disk_usage(volume).free
+    if needed and shortfall > 0:
+        raise OSError(
+            errno.ENOSPC,
+            f"Collecting {needed} bytes would leave less than {FREE_SPACE_FLOOR} free; "
+            f"release {shortfall} bytes of finished evidence on this volume, then collect into a new result",
+        )
+
+
 def receive_result(stream: BinaryIO, requests: BinaryIO, destination: Path, reference: Path | None = None) -> dict[str, int]:
     inventory: dict[str, dict] = json.loads(stream.readline())
     validate_result_inventory(inventory)
@@ -236,6 +247,7 @@ def receive_result(stream: BinaryIO, requests: BinaryIO, destination: Path, refe
                 report["cloned_files"] += 1
                 continue
         selected.append(name)
+    require_free_space(destination.parent, sum(inventory[name]["size"] for name in selected))
     requests.write(json.dumps(selected).encode() + b"\n")
     requests.flush()
     for name in selected:
@@ -615,12 +627,14 @@ class Docker:
             self.free_before = shutil.disk_usage(root).free
             self.storage.update(cloned_files=0, copied_files=0, copied_bytes=0)
         destination = root / str(len(list(root.iterdir())) - 1)
+        device = root.stat().st_dev
+        require_free_space(root, sum(path.stat().st_size for path in paths if path.is_file() and path.stat().st_dev != device))
         for path in paths:
             target = destination / path.relative_to(source)
             if path.is_dir():
                 target.mkdir(mode=0o700)
                 continue
-            if path.stat().st_dev == root.stat().st_dev:
+            if path.stat().st_dev == device:
                 clone_input(path, target)
                 self.storage["cloned_files"] += 1
             else:
