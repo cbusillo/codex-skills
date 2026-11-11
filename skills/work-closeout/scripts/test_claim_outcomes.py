@@ -68,6 +68,26 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
             row["ordinal"] = index
         return rows
 
+    @classmethod
+    def recorded_parallel_completion(cls, command: str = "cat evidence.json") -> list[dict]:
+        rows = cls.recorded_display(command, computed=True)
+        rows[0]["payload"]["input"] = (
+            "const r=await Promise.allSettled([tools.exec_command({cmd:`cat \\${file}`}),"
+            'tools.exec_command({cmd:"gh-plan.py claim --help"})]);for(const x of r)text(x.value?.output);'
+        )
+        late = rows.pop(1)
+        late["payload"]["completed_at_ms"] += 5000
+        late["timestamp"] = "2026-01-01T00:00:06Z"
+        before = copy.deepcopy(late)
+        before["payload"]["completed_at_ms"] -= 5000
+        before["timestamp"] = "2026-01-01T00:00:01Z"
+        before["payload"]["item"].update(id="help", process_id="456", command=["sh", "-c", "gh-plan.py claim --help"])
+        rows.insert(1, before)
+        rows.append(late)
+        for index, row in enumerate(rows):
+            row["ordinal"] = index
+        return rows
+
     def test_recorded_display_and_computed_commands_use_native_effects(self) -> None:
         for command in ("cat evidence.json", COMMAND):
             for computed in (False, True):
@@ -156,19 +176,27 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
                 report = check_claims.history.literal_targets([*previous, *rows], SESSION)
                 self.assertTrue(any(item["call_id"] == "call" for item in report["unresolved_invocations"]))
 
-    def test_later_completion_needs_the_original_native_process_identity(self) -> None:
-        for recorded in (True, False):
-            with self.subTest(recorded=recorded):
+    def test_crossing_completion_needs_the_original_native_process_identity(self) -> None:
+        for recorded, crossing in ((True, False), (False, False), (True, True), (False, True)):
+            with self.subTest(recorded=recorded, crossing=crossing):
                 rows = self.recorded_display(COMMAND, computed=True)
                 event = rows.pop(1)
                 event["payload"]["completed_at_ms"] += 5000
+                event["timestamp"] = "2026-01-01T00:00:06Z"
                 if recorded:
                     rows[-1]["payload"]["output"].append({"type": "input_text", "text": '[{"value":{"session_id":123}}]'})
+                if crossing:
+                    other = invocation("text(1)", "Script completed\nWall time 0.5 seconds\nOutput:\n")
+                    for row in other:
+                        row["payload"]["call_id"] = "other"
+                    rows.extend(other)
                 rows.append(event)
                 for index, row in enumerate(rows):
                     row["ordinal"] = index
                 report = check_claims.history.literal_targets(rows, SESSION)
-                self.assertEqual(bool(report["unresolved_invocations"]), not recorded)
+                self.assertEqual(
+                    any(item["call_id"] == "call" for item in report["unresolved_invocations"]), crossing and not recorded
+                )
                 self.assertEqual(report["targets"], {("test/a", 5)})
 
     def test_native_argv_exposes_claims_instead_of_trusting_decoded_options(self) -> None:
@@ -177,6 +205,39 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
         report = check_claims.history.literal_targets(rows, SESSION)
         self.assertEqual(report["targets"], {("test/a", 5)})
         self.assertTrue(report["unresolved_invocations"])
+
+    def test_adjacent_completion_requires_uninterrupted_native_proof(self) -> None:
+        self.assertFalse(
+            check_claims.history.literal_targets(self.recorded_parallel_completion(), SESSION)["unresolved_invocations"]
+        )
+        for kind in ("missing", "foreign", "turn", "gap", "unfinished", "earlier", "crossing", "native-call"):
+            with self.subTest(kind=kind):
+                rows = self.recorded_parallel_completion()
+                event = rows[-1]["payload"]
+                if kind == "missing":
+                    rows.pop()
+                elif kind == "foreign":
+                    event["thread_id"] = "foreign"
+                elif kind == "turn":
+                    event["turn_id"] = "other"
+                elif kind == "gap":
+                    rows[-1]["ordinal"] += 1
+                elif kind == "unfinished":
+                    event["item"].update(status="in_progress", exit_code=None)
+                elif kind == "earlier":
+                    event["started_at_ms"] -= 5000
+                elif kind in {"crossing", "native-call"}:
+                    other = invocation("text(1)")
+                    for row in other:
+                        row["payload"]["call_id"] = "other"
+                    if kind == "native-call":
+                        other[0]["payload"].update(type="function_call", name="clock__curr_time", arguments="{}")
+                        other[1]["payload"]["type"] = "function_call_output"
+                    rows[-1:-1] = other
+                    for index, row in enumerate(rows):
+                        row["ordinal"] = index
+                report = check_claims.history.literal_targets(rows, SESSION)
+                self.assertTrue(any(item["call_id"] == "call" for item in report["unresolved_invocations"]), report)
 
     def test_recorded_date_processing_does_not_need_javascript_evaluation(self) -> None:
         rows = self.recorded_display(computed=True)
