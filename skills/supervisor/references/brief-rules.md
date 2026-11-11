@@ -75,8 +75,7 @@ Rules for this brief (every Supervisor brief carries them):
   `Engineering ready; waiting for <named reason>`, then run `ready` when the
   hold ends. A brief that holds a PR names that wait in one line.
 - Briefs state the goal and observable finish line, not a mechanism to build.
-  A named mechanism is a suggestion unless it records a Director decision. Choose
-  tiers under [Accounts, Pace, And Launch Tier](../SKILL.md#accounts-pace-and-launch-tier).
+  A named mechanism is a suggestion unless it records a Director decision.
 - Small fixes in the same file or area that share the change's reason go in
   the same PR; different behavior, its own risk, security or access,
   Client-visible, or large work gets a separate issue.
