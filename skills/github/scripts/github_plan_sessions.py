@@ -87,6 +87,12 @@ def actor_state(session: str) -> str:
         liveness = process_liveness()
         if liveness.generation_ended(entry):
             return EXPIRED
+        if entry.get("harness") == "claude" and not entry.get("launch_started_at"):
+            # Rows registered before start times were recorded: the native argv names the session.
+            argv = liveness.native_arguments(entry["pid"])
+            words = argv[1:argv.index("--")] if "--" in argv else argv[1:]
+            named = {("--session-id", session), ("--resume", session)} & set(zip(words, words[1:]))
+            return LIVE if named and liveness.harness_family(argv[0]) == "claude" else UNKNOWN
         born = liveness.process_started_at(entry["pid"])
         launched = datetime.fromisoformat(entry["launch_started_at"])
         return LIVE if launched.tzinfo and born == launched else UNKNOWN

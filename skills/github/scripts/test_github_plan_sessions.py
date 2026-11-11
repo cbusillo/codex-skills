@@ -1025,6 +1025,16 @@ class AccountHomeTests(unittest.TestCase):
                     self.assertEqual(SESSIONS.actor_state('actor'), github_plan_lease.UNKNOWN)
                 ledger.write_text('{malformed')
                 self.assertEqual(SESSIONS.actor_state('actor'), github_plan_lease.UNKNOWN)
+                claude = {**entry, 'harness': 'claude'}
+                claude.pop('launch_started_at')
+                ledger.write_text(json.dumps([claude]))
+                ended.return_value = False
+                for argv, state in ((['claude', '--model', 'opus', '--session-id', 'actor', '--', 'brief'], github_plan_lease.LIVE),
+                                    (['claude', '--resume', 'actor'], github_plan_lease.LIVE),
+                                    (['claude', '--session-id', 'other', '--', '--session-id', 'actor'], github_plan_lease.UNKNOWN),
+                                    (['codex', 'resume', '--session-id', 'actor'], github_plan_lease.UNKNOWN)):
+                    with self.subTest(argv=argv), patch.object(shared, 'native_arguments', return_value=argv):
+                        self.assertEqual(SESSIONS.actor_state('actor'), state)
 
     def test_plain_install_inventory_uses_current_login_without_account_settings(self) -> None:
         with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"HOME": folder}, clear=True):
