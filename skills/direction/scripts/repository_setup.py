@@ -23,6 +23,7 @@ import iterm_tab
 # https://docs.renovatebot.com/configuration-options/
 RENOVATE_ROOT_FILES = frozenset({"renovate.json", "renovate.json5", ".renovaterc", ".renovaterc.json", ".renovaterc.json5"})
 RENOVATE_GITHUB_FILES = frozenset({"renovate.json", "renovate.json5"})
+RENOVATE_BOT_FORMAT = "renovate_metadata"
 AGENT = "agent"
 DIRECTOR = "Director"
 
@@ -38,6 +39,8 @@ SETUPS = {
     "merge_train": Setup("merge train", AGENT, "propose enrollment with launchplane-write-action.py "
                                                "privileged-policy-propose; the Director approves it on the Access policy card"),
     "renovate": Setup("Renovate", AGENT, "open a PR adding renovate.json that extends the shared preset"),
+    "renovate_train": Setup("Renovate cannot enqueue", AGENT,
+                            "propose the Renovate rows under Q1350; the Director approves the card"),
     "rulesets": Setup("ruleset pair", AGENT, "gh-rulesets.py apply --repo OWNER/REPO --confirm-owner-admin-write"),
     "rulesets_unavailable": Setup("rulesets (plan)", DIRECTOR,
                                   "a private repository on GitHub Free has no rulesets; make it public or change the plan"),
@@ -56,11 +59,17 @@ def gap(repo: str | None, setup: str, detail: str = "") -> dict[str, Any]:
     return {"repo": repo, "setup": setup, "detail": detail, "fixer": SETUPS[setup].fixer}
 
 
-def merge_train_missing(repo: str, policy_reader: PolicyReader) -> bool:
+def train_gaps(repo: str, policy_reader: PolicyReader, runs_renovate: bool | None) -> list[dict[str, Any]]:
     policy = policy_reader(repo)
     if policy is None:
         raise SetupUnknown("merge_train")
-    return policy["status"] != "enrolled"
+    if policy["status"] != "enrolled":
+        return [gap(repo, "merge_train")]
+    untrusted = [target["baseBranch"] for target in policy["targets"]
+                 if RENOVATE_BOT_FORMAT not in target["dependencyBotFormats"]]
+    if not runs_renovate or not untrusted:
+        return []
+    return [gap(repo, "renovate_train", ", ".join(untrusted) if len(untrusted) < len(policy["targets"]) else "")]
 
 
 def file_names(repo: str, path: str, fetch: Callable[[list[str]], Any]) -> set[str]:
@@ -117,9 +126,16 @@ def repository_gaps(repo: str, *, fetch: Callable[[list[str]], Any], policy_read
                     developer: Path, codex_homes: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     gaps: list[dict[str, Any]] = []
     unknown: list[dict[str, str]] = []
+    runs_renovate: bool | None = None
+
+    def renovate_gaps() -> list[dict[str, Any]]:
+        nonlocal runs_renovate
+        runs_renovate = not renovate_missing(repo, fetch)
+        return [] if runs_renovate else [gap(repo, "renovate")]
+
     checks: list[Callable[[], list[dict[str, Any]]]] = [
-        lambda: [gap(repo, "merge_train")] if merge_train_missing(repo, policy_reader) else [],
-        lambda: [gap(repo, "renovate")] if renovate_missing(repo, fetch) else [],
+        renovate_gaps,
+        lambda: train_gaps(repo, policy_reader, runs_renovate),
         lambda: [found] if (found := ruleset_gap(repo, fetch)) else [],
         lambda: trust_gaps(repo, developer, codex_homes),
     ]

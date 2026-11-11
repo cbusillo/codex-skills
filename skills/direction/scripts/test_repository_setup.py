@@ -29,6 +29,7 @@ class FakeOwner:
         self.selection = "all"
         self.repos = {"o/ready": {}, "o/old": {"archived": True}}
         self.enrolled = {"o/ready", "o/old"}
+        self.renovate_untrusted: set[str] = set()
         self.files = {"o/ready": {"": ["renovate.json"]}}
         self.rulesets: dict[str, Any] = {"o/ready": STANDARD}
         self.failing: set[str] = set()
@@ -76,8 +77,14 @@ class FakeOwner:
         return setup.collect(
             "o", fetch=self.fetch, developer=self.developer,
             codex_homes=[{"name": "codex-a", "env": {"CODEX_HOME": str(self.codex_home)}}],
-            policy_reader=lambda repo: {"status": "enrolled" if repo in self.enrolled else "not_enrolled", "targets": []},
+            policy_reader=self.policy,
         )
+
+    def policy(self, repo: str) -> dict[str, Any]:
+        if repo not in self.enrolled:
+            return {"status": "not_enrolled", "targets": []}
+        formats = [] if repo in self.renovate_untrusted else [setup.RENOVATE_BOT_FORMAT]
+        return {"status": "enrolled", "targets": [{"baseBranch": "main", "readyLabel": "ready", "dependencyBotFormats": formats}]}
 
 
 class RepositorySetupTests(unittest.TestCase):
@@ -122,6 +129,14 @@ class RepositorySetupTests(unittest.TestCase):
         self.account.codex_projects.discard("github-defaults")
         self.account.add_checkout("other", in_codex=False)
         self.assertEqual(self.gaps(), {("o/new", "codex_trust", "Director")})
+
+    def test_enrolled_repository_running_renovate_without_its_train_rows_is_flagged(self) -> None:
+        self.add_new_repository()
+        self.account.renovate_untrusted.add("o/new")
+        self.assertEqual(self.gaps(), {("o/new", "renovate_train", "agent")})
+        self.assertIn("Q1350", setup.markdown(self.account.collect()))
+        self.account.files["o/new"] = {"": ["README.md"]}
+        self.assertEqual(self.gaps(), {("o/new", "renovate", "agent")})
 
     def test_one_missing_ruleset_of_the_pair_is_named(self) -> None:
         self.add_new_repository()
@@ -173,7 +188,7 @@ class RepositorySetupTests(unittest.TestCase):
         self.account.repos["o/other"] = {}
         self.account.files.update({"o/new": {"": []}, "o/other": {"": []}})
         text = setup.markdown(self.account.collect())
-        self.assertIn("- o/new (fork): merge train, Renovate, ruleset pair, no checkout\n", text)
+        self.assertIn("- o/new (fork): Renovate, merge train, ruleset pair, no checkout\n", text)
         self.assertEqual(text.count(setup.SETUPS["renovate"].fix), 1)
 
     def test_upstream_contribution_fork_is_not_checked(self) -> None:
