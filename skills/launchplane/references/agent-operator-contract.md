@@ -61,7 +61,7 @@ uv run scripts/launchplane-call.py apply_product_config --mode apply \
   --response-file /private/task-evidence/example/apply.json
 ```
 
-Use the existing private operator configuration above. The body file stays
+Use the existing private admin configuration above. The body file stays
 outside Git; response files must be new, under an existing task-evidence
 folder, and are created with mode 0600 before any request. Read the saved dry
 run privately before applying the same intent. Supply any reviewed digest or
