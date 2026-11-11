@@ -102,10 +102,8 @@ def test_missing_document_is_unavailable(tmp_path: Path) -> None:
     assert check.run(["--openapi", str(tmp_path / "absent.json")]) == 2
 
 
-def test_oversized_document_is_unavailable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    payload = _openapi()
-    monkeypatch.setattr(check, "MAX_OPENAPI_BYTES", len(payload) - 1)
-    assert _check(tmp_path, payload) == 2
+def test_oversized_document_is_unavailable(tmp_path: Path) -> None:
+    assert _check(tmp_path, b" " * check.MAX_OPENAPI_BYTES + _openapi()) == 2
 
 
 if __name__ == "__main__":
