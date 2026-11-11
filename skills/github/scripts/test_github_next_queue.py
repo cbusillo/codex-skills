@@ -72,6 +72,13 @@ def test_session_actor_uses_current_process_without_changing_waits_or_custody() 
             assert 'lease store unreadable' in result['detail']
     with patch.object(queue.github_plan_sessions, 'actor_state', side_effect=AssertionError('roles have no session')):
         assert classify(item(actor='agent:supervisor-tooling'))['state'] == 'available'
+    row = item(actor=f'agent:{session}')
+    row['discussion']['comments'] = [
+        {'id': 1, 'author': 'bot', 'created_at': '2026-10-01T00:00:00Z', 'body': claim.marker(
+            {'worker': 'worker', 'session': session, 'branch': 'work/source', 'claimed_at': '2026-10-01T00:00:00Z'})},
+        {'id': 2, 'author': 'bot', 'created_at': '2026-10-01T00:01:00Z', 'body': 'Released claim 1'}]
+    with patch.object(queue.github_plan_sessions, 'actor_state', return_value=lease.UNKNOWN):
+        assert classify(row)['reason'] == 'next_actor_session_released'
 
 
 

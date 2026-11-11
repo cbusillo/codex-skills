@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import os
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 import subprocess
 import sys
@@ -76,18 +76,19 @@ def actor_state(session: str) -> str:
     try:
         records = native_helpers()[1]
         ledger = os.environ.get(records.LAUNCH_LEDGER_ENV)
-        entries = [entry for entry in records.load_ledger(Path(ledger)) if entry['session_id'] == session] if ledger else []
+        entries = [entry for entry in records.load_ledger(Path(ledger)) if entry["session_id"] == session] if ledger else []
         if not entries:
             source = github_plan_closure.source_records({session}).get(session)
-            entries = [source.get('resumed_generation') or source] if source else []
+            if isinstance(source, dict):
+                entries = [source.get("resumed_generation") or source]
         if len(entries) != 1:
             return UNKNOWN
         entry = entries[0]
         liveness = process_liveness()
         if liveness.generation_ended(entry):
             return EXPIRED
-        born = liveness.process_started_at(entry['pid'])
-        launched = datetime.fromisoformat(entry['launch_started_at'])
-        return LIVE if launched.tzinfo and born <= launched <= datetime.now(UTC) else UNKNOWN
+        born = liveness.process_started_at(entry["pid"])
+        launched = datetime.fromisoformat(entry["launch_started_at"])
+        return LIVE if launched.tzinfo and born == launched else UNKNOWN
     except (OSError, ValueError, KeyError, TypeError, ImportError, subprocess.SubprocessError):
         return UNKNOWN

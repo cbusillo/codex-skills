@@ -16,7 +16,7 @@ from pathlib import Path
 import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Self
 import unittest
@@ -1001,12 +1001,12 @@ class AccountHomeTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as folder:
             ledger = Path(folder) / 'ledger.json'
+            born = datetime(2026, 10, 1, 1, tzinfo=UTC)
             entry = {'session_id': 'actor', 'harness': 'codex', 'transcript': str(Path(folder) / 'source.jsonl'),
-                     'pid': 123, 'launch_started_at': '2026-10-01T01:00:00+00:00'}
+                     'pid': 123, 'launch_started_at': born.isoformat()}
             ledger.write_text(json.dumps([entry]))
             records = SESSIONS.native_helpers()[1]
             shared = SESSIONS.process_liveness()
-            born = datetime.fromisoformat(entry['launch_started_at'])
             with patch.dict(os.environ, {records.LAUNCH_LEDGER_ENV: str(ledger)}), \
                     patch.object(shared, 'generation_ended', return_value=False) as ended, \
                     patch.object(shared, 'process_started_at', return_value=born), \

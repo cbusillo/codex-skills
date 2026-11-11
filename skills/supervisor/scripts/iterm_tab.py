@@ -2205,9 +2205,9 @@ def register_file_launch(launch: dict, native: dict, ledger: Path) -> dict:
              "transcript": str(paths[0]), "pid": processes[0][0], "harness": harness, "supervisor_owned": True}
     entry.pop("claude_native", None)
     entry.pop("file_native", None)
+    entry["launch_started_at"] = session_liveness.process_started_at(entry["pid"]).isoformat()
     if harness == "agy":
         entry["agy_log"] = native["log"]
-        entry["launch_started_at"] = session_liveness.process_started_at(entry["pid"]).isoformat()
     while True:
         try:
             records = session_record.read_jsonl(paths[0])
