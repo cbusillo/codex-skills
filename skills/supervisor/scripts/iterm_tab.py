@@ -1396,7 +1396,6 @@ def launch_anchors(brief: str) -> list[tuple[str, str]]:
 
 
 def ledger_anchor(brief: str) -> dict:
-    """The one claimed anchor, as the ledger row's repository and issue."""
     claimed = {anchor for mode, anchor in launch_anchors(brief) if mode.casefold() != "read-only anchor"}
     if len(claimed) != 1:
         return {}
