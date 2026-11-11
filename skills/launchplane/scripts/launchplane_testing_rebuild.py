@@ -14,6 +14,7 @@ import urllib.error
 from typing import Any
 
 from launchplane_migrated_upload import COMMAND as UPLOAD_COMMAND
+from launchplane_testing_candidate_release import project_automatic_release
 
 COMMAND = "testing-rebuild-submit"
 PLAN_COMMAND = "testing-rebuild-dry-run"
@@ -234,6 +235,11 @@ def compact_receipt(h: Any, response: dict[str, Any], body: dict[str, object]) -
     result: dict[str, object] = {key: h.public_identifier(operation.get(key)) for key in (
         "operation_id", "product", "instance", "status", "phase")}
     result.update(updated_at=h.public_timestamp(operation.get("updated_at")), attempt=attempt)
+    if operation.get("candidate_release") is not None:
+        try:
+            result["candidate_release"] = project_automatic_release(h, operation["candidate_release"])
+        except ValueError as exc:
+            raise h.LaunchplaneSafetyError("invalid_response") from exc
     h.assert_public_safe_shape(result)
     return {"operation": result}
 

@@ -42,6 +42,7 @@ class ReceiptFixture(AbstractContextManager):
         self.rpc_requests = []
         self.home_requests = []
         self.parallel = False
+        self.close_without_reply = False
         self.queue_items = []
         self.home_queues = {}
         self.home_states = {}
@@ -90,7 +91,7 @@ class ReceiptFixture(AbstractContextManager):
             self.loop = asyncio.get_running_loop()
             self.stop = self.loop.create_future()
             async def handler(request):
-                ws = web.WebSocketResponse(max_msg_size=16 * 1024 * 1024)
+                ws = web.WebSocketResponse(max_msg_size=16 * 1024 * 1024, autoclose=not self.close_without_reply)
                 await ws.prepare(request)
                 native_home = self.socket_homes.get(request.transport.get_extra_info("sockname"), self.home)
                 native_path = self.transcript if native_home == self.home else native_home / "sessions" / self.transcript.name
@@ -156,6 +157,8 @@ class ReceiptFixture(AbstractContextManager):
                     for task in tasks:
                         task.cancel()
                     await asyncio.gather(*tasks, return_exceptions=True)
+                if self.close_without_reply:
+                    request.transport.close()
                 return ws
             app = web.Application()
             app.router.add_get("/", handler)

@@ -85,8 +85,8 @@ async def connection(home: Path, *, max_msg_size: int = 64 * 1024 * 1024, deadli
                     async with asyncio.timeout(remaining):
                         await ws.send_json({"method": "initialized"})
                     yield request
-                if ws.exception() is not None:
-                    raise ValueError("native connection cleanup failed; preserve the uncertain operation and do not replay") from ws.exception()
+                if isinstance(close_error := ws.exception(), TimeoutError):
+                    raise TimeoutError("native connection cleanup timed out; preserve state before retrying") from close_error
         except aiohttp.ClientError as transport_error:
             if isinstance(transport_error, (OSError, ValueError)):
                 raise  # Preserve existing known-absence and ordinary refusal handling.

@@ -233,6 +233,24 @@ class NativeFactsTests(unittest.IsolatedAsyncioTestCase):
 
 
 class NativeQueueTests(unittest.TestCase):
+    def test_acknowledged_native_reads_and_queue_survive_peer_eof_during_client_close(self) -> None:
+        import uuid
+        with ReceiptFixture(str(uuid.uuid4())) as fixture:
+            fixture.close_without_reply = True
+
+            async def read() -> dict:
+                async with NATIVE.connection(fixture.home) as request:
+                    thread = await NATIVE.read_thread(request, fixture.session)
+                    queue = await NATIVE.read_queue(request, fixture.session)
+                return {"thread": thread, "queue": queue}
+
+            self.assertEqual(asyncio.run(read())["thread"]["state"], "idle")
+            self.assertFalse(fixture.mutations)
+            result = asyncio.run(NATIVE.queue_input(fixture.home, fixture.session, "synthetic input"))
+            self.assertEqual(result["delivery"], "turn_started")
+            self.assertEqual(fixture.rpc_requests.count("thread/queue/add"), 1)
+            self.assertTrue(CLOSURE.action_pending(fixture.session))
+
     def test_slow_ownership_read_preserves_admission_and_refusal_before_queue_send(self) -> None:
         import uuid
         for admitted in (True, False):

@@ -60,6 +60,7 @@ DENIED_KEY_FRAGMENTS = (
     "token",
 )
 SAFE_SECRET_METADATA_KEYS = {
+    "copyexecutioncredentialsabsent",
     "managedsecretbindingkeys",
     "secretevidence",
     "secretchangecount",
