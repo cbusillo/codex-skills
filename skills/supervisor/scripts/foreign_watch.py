@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --no-cache --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["PyYAML==6.0.3"]
+# dependencies = ["PyYAML==6.0.3", "zstandard==0.25.0"]
 # ///
 """Emit untrusted foreign-post notices; never start or widen work."""
 
