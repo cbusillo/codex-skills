@@ -2471,19 +2471,19 @@ For bounded GET reads, the top-level allowlists live in
 Launchplane declares there but the read does not project is accepted and
 dropped; the secret-binding read counts omitted top-level fields in its existing
 `dropped_field_paths` and `dropped_field_count`. Any undeclared field still fails
-closed. `references/launchplane-read-response-fields.json` pins the top-level
-fields Launchplane's generated OpenAPI declares for each of those routes, and
-the tests require every pinned field to be in its read's allowlist. Refresh the
-pin by running `uv run launchplane service export-openapi --output <schema-path>`
-from a Launchplane source checkout, then
-`uv run scripts/sync-read-response-fields.py sync --openapi <schema-path>` from
-this skill directory. Add each new field to its read's allowlist, projecting it only
-when the read should emit it, and name the Launchplane commit in the commit
-message. The `Launchplane Read Response Fields` workflow fails on pull
-requests, on `main` and daily when the pin differs from a fresh source export
-of Launchplane's `main`. It does not fetch the retired committed snapshots. The
-comparator exits 0 for agreement, 1 for drift and 2 when it cannot derive the
-fields from the supplied schema.
+closed. `scripts/check-read-response-fields.py --openapi <schema-path>` reads
+the OpenAPI document Launchplane generates (`uv run launchplane service
+export-openapi --output <schema-path>` from a Launchplane source checkout) and
+fails, naming the read and field, when a bounded read declares a field outside
+its allowlist. There is no pinned copy of Launchplane's fields to refresh.
+Launchplane's CI runs this check from catalog `main` against each pull
+request's own export, so a producer change that adds a field fails there until
+the catalog accepts it: add the field to its read's allowlist, projecting it
+only when the read should emit it, land that first, then rerun the producer's
+check. The `Launchplane Read Response Fields` workflow runs the same check
+against Launchplane `main` on catalog pull requests, on `main` and daily. The
+comparator exits 0 when every declared field is accepted, 1 when one is not
+and 2 when it cannot derive the fields from the supplied schema.
 
 The merge-train controller reply has no helper allowlist. Launchplane publishes
 its contract as `contracts/merge-train-controller-reply.schema.json` and tests
