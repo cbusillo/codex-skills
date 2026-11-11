@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, BinaryIO, NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from launchplane_safety import LaunchplaneSafetyError, validate_service_url  # noqa: E402
+from launchplane_safety import validate_service_url  # noqa: E402
 
 SPEC = importlib.util.spec_from_file_location("caller_operator", Path(__file__).with_name("launchplane-write-action.py"))
 assert SPEC is not None and SPEC.loader is not None
@@ -44,6 +44,15 @@ def open_evidence(path: str) -> BinaryIO:
         raise ValueError("private_task_evidence_required")
     descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     return os.fdopen(descriptor, "wb")
+
+
+def save_evidence(evidence: BinaryIO, raw: bytes) -> bool:
+    try:
+        evidence.write(raw)
+        evidence.flush()
+        return True
+    except (OSError, ValueError):
+        return False
 
 
 def resolve_schema(schema: dict[str, Any], document: dict[str, Any]) -> dict[str, Any]:
@@ -146,7 +155,7 @@ def find_operation(document: dict[str, Any], operation_id: str) -> Operation:
     return operations[0]
 
 
-def call(args: argparse.Namespace, evidence: BinaryIO) -> int:
+def call(args: argparse.Namespace, evidence: BinaryIO) -> tuple[int, dict[str, Any], bool]:
     settings = operator.resolve_settings(args)
     validate_service_url(settings["service_url"])
     if not settings["token"]:
@@ -156,13 +165,14 @@ def call(args: argparse.Namespace, evidence: BinaryIO) -> int:
         body = {**(body or {}), "mode": args.mode}
     status, raw = exchange(settings, "GET", "/openapi.json", {}, None, "", args.timeout)
     if status != 200:
-        evidence.write(raw)
         try:
             payload = json.loads(raw)
         except (ValueError, UnicodeDecodeError):
             payload = {}
-        print(json.dumps(service_output(payload, {}, {}, status)))
-        return 1
+        output = service_output(payload, {}, {}, status)
+        if not save_evidence(evidence, raw):
+            output["status"] = "unavailable"
+        return 1, output, False
     document = json.loads(raw)
     contract = document["x-launchplane-agent-contract"]["operations"]
     method, path, operation = find_operation(document, args.operation_id)
@@ -174,22 +184,14 @@ def call(args: argparse.Namespace, evidence: BinaryIO) -> int:
     for name, value in pairs(args.path).items():
         path = path.replace("{" + name + "}", urllib.parse.quote(value, safe=""))
     query = pairs(args.query)
+    mutating = method not in {"GET", "HEAD", "OPTIONS"}
     try:
         status, raw = exchange(settings, method, path, query, body, args.idempotency_key, args.timeout)
-        evidence.write(raw)
-        evidence.flush()
     except (OSError, ValueError, http.client.HTTPException) as error:
-        try:
-            evidence.write(json.dumps({"transport_error": type(error).__name__, "detail": str(error)}).encode())
-        except OSError:
-            pass
-        try:
-            evidence.close()
-        except OSError:
-            pass
-        print(json.dumps({"status": "outcome_unknown" if method not in {"GET", "HEAD", "OPTIONS"} else "unavailable"}))
-        return 1
-    unknown = method not in {"GET", "HEAD", "OPTIONS"} and (status >= 500 or status == 408)
+        save_evidence(evidence, json.dumps({"transport_error": type(error).__name__, "detail": str(error)}).encode())
+        return 1, {"status": "outcome_unknown" if mutating else "unavailable"}, mutating
+    stored = save_evidence(evidence, raw)
+    code = 0 if 200 <= status < 300 else 1
     try:
         payload = json.loads(raw)
         response = operation.get("responses", {}).get(str(status), operation.get("responses", {}).get("default", {}))
@@ -198,12 +200,11 @@ def call(args: argparse.Namespace, evidence: BinaryIO) -> int:
         output = service_output(payload, schema, document, status)
     except (ValueError, UnicodeDecodeError, TypeError, KeyError, AttributeError):
         output = {"http_status": status, "status": "accepted_unverified" if 200 <= status < 300 else "unverified"}
-        print(json.dumps({**output, **({"status": "outcome_unknown"} if unknown else {})}))
-        return 1
-    if unknown:
-        output["status"] = "outcome_unknown"
-    print(json.dumps(output))
-    return 0 if 200 <= status < 300 else 1
+        code = 1
+    if not stored or (mutating and (status >= 500 or status == 408)):
+        output["status"] = "outcome_unknown" if mutating else "unavailable"
+        code = 1
+    return code, output, mutating
 
 
 def main() -> int:
@@ -222,25 +223,26 @@ def main() -> int:
     parser.add_argument("--url")
     parser.add_argument("--timeout", type=float, default=30)
     args = parser.parse_args()
+    evidence = None
+    code, output, mutating = 1, {"status": "private_evidence_unavailable"}, False
     try:
-        with open_evidence(args.response_file) as evidence:
-            try:
-                return call(args, evidence)
-            except (
-                OSError,
-                ValueError,
-                KeyError,
-                TypeError,
-                AttributeError,
-                LaunchplaneSafetyError,
-                http.client.HTTPException,
-            ) as error:
-                evidence.write(json.dumps({"caller_error": type(error).__name__, "detail": str(error)}).encode())
-                print(json.dumps({"status": "unavailable"}))
-                return 1
+        evidence = open_evidence(args.response_file)
+        try:
+            code, output, mutating = call(args, evidence)
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, http.client.HTTPException) as error:
+            save_evidence(evidence, json.dumps({"caller_error": type(error).__name__, "detail": str(error)}).encode())
+            output = {"status": "unavailable"}
     except (OSError, ValueError):
-        print(json.dumps({"status": "private_evidence_unavailable"}))
-        return 1
+        pass
+    finally:
+        if evidence is not None:
+            try:
+                evidence.close()
+            except OSError:
+                code = 1
+                output["status"] = "outcome_unknown" if mutating else "unavailable"
+    print(json.dumps(output))
+    return code
 
 
 if __name__ == "__main__":

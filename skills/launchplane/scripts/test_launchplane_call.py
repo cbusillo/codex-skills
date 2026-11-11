@@ -212,14 +212,6 @@ class CallerTests(unittest.TestCase):
         self.assertEqual((self.root / "unparseable.json").read_bytes(), self.raw_reply)
 
     def test_evidence_write_failure_after_apply_is_unknown_without_retry(self) -> None:
-        with patch.object(caller, "open_evidence") as evidence:
-            evidence.return_value.__enter__.return_value.write.side_effect = OSError("private-disk-canary")
-            code, output = self.run_call("disk-full.json", "--mode", "apply")
-        self.assertEqual(code, 1)
-        self.assertEqual(output["status"], "outcome_unknown")
-        self.assertNotIn("canary", json.dumps(output))
-        self.assertEqual(len(self.observed), 1)
-
         class FullDisk(io.RawIOBase):
             def writable(self) -> bool:
                 return True
@@ -227,11 +219,26 @@ class CallerTests(unittest.TestCase):
             def write(self, data: Any) -> int:
                 raise OSError(errno.ENOSPC, "private-disk-canary")
 
+        class CloseFailure(io.BytesIO):
+            def close(self) -> None:
+                if not self.closed:
+                    super().close()
+                    raise OSError(errno.EIO, "private-close-canary")
+
+        for name, stream in (("flush-full", io.BufferedWriter(FullDisk())), ("close-error", CloseFailure())):
+            with self.subTest(name=name), patch.object(caller, "open_evidence", return_value=stream):
+                code, output = self.run_call(name + ".json", "--mode", "apply")
+                self.assertEqual(code, 1)
+                self.assertEqual(output["status"], "outcome_unknown")
+                self.assertEqual(output["trace_id"], self.payload["trace_id"])
+                self.assertEqual(output["http_status"], self.response_status)
+                self.assertNotIn("canary", json.dumps(output))
+        self.assertEqual(len(self.observed), 2)
+        self.generic_surface = False
         with patch.object(caller, "open_evidence", return_value=io.BufferedWriter(FullDisk())):
-            code, output = self.run_call("flush-full.json", "--mode", "apply")
+            code, output = self.run_call("no-request-full.json")
         self.assertEqual(code, 1)
-        self.assertEqual(output["status"], "outcome_unknown")
-        self.assertNotIn("canary", json.dumps(output))
+        self.assertEqual(output["status"], "unavailable")
         self.assertEqual(len(self.observed), 2)
 
     def test_private_body_and_evidence_work_outside_git(self) -> None:
