@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["zstandard==0.25.0"]
 # ///
 """Discover Supervisor review requests; --apply runs and posts, never weighs or readies."""
 
