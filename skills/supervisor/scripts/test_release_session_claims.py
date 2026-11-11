@@ -190,6 +190,8 @@ class ReleaseTests(unittest.TestCase):
                 else:
                     with self.assertRaises(ValueError):
                         helper.record_recovery(log, {**entry, "recovery": {"kind": "gone"}}, "supervisor")
+        with patch.object(helper.session_liveness.sys, "platform", "linux"):  # a subreaper may adopt leftover work
+            self.assertTrue(helper.session_liveness.tty_has_orphan(source["tty"], [(456, source["tty"], unrelated)]))
 
     def test_recovered_custody_is_not_releasable_by_backfill(self) -> None:
         ledger, log = self.root / "ledger.json", self.root / "closed.json"

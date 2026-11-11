@@ -7,6 +7,7 @@
 #     "tree-sitter==0.26.0",
 #     "tree-sitter-bash==0.25.1",
 #     "tree-sitter-javascript==0.25.0",
+#     "zstandard==0.25.0",
 # ]
 # ///
 """Compact GitHub issue planning helper for Codex skills."""

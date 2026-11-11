@@ -125,6 +125,7 @@ def recorded_transcript(value: str | Path) -> Path:
 
 def transcript_glob(session: str, suffix: str = ".jsonl") -> tuple[str, ...]:
     """Patterns for a session's transcript copies, compressed or not."""
+    suffix = ".jsonl" if suffix == ".zst" else suffix
     return (f"*{session}*{suffix}",) + ((f"*{session}*{suffix}.zst",) if suffix == ".jsonl" else ())
 
 
