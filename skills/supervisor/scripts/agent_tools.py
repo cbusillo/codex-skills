@@ -170,7 +170,7 @@ def browser_connection_problem(observations: set[str]) -> str:
         "unknown": "the server supplied no recognized connection evidence; extension account/organization and bridge state are unverified",
     }
     reason = next((key for key in reasons if key in observations), "unknown")
-    return f"no Chrome browser connected ({reason}): {reasons[reason]}"
+    return f"browser diagnostic ({reason}): {reasons[reason]}"
 
 
 def observe_browser_log(line: bytes, observations: set[str]) -> None:
@@ -219,9 +219,9 @@ def connected_browsers(server: dict, timeout: float = 15.0) -> list[dict]:
     observations: set[str] = set()
     streams = [stderr, stdout]
 
-    def capture_diagnostics(chunk: bytes) -> None:
+    def capture_diagnostics(data: bytes) -> None:
         nonlocal diagnostic_buffer, discard_diagnostic_line
-        lines = (diagnostic_buffer + chunk).split(b"\n")
+        lines = (diagnostic_buffer + data).split(b"\n")
         diagnostic_buffer = lines.pop()
         for line in lines:
             if not discard_diagnostic_line and len(line) <= 65536:
@@ -274,7 +274,8 @@ def connected_browsers(server: dict, timeout: float = 15.0) -> list[dict]:
                 if "error" in message or not isinstance(message.get("result"), dict):
                     raise ValueError(f"{CHROME_SERVER} {method} failed")
                 return message
-        raise ValueError(f"{CHROME_SERVER} gave no {method} reply within {timeout:g}s; browser state unknown")
+        raise ValueError(f"{CHROME_SERVER} gave no {method} reply within {timeout:g}s; "
+                         + browser_connection_problem(observations))
 
     try:
         call(1, "initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
@@ -283,13 +284,13 @@ def connected_browsers(server: dict, timeout: float = 15.0) -> list[dict]:
         reply = call(2, "tools/call", {"name": LIST_TOOL, "arguments": {}})
         drain_deadline = min(deadline, time.monotonic() + 0.1)
         while stderr in streams and (remaining := drain_deadline - time.monotonic()) > 0:
-            ready, _, _ = select.select([stderr], [], [], remaining)
-            if not ready:
+            diagnostic_ready, _, _ = select.select([stderr], [], [], remaining)
+            if not diagnostic_ready:
                 break
-            chunk = os.read(stderr.fileno(), 65536)
-            if not chunk:
+            diagnostic_chunk = os.read(stderr.fileno(), 65536)
+            if not diagnostic_chunk:
                 break
-            capture_diagnostics(chunk)
+            capture_diagnostics(diagnostic_chunk)
     except (OSError, ValueError) as error:
         raise ValueError(str(error) if isinstance(error, ValueError) else
                          f"{CHROME_SERVER} closed early ({type(error).__name__})") from None
@@ -322,7 +323,7 @@ def connected_browsers(server: dict, timeout: float = 15.0) -> list[dict]:
             stdout.close()
             stderr.close()
     if reply["result"].get("isError"):
-        raise ValueError(f"{CHROME_SERVER} {LIST_TOOL} failed; check the pinned account's connection")
+        raise ValueError(f"{CHROME_SERVER} {LIST_TOOL} failed; " + browser_connection_problem(observations))
     content = (reply.get("result") or {}).get("content") or []
     text = next((item.get("text") for item in content if isinstance(item, dict)), None)
     try:
@@ -332,5 +333,5 @@ def connected_browsers(server: dict, timeout: float = 15.0) -> list[dict]:
     if not isinstance(browsers, list) or not all(isinstance(browser, dict) for browser in browsers):
         raise ValueError(f"{CHROME_SERVER} {LIST_TOOL} returned no browser list")
     if not browsers:
-        raise ValueError(browser_connection_problem(observations))
+        raise ValueError("no Chrome browser connected; " + browser_connection_problem(observations))
     return browsers

@@ -71,7 +71,7 @@ class ClaudeToolTests(unittest.TestCase):
 
 
 class BrowserProbeTests(unittest.TestCase):
-    def server(self, behavior):
+    def server(self, behavior: str) -> dict:
         script = '''import json, os, sys, time
 for line in sys.stdin:
     msg=json.loads(line)
@@ -94,13 +94,15 @@ for line in sys.stdin:
 
     def test_server_request_with_same_id_is_not_a_reply(self):
         server = self.server("print(json.dumps({'jsonrpc':'2.0','id':msg['id'],'method':'ping'}),flush=True)\nresult={'content':[{'type':'text','text':'[]'}]}")
-        with self.assertRaisesRegex(ValueError, "^no Chrome browser connected \\(unknown\\)"):
+        with self.assertRaisesRegex(ValueError, r"\(unknown\)") as error:
             agent_tools.connected_browsers(server, timeout=2)
+        self.assertNotIn("gave no", str(error.exception))
 
     def test_empty_list_is_distinct_from_failed_or_malformed_tool(self):
-        with self.assertRaisesRegex(ValueError, "^no Chrome browser connected \\(unknown\\)"):
+        with self.assertRaisesRegex(ValueError, r"\(unknown\)") as error:
             agent_tools.connected_browsers(
                 self.server("result={'content':[{'type':'text','text':'[]'}]}"), timeout=2)
+        self.assertNotIn("gave no", str(error.exception))
         for result in ({"isError": True, "content": [{"type": "text", "text": "private"}]},
                        {"content": [{"type": "text", "text": "private"}]},
                        {"content": [{"type": "text", "text": "{}"}]},
@@ -129,10 +131,10 @@ for line in sys.stdin:
                         "result={'content':[{'type':'text','text':'[]'}]}")
             with self.subTest(reason=reason), self.assertRaises(ValueError) as error:
                 agent_tools.connected_browsers(self.server(behavior), timeout=2)
-            self.assertIn(reason, str(error.exception))
+            self.assertIn(f"({reason})", str(error.exception))
             self.assertNotIn("private", str(error.exception))
 
-    def test_stderr_flood_cannot_block_listing_or_leak_into_diagnostic(self) -> None:
+    def test_stderr_flood_cannot_block_listing(self) -> None:
         server = self.server("sys.stderr.write('private'*200000);sys.stderr.flush()\n"
                              "result={'content':[{'type':'text','text':'[{\"id\":\"fixture\"}]'}]}")
         self.assertEqual(agent_tools.connected_browsers(server, timeout=2), [{"id": "fixture"}])
@@ -143,8 +145,17 @@ for line in sys.stdin:
                     f"def delayed_trace():\n    time.sleep(0.02)\n    sys.stderr.write({trace['trace']!r});sys.stderr.flush()\n"
                     "threading.Thread(target=delayed_trace).start()\n"
                     "result={'content':[{'type':'text','text':'[]'}]}")
-        with self.assertRaisesRegex(ValueError, "^no Chrome browser connected \\(extension_unregistered\\)"):
+        with self.assertRaisesRegex(ValueError, r"\(extension_unregistered\)"):
             agent_tools.connected_browsers(self.server(behavior), timeout=2)
+
+    def test_tool_error_and_timeout_preserve_observed_connection_cause(self) -> None:
+        log = "[Claude in Chrome] Not connecting: nobody is signed in"
+        for outcome in ("result={'isError':True,'content':[{'type':'text','text':'private'}]}", "time.sleep(30)"):
+            behavior = f"sys.stderr.write({log!r}+'\\n');sys.stderr.flush()\n" + outcome
+            with self.subTest(outcome=outcome), self.assertRaisesRegex(ValueError, r"\(signed_out\)") as error:
+                agent_tools.connected_browsers(self.server(behavior), timeout=0.4)
+            self.assertNotIn("private", str(error.exception))
+            self.assertNotIn("no Chrome browser connected", str(error.exception))
 
     def test_partial_line_eof_rpc_error_and_missing_executable_are_bounded(self):
         for behavior in ("sys.stdout.write('{');sys.stdout.flush();time.sleep(30)",

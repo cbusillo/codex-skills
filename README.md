@@ -1385,14 +1385,9 @@ With the catalog Chrome opt-in, Supervisor Claude launches export
 the selected home's server before launch without selecting or navigating a
 browser. Source briefs get warnings when unavailable; add `--require-browser`
 to browser launches to refuse before terminals and receipts. `--without-browser`
-skips the listing for work that needs none. The listing check reads the native
-server's debug stderr in memory and reports signed-out CLI state, CLI account
-mismatch, bridge failure, or an empty extension roster when its trace proves
-one. It never prints raw logs. An empty roster leaves the extension's account,
-organization and running state unknown; it does not prove the Agents window
-is closed. Unrecognized or missing diagnostics report `unknown`. A connected
-MCP server alone does not prove an extension is registered with the bridge.
-Session start reports static Claude
+skips the listing for work that needs none. See
+[browser preflight diagnostics](skills/supervisor/references/helpers.md#browser-and-computer-use-preflight)
+for evidence-backed failure reasons and their limits. Session start reports static Claude
 Chrome-route conflicts and validates Codex's source override when the local
 launcher supplied its marker. Unrequested desktop tools and unverified remote
 setup stay with launch preflight. The hook changes no settings and starts no
