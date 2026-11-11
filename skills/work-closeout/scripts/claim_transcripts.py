@@ -1038,6 +1038,16 @@ def native_effects_complete(
         if index > end and (
             kind != "CommandExecution"
             or str(item.get("process_id")) not in processes
+            and (
+                any(
+                    other != identifier and tool != "command" and end < position < index
+                    for other, (_, _, tool, position) in native.inputs.items()
+                )
+                or any(
+                    type(row.get("ordinal")) is not int or row["ordinal"] != ordinal + end - start + offset
+                    for offset, row in enumerate(records[end : index + 1])
+                )
+            )
             or type(event.get("started_at_ms")) is not int
             or not began.timestamp() * 1000 <= event["started_at_ms"] <= returned.timestamp() * 1000
         ):

@@ -196,10 +196,15 @@ for an opaque command, without treating its stdout as proof that no claim exists
 For bounded wrappers that project or combine results, native terminal events
 can prove completion when the exact command started during that wrapper's
 recorded timestamp interval, belongs to the same native session and matches
-the full possible execution count. Overlapping or still-yielded tool calls,
-unbounded repetitions, missing timestamps, foreign events and duplicate event
-IDs cannot satisfy that proof. Literal loops and callbacks reuse the existing
-bounded literal expansion; no historical code is executed.
+the full possible execution count. A process yielded by a completed cell can
+finish afterward without a printed process ID only before the next native tool
+invocation, with contiguous ordinals through that completion. Its start interval
+and the exclusive window exclude an earlier hidden process. Across another
+invocation, the original returned process identity remains required. Overlapping
+or still-running code-mode cells, unbounded repetitions, missing timestamps,
+foreign events and duplicate event IDs cannot satisfy that proof. Literal loops
+and callbacks reuse the existing bounded literal expansion; no historical code
+is executed.
 
 A shell variable assigned once to a literal value at the top level, and a `for`
 loop over literal words, expand into exact claim targets, so
