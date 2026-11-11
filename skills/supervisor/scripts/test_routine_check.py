@@ -53,6 +53,61 @@ class RoutineCheckTests(unittest.TestCase):
         self.enterContext(patch_attr(routine_check.radar.github_identity, "configured_bot_logins", return_value=["agent[bot]"]))
         self.enterContext(patch.object(session_closeout.closure, "source_records", return_value={}))
 
+    def test_lead_handoff_rows_repeat_for_milestone_seat_until_posted(self) -> None:
+        now = datetime(2026, 11, 11, tzinfo=UTC)
+        started = now - timedelta(hours=20)
+        lead: dict[str, Any] = {"session_id": "lead", "lead": {"started_at": started.isoformat(), "compactions": 7,
+                                                  "last_compaction_at": now.isoformat()}}
+        sources: dict[str, Any] = {"sessions": {"sessions": [lead]}}
+        with patch.object(routine_check, "clock", return_value=now):
+            for _ in range(2):
+                output = routine_check.digest(sources, roles=("milestone",))
+                self.assertIn("LEAD_HANDOFF lead", output)
+                self.assertIn("compactions=7 age=20h00m", output)
+            for roles in ((), ("tooling",), ("cleanup",)):
+                self.assertNotIn("LEAD", routine_check.digest(sources, roles=roles))
+            sources["primary"] = {"lead_handoffs": {"lead": "https://example.test/handoff"}}
+            output = routine_check.digest(sources, roles=("milestone",))
+            self.assertNotIn("LEAD_HANDOFF", output)
+            self.assertIn("LEAD lead", output)
+            sources.pop("primary")
+            lead["lead"]["compactions"] = 0
+            lead["lead"]["started_at"] = (now - timedelta(days=2)).isoformat()
+            self.assertIn("LEAD_HANDOFF", routine_check.digest(sources, roles=("milestone",)))
+            lead["lead"]["started_at"] = started.isoformat()
+            self.assertNotIn("LEAD_HANDOFF", routine_check.digest(sources, roles=("milestone",)))
+            lead["lead"]["compactions"] = 2
+            lead["lead"]["last_compaction_at"] = (started + timedelta(hours=4)).isoformat()
+            self.assertIn("LEAD_HANDOFF", routine_check.digest(sources, roles=("milestone",)))
+            lead["lead"] = None
+            self.assertIn("compactions=UNKNOWN age=UNKNOWN", routine_check.digest(sources, roles=("milestone",)))
+
+    def test_lead_handoff_is_read_at_source_and_must_name_this_session(self) -> None:
+        started = "2026-11-10T00:00:00Z"
+        session: dict[str, Any] = {"session_id": "native-lead", "issue": "owner/repo#1", "lead": {"started_at": started}}
+        handoff = {"body": "Lead handoff\nSession: native-lead\nNext actor: agent:supervisor-milestone",
+                   "created_at": "2026-11-11T00:00:00Z", "user": {"login": "agent[bot]"},
+                   "html_url": "https://github.com/owner/repo/issues/1#issuecomment-2"}
+        with patch_attr(routine_check.github_read, "read_discussion", return_value={"comments": [handoff]}) as read:
+            reader = routine_check.primary_readers(argparse.Namespace())["lead_handoff"]
+            self.assertEqual(reader(session), handoff["html_url"])
+            for change in ({"user": {"login": "outside"}}, {"created_at": "2026-11-09T00:00:00Z"},
+                           {"body": "Lead handoff\nSession: other-lead"},
+                           {"body": "Still working; handoff is not ready\nSession: native-lead"},
+                           {"body": "Claimed by worker\nSession: native-lead\nNext action: Implement handoff"}):
+                read.return_value = {"comments": [{**handoff, **change}]}
+                self.assertIsNone(reader(session))
+        callbacks = {"owner_review": Mock(), "client_release": Mock(), "production": Mock(),
+                     "anchor_response": Mock(), "checks": Mock(), "lead_handoff": Mock(return_value=handoff["html_url"])}
+        for roles in ((), ("tooling",), ("cleanup",)):
+            routine_check.primary_reads({}, [session], **callbacks, roles=roles)
+        callbacks["lead_handoff"].assert_not_called()
+        primary = routine_check.primary_reads({}, [session], **callbacks, roles=("milestone",))
+        self.assertEqual(primary["lead_handoffs"], {session["session_id"]: handoff["html_url"]})
+        callbacks["lead_handoff"].side_effect = OSError("unreadable anchor")
+        primary = routine_check.primary_reads({}, [session], **callbacks, roles=("milestone",))
+        self.assertFalse(primary["coverage"]["complete"])
+
     def test_seats_recompute_incomplete_reports_while_sharing_successful_queries(self) -> None:
         root = Path(os.environ["CODE_HOME"])
         watch = root / "watch.jsonl"

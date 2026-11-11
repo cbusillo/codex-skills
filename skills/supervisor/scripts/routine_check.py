@@ -16,6 +16,7 @@ from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -25,6 +26,7 @@ import github_access
 import oq
 from github_plan_status.next_actor import SUPERVISOR_ACTORS, SUPERVISOR_ROLES
 from question_delivery import run_queue, source_item
+from session_closeout import explicit_session
 
 if TYPE_CHECKING:
     from skills.github.scripts import github_next_pr, github_read, ready_handoff
@@ -288,7 +290,8 @@ def request_text(row: dict) -> str:
 
 def primary_reads(selection: dict, sessions: list[dict], *, owner_review: Callable[[str, int], dict | None],
                   client_release: Callable[[str], Any], production: Callable[[str], dict],
-                  anchor_response: Callable[[str], str], checks: Callable[[str, int], dict]) -> dict:
+                  anchor_response: Callable[[str], str], checks: Callable[[str, int], dict],
+                  lead_handoff: Callable[[dict], str | None] | None = None, roles: tuple[str, ...] = ()) -> dict:
     errors: list[dict] = []
     followthrough = selection.get("pr_followthrough", [])
     errors.extend({"read": f"handoff {pointer(row)}", "error": str(row.get("reason"))} for row in followthrough
@@ -373,7 +376,13 @@ def primary_reads(selection: dict, sessions: list[dict], *, owner_review: Callab
             annotations[pointer(row)] = " | ".join(notes)
     anchors = {row["session_id"]: attempt(f"anchor {row['issue']}", lambda issue=row["issue"]: anchor_response(issue)) or "anchor_response=UNKNOWN"
                for row in sessions if row.get("action") == "inspect_idle_session" and row.get("issue")}
-    return {"annotations": annotations, "anchors": anchors, "no_handoff": no_handoff, "errors": errors, "coverage": {"complete": not errors}}
+    handoffs = {}
+    if "milestone" in roles and lead_handoff is not None:
+        for row in sessions:
+            if "lead" in row and row.get("issue"):
+                handoffs[row["session_id"]] = attempt(f"lead handoff {row['session_id']}", partial(lead_handoff, row))
+    return {"annotations": annotations, "anchors": anchors, "lead_handoffs": handoffs,
+            "no_handoff": no_handoff, "errors": errors, "coverage": {"complete": not errors}}
 
 
 def ask_note(row: dict) -> str:
@@ -395,6 +404,22 @@ def stale_row(row: dict, now: datetime) -> str:
     return f"STALE {pointer(row)}: {kinds} age={age_text(now - recorded) if recorded else 'UNKNOWN'} evidence={' '.join(str(detail).split())[:180]}"
 
 
+def lead_row(session: dict, now: datetime, handoff: str | None) -> str:
+    lead = session.get("lead") or {}
+    count = lead.get("compactions")
+    started = recorded_time(lead.get("started_at"))
+    last = recorded_time(lead.get("last_compaction_at"))
+    age = now - started if started else None
+    frequent = False
+    if isinstance(count, int) and count > 0 and started is not None and last is not None:
+        frequent = timedelta() < last - started < timedelta(hours=3 * count)
+    due = (count is not None and count >= 6) or (age is not None and age >= timedelta(days=2)) or frequent
+    kind = "LEAD_HANDOFF" if due and not handoff else "LEAD"
+    detail = f"compactions={count if count is not None else 'UNKNOWN'} age={age_text(age) if age is not None else 'UNKNOWN'}"
+    suffix = f"; handoff={handoff}" if handoff else "; post a handoff on the anchor; Next actor: agent:supervisor-milestone" if due else ""
+    return f"{kind} {pointer(session)}: {detail} anchor={session.get('issue') or 'UNKNOWN'}{suffix}"
+
+
 def digest(sources: dict[str, dict], *, full: bool = False, roles: tuple[str, ...] = ()) -> str:
     now = clock()
     lines = [f"Routine check at {clock_label(now)} (source candidates; routing receipts are delivery evidence only)"]
@@ -412,6 +437,8 @@ def digest(sources: dict[str, dict], *, full: bool = False, roles: tuple[str, ..
 
     sessions = sources.get("sessions", {}).get("sessions", [])
     for session in sessions:
+        if "milestone" in roles and "lead" in session:
+            lines.append(lead_row(session, now, primary.get("lead_handoffs", {}).get(session["session_id"])))
         if session.get("action") or session.get("error"):
             suffix = f"; {anchors[pointer(session)]}" if pointer(session) in anchors else ""
             lines.append(f"WORKER {pointer(session)}: {session.get('error') or session['action']}{suffix}")
@@ -642,15 +669,30 @@ def primary_readers(args: argparse.Namespace) -> dict[str, Callable]:
         return {"deployed": deployed.commit, "newest": newest, "contained": comparison["status"] in {"identical", "ahead"},
                 "behind": comparison.get("behind_by")}
 
-    def anchor_response(issue: str) -> str:
+    def anchor_discussion(issue: str) -> dict:
         match = re.search(r"([\w.-]+/[\w.-]+)(?:#|/issues/|/pull/)([1-9][0-9]*)", issue)
         if not match:
             raise ValueError("anchor is not OWNER/REPO#NUMBER")
-        discussion = github_read.read_discussion(reader(), match[1], int(match[2]))
-        return anchor_note(discussion)
+        return github_read.read_discussion(reader(), match[1], int(match[2]))
+
+    def lead_handoff(session: dict) -> str | None:
+        started = recorded_time((session.get("lead") or {}).get("started_at"))
+        if started is None:
+            return None
+        authors = github_read.github_identity.configured_bot_logins()
+        for comment in reversed(anchor_discussion(session["issue"])["comments"]):
+            body = comment.get("body") or ""
+            posted = recorded_time(comment.get("created_at"))
+            if ((comment.get("user") or {}).get("login") in authors and posted and posted >= started
+                    and explicit_session(body, session["session_id"])
+                    and re.search(r"(?im)^(?:#{1,6}\s+)?(?:(?:Lead|Explicit)\s+)?handoff\b", body)
+                    and not re.match(r"(?i)^Claimed by\b", body.strip())):
+                return comment["html_url"]
+        return None
 
     return {"owner_review": owner_review, "client_release": lambda repo: acceptance().read_client_release(repo),
-            "production": production, "anchor_response": anchor_response,
+            "production": production, "anchor_response": lambda issue: anchor_note(anchor_discussion(issue)),
+            "lead_handoff": lead_handoff,
             "checks": lambda repo, number: github_read.pull_request_checks(reader(), repo, number)}
 
 
@@ -745,7 +787,8 @@ def main() -> int:
     with context:
         sources = collect({"watch": read_watch, **service_readers})
         sources.update(collect(build_readers(args, sources["watch"])))
-        sources["primary"] = read_source(lambda: primary_reads(sources["next"], sources["sessions"].get("sessions", []), **primary_readers(args)), None)
+        sources["primary"] = read_source(lambda: primary_reads(sources["next"], sources["sessions"].get("sessions", []),
+                                                             **primary_readers(args), roles=tuple(args.role)), None)
         output = digest(sources, full=args.full, roles=tuple(args.role))
         if producer or args.fresh:
             usage = github_read.shared_query_usage() if unavailable is None else {"reused": 0, "oldest_age_seconds": 0, "unavailable": 1}
