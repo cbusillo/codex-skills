@@ -86,13 +86,102 @@ class WorktreeTests(unittest.TestCase):
         self.assertNotIn(f"refs/heads/work/{task}", self.git("for-each-ref", "--format=%(refname)").splitlines())
         self.assertEqual(self.git("rev-parse", "HEAD"), self.source_head)
 
+    def test_task_only_creation_preserves_foreign_evidence_trees_and_shared_inputs(self) -> None:
+        for managed in (False, True):
+            with self.subTest(managed=managed):
+                task = f"owned-{managed}"
+                root = self.base / "tasks"
+                evidence = self.base / "task-evidence"
+                retained = self.base / "retained"
+                helper = self.base / "host"
+                self.settings({"root": str(root), "evidenceRoot": str(evidence), "retainedRoot": str(retained),
+                               **({"hostHelper": str(helper)} if managed else {})})
+                helper.write_text(f"#!{sys.executable}\nimport sys\nfrom pathlib import Path\n"
+                                  f"sys.path.insert(0, {str(SCRIPT.parent)!r})\nimport dev_worktree\n"
+                                  f"print(dev_worktree.create(*sys.argv[1:], Path({str(root)!r})))\n")
+                helper.chmod(0o700)
+                leaves = [evidence / self.repo.name / f"foreign-{managed}",
+                          evidence / "other-repository" / f"foreign-{managed}",
+                          retained / "recovery" / self.repo.name / f"kept-{managed}"]
+                for leaf in leaves:
+                    leaf.mkdir(parents=True)
+                    (leaf / "input").write_text("foreign custody")
+                    os.utime(leaf / "input", (0, 0))
+                    os.utime(leaf, (0, 0))
+                sibling = root / self.repo.name / f"active-{managed}"
+                self.git("worktree", "add", "-q", "--lock", "--reason", "active owner",
+                         "-b", f"work/active-{managed}", str(sibling), self.initial)
+                stray = sibling.parent / f"stray-{managed}"
+                stray.mkdir()
+                shared = self.base / f"shared-{managed}"
+                shared.write_text("shared input")
+                link = evidence / self.repo.name / f"shared-{managed}"
+                link.symlink_to(shared)
+                os.utime(link, (0, 0), follow_symlinks=False)
+                result = self.run_helper("--task-only", self.repo, task, self.initial)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                destination = root / self.repo.name / task
+                self.assertEqual(Path(result.stdout.strip()), destination)
+                self.assertEqual(self.git("rev-parse", "HEAD", repo=destination), self.initial)
+                self.assertIn(str(evidence / self.repo.name / task), result.stderr)
+                for leaf in leaves:
+                    self.assertEqual((leaf / "input").read_text(), "foreign custody")
+                self.assertTrue(stray.is_dir())
+                self.assertEqual(self.git("rev-parse", "HEAD", repo=sibling), self.initial)
+                self.assertTrue(link.is_symlink())
+                self.assertEqual(link.read_text(), "shared input")
+
+    def test_invalid_task_only_requests_refuse_before_foreign_housekeeping_or_host_effects(self) -> None:
+        root = self.base / "tasks"
+        evidence = self.base / "task-evidence"
+        host = self.base / "host"
+        effect = self.base / "host-effect"
+        host.write_text(f"#!{sys.executable}\nfrom pathlib import Path\nPath({str(effect)!r}).touch()\n")
+        host.chmod(0o700)
+        requests = [
+            ("--task-only",), ("--task-only", str(self.repo), "task"),
+            ("--task-only", "retire", "--dry-run", str(self.repo)),
+            ("--task-only", "sweep-evidence", "--apply", "extra"),
+            ("--task-only", "--task-only", str(self.repo), "HEAD"),
+            (str(self.repo), "task", "--task-only"),
+            (str(self.repo), "--task-only", "HEAD"),
+            (str(self.repo), "task", "HEAD", "--task-only"),
+        ]
+        for managed in (False, True):
+            self.settings({"root": str(root), "evidenceRoot": str(evidence),
+                           **({"hostHelper": str(host)} if managed else {})})
+            for index, request in enumerate(requests):
+                with self.subTest(managed=managed, request=request):
+                    foreign = evidence / "foreign" / f"old-{managed}-{index}"
+                    foreign.mkdir(parents=True)
+                    os.utime(foreign, (0, 0))
+                    result = self.run_helper(*request)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertTrue(foreign.is_dir(), result.stderr)
+                    self.assertFalse(effect.exists())
+                    self.assertFalse(root.exists())
+
+    def test_task_only_keeps_destination_and_host_delegation_guards(self) -> None:
+        root = self.base / "tasks"
+        self.settings({"root": str(root)})
+        destination = root / self.repo.name / "task"
+        destination.mkdir(parents=True)
+        (destination / "input").write_text("foreign destination")
+        self.assert_refused(self.run_helper("--task-only", self.repo, "task", self.initial))
+        self.assertEqual((destination / "input").read_text(), "foreign destination")
+        self.settings({"root": str(root), "hostHelper": str(SCRIPT)})
+        self.assert_refused(self.run_helper("--task-only", self.repo, "other", self.initial), task="other")
+        self.settings({"root": str(root), "hostHelper": str(self.base / "missing-host")})
+        self.assert_refused(self.run_helper("--task-only", self.repo, "other", self.initial), task="other")
+        self.assertFalse((root / self.repo.name / "other").exists())
+
     def test_creation_retires_finished_work_before_portable_or_host_creation(self) -> None:
         for helper in (None, self.base / "host"):
             events = []
             with mock.patch.dict(dev_worktree.os.environ, self.env, clear=True), \
                     mock.patch.object(dev_worktree, "configuration", return_value=(self.base, helper)), \
                     mock.patch.object(dev_worktree, "retire_finished", side_effect=lambda *_: events.append("retire")), \
-                    mock.patch.object(dev_worktree, "sweep_evidence", side_effect=lambda *_: events.append("evidence")), \
+                    mock.patch.object(dev_worktree, "sweep_evidence", side_effect=lambda *_, **_kwargs: events.append("evidence")), \
                     mock.patch.object(dev_worktree, "refresh_primary", side_effect=lambda *_: events.append("refresh")), \
                     mock.patch.object(dev_worktree, "create", side_effect=lambda *_: events.append("create")), \
                     mock.patch.object(dev_worktree.os, "execve", side_effect=lambda *_: events.append("create")):

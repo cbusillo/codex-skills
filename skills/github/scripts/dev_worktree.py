@@ -116,13 +116,18 @@ def host_environment(args: list[str]) -> dict[str, str]:
     return environment
 
 
-def sweep_evidence(repo: Path, task: str) -> None:
+def report_artifact_roots(repo: Path, task: str) -> None:
+    evidence, retained = artifact_roots()
+    name = Path(git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir")).parent.name
+    print(f"Task evidence: {evidence / name / task}; retained root: {retained}. "
+          "See skills/github/references/worktrees.md for retention.", file=sys.stderr)
+
+
+def sweep_evidence(repo: Path, task: str, *, expire: bool = True) -> None:
     try:
-        evidence, retained = artifact_roots()
-        name = Path(git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir")).parent.name
-        print(f"Task evidence: {evidence / name / task}; retained root: {retained}. "
-              "See skills/github/references/worktrees.md for retention.", file=sys.stderr)
-        sweep(apply=True, budget_seconds=5)
+        report_artifact_roots(repo, task)
+        if expire:
+            sweep(apply=True, budget_seconds=5)
     except (ImportError, OSError, ValueError, subprocess.CalledProcessError) as exc:
         print(f"dev-worktree: evidence sweep unavailable; creation continues: {exc}", file=sys.stderr)
 
@@ -273,9 +278,16 @@ def create(repo_arg: str, task: str, start: str, root: Path) -> Path:
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     if args in (["--help"], ["-h"]):
-        print(f"Usage: dev-worktree REPOSITORY TASK-SLUG START-POINT\n       dev-worktree retire [--dry-run] [--offline-only] PATH\n       dev-worktree sweep-evidence [--apply]\nConfig: ~/{DEFAULT_CONFIG_RELATIVE} (override: DEV_WORKTREE_CONFIG)\nSee skills/github/references/worktrees.md for host integration and cleanup.")
+        print(f"Usage: dev-worktree [--task-only] REPOSITORY TASK-SLUG START-POINT\n       dev-worktree retire [--dry-run] [--offline-only] PATH\n       dev-worktree sweep-evidence [--apply]\nConfig: ~/{DEFAULT_CONFIG_RELATIVE} (override: DEV_WORKTREE_CONFIG)\nSee skills/github/references/worktrees.md for host integration and cleanup.")
         return 0
     try:
+        if "--task-only" in args[1:]:
+            raise Refused("--task-only must appear once before creation arguments.")
+        task_only = args[:1] == ["--task-only"]
+        if task_only:
+            args = args[1:]
+            if len(args) != 3 or args[0] in {"retire", "sweep-evidence"} or args[0].startswith("-"):
+                raise Refused("Usage: dev-worktree --task-only REPOSITORY TASK-SLUG START-POINT")
         if args[:1] == ["sweep-evidence"]:
             parser = argparse.ArgumentParser(prog="dev-worktree sweep-evidence")
             parser.add_argument("--apply", action="store_true")
@@ -295,8 +307,9 @@ def main(argv: list[str] | None = None) -> int:
             return retire_task(retirement.path, dry_run=retirement.dry_run, offline_only=retirement.offline_only)
         if len(args) == 3 and args[0] != "retire":
             refresh_primary(Path(args[0]))
-            retire_finished(Path(args[0]))
-            sweep_evidence(Path(args[0]), args[1])
+            if not task_only:
+                retire_finished(Path(args[0]))
+            sweep_evidence(Path(args[0]), args[1], expire=not task_only)
         if helper:
             os.execve(str(helper), [str(helper), *args], host_environment(args))
         if len(args) != 3 or args[0] == "retire":

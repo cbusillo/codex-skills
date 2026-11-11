@@ -635,7 +635,7 @@ additional affected modules:
 | --- | --- |
 | Command approval policy | `hooks/test_command_policy_hook.py`; command-policy simulator above |
 | Claims and ready handoffs | `skills/github/scripts/test_gh_plan_claim.py`, `test_github_plan_claim_log.py`, `test_ready_handoff.py`, `test_client_handoff.py` |
-| Worktree creation and retirement | `skills/github/scripts/test_dev_worktree.py`, `test_git_task_worktree.py`, `test_landed_worktrees.py` |
+| Worktree creation and retirement | `skills/github/scripts/test_dev_worktree.py`, `test_git_task_worktree.py`, `test_landed_worktrees.py`, `test_task_evidence_gc.py` |
 | Launchplane route authority | `skills/launchplane/scripts/test_launchplane_route_authority.py` |
 
 Paths after a semicolon start a new directory; other basenames share the first

@@ -8,11 +8,25 @@ catalog's helper by its absolute path; no PATH installation is needed:
 <catalog>/skills/github/scripts/dev-worktree /absolute/repository task-slug origin/main
 ```
 
+When the task explicitly preserves foreign worktrees or evidence, use the
+scoped creation route:
+
+```sh
+<catalog>/skills/github/scripts/dev-worktree --task-only /absolute/repository task-slug origin/main
+```
+
+Put `--task-only` before the repository argument. This creates the requested
+tree without the repository retirement, stray cleanup or global evidence expiry
+pass. Primary refresh, validated evidence-path reporting and the configured
+host's storage and creation guards still run. Exact retirement uses the
+qualified `retire` route below. Ordinary creation retains its automatic
+housekeeping; deliberately broader passes use the explicit commands below.
+
 Here `<catalog>` is the checkout containing the loaded skills, not a literal
 directory name. The command creates `work/task-slug` at the explicit starting
 commit and prints the new path. Before creation it refreshes the primary
 default-branch checkout using the [checkout refresh rules](post-merge-checkouts.md),
-then runs the guarded
+then, unless `--task-only` was selected, runs the guarded
 `landed_worktrees.py --all --apply` for that repository, reporting retired and
 kept trees with reasons on stderr. Unavailable cleanup evidence keeps trees and
 creation continues; it never weakens a retirement guard. A per-start
@@ -72,7 +86,7 @@ and disjoint from retained/worktree roots.
 Optional `evidenceMount` requires a mounted ancestor of the evidence root.
 Verify external storage identity/mounts through the host storage guard before writing either root; never create a fallback mount directory.
 
-After retirement, creation expires evidence older than 30 quiet days, stopping
+After retirement, ordinary creation expires evidence older than 30 quiet days, stopping
 new units after five seconds; a started unit may take longer and finishes. Failures keep evidence
 and report without blocking creation. Missing roots are empty sweeps; idle
 computers keep expired evidence until new work starts.
@@ -182,7 +196,7 @@ checks its current, legacy or missing registration lock and retains foreign
 locks. Portable foreign locks remain holds. Physical publication, contents,
 live-use and IDE checks still apply.
 
-Creation checks each registered linked worktree through `landed_worktrees.py`.
+Ordinary creation checks each registered linked worktree through `landed_worktrees.py`.
 The same pass previews or removes empty unregistered folders and moves recognizable
 stray result files older than two hours into task evidence, including loose results
 beside worktrees. Existing evidence expiry owns their eventual deletion.
