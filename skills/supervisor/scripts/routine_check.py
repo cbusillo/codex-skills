@@ -249,10 +249,13 @@ def refused_read(row: dict) -> str:
 def queue_rows(selection: dict) -> list[tuple[str, dict]]:
     rows: dict[str, tuple[str, dict]] = {}
     actors = supervisor_actors()
-    for field in ("candidates", "excluded", "needs_status"):
+    for field in ("candidates", "excluded", "needs_status", "underway", "waiting", "pr_followthrough"):
         for row in selection.get(field, []):
             queue = row.get("queue", {})
             if str(row.get("state", "")).casefold() != "open":
+                continue
+            if queue.get("next_actor_session_state") in {"expired", "unknown"}:
+                rows[pointer(row)] = ("SUPERVISOR_ACTION", row)
                 continue
             if field == "excluded" and row.get("exclusion") not in {"assigned_elsewhere", "agent_assignment_unresolved"}:
                 continue
@@ -481,6 +484,10 @@ def digest(sources: dict[str, dict], *, full: bool = False, roles: tuple[str, ..
         age = now - recorded if recorded else None
         request = (row["queue"].get("next_action") or row["queue"].get("reason") or "").splitlines()[0:1]
         detail = ''.join(request)[:180]
+        session_state = row["queue"].get("next_actor_session_state")
+        if session_state in {"expired", "unknown"}:
+            owner = "UNOWNED" if session_state == "expired" else "UNKNOWN"
+            detail = f"{owner} next_actor={row['queue']['next_actor']} lease={session_state}; {detail}"
         if kind == "PRODUCTION_READ_REFUSED":
             detail = f"read=\"{refused_read(row)[:400]}\" next_actor={row['queue']['next_actor']} route={REFUSED_READ_ROUTE}"
         lines.append(noted(f"{kind} {pointer(row)} age={age_text(age) if age else 'UNKNOWN'}: {detail}{routing}", row))

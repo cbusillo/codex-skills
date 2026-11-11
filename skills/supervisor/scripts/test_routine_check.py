@@ -1059,6 +1059,28 @@ class PrimaryReadTests(unittest.TestCase):
         self.assertTrue([line for line in lines if line.startswith("SUPERVISOR_ACTION") and "age=UNKNOWN" in line])
         self.assertTrue([line for line in lines if line.startswith("ERROR supervisor_action")])
 
+    def test_departed_session_actor_surfaces_even_behind_wait_or_pr_handoff(self) -> None:
+        import github_plan_lease
+
+        actor = 'agent:01970242-7941-7f0c-b461-16aa5723fb52'
+        for state in (github_plan_lease.EXPIRED, github_plan_lease.UNKNOWN, github_plan_lease.LIVE):
+            for field in ('candidates', 'needs_status', 'excluded', 'underway', 'waiting', 'pr_followthrough'):
+                row = queue_row(5, actor, 'Qualify the retained source', recorded='2026-11-08T15:42:00+00:00')
+                row['queue']['next_actor_session_state'] = state
+                if field == 'excluded':
+                    row['exclusion'] = 'blocked_by_open_dependency'
+                if field in {'waiting', 'underway'}:
+                    row['queue']['state'] = field
+                if field == 'pr_followthrough':
+                    row['record_type'] = 'pull_request'
+                for role in routine_check.SUPERVISOR_ROLES:
+                    output = routine_check.digest({'next': {field: [row]}}, roles=(role,))
+                    self.assertEqual('SUPERVISOR_ACTION ' + row['url'] in output, state != github_plan_lease.LIVE)
+                    if state != github_plan_lease.LIVE:
+                        self.assertIn(actor, output)
+                        self.assertIn('UNOWNED' if state == github_plan_lease.EXPIRED else 'UNKNOWN', output)
+                        self.assertIn('Qualify the retained source', output)
+
     def test_refused_production_read_is_routed_with_its_read_and_repeats_until_settled(self) -> None:
         read = "health payload of owner/app production over the private operations path"
         row = queue_row(190, "agent:supervisor", f"Production read refused: {read}", recorded="2026-11-08T15:42:00+00:00")

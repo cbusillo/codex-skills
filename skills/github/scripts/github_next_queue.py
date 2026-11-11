@@ -196,6 +196,11 @@ def classify(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[st
     except ValueError:
         actor = None
     row["next_actor"] = actor
+    if actor and actor.startswith("agent:") and github_plan_claim.NATIVE_SESSION_ID.fullmatch(actor[6:]):
+        try:
+            row["next_actor_session_state"] = github_plan_lease.state(actor[6:].casefold())
+        except (OSError, ValueError) as exc:
+            row.update(next_actor_session_state=github_plan_lease.UNKNOWN, detail=str(exc))
     pull = next((pull for pull in ownership.get("pulls", []) if pull["number"] == item["number"]), None) if item.get("record_type") == "pull_request" else None
     projected: dict[str, Any] = {}
     if isinstance(pull, dict):
@@ -231,6 +236,9 @@ def classify(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[st
     if conflicts or artifacts:
         return {**row, "state": "underway", "reason": "existing_claim_or_artifact",
                 "ownership_evidence": [*conflicts, *artifacts], "certainty": "current_or_stale"}
+    if row.get("next_actor_session_state") in {github_plan_lease.EXPIRED, github_plan_lease.UNKNOWN}:
+        return {**row, "state": "needs_status", "reason": f"next_actor_session_{row['next_actor_session_state']}",
+                "ownership_evidence": facts["recipients"]}
     if facts["recipients"]:
         return {**row, "state": "needs_status", "reason": "named_recipient_requires_reconciliation",
                 "ownership_evidence": facts["recipients"], "recorded_next_action": row["next_action"],

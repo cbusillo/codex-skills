@@ -6807,7 +6807,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     discoveries.extend(pull_items)
     NEXT_READS.start_phase("ownership")
     queue_context = annotate_next_queue(list({(entry["repo"].casefold(), entry["number"]): entry
-        for entry in [*ranked["candidates"], *discoveries, *decision_wait_items(ranked["excluded"])]}.values()), args)
+        for entry in [*ranked["candidates"], *discoveries, *ranked["excluded"]]}.values()), args)
     for item in pull_items:
         discussion = item.get("discussion") or {}
         discussion.update(ancestry_complete=True, parents=[])

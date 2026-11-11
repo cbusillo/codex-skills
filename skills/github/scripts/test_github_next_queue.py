@@ -33,6 +33,40 @@ def classify(row: dict, observed: dict | None = None) -> dict:
     return queue.classify(row, observed or evidence(), trusted={'owner', 'bot'})
 
 
+def test_session_actor_uses_current_lease_without_changing_waits_or_custody() -> None:
+    session = '01970242-7941-7f0c-b461-16aa5723fb52'
+    for state in (lease.LIVE, lease.EXPIRED, lease.UNKNOWN):
+        with patch.object(lease, 'state', return_value=state):
+            row = item(actor=f'agent:{session}')
+            result = classify(row)
+            assert result['next_actor_session_state'] == state
+            assert result['state'] == 'needs_status'
+            if state != lease.LIVE:
+                assert result['reason'] == f'next_actor_session_{state}'
+            row['discussion']['body'] = row['discussion']['body'].replace(
+                wait.marker(wait.reviewed(evidence='Fixture request reviewed; no current holds')),
+                wait.marker(wait.reviewed(evidence='Owner has not finished testing',
+                    waiting_for='Owner tests the preview', ends_when='Owner reports results')))
+            result = classify(row)
+            assert result['state'] == 'waiting'
+            assert result['next_actor_session_state'] == state
+            assert result['wait']['state'] == 'waiting'
+            row = item(actor=f'agent:{session}')
+            observed = evidence()
+            observed['pulls'] = [{'number': 80, 'state': 'open', 'title': 'Export', 'body': 'Closes #1', 'head': {'ref': 'work/source'}}]
+            result = classify(row, observed)
+            assert result['state'] == 'underway'
+            assert result['next_actor_session_state'] == state
+            assert result['ownership_evidence']
+    with patch.object(lease, 'state', side_effect=OSError('lease store unreadable')):
+        result = classify(item(actor=f'agent:{session}'))
+        assert result['next_actor_session_state'] == lease.UNKNOWN
+        assert result['reason'] == 'next_actor_session_unknown'
+        assert 'lease store unreadable' in result['detail']
+    with patch.object(lease, 'state', side_effect=AssertionError('roles have no session lease')):
+        assert classify(item(actor='agent:supervisor-tooling'))['state'] == 'available'
+
+
 def test_empty_status_fields_do_not_consume_following_fields() -> None:
     row = item()
     status = 'Waiting for: Owner observation\nLast verified: \nNext action: owner/repo#7\nBlocked by: \nEvidence: retained logs'
@@ -40,6 +74,24 @@ def test_empty_status_fields_do_not_consume_following_fields() -> None:
     assert not records[0]['last_verified']
     checked = direction.milestone_wait_evidence(row, 'Blocked by: \nNext action: owner/repo#7', [])
     assert not checked['requested']
+
+
+def test_global_next_checks_session_actor_on_blocked_work() -> None:
+    root = cli.track('someone/direction', 1, 'First')
+    held = cli.global_issue('someone/product', 2,
+        body='## Current Status\nNext actor: agent:01970242-7941-7f0c-b461-16aa5723fb52\nNext action: Qualify source.')
+    blocker = cli.global_issue('someone/product', 3)
+    edges = {('someone/direction', 1): cli.relationships(sub_issues=[held]),
+             ('someone/product', 2): cli.relationships(blocked_by=[blocker])}
+    with cli.global_fixture([root], [held, blocker], edges, clear_waits=[held, blocker]) as (module, result, _reads):
+        with patch.multiple(module, annotate_next_queue=module.real_annotate_next_queue,
+                            read_queue_ownership=lambda _: evidence(), next_status_body_time=lambda *_: None,
+                            wait_authors=lambda _: {'someone'}), patch.object(lease, 'state', return_value=lease.EXPIRED):
+            module.cmd_next(cli.next_args())
+        row = next(row for row in result['excluded'] if row['repo'] == held['repo'] and row['number'] == held['number'])
+        assert row['exclusion'] == 'blocked_by_open_dependency'
+        assert row['queue']['next_actor_session_state'] == lease.EXPIRED
+        assert held['number'] not in [row['number'] for row in result['available_candidates']]
 
 
 def test_current_status_accepts_trusted_discussion_and_formatted_fields() -> None:
@@ -419,7 +471,8 @@ def test_next_actor_routes_work_without_prose_inference() -> None:
     for actor in ("agent:ODOO20LEAD2-1027", "agent:01970242-7941-7f0c-b461-16aa5723fb52"):
         row = item(actor=actor)
         row["discussion"]["body"] += "\nTrial token: ODOO20LEAD2-1027.\n"
-        result = classify(row)
+        with patch.object(lease, 'state', return_value=lease.LIVE):
+            result = classify(row)
         assert result["state"] == "needs_status"
         assert result["next_actor"] == actor
         assert result["ownership_evidence"][0]["source"] == "recorded_recipient"
