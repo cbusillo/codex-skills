@@ -266,6 +266,13 @@ class NativeQueueTests(unittest.TestCase):
             fixture.queue_items = [{"id": "pending", "clientUserMessageId": "client", "input": []}]
             with self.assertRaises(ValueError):
                 asyncio.run(NATIVE.prove_end(fixture.entry, require_verdict=False))
+            fixture.queue_items = []
+            fixture.native_state = "notLoaded"
+            with CLOSURE.ownership(fixture.session, create=True):
+                CLOSURE.set_action_pending(fixture.session, True, method="opaque-fixture-action", home=fixture.home)
+            with patch.object(fixture.release, "recovery_claims"):
+                closed = fixture.release.record_recovery(fixture.log, {**fixture.entry, "recovery": {"kind": "gone"}}, "supervisor")
+            self.assertNotIn("verdict_at", closed)
             self.assertFalse(fixture.mutations)
 
     def test_native_timeout_names_the_stalled_read(self) -> None:
