@@ -1,10 +1,11 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["jsonschema==4.26.0", "rfc3339-validator==0.1.4"]
 # ///
 from __future__ import annotations
 
 import argparse
+import hashlib
 import http.client
 import json
 import re
@@ -69,6 +70,11 @@ def add_parser(subparsers: Any) -> None:
             "--receiver-operation-id",
             help="Original receiver operation to assess for capacity.",
         )
+        if mode == "dry-run":
+            parser.add_argument(
+                "--custody-evidence-file",
+                help="Request custody evidence without a receiver and save it to a new private file outside the repository.",
+            )
         if mode != "dry-run":
             for flag in ("--expected-plan-digest", "--idempotency-key"):
                 parser.add_argument(flag, required=True)
@@ -85,6 +91,17 @@ def intent(h: Any, args: argparse.Namespace) -> tuple[dict[str, str], dict[str, 
         "mode": mode,
     }
     body: dict[str, object] = {"mode": mode}
+    if getattr(args, "custody_evidence_file", None):
+        from launchplane_website_indexing import destination
+
+        if (
+            args.receiver_operation_id is not None
+            or request["product"] != args.product
+            or request["operation_id"] != args.operation_id
+        ):
+            raise ValueError("custody_evidence_receiver_unsupported")
+        destination(h, args.custody_evidence_file)
+        body["include_evidence"] = True
     if args.receiver_operation_id is not None:
         receiver = h.public_identifier(args.receiver_operation_id)
         if receiver != args.receiver_operation_id or len(receiver) > 200:
@@ -134,7 +151,12 @@ def optional_identifier(h: Any, value: object) -> str:
 def project_readback(h: Any, value: object) -> dict[str, str]:
     result = {}
     for predicate, outcome in h._require_dict(value).items():
-        if not isinstance(outcome, str) or outcome not in {"pass", "fail", "unavailable", "skipped"}:
+        if not isinstance(outcome, str) or outcome not in {
+            "pass",
+            "fail",
+            "unavailable",
+            "skipped",
+        }:
             raise ValueError("invalid_response")
         result[h.public_identifier(predicate)] = outcome
     return result
@@ -290,6 +312,89 @@ def project(h: Any, response: object, request: dict[str, str]) -> dict[str, obje
     return projected
 
 
+def without_nulls(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: without_nulls(item) for key, item in value.items() if item is not None}
+    if isinstance(value, list):
+        return [without_nulls(item) for item in value]
+    return value
+
+
+def retain_custody(h: Any, response: dict[str, Any], request: dict[str, str], path: str) -> dict[str, object]:
+    from jsonschema import Draft202012Validator, FormatChecker, validators
+    from launchplane_testing_state import write_staged
+
+    schema_path = Path(__file__).resolve().parent.parent / "references" / "candidate-custody-evidence.schema.json"
+    packet = response.get("evidence")
+    checker = Draft202012Validator.TYPE_CHECKER.redefine(
+        "integer",
+        lambda _checker, value: type(value) is int and -(2**63) <= value < 2**63,
+    )
+    validator = validators.extend(Draft202012Validator, type_checker=checker)(
+        json.loads(schema_path.read_text()), format_checker=FormatChecker()
+    )
+    if not isinstance(packet, dict) or not validator.is_valid(packet):
+        raise ValueError("invalid_custody_evidence")
+    trace = response.get("trace_id")
+    if (
+        not isinstance(trace, str)
+        or not trace
+        or h.public_identifier(trace) != trace
+        or len(trace) > 200
+        or response.get("product") != request["product"]
+        or response.get("operation_id") != request["operation_id"]
+        or packet.get("plan_sha256") != response.get("plan_sha256")
+        or not packet.get("completed_at")
+    ):
+        raise ValueError("invalid_custody_binding")
+    canonical = json.dumps(
+        without_nulls({key: value for key, value in packet.items() if key != "packet_sha256"}),
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode()
+    packet_hash = hashlib.sha256(canonical).hexdigest()
+    if packet.get("packet_sha256") != packet_hash:
+        raise ValueError("invalid_custody_hash")
+    saved = {key: response[key] for key in ("product", "operation_id", "trace_id", "plan_sha256", "status")}
+    saved["evidence"] = packet
+    saved["release_review"] = project(h, response, request)
+    reference = str(h.path_with_resolved_parent(Path(path).expanduser()))
+    public_reference = h.public_identifier(reference, pattern=re.compile(r"/[^\x00-\x1f\x7f]+"))
+    if public_reference != reference:
+        raise ValueError("invalid_custody_reference")
+    summary = {
+        "status": response["status"],
+        "plan_sha256": response["plan_sha256"],
+        "custody_evidence_file": public_reference,
+        "packet_sha256": packet_hash,
+        "outcomes": custody_outcomes(packet),
+    }
+    h.assert_public_safe_shape(summary)
+    write_staged(h, path, saved)
+    summary["file_sha256"] = hashlib.sha256(Path(reference).read_bytes()).hexdigest()
+    return summary
+
+
+def custody_outcomes(value: object) -> dict[str, int]:
+    counts = dict.fromkeys(("pass", "fail", "unavailable", "not_reached", "not_applicable"), 0)
+
+    def collect(node: Any) -> None:
+        if isinstance(node, dict):
+            for key, item in node.items():
+                if key == "checks":
+                    for outcome in item.values():
+                        counts[outcome] += 1
+                else:
+                    collect(item)
+        elif isinstance(node, list):
+            for item in node:
+                collect(item)
+
+    collect(value)
+    return counts
+
+
 def reviewed(evidence_file: str, request: dict[str, str]) -> bool:
     try:
         evidence = json.loads(Path(evidence_file).read_text())
@@ -356,8 +461,11 @@ def execute(h: Any, args: argparse.Namespace) -> int:
             body=body,
             timeout=args.timeout,
             idempotency_key=getattr(args, "idempotency_key", ""),
+            **({"no_store": True} if body.get("include_evidence") else {}),
         )
         result = project(h, response, request)
+        if getattr(args, "custody_evidence_file", None):
+            result = retain_custody(h, response, request, args.custody_evidence_file)
         status = "held" if result["status"] == "held" else "ok"
         return finish(
             h,

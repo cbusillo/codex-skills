@@ -1,0 +1,1296 @@
+{
+  "$defs": {
+    "ConsumerEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "checks": {
+          "additionalProperties": {
+            "enum": [
+              "pass",
+              "fail",
+              "unavailable",
+              "not_reached",
+              "not_applicable"
+            ],
+            "type": "string"
+          },
+          "propertyNames": {
+            "enum": [
+              "acquisition",
+              "target_acquisition",
+              "conversion_acquisition",
+              "cached_acquisition",
+              "identity",
+              "placement",
+              "complete",
+              "source_scope",
+              "root",
+              "includes",
+              "input_precedence",
+              "exact_environment",
+              "default_absence",
+              "stable_documents",
+              "conversion_parse",
+              "root_path",
+              "include_paths",
+              "document_shape",
+              "default_inputs",
+              "default_acquisition",
+              "environment_identity",
+              "compose_identity_present",
+              "application_identity",
+              "schedules_acquisition",
+              "own_candidate_excluded",
+              "source_fields_present",
+              "source_fields_empty",
+              "source_type",
+              "env_shape",
+              "mounts_empty",
+              "command_present",
+              "command_empty",
+              "backups_empty",
+              "domains_empty",
+              "deployments_shape",
+              "deployments_terminal",
+              "schedules_empty",
+              "cached_project_absent",
+              "named_storage",
+              "volume_definitions",
+              "volume_definition",
+              "volume_identity",
+              "standard_environment",
+              "allowed_inputs",
+              "unique_inputs",
+              "interpolation",
+              "supported_name",
+              "resolution",
+              "volume_reference",
+              "environment_reference",
+              "mounts_shape",
+              "mount_reference",
+              "provider_inventory",
+              "native_inventory",
+              "lifecycle_acquisition",
+              "lifecycle_usable",
+              "physical",
+              "source_preserved",
+              "owned",
+              "mounts",
+              "web_command",
+              "runtime_identity",
+              "web_data_mount",
+              "web_gate",
+              "web_process",
+              "container_inventory",
+              "container_qualification",
+              "foreign_reference"
+            ]
+          },
+          "title": "Checks",
+          "type": "object"
+        },
+        "kind": {
+          "enum": [
+            "project",
+            "environment",
+            "compose",
+            "application",
+            "postgres",
+            "mysql",
+            "mariadb",
+            "mongo",
+            "redis",
+            "libsql"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "record_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[a-f0-9]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Record Sha256"
+        },
+        "payload_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[a-f0-9]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Payload Sha256"
+        },
+        "server_identity": {
+          "default": "missing",
+          "enum": [
+            "missing",
+            "local",
+            "remote",
+            "malformed"
+          ],
+          "title": "Server Identity",
+          "type": "string"
+        },
+        "server_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[a-f0-9]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Server Sha256"
+        },
+        "endpoint_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[a-f0-9]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Endpoint Sha256"
+        },
+        "conversion_shape": {
+          "default": "missing",
+          "enum": [
+            "missing",
+            "null",
+            "mapping",
+            "list",
+            "string",
+            "boolean",
+            "number",
+            "other"
+          ],
+          "title": "Conversion Shape",
+          "type": "string"
+        },
+        "converted_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[a-f0-9]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Converted Sha256"
+        },
+        "source_path_shape": {
+          "default": "missing",
+          "enum": [
+            "missing",
+            "null",
+            "mapping",
+            "list",
+            "string",
+            "boolean",
+            "number",
+            "other"
+          ],
+          "title": "Source Path Shape",
+          "type": "string"
+        },
+        "include_shape": {
+          "default": "missing",
+          "enum": [
+            "missing",
+            "null",
+            "mapping",
+            "list",
+            "string",
+            "boolean",
+            "number",
+            "other"
+          ],
+          "title": "Include Shape",
+          "type": "string"
+        },
+        "include_count": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Include Count"
+        },
+        "source_type": {
+          "default": "missing",
+          "enum": [
+            "missing",
+            "null",
+            "empty",
+            "raw",
+            "git",
+            "github",
+            "gitlab",
+            "bitbucket",
+            "gitea",
+            "other"
+          ],
+          "title": "Source Type",
+          "type": "string"
+        },
+        "cached_endpoint_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[a-f0-9]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cached Endpoint Sha256"
+        },
+        "documents": {
+          "items": {
+            "$ref": "#/$defs/VolumeDocumentEvidence"
+          },
+          "title": "Documents",
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "ConsumerEvidence",
+      "type": "object"
+    },
+    "ContainerEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "checks": {
+          "additionalProperties": {
+            "enum": [
+              "pass",
+              "fail",
+              "unavailable",
+              "not_reached",
+              "not_applicable"
+            ],
+            "type": "string"
+          },
+          "propertyNames": {
+            "enum": [
+              "acquisition",
+              "target_acquisition",
+              "conversion_acquisition",
+              "cached_acquisition",
+              "identity",
+              "placement",
+              "complete",
+              "source_scope",
+              "root",
+              "includes",
+              "input_precedence",
+              "exact_environment",
+              "default_absence",
+              "stable_documents",
+              "conversion_parse",
+              "root_path",
+              "include_paths",
+              "document_shape",
+              "default_inputs",
+              "default_acquisition",
+              "environment_identity",
+              "compose_identity_present",
+              "application_identity",
+              "schedules_acquisition",
+              "own_candidate_excluded",
+              "source_fields_present",
+              "source_fields_empty",
+              "source_type",
+              "env_shape",
+              "mounts_empty",
+              "command_present",
+              "command_empty",
+              "backups_empty",
+              "domains_empty",
+              "deployments_shape",
+              "deployments_terminal",
+              "schedules_empty",
+              "cached_project_absent",
+              "named_storage",
+              "volume_definitions",
+              "volume_definition",
+              "volume_identity",
+              "standard_environment",
+              "allowed_inputs",
+              "unique_inputs",
+              "interpolation",
+              "supported_name",
+              "resolution",
+              "volume_reference",
+              "environment_reference",
+              "mounts_shape",
+              "mount_reference",
+              "provider_inventory",
+              "native_inventory",
+              "lifecycle_acquisition",
+              "lifecycle_usable",
+              "physical",
+              "source_preserved",
+              "owned",
+              "mounts",
+              "web_command",
+              "runtime_identity",
+              "web_data_mount",
+              "web_gate",
+              "web_process",
+              "container_inventory",
+              "container_qualification",
+              "foreign_reference"
+            ]
+          },
+          "title": "Checks",
+          "type": "object"
+        },
+        "container_sha256": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Container Sha256",
+          "type": "string"
+        },
+        "role": {
+          "default": "unknown",
+          "enum": [
+            "web",
+            "database",
+            "script-runner",
+            "other",
+            "unknown"
+          ],
+          "title": "Role",
+          "type": "string"
+        },
+        "state": {
+          "default": "unknown",
+          "enum": [
+            "running",
+            "exited",
+            "created",
+            "dead",
+            "other",
+            "unknown"
+          ],
+          "title": "State",
+          "type": "string"
+        },
+        "volume_roles": {
+          "default": [],
+          "items": {
+            "enum": [
+              "ODOO_DB_VOLUME",
+              "ODOO_DATA_VOLUME",
+              "ODOO_LOG_VOLUME"
+            ],
+            "type": "string"
+          },
+          "title": "Volume Roles",
+          "type": "array"
+        },
+        "mounts_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[a-f0-9]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mounts Sha256"
+        }
+      },
+      "required": [
+        "container_sha256"
+      ],
+      "title": "ContainerEvidence",
+      "type": "object"
+    },
+    "LifecycleEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "checks": {
+          "additionalProperties": {
+            "enum": [
+              "pass",
+              "fail",
+              "unavailable",
+              "not_reached",
+              "not_applicable"
+            ],
+            "type": "string"
+          },
+          "propertyNames": {
+            "enum": [
+              "acquisition",
+              "target_acquisition",
+              "conversion_acquisition",
+              "cached_acquisition",
+              "identity",
+              "placement",
+              "complete",
+              "source_scope",
+              "root",
+              "includes",
+              "input_precedence",
+              "exact_environment",
+              "default_absence",
+              "stable_documents",
+              "conversion_parse",
+              "root_path",
+              "include_paths",
+              "document_shape",
+              "default_inputs",
+              "default_acquisition",
+              "environment_identity",
+              "compose_identity_present",
+              "application_identity",
+              "schedules_acquisition",
+              "own_candidate_excluded",
+              "source_fields_present",
+              "source_fields_empty",
+              "source_type",
+              "env_shape",
+              "mounts_empty",
+              "command_present",
+              "command_empty",
+              "backups_empty",
+              "domains_empty",
+              "deployments_shape",
+              "deployments_terminal",
+              "schedules_empty",
+              "cached_project_absent",
+              "named_storage",
+              "volume_definitions",
+              "volume_definition",
+              "volume_identity",
+              "standard_environment",
+              "allowed_inputs",
+              "unique_inputs",
+              "interpolation",
+              "supported_name",
+              "resolution",
+              "volume_reference",
+              "environment_reference",
+              "mounts_shape",
+              "mount_reference",
+              "provider_inventory",
+              "native_inventory",
+              "lifecycle_acquisition",
+              "lifecycle_usable",
+              "physical",
+              "source_preserved",
+              "owned",
+              "mounts",
+              "web_command",
+              "runtime_identity",
+              "web_data_mount",
+              "web_gate",
+              "web_process",
+              "container_inventory",
+              "container_qualification",
+              "foreign_reference"
+            ]
+          },
+          "title": "Checks",
+          "type": "object"
+        },
+        "snapshot_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[a-f0-9]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Snapshot Sha256"
+        },
+        "resource_binding_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[a-f0-9]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Resource Binding Sha256"
+        },
+        "physical_binding_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[a-f0-9]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Physical Binding Sha256"
+        },
+        "container_count": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Container Count"
+        },
+        "containers": {
+          "items": {
+            "$ref": "#/$defs/ContainerEvidence"
+          },
+          "title": "Containers",
+          "type": "array"
+        }
+      },
+      "title": "LifecycleEvidence",
+      "type": "object"
+    },
+    "VolumeCustodyEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "checks": {
+          "additionalProperties": {
+            "enum": [
+              "pass",
+              "fail",
+              "unavailable",
+              "not_reached",
+              "not_applicable"
+            ],
+            "type": "string"
+          },
+          "propertyNames": {
+            "enum": [
+              "acquisition",
+              "target_acquisition",
+              "conversion_acquisition",
+              "cached_acquisition",
+              "identity",
+              "placement",
+              "complete",
+              "source_scope",
+              "root",
+              "includes",
+              "input_precedence",
+              "exact_environment",
+              "default_absence",
+              "stable_documents",
+              "conversion_parse",
+              "root_path",
+              "include_paths",
+              "document_shape",
+              "default_inputs",
+              "default_acquisition",
+              "environment_identity",
+              "compose_identity_present",
+              "application_identity",
+              "schedules_acquisition",
+              "own_candidate_excluded",
+              "source_fields_present",
+              "source_fields_empty",
+              "source_type",
+              "env_shape",
+              "mounts_empty",
+              "command_present",
+              "command_empty",
+              "backups_empty",
+              "domains_empty",
+              "deployments_shape",
+              "deployments_terminal",
+              "schedules_empty",
+              "cached_project_absent",
+              "named_storage",
+              "volume_definitions",
+              "volume_definition",
+              "volume_identity",
+              "standard_environment",
+              "allowed_inputs",
+              "unique_inputs",
+              "interpolation",
+              "supported_name",
+              "resolution",
+              "volume_reference",
+              "environment_reference",
+              "mounts_shape",
+              "mount_reference",
+              "provider_inventory",
+              "native_inventory",
+              "lifecycle_acquisition",
+              "lifecycle_usable",
+              "physical",
+              "source_preserved",
+              "owned",
+              "mounts",
+              "web_command",
+              "runtime_identity",
+              "web_data_mount",
+              "web_gate",
+              "web_process",
+              "container_inventory",
+              "container_qualification",
+              "foreign_reference"
+            ]
+          },
+          "title": "Checks",
+          "type": "object"
+        },
+        "role": {
+          "enum": [
+            "ODOO_DB_VOLUME",
+            "ODOO_DATA_VOLUME",
+            "ODOO_LOG_VOLUME"
+          ],
+          "title": "Role",
+          "type": "string"
+        },
+        "name_sha256": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Name Sha256",
+          "type": "string"
+        },
+        "identity_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[a-f0-9]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Identity Sha256"
+        },
+        "engine_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[a-f0-9]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Engine Sha256"
+        },
+        "backing_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[a-f0-9]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Backing Sha256"
+        },
+        "planned_removal_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[a-f0-9]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Planned Removal Sha256"
+        },
+        "planned_snapshot_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[a-f0-9]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Planned Snapshot Sha256"
+        },
+        "planned_container_sha256": {
+          "default": [],
+          "items": {
+            "pattern": "^[a-f0-9]{64}$",
+            "type": "string"
+          },
+          "title": "Planned Container Sha256",
+          "type": "array"
+        },
+        "referenced": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Referenced"
+        },
+        "empty": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Empty"
+        },
+        "source_inputs": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Inputs"
+        },
+        "gate_unexpected": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Gate Unexpected"
+        },
+        "consumers": {
+          "items": {
+            "$ref": "#/$defs/ConsumerEvidence"
+          },
+          "title": "Consumers",
+          "type": "array"
+        }
+      },
+      "required": [
+        "role",
+        "name_sha256"
+      ],
+      "title": "VolumeCustodyEvidence",
+      "type": "object"
+    },
+    "VolumeDocumentEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "checks": {
+          "additionalProperties": {
+            "enum": [
+              "pass",
+              "fail",
+              "unavailable",
+              "not_reached",
+              "not_applicable"
+            ],
+            "type": "string"
+          },
+          "propertyNames": {
+            "enum": [
+              "acquisition",
+              "target_acquisition",
+              "conversion_acquisition",
+              "cached_acquisition",
+              "identity",
+              "placement",
+              "complete",
+              "source_scope",
+              "root",
+              "includes",
+              "input_precedence",
+              "exact_environment",
+              "default_absence",
+              "stable_documents",
+              "conversion_parse",
+              "root_path",
+              "include_paths",
+              "document_shape",
+              "default_inputs",
+              "default_acquisition",
+              "environment_identity",
+              "compose_identity_present",
+              "application_identity",
+              "schedules_acquisition",
+              "own_candidate_excluded",
+              "source_fields_present",
+              "source_fields_empty",
+              "source_type",
+              "env_shape",
+              "mounts_empty",
+              "command_present",
+              "command_empty",
+              "backups_empty",
+              "domains_empty",
+              "deployments_shape",
+              "deployments_terminal",
+              "schedules_empty",
+              "cached_project_absent",
+              "named_storage",
+              "volume_definitions",
+              "volume_definition",
+              "volume_identity",
+              "standard_environment",
+              "allowed_inputs",
+              "unique_inputs",
+              "interpolation",
+              "supported_name",
+              "resolution",
+              "volume_reference",
+              "environment_reference",
+              "mounts_shape",
+              "mount_reference",
+              "provider_inventory",
+              "native_inventory",
+              "lifecycle_acquisition",
+              "lifecycle_usable",
+              "physical",
+              "source_preserved",
+              "owned",
+              "mounts",
+              "web_command",
+              "runtime_identity",
+              "web_data_mount",
+              "web_gate",
+              "web_process",
+              "container_inventory",
+              "container_qualification",
+              "foreign_reference"
+            ]
+          },
+          "title": "Checks",
+          "type": "object"
+        },
+        "document_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[a-f0-9]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Document Sha256"
+        },
+        "resolution_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Resolution Index"
+        },
+        "path_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[a-f0-9]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Path Sha256"
+        },
+        "input_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[a-f0-9]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input Sha256"
+        },
+        "resolved_name_sha256": {
+          "default": [],
+          "items": {
+            "pattern": "^[a-f0-9]{64}$",
+            "type": "string"
+          },
+          "title": "Resolved Name Sha256",
+          "type": "array"
+        },
+        "volumes": {
+          "items": {
+            "$ref": "#/$defs/VolumeResolutionEvidence"
+          },
+          "title": "Volumes",
+          "type": "array"
+        }
+      },
+      "title": "VolumeDocumentEvidence",
+      "type": "object"
+    },
+    "VolumeResolutionEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "checks": {
+          "additionalProperties": {
+            "enum": [
+              "pass",
+              "fail",
+              "unavailable",
+              "not_reached",
+              "not_applicable"
+            ],
+            "type": "string"
+          },
+          "propertyNames": {
+            "enum": [
+              "acquisition",
+              "target_acquisition",
+              "conversion_acquisition",
+              "cached_acquisition",
+              "identity",
+              "placement",
+              "complete",
+              "source_scope",
+              "root",
+              "includes",
+              "input_precedence",
+              "exact_environment",
+              "default_absence",
+              "stable_documents",
+              "conversion_parse",
+              "root_path",
+              "include_paths",
+              "document_shape",
+              "default_inputs",
+              "default_acquisition",
+              "environment_identity",
+              "compose_identity_present",
+              "application_identity",
+              "schedules_acquisition",
+              "own_candidate_excluded",
+              "source_fields_present",
+              "source_fields_empty",
+              "source_type",
+              "env_shape",
+              "mounts_empty",
+              "command_present",
+              "command_empty",
+              "backups_empty",
+              "domains_empty",
+              "deployments_shape",
+              "deployments_terminal",
+              "schedules_empty",
+              "cached_project_absent",
+              "named_storage",
+              "volume_definitions",
+              "volume_definition",
+              "volume_identity",
+              "standard_environment",
+              "allowed_inputs",
+              "unique_inputs",
+              "interpolation",
+              "supported_name",
+              "resolution",
+              "volume_reference",
+              "environment_reference",
+              "mounts_shape",
+              "mount_reference",
+              "provider_inventory",
+              "native_inventory",
+              "lifecycle_acquisition",
+              "lifecycle_usable",
+              "physical",
+              "source_preserved",
+              "owned",
+              "mounts",
+              "web_command",
+              "runtime_identity",
+              "web_data_mount",
+              "web_gate",
+              "web_process",
+              "container_inventory",
+              "container_qualification",
+              "foreign_reference"
+            ]
+          },
+          "title": "Checks",
+          "type": "object"
+        },
+        "alias_sha256": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Alias Sha256",
+          "type": "string"
+        },
+        "name_source": {
+          "default": "unavailable",
+          "enum": [
+            "explicit",
+            "external_alias",
+            "project_prefix",
+            "unavailable"
+          ],
+          "title": "Name Source",
+          "type": "string"
+        },
+        "resolved_name_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[a-f0-9]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Resolved Name Sha256"
+        }
+      },
+      "required": [
+        "alias_sha256"
+      ],
+      "title": "VolumeResolutionEvidence",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "checks": {
+      "additionalProperties": {
+        "enum": [
+          "pass",
+          "fail",
+          "unavailable",
+          "not_reached",
+          "not_applicable"
+        ],
+        "type": "string"
+      },
+      "propertyNames": {
+        "enum": [
+          "acquisition",
+          "target_acquisition",
+          "conversion_acquisition",
+          "cached_acquisition",
+          "identity",
+          "placement",
+          "complete",
+          "source_scope",
+          "root",
+          "includes",
+          "input_precedence",
+          "exact_environment",
+          "default_absence",
+          "stable_documents",
+          "conversion_parse",
+          "root_path",
+          "include_paths",
+          "document_shape",
+          "default_inputs",
+          "default_acquisition",
+          "environment_identity",
+          "compose_identity_present",
+          "application_identity",
+          "schedules_acquisition",
+          "own_candidate_excluded",
+          "source_fields_present",
+          "source_fields_empty",
+          "source_type",
+          "env_shape",
+          "mounts_empty",
+          "command_present",
+          "command_empty",
+          "backups_empty",
+          "domains_empty",
+          "deployments_shape",
+          "deployments_terminal",
+          "schedules_empty",
+          "cached_project_absent",
+          "named_storage",
+          "volume_definitions",
+          "volume_definition",
+          "volume_identity",
+          "standard_environment",
+          "allowed_inputs",
+          "unique_inputs",
+          "interpolation",
+          "supported_name",
+          "resolution",
+          "volume_reference",
+          "environment_reference",
+          "mounts_shape",
+          "mount_reference",
+          "provider_inventory",
+          "native_inventory",
+          "lifecycle_acquisition",
+          "lifecycle_usable",
+          "physical",
+          "source_preserved",
+          "owned",
+          "mounts",
+          "web_command",
+          "runtime_identity",
+          "web_data_mount",
+          "web_gate",
+          "web_process",
+          "container_inventory",
+          "container_qualification",
+          "foreign_reference"
+        ]
+      },
+      "title": "Checks",
+      "type": "object"
+    },
+    "version": {
+      "const": 1,
+      "default": 1,
+      "title": "Version",
+      "type": "integer"
+    },
+    "observed_at": {
+      "format": "date-time",
+      "title": "Observed At",
+      "type": "string"
+    },
+    "completed_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Completed At"
+    },
+    "candidate_sha256": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Candidate Sha256",
+      "type": "string"
+    },
+    "server_sha256": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Server Sha256",
+      "type": "string"
+    },
+    "endpoint_sha256": {
+      "anyOf": [
+        {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Endpoint Sha256"
+    },
+    "plan_sha256": {
+      "anyOf": [
+        {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Plan Sha256"
+    },
+    "packet_sha256": {
+      "anyOf": [
+        {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Packet Sha256"
+    },
+    "lifecycle": {
+      "$ref": "#/$defs/LifecycleEvidence"
+    },
+    "volumes": {
+      "items": {
+        "$ref": "#/$defs/VolumeCustodyEvidence"
+      },
+      "title": "Volumes",
+      "type": "array"
+    }
+  },
+  "required": [
+    "observed_at",
+    "candidate_sha256",
+    "server_sha256"
+  ],
+  "title": "CandidateCustodyEvidence",
+  "type": "object"
+}
