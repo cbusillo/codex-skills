@@ -606,6 +606,14 @@ def native_exit_cutoff(entry):
         return None
 
 
+def tty_has_orphan(tty, rows):
+    """Work a dead process left on its TTY is reparented to init; a terminal's own work is not."""
+    from tmux_terminal import process_parents
+    occupants = {pid for pid, process_tty, _command in rows if process_tty == tty.removeprefix("/dev/")}
+    parents = process_parents()
+    return any(pid not in parents or parents[pid] not in occupants and parents[pid] <= 1 for pid in occupants)
+
+
 def replacement_tty_owner(entry, rows, *, started_at):
     """Prove one newer process tree after the exact source pane disappeared."""
     socket = entry.get("tmux_socket", "supervisor")

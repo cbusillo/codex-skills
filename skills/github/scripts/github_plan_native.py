@@ -507,7 +507,7 @@ def _source_process(entry, saved, context=None, *, recorded=None):
 def _ended_original_activity(entry):
     """Once the recorded process is gone, its last transcript activity bounds the work it started.
 
-    A reboot after that activity ends everything the session ran. Otherwise its
+    A reboot after that activity ends everything the session ran. Otherwise, its
     last turn must have ended, and nothing on its old TTY may be an orphan: work
     a dead session left running is reparented to init, while a later terminal's
     processes descend from that terminal's live owner.
@@ -526,14 +526,7 @@ def _ended_original_activity(entry):
         return max(times)
     if session_record.session_status(entry)["state"] != "turn_ended" or not isinstance(entry.get("tty"), str):
         return None
-    import release_session_claims
-    from tmux_terminal import process_parents
-    tty = entry["tty"].removeprefix("/dev/")
-    occupants = {pid for pid, process_tty, _command in release_session_claims.inventory() if process_tty == tty}
-    parents = process_parents()
-    if any(pid not in parents or parents[pid] not in occupants and parents[pid] <= 1 for pid in occupants):
-        return None
-    return max(times)
+    return None if liveness.tty_has_orphan(entry["tty"], liveness.inventory()) else max(times)
 
 
 def recheck_source_process(process):

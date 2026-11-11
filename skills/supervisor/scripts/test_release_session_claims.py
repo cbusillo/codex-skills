@@ -178,6 +178,7 @@ class ReleaseTests(unittest.TestCase):
             log = self.root / f"{name}.json"
             with (self.subTest(name), patch_attribute(closure, "ownership", return_value=contextlib.nullcontext()),
                   patch.object(helper, "recovery_claims"), patch.object(helper, "inventory", return_value=rows),
+                  patch.object(helper.session_liveness, "inventory", return_value=rows),
                   patch_attribute(closure, "process_started_at", side_effect=births.__getitem__),
                   patch.object(helper.session_liveness, "process_started_at", side_effect=births.__getitem__),
                   patch.object(helper.session_liveness, "process_absent", side_effect=lambda pid, live=births: pid not in live),
