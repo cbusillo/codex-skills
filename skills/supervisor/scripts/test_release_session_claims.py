@@ -163,7 +163,7 @@ class ReleaseTests(unittest.TestCase):
         launched = {**source, "launch_pid": source["pid"], "launch_started_at": (earlier - timedelta(minutes=1)).isoformat()}
         unrelated = "sleep 60"
         terminal, launchd = 999, 1
-        cases = (  # entry, live process births, parent of the occupant, host boot, recovered
+        cases = (
             ("newer occupant of a later terminal", source, {456: later}, terminal, None, True),
             ("orphaned work the session left", source, {456: later}, launchd, None, False),
             ("orphan after a reboot ended the session", source, {456: later}, launchd, last + timedelta(hours=1), True),
@@ -191,8 +191,10 @@ class ReleaseTests(unittest.TestCase):
                 else:
                     with self.assertRaises(ValueError):
                         helper.record_recovery(log, {**entry, "recovery": {"kind": "gone"}}, "supervisor")
-        with patch.object(helper.session_liveness.sys, "platform", "linux"):  # a subreaper may adopt leftover work
-            self.assertTrue(helper.session_liveness.tty_has_orphan(source["tty"], [(456, source["tty"], unrelated)]))
+
+    def test_off_macos_any_tty_occupant_may_be_adopted_leftover_work(self) -> None:
+        with patch.object(helper.session_liveness.sys, "platform", "linux"):
+            self.assertTrue(helper.session_liveness.tty_has_orphan("ttys123", [(456, "ttys123", "sleep 60")]))
 
     def test_recovered_custody_is_not_releasable_by_backfill(self) -> None:
         ledger, log = self.root / "ledger.json", self.root / "closed.json"

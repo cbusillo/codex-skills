@@ -606,11 +606,8 @@ def native_exit_cutoff(entry):
         return None
 
 
-def tty_has_orphan(tty, rows):
-    """Work a dead process left on its TTY is reparented to init; a terminal's own work is not.
-
-    Only macOS guarantees that adoption; elsewhere a subreaper can adopt it, so any occupant counts.
-    """
+def tty_has_orphan(tty: str, rows: list[tuple[int, str, str]]) -> bool:
+    # https://man7.org/linux/man-pages/man2/PR_SET_CHILD_SUBREAPER.2const.html
     if sys.platform != "darwin":
         return any(process_tty == tty.removeprefix("/dev/") for _pid, process_tty, _command in rows)
     from tmux_terminal import process_parents

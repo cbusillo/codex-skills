@@ -424,6 +424,12 @@ class _SourceEndMismatch(ValueError):
     """This verified End cannot cover the selected generation's actual facts."""
 
 
+def _records_process_exit(closed: dict | None) -> bool:
+    recovery_time_only = bool(closed) and closed.get("closure_kind") == "claim_free_recovery"
+    return (bool(closed) and closed.get("process_exit_verified") is True and bool(closed.get("ended_at"))
+            and not recovery_time_only)
+
+
 def _source_process(entry, saved, context=None, *, recorded=None):
     """Select actual source identity and its recorder-owned exit boundary."""
     from github_plan_sessions import process_liveness
@@ -467,9 +473,7 @@ def _source_process(entry, saved, context=None, *, recorded=None):
     closed = recorded if recorded is not None else (saved if not generation else None)
     if recorded is not None and (recorded.get("process_exit_verified") is not True or not recorded.get("ended_at")):
         raise ValueError("recorded closure lacks a verified process exit boundary")
-    # A claim-free recovery records when recovery ran, not when the process exited.
-    if (closed and closed.get("process_exit_verified") is True and closed.get("ended_at")
-            and closed.get("closure_kind") != "claim_free_recovery"):
+    if _records_process_exit(closed):
         ended = stamp(closed["ended_at"])
         cutoff = stamp(closed["tty_exited_at"]) if closed.get("tty_exited_at") else ended
         if cutoff > ended:
@@ -504,14 +508,7 @@ def _source_process(entry, saved, context=None, *, recorded=None):
     return _SourceProcess(source, saved, effective, cutoff, context)
 
 
-def _ended_original_activity(entry):
-    """Once the recorded process is gone, its last transcript activity bounds the work it started.
-
-    A reboot after that activity ends everything the session ran. Otherwise, its
-    last turn must have ended, and nothing on its old TTY may be an orphan: work
-    a dead session left running is reparented to init, while a later terminal's
-    processes descend from that terminal's live owner.
-    """
+def _ended_original_activity(entry: dict) -> datetime | None:
     from github_plan_sessions import native_helpers, process_liveness
     from github_plan_release import stamp
     liveness = process_liveness()

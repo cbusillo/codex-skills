@@ -112,19 +112,16 @@ def outside_fences(lines: list[str]) -> bool:
 
 
 def transcript_file(path: Path) -> Path:
-    """The recorded transcript, or the `.zst` file Codex leaves after compressing it."""
     path = Path(path)
     compressed = path.with_name(path.name + ".zst")
     return compressed if path.suffix == ".jsonl" and not path.exists() and compressed.exists() else path
 
 
 def recorded_transcript(value: str | Path) -> Path:
-    """The existing file behind a recorded transcript name."""
     return transcript_file(Path(value)).resolve(strict=True)
 
 
 def transcript_glob(session: str, suffix: str = ".jsonl") -> tuple[str, ...]:
-    """Patterns for a session's transcript copies, compressed or not."""
     suffix = ".jsonl" if suffix == ".zst" else suffix
     return (f"*{session}*{suffix}",) + ((f"*{session}*{suffix}.zst",) if suffix == ".jsonl" else ())
 
