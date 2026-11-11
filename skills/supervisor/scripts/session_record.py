@@ -667,8 +667,8 @@ def session_status(entry: dict) -> dict:
         boundaries = [row for row in records if row.get("type") == "compacted" and entry["harness"] == "codex"
                       or row.get("type") == "system" and row.get("subtype") == "compact_boundary" and entry["harness"] == "claude"]
         result["lead"] = {"started_at": next((row["timestamp"] for row in records if row.get("timestamp")), None),
-                          "compactions": len(boundaries) if entry["harness"] in {"codex", "claude"} else None,
-                          "last_compaction_at": boundaries[-1].get("timestamp") if boundaries else None}
+                          "compactions": [row.get("timestamp") for row in boundaries]
+                          if entry["harness"] in {"codex", "claude"} else None}
     result["session_outcome"] = session_outcomes.record(entry, records, result["last_text"])
     after = checked_stat()
     result.update(

@@ -16,7 +16,8 @@ from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
-from functools import partial
+from functools import cache, partial
+from itertools import pairwise
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -24,9 +25,10 @@ import compact_check
 import foreign_watch
 import github_access
 import oq
+from github_plan_status import next_actor
 from github_plan_status.next_actor import SUPERVISOR_ACTORS, SUPERVISOR_ROLES
 from question_delivery import run_queue, source_item
-from session_closeout import explicit_session
+from session_closeout import explicit_session, live_lines
 
 if TYPE_CHECKING:
     from skills.github.scripts import github_next_pr, github_read, ready_handoff
@@ -43,6 +45,9 @@ director_waits = importlib.import_module("director_waits")
 
 READS_AFTER = {"comments": "questions"}
 ROUTINE_INTERVAL = timedelta(minutes=30)
+LEAD_HANDOFF_COMPACTIONS = 6
+LEAD_HANDOFF_AGE = timedelta(days=2)
+LEAD_HANDOFF_INTERVAL = timedelta(hours=3)
 OWNER_REVIEW_CHECK = "launchplane/owner-review"
 CLIENT_WAIT = re.compile(r"waiting (?:for|on) (?:the |this )?client|client(?:'s)? acceptance", re.I)
 NOTHING_REVIEWABLE = re.compile(r"preview failed|nothing\b[^.]*\b(?:reviewable|to review)", re.I)
@@ -291,7 +296,7 @@ def request_text(row: dict) -> str:
 def primary_reads(selection: dict, sessions: list[dict], *, owner_review: Callable[[str, int], dict | None],
                   client_release: Callable[[str], Any], production: Callable[[str], dict],
                   anchor_response: Callable[[str], str], checks: Callable[[str, int], dict],
-                  lead_handoff: Callable[[dict], str | None] | None = None, roles: tuple[str, ...] = ()) -> dict:
+                  lead_handoff: Callable[[dict], dict] | None = None, roles: tuple[str, ...] = ()) -> dict:
     errors: list[dict] = []
     followthrough = selection.get("pr_followthrough", [])
     errors.extend({"read": f"handoff {pointer(row)}", "error": str(row.get("reason"))} for row in followthrough
@@ -379,7 +384,7 @@ def primary_reads(selection: dict, sessions: list[dict], *, owner_review: Callab
     handoffs = {}
     if "milestone" in roles and lead_handoff is not None:
         for row in sessions:
-            if "lead" in row and row.get("issue"):
+            if lead_handoff_due(row, clock()) and row.get("issue"):
                 handoffs[row["session_id"]] = attempt(f"lead handoff {row['session_id']}", partial(lead_handoff, row))
     return {"annotations": annotations, "anchors": anchors, "lead_handoffs": handoffs,
             "no_handoff": no_handoff, "errors": errors, "coverage": {"complete": not errors}}
@@ -404,19 +409,32 @@ def stale_row(row: dict, now: datetime) -> str:
     return f"STALE {pointer(row)}: {kinds} age={age_text(now - recorded) if recorded else 'UNKNOWN'} evidence={' '.join(str(detail).split())[:180]}"
 
 
-def lead_row(session: dict, now: datetime, handoff: str | None) -> str:
+def lead_handoff_due(session: dict, now: datetime) -> bool:
     lead = session.get("lead") or {}
-    count = lead.get("compactions")
+    boundaries = lead.get("compactions")
     started = recorded_time(lead.get("started_at"))
-    last = recorded_time(lead.get("last_compaction_at"))
+    if started is not None and now - started >= LEAD_HANDOFF_AGE:
+        return True
+    if not isinstance(boundaries, list):
+        return False
+    times = [recorded_time(value) for value in boundaries]
+    return len(boundaries) >= LEAD_HANDOFF_COMPACTIONS or any(
+        before is not None and after is not None and timedelta() < after - before < LEAD_HANDOFF_INTERVAL
+        for before, after in pairwise(times))
+
+
+def lead_row(session: dict, now: datetime, handoff: dict | None) -> str:
+    lead = session.get("lead") or {}
+    boundaries = lead.get("compactions")
+    started = recorded_time(lead.get("started_at"))
     age = now - started if started else None
-    frequent = False
-    if isinstance(count, int) and count > 0 and started is not None and last is not None:
-        frequent = timedelta() < last - started < timedelta(hours=3 * count)
-    due = (count is not None and count >= 6) or (age is not None and age >= timedelta(days=2)) or frequent
-    kind = "LEAD_HANDOFF" if due and not handoff else "LEAD"
-    detail = f"compactions={count if count is not None else 'UNKNOWN'} age={age_text(age) if age is not None else 'UNKNOWN'}"
-    suffix = f"; handoff={handoff}" if handoff else "; post a handoff on the anchor; Next actor: agent:supervisor-milestone" if due else ""
+    due = lead_handoff_due(session, now)
+    url = (handoff or {}).get("url")
+    kind = "LEAD_HANDOFF" if due and not url else "LEAD"
+    detail = f"compactions={len(boundaries) if isinstance(boundaries, list) else 'UNKNOWN'} age={age_text(age) if age is not None else 'UNKNOWN'}"
+    suffix = f"; handoff={url}" if url else ""
+    if due and not url:
+        suffix = "; handoff=UNKNOWN; check the anchor before asking the lead to hand off" if handoff is None else "; ask the lead to post its handoff"
     return f"{kind} {pointer(session)}: {detail} anchor={session.get('issue') or 'UNKNOWN'}{suffix}"
 
 
@@ -669,26 +687,27 @@ def primary_readers(args: argparse.Namespace) -> dict[str, Callable]:
         return {"deployed": deployed.commit, "newest": newest, "contained": comparison["status"] in {"identical", "ahead"},
                 "behind": comparison.get("behind_by")}
 
+    @cache
     def anchor_discussion(issue: str) -> dict:
         match = re.search(r"([\w.-]+/[\w.-]+)(?:#|/issues/|/pull/)([1-9][0-9]*)", issue)
         if not match:
             raise ValueError("anchor is not OWNER/REPO#NUMBER")
         return github_read.read_discussion(reader(), match[1], int(match[2]))
 
-    def lead_handoff(session: dict) -> str | None:
+    def lead_handoff(session: dict) -> dict:
         started = recorded_time((session.get("lead") or {}).get("started_at"))
         if started is None:
-            return None
-        authors = github_read.github_identity.configured_bot_logins()
+            raise ValueError("lead start time is UNKNOWN")
+        authors = oq.default_decision_authors()
         for comment in reversed(anchor_discussion(session["issue"])["comments"]):
             body = comment.get("body") or ""
             posted = recorded_time(comment.get("created_at"))
             if ((comment.get("user") or {}).get("login") in authors and posted and posted >= started
                     and explicit_session(body, session["session_id"])
-                    and re.search(r"(?im)^(?:#{1,6}\s+)?(?:(?:Lead|Explicit)\s+)?handoff\b", body)
-                    and not re.match(r"(?i)^Claimed by\b", body.strip())):
-                return comment["html_url"]
-        return None
+                    and not live_lines(body) and not re.match(r"(?i)^Claimed by\b", body.strip())
+                    and next_actor.read(body) in SUPERVISOR_ACTORS):
+                return {"url": comment["html_url"]}
+        return {"url": None}
 
     return {"owner_review": owner_review, "client_release": lambda repo: acceptance().read_client_release(repo),
             "production": production, "anchor_response": lambda issue: anchor_note(anchor_discussion(issue)),

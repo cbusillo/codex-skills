@@ -791,7 +791,7 @@ class LedgerTests(unittest.TestCase):
                 records[0]["timestamp"] = started
                 write_jsonl(self.transcript, records)
                 row = compact_check.report(self.ledger)["sessions"][0]
-                self.assertEqual(row["lead"], {"started_at": started, "compactions": 1, "last_compaction_at": compacted})
+                self.assertEqual(row["lead"], {"started_at": started, "compactions": [compacted]})
                 self.transcript.unlink()
                 row = compact_check.report(self.ledger)["sessions"][0]
                 self.assertIn("lead", row)
@@ -806,6 +806,7 @@ class LedgerTests(unittest.TestCase):
         self.assertTrue(report["coverage"]["complete"])
         self.assertEqual(report["sessions"][0]["action"], finished_map.candidates(self.ledger)[0]["closeout_request"]["action"])
         self.assertNotIn("last_text", json.dumps(report))
+        self.assertNotIn("lead", report["sessions"][0])
         self.assertTrue(compact_check.check(self.ledger, state)["sessions"])
         self.write([event("task_started", turn_id="working")])
         self.assertTrue(compact_check.check(self.ledger, state)["sessions"])
