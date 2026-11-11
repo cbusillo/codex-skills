@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["tree-sitter==0.26.0", "tree-sitter-bash==0.25.1", "tree-sitter-javascript==0.25.0"]
+# dependencies = ["tree-sitter==0.26.0", "tree-sitter-bash==0.25.1", "tree-sitter-javascript==0.25.0", "zstandard==0.25.0"]
 # ///
 """Exercise native-session closeout against disposable GitHub and transcript records."""
 import contextlib
@@ -191,6 +191,20 @@ class ClaimCloseoutTests(unittest.TestCase):
             helper.require_own_transcript({"session_id": SESSION, "transcript": str(path)})
             with self.assertRaises(ValueError):
                 helper.require_own_transcript({"session_id": "other-source", "transcript": str(path)})
+
+    def test_recorded_transcript_name_reads_its_compressed_copy(self) -> None:
+        import zstandard
+        rows = [{"type": "session_meta", "timestamp": "2026-01-01T00:00:00Z", "payload": {"id": SESSION}}]
+        packed = zstandard.ZstdCompressor().compress("".join(json.dumps(row) + "\n" for row in rows).encode())
+        with tempfile.TemporaryDirectory() as folder:
+            recorded = Path(folder) / f"rollout-{SESSION}.jsonl"
+            compressed = recorded.with_name(recorded.name + ".zst")
+            compressed.write_bytes(packed)
+            helper.require_own_transcript({"session_id": SESSION, "transcript": str(recorded)})
+            self.assertEqual(helper.history.read_records(recorded), rows)
+            compressed.write_bytes(packed[:-4])
+            with self.assertRaises(OSError):
+                helper.require_own_transcript({"session_id": SESSION, "transcript": str(recorded)})
 
     def test_accepted_release_exclusion_survives_closeout(self) -> None:
         release_tests: Any = importlib.import_module("test_gh_plan_release")

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
 import fcntl
 import json
 import os
@@ -489,7 +490,7 @@ def transcript_facts(session: str, primary: str, *, include_status: bool = False
     from github_plan_sessions import observation_homes, native_helpers
     from github_plan_release import stamp
     deadline = time.monotonic() + 3 if deadline is None else deadline
-    paths = {Path(primary).resolve(strict=True)}
+    paths = {native_helpers()[1].transcript_file(Path(primary)).resolve(strict=True)}
     def fail(error):
         raise error
     homes = observation_homes(strict=True, additional_homes=additional_homes or set())
@@ -511,7 +512,7 @@ def transcript_facts(session: str, primary: str, *, include_status: bool = False
             if time.monotonic() > deadline:
                 raise TimeoutError("native closure scan exceeded its budget")
             for name in names:
-                if session not in name or not name.endswith(".jsonl"):
+                if session not in name or not name.endswith((".jsonl", ".jsonl.zst")):
                     continue
                 path = Path(directory) / name
                 if time.monotonic() > deadline:
@@ -521,7 +522,7 @@ def transcript_facts(session: str, primary: str, *, include_status: bool = False
     for path in sorted(paths):
         before = path.stat()
         records, digest, lines = [], hashlib.sha256(), []
-        with path.open("rb") as stream:
+        with io.BytesIO(native_helpers()[1].transcript_bytes(path)) as stream:
             for line in stream:
                 if time.monotonic() > deadline:
                     raise TimeoutError("native closure read exceeded its budget")

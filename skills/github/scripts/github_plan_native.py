@@ -467,7 +467,9 @@ def _source_process(entry, saved, context=None, *, recorded=None):
     closed = recorded if recorded is not None else (saved if not generation else None)
     if recorded is not None and (recorded.get("process_exit_verified") is not True or not recorded.get("ended_at")):
         raise ValueError("recorded closure lacks a verified process exit boundary")
-    if closed and closed.get("process_exit_verified") is True and closed.get("ended_at"):
+    # A claim-free recovery records when recovery ran, not when the process exited.
+    if (closed and closed.get("process_exit_verified") is True and closed.get("ended_at")
+            and closed.get("closure_kind") != "claim_free_recovery"):
         ended = stamp(closed["ended_at"])
         cutoff = stamp(closed["tty_exited_at"]) if closed.get("tty_exited_at") else ended
         if cutoff > ended:
@@ -487,6 +489,8 @@ def _source_process(entry, saved, context=None, *, recorded=None):
             if owner is not None:
                 effective["_tty_owner"] = owner[:2]
                 cutoff = owner[1]
+        if cutoff is None and context is None:
+            cutoff = _ended_original_activity(effective)
         if cutoff is not None:
             effective["tty_exited_at"] = cutoff.isoformat()
     # A canonical closed-session receipt bounds this exact saved generation.
@@ -497,6 +501,27 @@ def _source_process(entry, saved, context=None, *, recorded=None):
         if cutoff is None:
             cutoff = context.ended_at
     return _SourceProcess(source, saved, effective, cutoff, context)
+
+
+def _ended_original_activity(entry):
+    """Once the recorded process is gone, its last transcript activity bounds the work it started.
+
+    A reboot after that activity ends everything the session ran; otherwise the
+    session's last turn must have ended, so no tool was still being started.
+    """
+    from github_plan_sessions import native_helpers, process_liveness
+    from github_plan_release import stamp
+    liveness = process_liveness()
+    if not liveness.generation_ended(entry):
+        return None
+    session_record = native_helpers()[1]
+    times = [stamp(row["timestamp"]) for row in session_record.read_jsonl(Path(entry["transcript"])) if row.get("timestamp")]
+    if not times:
+        return None
+    booted = liveness.host_boot_time()
+    if booted is not None and max(times) < booted:
+        return max(times)
+    return max(times) if session_record.session_status(entry)["state"] == "turn_ended" else None
 
 
 def recheck_source_process(process):

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -16,6 +17,7 @@ import claim_history
 import session_outcomes
 
 LAUNCH_LEDGER_ENV = "CODEX_SKILLS_SUPERVISOR_LEDGER"
+ROLLOUT_SCRIPTS = str(Path(__file__).resolve().parents[2] / "rollout-friction" / "scripts")
 
 MEMORY_CITATION_TAIL = re.compile(
     r"^<oai-mem-citation>(?:(?!</?oai-mem-citation>).)*"
@@ -109,27 +111,48 @@ def outside_fences(lines: list[str]) -> bool:
     return fence is None
 
 
+def transcript_file(path: Path) -> Path:
+    """The recorded transcript, or the `.zst` file Codex leaves after compressing it."""
+    path = Path(path)
+    compressed = path.with_name(path.name + ".zst")
+    return compressed if path.suffix == ".jsonl" and not path.exists() and compressed.exists() else path
+
+
+def transcript_bytes(path: Path) -> bytes:
+    path = transcript_file(path)
+    if path.suffix != ".zst":
+        return path.read_bytes()
+    if ROLLOUT_SCRIPTS not in sys.path:
+        sys.path.insert(0, ROLLOUT_SCRIPTS)
+    # noinspection PyUnresolvedReferences
+    from analyze_rollouts import read_transcript
+    return read_transcript(path, sys.maxsize)
+
+
+def transcript_lines(path: Path) -> list[str]:
+    return [line.decode("utf-8") for line in transcript_bytes(path).splitlines(keepends=True)]
+
+
 def read_jsonl(path: Path) -> list[dict]:
     if path.suffix == ".db":
         return claim_history.read_agy_records(path)
     records = []
-    with path.open(encoding="utf-8") as stream:
-        for number, line in enumerate(stream, 1):
-            if not line.strip():
-                continue
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError as error:
-                raise ValueError(
-                    f"{path.name}:{number}: incomplete or invalid JSON"
-                ) from error
-            if not isinstance(record, dict):
-                raise TypeError(f"{path.name}:{number}: record is not an object")
-            try:
-                validate_record(record)
-            except TypeError as error:
-                raise TypeError(f"{path.name}:{number}: {error}") from error
-            records.append(record)
+    for number, line in enumerate(transcript_lines(path), 1):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise ValueError(
+                f"{path.name}:{number}: incomplete or invalid JSON"
+            ) from error
+        if not isinstance(record, dict):
+            raise TypeError(f"{path.name}:{number}: record is not an object")
+        try:
+            validate_record(record)
+        except TypeError as error:
+            raise TypeError(f"{path.name}:{number}: {error}") from error
+        records.append(record)
     return records
 
 
@@ -602,7 +625,7 @@ class TranscriptChanged(ValueError):
 
 
 def transcript_revision(path: Path) -> tuple[tuple[int, int], ...]:
-    info = path.stat()
+    info = transcript_file(path).stat()
     revision = ((info.st_mtime_ns, info.st_size),)
     if path.suffix != ".db":
         return revision
@@ -620,7 +643,7 @@ def session_status(entry: dict) -> dict:
     def checked_stat():
         if before != transcript_revision(path):
             raise TranscriptChanged("transcript changed during read; check again")
-        return path.stat()
+        return transcript_file(path).stat()
 
     try:
         records = read_jsonl(path)
