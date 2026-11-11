@@ -920,7 +920,11 @@ class GhApiCommand:
     endpoint: str
     method: Optional[str]
     fields: tuple[str, ...]
-    has_input: bool
+    input_source: str  # the effective --input: "-" for stdin, a file path, or "" for none
+
+    @property
+    def has_input(self) -> bool:
+        return bool(self.input_source)
 
     @property
     def sent_method(self) -> str:
@@ -1001,7 +1005,7 @@ def parse_gh_api_args(args: list[str]) -> Optional[GhApiCommand]:
         endpoint=positionals[0],
         method=methods[-1] if methods else None,
         fields=tuple(value for name, value in options if name in ("--field", "--raw-field")),
-        has_input=bool(inputs and inputs[-1]),
+        input_source=inputs[-1] if inputs else "",
     )
 
 
@@ -1035,8 +1039,9 @@ def infer_gh_command_context(args: list[str], *, input_text: Optional[str] = Non
             return CommandContext(True, "rest_api", "rest_core")
         if is_graphql_path(parsed.endpoint):
             graphql_document: Any = parsed.graphql_query
-            if parsed.has_input and input_text:
-                graphql_document = _try_parse_json(input_text)
+            if parsed.has_input:
+                # gh sends the --input body, not the fields; only stdin is known here.
+                graphql_document = _try_parse_json(input_text) if parsed.input_source == "-" and input_text else None
             operation = infer_graphql_operation_type(graphql_document)
             return CommandContext(
                 infer_is_write(parsed.method or "GET", parsed.endpoint, graphql_document, graphql_operation=operation),
