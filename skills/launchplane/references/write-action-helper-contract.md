@@ -3034,56 +3034,48 @@ and approves pending plans in the UI; no helper approval or apply path is added.
 
 ## Release request under the recorded Client policy
 
-`release-request --product P --plan` reads the current checklist and sends
-nothing. It reports `checklist_digest`, both lanes' source commits, whether each
-carries recorded runtime settings, the blocker count and the full `review_url`.
-Item text, settings, artifact ids, blocker prose and the saved reason and actor
-are never emitted.
+`release-request --product P --plan` reads the current profile and checklist and
+sends nothing. It reports `release_on_acceptance`, `checklist_digest`, both lanes'
+source commits, whether they carry runtime settings, blocker count and `review_url`.
+A plan with a current prerequisite reports `refused` and `refusal_reason`.
+Item text, settings, artifact ids, blocker prose, saved reason and actor stay private.
+The profile supplies the configured policy; the review's similarly named field
+supplies the effective release action and cannot replace it.
 
 `release-request --product P --checklist-digest D --reason R --decision-reference
-URL --idempotency-key K` calls `POST /v1/release-review/requests` with that exact
-digest and returns `request_id` and `review_url`. `--decision-reference` is the
-recorded decision's GitHub comment URL. The reason and citation are hashed in the
-output. No new grant is involved: the service holds the Director-agent authority
-and records a request, never an acceptance or a promotion. Standing acceptance
-then starts the existing gated release for `director_standing` products; observe
-it and do not promote by hand. For Client products (`held`, `promote` or
-`promote_with_rollback_drill`), this records the review request and notifies the
-Client through the normal invitation sender. It starts no production action. The Client
-must separately accept the exact release, and the recorded policy and server
-backup, rollback and release gates still apply. A held policy remains held.
-The result preserves `release_on_acceptance` and reports
-`invitation_delivery` for Client request results; it never changes the Client or policy.
+URL --idempotency-key K` calls the existing `POST /v1/release-review/requests`.
+The reference is the recorded Director request's GitHub comment URL. Reason and
+reference are hashed in output. The caller checks response shape, product,
+reviewed digest and conflicting saved requests. The service decides eligibility,
+including the Client, candidate, checklist, current decisions, temporary hotfixes
+and the first-settings-release restriction for Director-standing products.
+It records a request, never acceptance or promotion; no grant or policy changes.
 
-Both modes read the recorded product profile and stop on an unsupported or
-malformed response. They stop with `refused` and a `refusal_reason` unless a
-release review is required, the checklist is complete with no decision on it and a real candidate, and Client
-approval is its only blocker. The service keeps its own stricter gates, including
-that a standing product uses this route only for its first release carrying
-recorded production settings.
+For Client products, the service uses its normal invitation sender. Separate
+Client acceptance and the recorded release policy govern production. A held
+policy stays held. Director-standing acceptance starts its existing gated release;
+observe it and do not promote by hand.
 
-`stale` means the checklist changed, before or during the call. Run `--plan` for
-a new current read and review it; neither a retry nor a new key bypasses this.
-A matching saved request retains `request_id` and `request_recorded` even when
-stale, without attributing the current lane versions to that old digest.
-A digest recorded with a different decision, reason or source is `conflict`.
+A successful Client POST returns `ok`, `request_id`, `request_recorded` and
+`invitation_delivery: confirmed`. This means the producer confirmed its invitation
+receipt, including an existing receipt, not that it sent a fresh notification.
+A matching saved request deduplicates without another POST. A read proves only
+the request record: Client results return `accepted_unverified` and
+`invitation_delivery: unverified`. Director-standing results retain `ok` for an
+exact saved request. Current prerequisites override either result with `refused`;
+the request identity is retained. The same settlement applies after an uncertain
+POST, preserving the producer's error code and trace even when readback finds the request.
 
-A successful Client POST returns `ok` with `invitation_delivery: confirmed`.
-A matching saved request deduplicates without another POST, but a read alone
-proves only the request record: Client results return `accepted_unverified`
-with `invitation_delivery: unverified`, including after a lost response, 5xx or
-`release_review_not_opened`. Plan reads also mark saved delivery unverified.
-The service's existing worker continues delivery from the saved request.
-Keep its digest, reason, decision reference and key; do not create a replacement
-to force another invitation. The review URL identifies the product's review page,
-not proof that a particular invitation reached the Client.
-
-Director-standing requests retain `ok` for an exact saved request, including
-readback after an uncertain POST. If no matching request can be proved after
-a lost response or 5xx, the result is `outcome_unknown`; keep the original inputs
-for reconciliation. An accepted response without this exact request remains
-`accepted_unverified`. Denials, missing routes and other producer refusals stay
-explicit and never select another caller or identity.
+`stale` means the checklist changed; the old request identity is retained without
+attributing new lane versions to it. Review a fresh `--plan`; a new key cannot
+bypass drift. A digest recorded with a different decision, reason or source is
+`conflict`. An accepted response without the exact request is `accepted_unverified`.
+After a timeout, 5xx or `release_review_not_opened`, readback runs once. Unproved
+transport effects remain `outcome_unknown`; producer refusals stay explicit.
+Keep the original digest, reason, reference and key for reconciliation. The
+service worker continues delivery from its saved request; never create a
+replacement or blindly repeat POST to force an invitation. The review URL alone
+proves no delivery. Denials never select another caller or identity.
 
 ## Pending Client review withdrawal
 

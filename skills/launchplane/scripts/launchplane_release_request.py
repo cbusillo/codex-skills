@@ -69,7 +69,9 @@ class ReviewState(NamedTuple):
 
 
 def add_parser(subparsers: Any) -> None:
-    parser = subparsers.add_parser(COMMAND, help="Request review of an exact release checklist under its recorded Client policy; never accepts or promotes.")
+    parser = subparsers.add_parser(
+        COMMAND, help="Request review of an exact release checklist under its recorded Client policy; never accepts or promotes."
+    )
     parser.add_argument("--product", required=True)
     target = parser.add_mutually_exclusive_group(required=True)
     target.add_argument("--plan", action="store_true", help="Read the current checklist and send nothing.")
@@ -260,12 +262,7 @@ def _finish(
     if refusal:
         summary["refusal_reason"] = refusal
     service_advice = summary.get("recommendation")
-    advice = (
-        recommendation
-        or REFUSAL_ADVICE.get(refusal)
-        or RECOVERY.get(status)
-        or (service_advice if isinstance(service_advice, str) else "Inspect the service refusal before retrying.")
-    )
+    advice = recommendation or REFUSAL_ADVICE.get(refusal) or RECOVERY.get(status) or (service_advice if isinstance(service_advice, str) else "Inspect the service refusal before retrying.")
     summary["recommendation"] = advice
     output["summary"] = summary
     if result is not None:
@@ -280,12 +277,22 @@ def _finish(
 
 
 def _finish_recorded(
-    h: Any, settings: dict[str, str], intent: Intent, state: ReviewState, acceptance: str, saved: dict[str, Any],
-    *, readback: bool = False, delivery_confirmed: bool = False,
+    h: Any,
+    settings: dict[str, str],
+    intent: Intent,
+    state: ReviewState,
+    acceptance: str,
+    saved: dict[str, Any],
+    *,
+    readback: bool = False,
+    delivery_confirmed: bool = False,
+    diagnostics: dict[str, object] | None = None,
 ) -> int:
     result: dict[str, object] = {
-        "release_on_acceptance": acceptance, "checklist_digest": intent.digest,
-        "request_id": saved["record_id"], "request_recorded": True,
+        "release_on_acceptance": acceptance,
+        "checklist_digest": intent.digest,
+        "request_id": saved["record_id"],
+        "request_recorded": True,
     }
     standing = acceptance == STANDING_ACCEPTANCE
     if not standing:
@@ -293,18 +300,31 @@ def _finish_recorded(
     if readback:
         result["verified_by_readback"] = True
     if state.digest != intent.digest:
-        return _finish(h, intent, "stale", result=result, diagnostics=CHECKLIST_CHANGED_DIAGNOSTICS)
+        return _finish(h, intent, "stale", result=result, diagnostics=diagnostics or CHECKLIST_CHANGED_DIAGNOSTICS)
     result.update(_result(h, settings, intent, state, acceptance))
+    if state.refusal:
+        return _finish(h, intent, "refused", result=result, refusal=state.refusal, diagnostics=diagnostics)
     if not standing and not delivery_confirmed:
-        return _finish(h, intent, "accepted_unverified", result=result, recommendation=(
-            "The request is recorded; Client invitation delivery is unverified. Keep the same digest, reason, decision reference and key. "
-            "The service continues delivery from this saved request; do not create a replacement to force another invitation."
-        ))
-    advice = RECOVERY["ok"] if standing else (
-        "Client invitation delivery confirmed. Separate Client acceptance and the recorded release policy still govern the gated release; "
-        "this call never accepts or promotes."
+        return _finish(
+            h,
+            intent,
+            "accepted_unverified",
+            result=result,
+            diagnostics=diagnostics,
+            recommendation=(
+                "The request is recorded; Client invitation delivery is unverified. Keep the same digest, reason, decision reference and key. "
+                "The service continues delivery from this saved request; do not create a replacement to force another invitation."
+            ),
+        )
+    advice = (
+        RECOVERY["ok"]
+        if standing
+        else (
+            "The service confirmed its invitation receipt. Separate Client acceptance and the recorded release policy still govern the gated release; "
+            "this call never accepts or promotes."
+        )
     )
-    return _finish(h, intent, "ok", result=result, recommendation=advice)
+    return _finish(h, intent, "ok", result=result, diagnostics=diagnostics, recommendation=advice)
 
 
 def _settle_uncertain_post(
@@ -323,7 +343,7 @@ def _settle_uncertain_post(
     except (ValueError, OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException):
         return _finish(h, intent, "outcome_unknown", diagnostics=diagnostics)
     if (saved := _matching_request(state, intent)) is not None:
-        return _finish_recorded(h, settings, intent, state, acceptance, saved, readback=True)
+        return _finish_recorded(h, settings, intent, state, acceptance, saved, readback=True, diagnostics=diagnostics)
     if _recorded_differently(state, intent):
         return _finish(h, intent, "conflict", diagnostics=diagnostics)
     return _finish(h, intent, status, refusal=refusal, diagnostics=diagnostics)
@@ -356,7 +376,16 @@ def _submit(h: Any, settings: dict[str, str], intent: Intent, acceptance: str, t
         diagnostics: dict[str, object] = {"error_code": "release_request_unverified", **h.service_response_diagnostics(error)}
         return _settle_uncertain_post(h, settings, intent, acceptance, timeout, status="outcome_unknown", diagnostics=diagnostics)
     if (saved := _matching_request(state, intent)) is not None:
-        return _finish_recorded(h, settings, intent, state, acceptance, saved, delivery_confirmed=True)
+        return _finish_recorded(
+            h,
+            settings,
+            intent,
+            state,
+            acceptance,
+            saved,
+            delivery_confirmed=True,
+            diagnostics=h.service_response_diagnostics(response),
+        )
     status = "conflict" if _recorded_differently(state, intent) else "accepted_unverified"
     return _finish(h, intent, status, diagnostics=h.service_response_diagnostics(response))
 
@@ -409,8 +438,6 @@ def execute(h: Any, args: argparse.Namespace) -> int:
         return _finish(h, intent, "conflict")
     if state.digest and state.digest != intent.digest:
         return _finish(h, intent, "stale", diagnostics=CHECKLIST_CHANGED_DIAGNOSTICS)
-    if state.refusal:
-        return _finish(h, intent, "refused", refusal=state.refusal)
     return _submit(h, settings, intent, acceptance, args.timeout)
 
 
