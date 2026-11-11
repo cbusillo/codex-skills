@@ -20,7 +20,7 @@ including an external link to another external file, is accepted.
 
 ## Current testing inventory and purchaser readback
 
-`odoo-inventory-readback` uses the existing operator GET transport and
+`odoo-inventory-readback` uses the existing admin GET transport and
 `operations.read` identity for
 `/v1/products/{product}/environments/testing/odoo-inventory-readback`.
 The [reviewed producer schema](https://github.com/cbusillo/launchplane/issues/5982#issuecomment-6795148145)
