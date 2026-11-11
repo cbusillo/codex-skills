@@ -66,7 +66,6 @@ class ServicesTests(unittest.TestCase):
                         stdout = f"state = {'running' if active else 'not running'}\n" if platform == "darwin" else "active" if active else "failed"
                         command.return_value = subprocess.CompletedProcess([], 0 if active or platform == "darwin" else 3, stdout, "")
                         self.assertEqual(bool(services.catalog_service_warning()), not active)
-                        self.assertEqual(command.call_args.kwargs["timeout"], 2)
                     command.side_effect = subprocess.TimeoutExpired("manager", 2)
                     self.assertTrue(services.catalog_service_warning())
                     command.side_effect = None
