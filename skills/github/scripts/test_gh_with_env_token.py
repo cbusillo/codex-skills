@@ -589,30 +589,6 @@ def test_app_installation_follows_the_target_repository() -> None:
             assert result.returncode == 0, (args, result.stderr)
             assert result.stdout == f"{token}\n", (args, result.stdout)
 
-        # Repository-scoped GraphQL (GitHubReader sets GH_REPO): a query is a
-        # read and keeps the App reader without an installation; a mutation is not.
-        for query, token in {
-            "query=query { repository(owner:\"x\",name:\"y\") { id } }": "token:--repo second-owner/site",
-            "query=mutation { addStar(input:{starrableId:\"x\"}) { clientMutationId } }":
-                "token:--repo second-owner/site --require-installation",
-        }.items():
-            result = run_wrapper(env_file, unused, identity, "api", "graphql", "-f", query,
-                                 gh_command=fake_gh, extra_env={"GH_REPO": "second-owner/site"})
-            assert result.returncode == 0, (query, result.stderr)
-            assert result.stdout == f"{token}\n", (query, result.stdout)
-        # gh sends an uncaptured --input body instead of the query field, and
-        # the own-user opt-in keeps its contributor route.
-        body = root / "mutation.json"
-        body.write_text('{"query":"mutation { addStar(input:{starrableId:\\"x\\"}) { clientMutationId } }"}')
-        stdin_query = '{"query":"query { viewer { id } }"}'
-        for args, extra in (((f"--input={body}",), {}), (("--input", "-", f"--input={body}"), {}),
-                            ((), {"GH_WITH_ENV_TOKEN_OWN_USER": "1"})):
-            result = run_wrapper(env_file, unused, identity, "api", "graphql", *args, "-f", "query=query { viewer { id } }",
-                                 gh_command=fake_gh, extra_env={"GH_REPO": "second-owner/site", **extra},
-                                 input_text=stdin_query)
-            assert result.returncode == 0, (args, extra, result.stderr)
-            assert result.stdout == "token:--repo second-owner/site --require-installation\n", (args, extra, result.stdout)
-
         refused = run_wrapper(
             env_file, unused, identity,
             "api", "repos/other-owner/uncovered/issues/1/comments", "--method", "POST", "-f", "body=x",
@@ -620,6 +596,35 @@ def test_app_installation_follows_the_target_repository() -> None:
         )
         assert refused.returncode != 0
         assert "not installed on other-owner/uncovered" in refused.stderr
+
+
+def test_scoped_graphql_needs_an_installation_unless_its_sent_body_is_a_query() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        env_file, _identity, unused = app_fixture(root)
+        identity = root / "identity.py"
+        write(identity, "import sys\nprint('catalog-app[bot]')\nprint('token:' + ' '.join(sys.argv[2:]))\n")
+        fake_gh = root / "gh"
+        write(fake_gh, "#!/bin/sh\nprintf '%s\\n' \"$GH_TOKEN\"\n")
+        mutation_file = root / "mutation.json"
+        mutation_file.write_text('{"query":"mutation { addStar(input:{starrableId:\\"x\\"}) { clientMutationId } }"}')
+        query_field = "query=query { viewer { id } }"
+        app_reader = "token:--repo second-owner/site"
+        installation_required = f"{app_reader} --require-installation"
+        cases = [
+            (("-f", query_field), {}, app_reader),
+            (("-f", "query=mutation { addStar(input:{starrableId:\"x\"}) { clientMutationId } }"), {}, installation_required),
+            ((f"--input={mutation_file}", "-f", query_field), {}, installation_required),
+            (("--input", "-", f"--input={mutation_file}", "-f", query_field), {}, installation_required),
+            (("--input", "-"), {}, app_reader),
+            (("-f", query_field), {"GH_WITH_ENV_TOKEN_OWN_USER": "1"}, installation_required),
+        ]
+        for args, extra, token in cases:
+            result = run_wrapper(env_file, unused, identity, "api", "graphql", *args, gh_command=fake_gh,
+                                 extra_env={"GH_REPO": "second-owner/site", **extra},
+                                 input_text='{"query":"query { viewer { id } }"}')
+            assert result.returncode == 0, (args, extra, result.stderr)
+            assert result.stdout == f"{token}\n", (args, extra, result.stdout)
 
 
 def test_api_write_checks_read_arguments_as_gh_does() -> None:
