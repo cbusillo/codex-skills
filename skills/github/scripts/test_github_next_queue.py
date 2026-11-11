@@ -115,19 +115,21 @@ def test_idle_live_sessions_with_lapsed_claim_leases_stay_owned() -> None:
                 patch.object(lease, 'uses_live_claims', return_value=False), \
                 patch.object(liveness, 'process_started_at', return_value=born), \
                 patch.object(liveness, 'native_arguments', return_value=['claude', '--session-id', worker, '--', 'brief']):
-            with patch.object(liveness, 'process_absent', return_value=False):
-                for session in (lead, executor, worker):
-                    result = classify_claimed(session)
-                    assert result['next_actor_session_state'] == lease.LIVE
-                    assert result['reason'] == 'named_recipient_requires_reconciliation'
-                    assert result['ownership_evidence'][0]['worker'] == session
-                with patch.object(lease, 'state', return_value=lease.LIVE):
-                    released = item(actor=f'agent:{lead}')
-                    released['discussion']['comments'] = [{'id': 1, 'author': 'bot', 'created_at': '2026-11-11T18:27:00Z',
-                        'body': claim.marker({'worker': 'worker', 'session': lead, 'branch': 'work/source',
-                                              'claimed_at': '2026-11-11T18:27:00Z'})},
-                        {'id': 2, 'author': 'bot', 'created_at': '2026-11-11T18:28:00Z', 'body': 'Released claim 1'}]
-                    assert classify(released)['reason'] == 'named_recipient_requires_reconciliation'
+            for live_claims in (False, True):
+                with patch.object(liveness, 'process_absent', return_value=False), \
+                        patch.object(lease, 'uses_live_claims', return_value=live_claims):
+                    for session in (lead, executor, worker):
+                        result = classify_claimed(session)
+                        assert result['next_actor_session_state'] == lease.LIVE
+                        assert result['reason'] == 'named_recipient_requires_reconciliation'
+                        assert result['ownership_evidence'][0]['worker'] == session
+            with patch.object(liveness, 'process_absent', return_value=False), patch.object(lease, 'state', return_value=lease.LIVE):
+                released = item(actor=f'agent:{lead}')
+                released['discussion']['comments'] = [{'id': 1, 'author': 'bot', 'created_at': '2026-11-11T18:27:00Z',
+                    'body': claim.marker({'worker': 'worker', 'session': lead, 'branch': 'work/source',
+                                          'claimed_at': '2026-11-11T18:27:00Z'})},
+                    {'id': 2, 'author': 'bot', 'created_at': '2026-11-11T18:28:00Z', 'body': 'Released claim 1'}]
+                assert classify(released)['reason'] == 'named_recipient_requires_reconciliation'
             with patch.object(liveness, 'process_absent', return_value=False), \
                     patch.object(liveness, 'native_arguments', side_effect=OSError('ps unavailable')), \
                     patch.object(liveness, 'process_started_at', side_effect=OSError('ps unavailable')):

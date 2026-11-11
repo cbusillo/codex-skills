@@ -236,12 +236,11 @@ def classify(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[st
                 "ownership_evidence": [*conflicts, *artifacts], "certainty": "current_or_stale"}
     if actor and actor.startswith("agent:"):
         session_state = row.get("next_actor_session_state")
-        claim_ended = released_actor(actor, discussion, trusted) or any(
-            actor.removeprefix("agent:").casefold() in {record["worker"].casefold(), record["session"].casefold()}
-            for record in facts["ended_ownership"])
-        if session_state == github_plan_lease.EXPIRED or session_state is None and claim_ended:
+        if session_state == github_plan_lease.EXPIRED or session_state is None and (released_actor(actor, discussion, trusted) or any(
+                actor.removeprefix("agent:").casefold() in {record["worker"].casefold(), record["session"].casefold()}
+                for record in facts["ended_ownership"])):
             return {**row, "state": "needs_status", "reason": "next_actor_session_released"}
-        if session_state == github_plan_lease.LIVE and claim_ended and not facts["recipients"]:
+        if session_state == github_plan_lease.LIVE and not facts["recipients"]:
             facts["recipients"].append(github_plan_claim.recipient_evidence(status, [], repo=item["repo"], number=item["number"], trusted=trusted))
     if row.get("next_actor_session_state") == github_plan_lease.UNKNOWN:
         return {**row, "state": "needs_status", "reason": "next_actor_session_unknown",
