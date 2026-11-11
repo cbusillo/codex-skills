@@ -13,12 +13,11 @@ import os
 import sys
 import urllib.error
 import urllib.parse
-import urllib.request
 from pathlib import Path
 from typing import Any, BinaryIO, NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from launchplane_safety import LaunchplaneSafetyError, build_launchplane_url, safe_urlopen, validate_service_url  # noqa: E402
+from launchplane_safety import LaunchplaneSafetyError, validate_service_url  # noqa: E402
 
 SPEC = importlib.util.spec_from_file_location("caller_operator", Path(__file__).with_name("launchplane-write-action.py"))
 assert SPEC is not None and SPEC.loader is not None
@@ -40,7 +39,8 @@ def open_evidence(path: str) -> BinaryIO:
     target = Path(path).expanduser().absolute()
     if "task-evidence" not in target.parent.parts or target.parent.resolve(strict=True) != target.parent:
         raise ValueError("private_task_evidence_required")
-    if target.is_relative_to(operator.active_repo_root()):
+    repository = operator.active_repo_root()
+    if repository is not None and target.is_relative_to(repository):
         raise ValueError("private_task_evidence_required")
     descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     return os.fdopen(descriptor, "wb")
@@ -102,9 +102,9 @@ def service_output(payload: Any, schema: dict[str, Any], document: dict[str, Any
         if isinstance(value, str):
             output[key] = operator.public_service_text(value)
         elif isinstance(value, dict):
-            diagnostics = operator.service_response_diagnostics({"error": value})
+            selected = diagnostics if key == "error" else operator.service_response_diagnostics({"error": value})
             output[key] = {
-                field: diagnostics["error_" + field] for field in ("code", "message", "reason") if diagnostics.get("error_" + field)
+                field: selected["error_" + field] for field in ("code", "message", "reason") if selected.get("error_" + field)
             }
     return output
 
@@ -112,17 +112,11 @@ def service_output(payload: Any, schema: dict[str, Any], document: dict[str, Any
 def exchange(
     settings: dict[str, str], method: str, path: str, query: dict[str, str], body: Any, key: str, timeout: float
 ) -> tuple[int, bytes]:
-    url = build_launchplane_url(settings["service_url"], path, query=urllib.parse.urlencode(query))
-    data = None if body is None else json.dumps(body).encode()
-    request = urllib.request.Request(url, data=data, method=method)
-    request.add_header("Accept", "application/json")
-    request.add_header("Authorization", f"Bearer {settings['token']}")
-    if data is not None:
-        request.add_header("Content-Type", "application/json")
-    if key:
-        request.add_header("Idempotency-Key", key)
     try:
-        response = safe_urlopen(request, timeout=timeout)
+        response = operator.request_launchplane_response(
+            service_url=settings["service_url"], path=path, settings=settings, method=method,
+            body=body, query=query, timeout=timeout, idempotency_key=key, no_store=True,
+        )
     except urllib.error.HTTPError as error:
         response = error
     with response:
@@ -181,12 +175,15 @@ def call(args: argparse.Namespace, evidence: BinaryIO) -> int:
         path = path.replace("{" + name + "}", urllib.parse.quote(value, safe=""))
     try:
         status, raw = exchange(settings, method, path, pairs(args.query), body, args.idempotency_key, args.timeout)
+        evidence.write(raw)
+        evidence.flush()
     except (OSError, ValueError, http.client.HTTPException) as error:
-        evidence.write(json.dumps({"transport_error": type(error).__name__, "detail": str(error)}).encode())
         print(json.dumps({"status": "outcome_unknown" if method not in {"GET", "HEAD", "OPTIONS"} else "unavailable"}))
+        try:
+            evidence.write(json.dumps({"transport_error": type(error).__name__, "detail": str(error)}).encode())
+        except OSError:
+            return 1
         return 1
-    evidence.write(raw)
-    evidence.flush()
     unknown = method not in {"GET", "HEAD", "OPTIONS"} and (status >= 500 or status == 408)
     try:
         payload = json.loads(raw)

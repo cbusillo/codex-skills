@@ -81,6 +81,7 @@ key and reconcile the original operation before retrying. The caller never retri
 Launchplane owns request validation, authority, matching dry-run enforcement,
 idempotency and operation-specific recovery. Read its live request schema and
 [operation docs](https://github.com/cbusillo/launchplane/blob/main/docs/agent-operator-contract.md)
-for the selected operation. Configuration readback is a fresh dry run showing
-no planned changes, plus the appropriate service metadata read where needed;
-recorded settings do not prove runtime sync or deployment.
+for the selected operation. For ordinary configuration, read back with a fresh
+dry run showing no planned changes. First-empty uses `product-secret-bindings-read`;
+business hours uses `product-profile-read`. Recorded settings do not prove
+runtime sync or deployment.

@@ -1058,13 +1058,13 @@ product-config-preflight` when agent-side authorization or managed-secret
   5. Use the signed-in, scoped admin path when a human-approved runtime or
      managed-secret mutation is required.
   6. Build a product-config request for `POST /v1/product-config/apply` only in
-     an approved admin surface. The helper may submit dry-run/apply from a
+     an approved admin surface. The generic caller submits dry-run/apply from a
      private local payload file, never from chat, CLI plaintext secret args, or
      committed examples.
-  7. **Dry-run** and inspect redacted results.
+  7. **Dry-run** and inspect the saved private response.
   8. **Apply** with a concrete reason after the dry-run succeeds, under the
      authority established by [task scope](../references/execution-scope.md).
-  9. Inspect returned `next_actions` and complete required follow-up actions;
+  9. Inspect `next_actions` in the saved private response and complete required follow-up actions;
      product-config apply can update Launchplane records before the live target
      runtime has been synced.
 

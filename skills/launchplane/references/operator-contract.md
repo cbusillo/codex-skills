@@ -23,7 +23,7 @@ For operation authority and the installed client's HTTP bindings, read
   live value is missing from Launchplane records or explicit scoped admin input,
   fail closed and ask for the service/admin source instead of inferring it
   from repo-local files.
-- **Verification**: Always perform a `dry-run` and inspect redacted evidence
+- **Verification**: Always perform a `dry-run` and inspect the saved private response
   before applying changes.
 - **Reason**: Apply operations require a concrete non-empty reason.
 - **Helper**: Use the [generic caller](agent-operator-contract.md#generic-caller) for product-config and `scripts/launchplane-write-action.py` for the remaining installed operations, with

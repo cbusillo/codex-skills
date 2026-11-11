@@ -8,6 +8,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import os
 import socket
 import stat
 import sys
@@ -203,6 +204,31 @@ class CallerTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(output["status"], "accepted_unverified")
         self.assertEqual(json.loads((self.root / "malformed.json").read_bytes()), self.payload)
+        self.raw_reply = b"private-unparseable-reply"
+        code, output = self.run_call("unparseable.json", "--mode", "apply")
+        self.assertEqual(code, 1)
+        self.assertEqual(output["status"], "accepted_unverified")
+        self.assertEqual((self.root / "unparseable.json").read_bytes(), self.raw_reply)
+
+    def test_evidence_write_failure_after_apply_is_unknown_without_retry(self) -> None:
+        with patch.object(caller, "open_evidence") as evidence:
+            evidence.return_value.__enter__.return_value.write.side_effect = OSError("private-disk-canary")
+            code, output = self.run_call("disk-full.json", "--mode", "apply")
+        self.assertEqual(code, 1)
+        self.assertEqual(output["status"], "outcome_unknown")
+        self.assertNotIn("canary", json.dumps(output))
+        self.assertEqual(len(self.observed), 1)
+
+    def test_private_body_and_evidence_work_outside_git(self) -> None:
+        body = self.root / "body.json"
+        body.write_text('{"private":"body-canary"}')
+        previous = Path.cwd()
+        try:
+            os.chdir(self.root.parent)
+            self.assertEqual(self.run_call("outside-git.json", "--body-file", str(body))[0], 0)
+        finally:
+            os.chdir(previous)
+        self.assertEqual(self.observed[0][1]["private"], "body-canary")
 
     def test_private_body_and_evidence_cannot_live_in_the_repository(self) -> None:
         repository = self.root.parent.parent / "source"

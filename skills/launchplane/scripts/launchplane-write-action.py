@@ -300,7 +300,7 @@ def _is_relative_to(path: Path, base: Path) -> bool:
         return any(parent.samefile(base) for parent in path.parents)
 
 
-def active_repo_root() -> Path:
+def active_repo_root() -> Path | None:
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
@@ -311,9 +311,13 @@ def active_repo_root() -> Path:
         root = result.stdout.strip()
         if root:
             return Path(root).resolve(strict=True)
-    except (OSError, subprocess.CalledProcessError):
-        pass
-    return Path.cwd().resolve(strict=True)
+    except subprocess.CalledProcessError as exc:
+        if "not a git repository" in str(exc.stderr or ""):
+            return None
+        raise ValueError("repo_root_unavailable") from exc
+    except OSError as exc:
+        raise ValueError("repo_root_unavailable") from exc
+    raise ValueError("repo_root_unavailable")
 
 
 def path_with_resolved_parent(path: Path) -> Path:
@@ -693,50 +697,46 @@ def _read_service_response(response: Any, *, private_no_store: bool = False) -> 
     return _ServiceResponse(payload, status, etag=etag if isinstance(etag, str) else "")
 
 
-def request_launchplane(
-    *,
-    service_url: str,
-    path: str,
-    settings: dict[str, str],
-    body: dict[str, object],
-    timeout: float,
-    idempotency_key: str = "",
-    if_match: str = "",
-    no_store: bool = False,
-) -> dict[str, Any]:
-    data = json.dumps(body, separators=(",", ":")).encode()
-    request = urllib.request.Request(build_url(service_url, path), data=data, method="POST")
+def request_launchplane_response(
+    *, service_url: str, path: str, settings: dict[str, str], method: str,
+    body: object = None, query: Mapping[str, str | list[str]] | None = None,
+    timeout: float, idempotency_key: str = "", if_match: str = "", no_store: bool = False,
+) -> Any:
+    url = build_launchplane_url(service_url, path, query=urllib.parse.urlencode(query or {}, doseq=True))
+    data = None if body is None else json.dumps(body, separators=(",", ":")).encode()
+    request = urllib.request.Request(url, data=data, method=method)
     request.add_header("Accept", "application/json")
-    request.add_header("Content-Type", "application/json")
     request.add_header("Authorization", f"Bearer {settings['token']}")
+    if data is not None:
+        request.add_header("Content-Type", "application/json")
     if idempotency_key:
         request.add_header("Idempotency-Key", idempotency_key)
     if if_match:
         request.add_header("If-Match", if_match)
     if no_store:
         request.add_header("Cache-Control", "no-store")
-    with safe_urlopen(request, timeout=timeout) as response:
+    return safe_urlopen(request, timeout=timeout)
+
+
+def request_launchplane(
+    *, service_url: str, path: str, settings: dict[str, str], body: dict[str, object],
+    timeout: float, idempotency_key: str = "", if_match: str = "", no_store: bool = False,
+) -> dict[str, Any]:
+    with request_launchplane_response(
+        service_url=service_url, path=path, settings=settings, method="POST", body=body,
+        timeout=timeout, idempotency_key=idempotency_key, if_match=if_match, no_store=no_store,
+    ) as response:
         return _read_service_response(response, private_no_store=no_store)
 
 
 def request_launchplane_read(
-    *,
-    service_url: str,
-    path: str,
-    settings: dict[str, str],
-    query: Mapping[str, str | list[str]],
-    timeout: float,
-    no_store: bool = False,
+    *, service_url: str, path: str, settings: dict[str, str], query: Mapping[str, str | list[str]],
+    timeout: float, no_store: bool = False,
 ) -> dict[str, Any]:
-    encoded_query = urllib.parse.urlencode(query, doseq=True)
-    request = urllib.request.Request(
-        build_launchplane_url(service_url, path, query=encoded_query), method="GET"
-    )
-    request.add_header("Accept", "application/json")
-    request.add_header("Authorization", f"Bearer {settings['token']}")
-    if no_store:
-        request.add_header("Cache-Control", "no-store")
-    with safe_urlopen(request, timeout=timeout) as response:
+    with request_launchplane_response(
+        service_url=service_url, path=path, settings=settings, method="GET", query=query,
+        timeout=timeout, no_store=no_store,
+    ) as response:
         return _read_service_response(response, private_no_store=no_store)
 
 
@@ -5155,8 +5155,8 @@ def read_payload_file(path: str) -> dict[str, object]:
         absolute_payload_path = path_with_resolved_parent(payload_path)
         resolved_payload_path = payload_path.resolve(strict=True)
         repo_root = active_repo_root()
-        repo_local = _is_relative_to(absolute_payload_path, repo_root) or _is_relative_to(
-            resolved_payload_path, repo_root
+        repo_local = repo_root is not None and (
+            _is_relative_to(absolute_payload_path, repo_root) or _is_relative_to(resolved_payload_path, repo_root)
         )
     except OSError:
         raise ValueError("invalid_payload_path") from None

@@ -2005,8 +2005,9 @@ Run dry-run, review its private full response, then apply the same intent with
 its own stable key, distinct from the dry run's key. Launchplane requires a matching dry run and any
 intent-specific reviewed digest before writing. Refusals are the service's
 own answer. On uncertainty preserve the request, review and key and use the
-service's original-operation recovery before any retry. Use a fresh dry run
-and relevant metadata read for configuration readback.
+service's original-operation recovery before any retry. For readback, use a fresh
+dry run for ordinary configuration, `product-secret-bindings-read` for first-empty,
+and `product-profile-read` for business hours.
 
 ## Merge-Train Policy Import
 
