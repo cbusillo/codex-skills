@@ -773,6 +773,31 @@ class LedgerTests(unittest.TestCase):
         self.assertFalse(finished_map.candidates(self.ledger)[0]["candidate"])
         self.assertIn("error", codex_idle_watch.poll(self.ledger, {}, 90, 1200)[0])
 
+    def test_lead_metrics_use_own_transcript_and_preserve_unreadable_leads(self) -> None:
+        self.entry["worker_cap"] = 3
+        for harness in ("codex", "claude"):
+            with self.subTest(harness=harness):
+                started = "2026-10-03T00:00:00Z"
+                compacted = "2026-10-03T02:00:00Z"
+                if harness == "codex":
+                    self.entry["harness"] = harness
+                    self.write([event("task_started"), {"type": "compacted", "timestamp": compacted},
+                                event("agent_message", message="mentions compacted but is not a boundary")])
+                else:
+                    self.write_claude([claude("working"), {"type": "system", "subtype": "compact_boundary", "timestamp": compacted},
+                                       {"type": "user", "isCompactSummary": True, "timestamp": compacted,
+                                        "message": {"content": "summary"}}])
+                records = session_record.read_jsonl(self.transcript)
+                records[0]["timestamp"] = started
+                write_jsonl(self.transcript, records)
+                row = compact_check.report(self.ledger)["sessions"][0]
+                self.assertEqual(row["lead"], {"started_at": started, "compactions": [compacted]})
+                self.transcript.unlink()
+                row = compact_check.report(self.ledger)["sessions"][0]
+                self.assertIn("lead", row)
+                self.assertIsNone(row["lead"])
+                self.assertIn("error", row)
+
     def test_compact_checks_keep_action_and_coverage_without_response_contents(self) -> None:
         state = self.root / "check.json"
         with patch_attr(compact_check, "session_status", wraps=session_record.session_status) as read:
@@ -781,6 +806,7 @@ class LedgerTests(unittest.TestCase):
         self.assertTrue(report["coverage"]["complete"])
         self.assertEqual(report["sessions"][0]["action"], finished_map.candidates(self.ledger)[0]["closeout_request"]["action"])
         self.assertNotIn("last_text", json.dumps(report))
+        self.assertNotIn("lead", report["sessions"][0])
         self.assertTrue(compact_check.check(self.ledger, state)["sessions"])
         self.write([event("task_started", turn_id="working")])
         self.assertTrue(compact_check.check(self.ledger, state)["sessions"])
