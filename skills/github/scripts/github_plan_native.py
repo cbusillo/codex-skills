@@ -33,49 +33,64 @@ async def connection(home: Path, *, max_msg_size: int = 64 * 1024 * 1024, deadli
     try:
         endpoint = closure.daemon_endpoint(home).resolve(strict=True)
         info = endpoint.stat()
-    except FileNotFoundError as error:
+    except FileNotFoundError as endpoint_error:
         remedy = importlib.import_module("codex_session_proxy").stopped_daemon_remedy(home)
-        raise ValueError(f"source daemon endpoint unavailable for CODEX_HOME={home}; {remedy}") from error
+        raise ValueError(f"source daemon endpoint unavailable for CODEX_HOME={home}; {remedy}") from endpoint_error
     if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
         raise ValueError("native socket ownership is unavailable")
     sequence = 0
-    stage = "connect"
-    try:
-        async with asyncio.timeout(read_timeout(deadline_at)):
-            async with aiohttp.ClientSession(connector=aiohttp.UnixConnector(path=str(endpoint))) as client:
-                async with client.ws_connect("http://localhost/", max_msg_size=max_msg_size) as ws:
+    remaining = read_timeout(deadline_at)
+    async with asyncio.timeout(None if deadline_at is None else remaining) as deadline:
+        try:
+            async with aiohttp.ClientSession(connector=aiohttp.UnixConnector(path=str(endpoint)),
+                                            timeout=aiohttp.ClientTimeout(total=remaining)) as client:
+                try:
+                    ws = await client.ws_connect("http://localhost/", max_msg_size=max_msg_size,
+                                                 timeout=aiohttp.ClientWSTimeout(ws_close=remaining))
+                except TimeoutError as connect_error:
+                    raise TimeoutError("native connect timed out (TimeoutError); preserve state before retrying") from connect_error
+                async with ws:
                     async def request(method: str, params: dict) -> Any:
-                        nonlocal sequence, stage
-                        stage = method
+                        nonlocal sequence, remaining
                         sequence += 1
-                        await ws.send_json({"id": sequence, "method": method, "params": params})
-                        while True:
-                            try:
-                                message = await ws.receive_json()
-                            except aiohttp.WSMessageTypeError as error:
-                                raise ValueError("native response is unavailable; preserve the uncertain operation and do not replay") from error
-                            if not isinstance(message, dict):
-                                raise ValueError("native response is unavailable")
-                            if message.get("id") == sequence and "method" not in message:
-                                if "error" in message:
-                                    raise NativeRequestRejected("native request rejected")
-                                if "result" not in message:
-                                    raise ValueError("native response is unavailable")
-                                return message["result"]
+                        started = time.monotonic()
+                        try:
+                            async with asyncio.timeout(min(remaining, read_timeout(deadline_at))):
+                                await ws.send_json({"id": sequence, "method": method, "params": params})
+                                while True:
+                                    try:
+                                        message = await ws.receive_json()
+                                    except aiohttp.WSMessageTypeError as error:
+                                        raise ValueError("native response is unavailable; preserve the uncertain operation and do not replay") from error
+                                    if not isinstance(message, dict):
+                                        raise ValueError("native response is unavailable")
+                                    if message.get("id") == sequence and "method" not in message:
+                                        if "error" in message:
+                                            raise NativeRequestRejected("native request rejected")
+                                        if "result" not in message:
+                                            raise ValueError("native response is unavailable")
+                                        return message["result"]
+                        except (TimeoutError, asyncio.CancelledError) as error:
+                            if isinstance(error, asyncio.CancelledError) and not deadline.expired():
+                                raise
+                            raise TimeoutError(f"native {method} timed out (TimeoutError); preserve state before retrying") from error
+                        finally:
+                            remaining = max(0, remaining - (time.monotonic() - started))
                     initialized = await request("initialize", {"clientInfo": {"name": "codex_skills_claim", "version": "1"},
                                                                "capabilities": {"experimentalApi": True}})
                     native_home = initialized.get("codexHome") if isinstance(initialized, dict) else None
                     request.codex_home = str(Path(native_home).resolve()) if isinstance(native_home, str) and Path(native_home).is_absolute() else None
                     if request.codex_home != str(home.resolve()):
                         raise ValueError("native daemon home identity disagrees with the source")
-                    await ws.send_json({"method": "initialized"})
+                    async with asyncio.timeout(remaining):
+                        await ws.send_json({"method": "initialized"})
                     yield request
-    except TimeoutError as error:
-        raise TimeoutError(f"native {stage} timed out ({type(error).__name__}); preserve state before retrying") from error
-    except aiohttp.ClientError as error:
-        if isinstance(error, (OSError, ValueError)):
-            raise  # Preserve existing known-absence and ordinary refusal handling.
-        raise ValueError("native transport failed; preserve the uncertain operation and do not replay") from error
+                if ws.exception() is not None:
+                    raise ValueError("native connection cleanup failed; preserve the uncertain operation and do not replay") from ws.exception()
+        except aiohttp.ClientError as transport_error:
+            if isinstance(transport_error, (OSError, ValueError)):
+                raise  # Preserve existing known-absence and ordinary refusal handling.
+            raise ValueError("native transport failed; preserve the uncertain operation and do not replay") from transport_error
 
 
 def read_timeout(deadline_at=None):
@@ -83,8 +98,6 @@ def read_timeout(deadline_at=None):
 
 
 async def pages(request, method, session, **params):
-    # A valid continuation chain is read in full. The caller's deadline (the
-    # connection's own timeout) bounds it, not a page count a long session outgrows.
     cursor, seen = None, set()
     while True:
         page = await request(method, {"threadId": session, "limit": 20, "cursor": cursor, **params})

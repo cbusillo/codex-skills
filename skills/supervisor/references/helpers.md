@@ -1612,6 +1612,8 @@ claiming the correction took effect. Both receipts omit message contents.
 Before it takes the lease, input delivery asks the `--codex-home` daemon to read the
 thread and refuses, with nothing written, unless that daemon has it loaded.
 The submission uses that same connection.
+Native exchanges share a bounded read budget; ownership checks use their own
+deadline and do not spend it. A handed-off source still refuses before submission.
 Account homes can share one sessions directory, so a transcript does not show
 which home runs the thread; only the running home's daemon delivers queued
 input. Take the home from the ledger's `codex_home`. Resume a stopped session
