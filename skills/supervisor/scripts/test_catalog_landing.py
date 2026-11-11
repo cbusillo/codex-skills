@@ -260,7 +260,7 @@ class CatalogLandingTests(unittest.TestCase):
             self.assertEqual(post.call_count, 1)
 
     def test_retryable_runtime_reads_keep_service_polling_without_advancing_cursor(self) -> None:
-        failed = {"ok": False, "status": "retryable", "reason_code": "fetch_failed", "runtime_mutated": False}
+        failed = {"ok": False, "status": "retryable", "reason_code": "runtime_catchup_timeout", "runtime_mutated": False}
         config = self.root / "catalog.json"
         config.write_text(json.dumps(self.config))
         service = self.root / "services.json"
@@ -272,7 +272,9 @@ class CatalogLandingTests(unittest.TestCase):
         (self.root / "cursor.json").write_text(json.dumps(cursor))
         responses = [failed, {"status": "already_current", "after_sha": "tip"}]
 
-        def runtime(*_args: Any, **_kwargs: Any) -> subprocess.CompletedProcess:
+        def runtime(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+            if "--timeout-seconds" not in argv or float(argv[argv.index("--timeout-seconds") + 1]) >= kwargs["timeout"]:
+                raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
             payload = responses.pop(0)
             return subprocess.CompletedProcess([], int(payload.get("ok") is False), json.dumps(payload), "")
 
@@ -390,6 +392,15 @@ class CatalogLandingTests(unittest.TestCase):
         self.assertEqual(saved["stdout"], "partial output")
         self.assertEqual(saved["stderr"], "failure detail")
         self.assertFalse(operation.state["steps"]["write"]["complete"])
+
+    def test_runtime_process_timeout_never_becomes_a_retryable_no_write_receipt(self) -> None:
+        operation = Operation(self.root, ["runtime-timeout"])
+        with (patch.object(Operation, "run", operation_run),
+              patch.object(subprocess, "run", side_effect=subprocess.TimeoutExpired("helper", 660)),
+              self.assertRaises(GateFailed) as failure):
+            operation.run("runtime", ["helper"], retry_read=True)
+        self.assertNotIsInstance(failure.exception, landing.RetryableGate)
+        self.assertIn("error", json.loads((self.root / "runtime.json").read_text()))
 
     def test_refusal_names_what_the_helper_blocked(self) -> None:
         blocked = {"ok": False, "blocked": ["https://github.com/owner/repo/pull/906: open non-draft PR has no handoff; mark it draft"]}

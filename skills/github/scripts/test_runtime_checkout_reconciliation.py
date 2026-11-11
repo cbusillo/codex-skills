@@ -1203,3 +1203,15 @@ def test_fetch_timeout_with_descendant_holding_output(tmp_path: Path) -> None:
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
+
+
+def test_cli_read_deadline_returns_conclusive_retry_without_runtime_write(tmp_path: Path) -> None:
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPT), "--repo", "owner/catalog", "--timeout-seconds", "0"],
+        text=True, capture_output=True, check=False, timeout=10,
+    )
+    payload = json.loads(proc.stdout)
+    assert proc.returncode == 1
+    assert payload["status"] == "retryable"
+    assert payload["runtime_mutated"] is False
+    assert payload["reason_code"] == "runtime_catchup_timeout"

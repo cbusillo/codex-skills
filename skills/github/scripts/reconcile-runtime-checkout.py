@@ -13,6 +13,7 @@ import contextvars
 import errno
 import hashlib
 import json
+import math
 import os
 import re
 import runpy
@@ -88,13 +89,18 @@ def parse_args() -> argparse.Namespace:
         help="The full Git commit SHA confirmed as landed on the repository default branch. "
         "Omit it to catch up to the fetched default-branch tip.",
     )
-    return parser.parse_args()
+    parser.add_argument("--timeout-seconds", type=float, help="Bound reads before fast-forward; mutations finish normally.")
+    args = parser.parse_args()
+    if args.timeout_seconds is not None and (not math.isfinite(args.timeout_seconds) or args.timeout_seconds < 0):
+        parser.error("--timeout-seconds must be finite and nonnegative")
+    return args
 
 
 def main() -> int:
     args = parse_args()
     try:
-        receipt = reconcile_runtime_checkout(args.merged_worktree, args.repo, args.landing_sha)
+        receipt = reconcile_runtime_checkout(args.merged_worktree, args.repo, args.landing_sha,
+                                            timeout_seconds=args.timeout_seconds)
     except GitCommandError as exc:
         receipt = finish(base_receipt(args.landing_sha), "failed", "unexpected_git_error")
         receipt["expected_repo"] = args.repo
