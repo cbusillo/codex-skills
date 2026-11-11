@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import ast
 import re
+from typing import NamedTuple
 
 from tree_sitter import Language, Node, Parser
 
@@ -969,7 +970,17 @@ def native_capabilities(root: Node) -> None:
                 raise ValueError("indirect call")
 
 
-def analyse(text: str, *, refusals: list[dict] | None = None, native_effects: bool = False) -> tuple[bool, list[tuple[Node, bool]]]:
+class JavascriptSyntax(NamedTuple):
+    root: Node
+    sites: list[tuple[Node, bool]]
+    errors: list[Node]
+    lexical: bool
+    invalid: Node | None
+    boundary: int | None
+    regex: bool
+
+
+def syntax_tree(text: str, *, native_effects: bool = False) -> JavascriptSyntax:
     import tree_sitter_javascript
 
     data = text.replace("\r\n", "\n").replace("\r", "\n").encode()
@@ -978,17 +989,22 @@ def analyse(text: str, *, refusals: list[dict] | None = None, native_effects: bo
     inert = []
     lexical = True
     invalid = None
+    errors = []
+    regex = False
     pending = [root]
     while pending:
         node = pending.pop()
-        pending.extend(reversed(node.named_children))
+        pending.extend(reversed(node.children))
         if node.is_missing:
             lexical = False
+        if node.is_missing or node.type == "ERROR":
+            errors.append(node)
         if invalid is None and (node.is_missing or node.type == "ERROR"):
             invalid = node
         if node.type == "regex" and source(node).startswith(("/*", "//")):
             lexical = False
             invalid = invalid or node
+        regex = regex or node.type == "regex"
         if node.type in {"string", "string_fragment", "escape_sequence", "comment", "hash_bang_line", "regex"}:
             if node.type == "comment" and source(node).startswith(("<!--", "-->")):
                 lexical = False
@@ -1004,18 +1020,49 @@ def analyse(text: str, *, refusals: list[dict] | None = None, native_effects: bo
         method = source(callee.child_by_field_name("property"))
         if receiver.type == "identifier" and source(receiver) == "tools" and method in SHELL_TOOLS | ({"apply_patch"} if native_effects else set()):
             sites.append((node.child_by_field_name("arguments"), method == "write_stdin"))
-    if not lexical or root.has_error or "\u2028" in text or "\u2029" in text:
-        if refusals is not None:
-            boundary = next((data.index(marker) for marker in (b"\xe2\x80\xa8", b"\xe2\x80\xa9") if marker in data), None)
-            refusals.append(refusal(invalid or root, "JavaScript syntax or lexical boundary", offset=boundary))
-        return False, sites
     visible = bytearray(data)
     for start, end in inert:
         visible[start:end] = bytes(value if value in {10, 13} else 32 for value in data[start:end])
-    if b"\\" in visible or b"<!--" in visible or b"#!" in visible or b"-->" in visible:
+    boundary = min(
+        (visible.index(marker) for marker in (b"\\", b"<!--", b"#!", b"-->", b"\xe2\x80\xa8", b"\xe2\x80\xa9") if marker in visible),
+        default=None,
+    )
+    separator = next((data.index(marker) for marker in (b"\xe2\x80\xa8", b"\xe2\x80\xa9") if marker in data), None)
+    boundary = separator if separator is not None else boundary
+    return JavascriptSyntax(root, sites, errors, lexical and boundary is None, invalid, boundary, regex)
+
+
+def invalid_property_quotes(text: str) -> list[Node]:
+    syntax = syntax_tree(text)
+    if not syntax.lexical or syntax.regex or not syntax.errors:
+        return []
+    for node in syntax.errors:
+        pair = node.parent
+        if node.type != "ERROR" or node.end_byte - node.start_byte != 1 or node.text != b'"' or pair is None or pair.type != "pair":
+            return []
+        key = pair.child_by_field_name("key")
+        siblings = pair.children
+        index = siblings.index(node)
+        if (
+            key is None
+            or key.type != "property_identifier"
+            or key.end_byte != node.start_byte
+            or index == 0
+            or siblings[index - 1] != key
+            or index + 1 >= len(siblings)
+            or siblings[index + 1].type != ":"
+            or siblings[index + 1].start_byte != node.end_byte
+        ):
+            return []
+    return syntax.errors
+
+
+def analyse(text: str, *, refusals: list[dict] | None = None, native_effects: bool = False) -> tuple[bool, list[tuple[Node, bool]]]:
+    syntax = syntax_tree(text, native_effects=native_effects)
+    root, sites = syntax.root, syntax.sites
+    if not syntax.lexical or root.has_error:
         if refusals is not None:
-            offset = min(visible.index(marker) for marker in (b"\\", b"<!--", b"#!", b"-->") if marker in visible)
-            refusals.append(refusal(root, "JavaScript lexical boundary", offset=offset))
+            refusals.append(refusal(syntax.invalid or root, "JavaScript syntax or lexical boundary", offset=syntax.boundary))
         return False, sites
     try:
         if native_effects:

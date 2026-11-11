@@ -88,6 +88,112 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
             row["ordinal"] = index
         return rows
 
+    @classmethod
+    def recorded_mixed_parse_failure(cls, source: str | None = None) -> list[dict]:
+        rows = cls.recorded_display(computed=True)
+        rows.pop(1)
+        rows[0]["payload"]["input"] = (
+            source
+            if source is not None
+            else (
+                'const folder="fixture";\n'
+                "text(await tools.exec_command({cmd:`cat ${folder}/a`,workdir:folder}));\n"
+                'text(await tools.exec_command({cmd:"cat b",limit_a":5}));\n'
+                'text(await tools.exec_command({cmd:"cat c",limit_b":6}));\n'
+            )
+        )
+        rows[-1]["payload"]["output"] = [
+            {"type": "input_text", "text": text} for text in check_claims.history.JAVASCRIPT_PARSE_FAILURE
+        ]
+        for index, row in enumerate(rows):
+            row["ordinal"] = index
+        return rows
+
+    def test_mixed_parse_failure_requires_complete_zero_effect_proof(self) -> None:
+        source = self.recorded_mixed_parse_failure()[0]["payload"]["input"]
+        for variation in (
+            source,
+            source.replace("fixture", "fixtüré"),
+            source.replace("\n", "\r\n"),
+            source.replace("limit_a", "other_key"),
+        ):
+            self.assertFalse(
+                check_claims.history.literal_targets(self.recorded_mixed_parse_failure(variation), SESSION)["unresolved_invocations"]
+            )
+        for kind in ("effect", "file-effect", "late-effect", "gap", "missing", "turn", "time", "overlap", "foreign-output"):
+            with self.subTest(kind=kind):
+                rows = self.recorded_mixed_parse_failure()
+                if kind in {"effect", "file-effect", "late-effect"}:
+                    event = self.recorded_display(COMMAND)[1]
+                    if kind == "file-effect":
+                        event["payload"]["item"].update(type="FileChange", status="completed")
+                    if kind == "late-effect":
+                        other = invocation("text(1)")
+                        for row in other:
+                            row["payload"]["call_id"] = "other"
+                        rows.extend(other)
+                        event["timestamp"] = "2026-01-01T00:00:03Z"
+                        event["payload"]["completed_at_ms"] += 2000
+                        rows.append(event)
+                    else:
+                        rows.insert(1, event)
+                    for index, row in enumerate(rows):
+                        row["ordinal"] = index
+                elif kind == "gap":
+                    rows[-1]["ordinal"] += 1
+                elif kind == "missing":
+                    rows.pop()
+                elif kind == "turn":
+                    rows[0]["payload"].pop("internal_chat_message_metadata_passthrough")
+                elif kind == "time":
+                    rows[-1]["timestamp"] = "2025-12-31T23:59:59Z"
+                elif kind == "overlap":
+                    other = invocation("text(1)")
+                    for row in other:
+                        row["payload"]["call_id"] = "other"
+                    rows[1:1] = other
+                    for index, row in enumerate(rows):
+                        row["ordinal"] = index
+                elif kind == "foreign-output":
+                    rows[-1]["payload"]["call_id"] = "other"
+                report = check_claims.history.literal_targets(rows, SESSION)
+                self.assertTrue(any(item["call_id"] == "call" for item in report["unresolved_invocations"]), report)
+
+    def test_runtime_errors_and_inert_quotes_cannot_supply_compile_proof(self) -> None:
+        claim = f"text(await tools.exec_command({{cmd:{json.dumps(COMMAND)}}}));"
+        mixed = self.recorded_mixed_parse_failure()[0]["payload"]["input"]
+        for source in (
+            claim + 'eval("invalid(");',
+            claim + 'new Function("invalid(");',
+            claim + 'throw new SyntaxError("Invalid or unexpected token");',
+            'text("({limit\\":5})");' + claim + 'eval("invalid(");',
+            'text(`({limit":5})\n`);' + claim + 'eval("invalid(");',
+            'const pattern=/({limit":5})/;' + claim + 'eval("invalid(");',
+            '<!-- ({limit":5})\n' + claim + 'eval("invalid(");',
+            '({limit":5}); text("closed");\n' + claim + 'eval("invalid(");',
+            '({limit:"broken});\n' + claim + 'eval("invalid(");',
+            '({[limit]":5});\n' + claim + 'eval("invalid(");',
+            '({"limit"":5});\n' + claim + 'eval("invalid(");',
+            '({limit":5});\n({other:});\n' + claim,
+            "({limit':5});\n" + claim + 'eval("invalid(");',
+            '({limit":5}); text("closed");\n' + mixed,
+            mixed + 'text("unfinished";',
+        ):
+            with self.subTest(source=source):
+                report = check_claims.history.literal_targets(self.recorded_mixed_parse_failure(source), SESSION)
+                self.assertTrue(any(item["call_id"] == "call" for item in report["unresolved_invocations"]), report)
+
+    def test_legacy_parse_failure_cannot_override_native_effects(self) -> None:
+        source = 'text(await tools.exec_command({cmd:"broken\ncommand"}));'
+        rows = self.recorded_mixed_parse_failure(source)
+        self.assertFalse(check_claims.history.literal_targets(rows, SESSION)["unresolved_invocations"])
+        rows.insert(1, self.recorded_display(COMMAND)[1])
+        for index, row in enumerate(rows):
+            row["ordinal"] = index
+        report = check_claims.history.literal_targets(rows, SESSION)
+        self.assertTrue(any(item["call_id"] == "call" for item in report["unresolved_invocations"]), report)
+        self.assertEqual(report["targets"], {("test/a", 5)})
+
     def test_recorded_display_and_computed_commands_use_native_effects(self) -> None:
         for command in ("cat evidence.json", COMMAND):
             for computed in (False, True):
@@ -1346,10 +1452,7 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
 
     def test_native_parse_failure_proves_the_cell_did_not_execute(self) -> None:
         source = 'text(await tools.exec_command({cmd:"cat <<EOF\\ngh-plan.py claim status\nEOF"}));'
-        output = [
-            {"type": "input_text", "text": "Script failed\nWall time 0.0 seconds\nOutput:\n"},
-            {"type": "input_text", "text": "Script error:\nSyntaxError: Invalid or unexpected token"},
-        ]
+        output = [{"type": "input_text", "text": text} for text in check_claims.history.JAVASCRIPT_PARSE_FAILURE]
         self.assertEqual(
             check_claims.history.literal_targets(invocation(source, output), SESSION),
             {"targets": set(), "unresolved_invocations": []},
@@ -1370,10 +1473,7 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
 
     def test_runtime_syntax_errors_cannot_erase_a_prior_claim(self) -> None:
         source = 'text(await tools.exec_command({cmd:"uv run gh-plan.py claim 5"})); eval("invalid(");'
-        output = [
-            {"type": "input_text", "text": "Script failed\nWall time 0.0 seconds\nOutput:\n"},
-            {"type": "input_text", "text": "Script error:\nSyntaxError: Invalid or unexpected token"},
-        ]
+        output = [{"type": "input_text", "text": text} for text in check_claims.history.JAVASCRIPT_PARSE_FAILURE]
         sources = [
             source,
             source + "return;",
