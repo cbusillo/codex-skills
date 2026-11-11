@@ -728,7 +728,9 @@ class OperationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             iterm_tab.fresh_claude_session("claude --resume earlier")
         result = dict(launch)
-        with patch.object(session_liveness, "inventory", return_value=[(8, "ttys001", "claude")]):
+        born = datetime(2026, 11, 11, tzinfo=UTC)
+        with patch.object(session_liveness, "inventory", return_value=[(8, "ttys001", "claude")]), \
+                patch.object(session_liveness, "process_started_at", return_value=born):
             asyncio.run(iterm_tab.register_fresh_launch(argparse.Namespace(ledger=ledger), result, {"claude_native": native}))
             second = iterm_tab.register_file_launch(launch, native, ledger)
         self.assertEqual(result["native_session_id"], second["session_id"])
@@ -736,6 +738,7 @@ class OperationTests(unittest.TestCase):
         rows = json.loads(ledger.read_text())
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["tmux_session_id"], launch["session_id"])
+        self.assertEqual(rows[0]["launch_started_at"], born.isoformat())
         with self.assertRaises(ValueError):
             iterm_tab.register_file_launch({**launch, "session_id": "another-terminal"}, native, ledger)
 
@@ -767,6 +770,7 @@ class OperationTests(unittest.TestCase):
                 return child
             with (self.subTest(label=label),
                   patch.object(session_liveness, "inventory", return_value=[(8, "ttys001", " ".join(agent)), (9, "ttys001", command)]),
+                  patch.object(session_liveness, "process_started_at", return_value=datetime(2026, 11, 11, tzinfo=UTC)),
                   patch.object(session_liveness, "native_arguments", side_effect=arguments)):
                 if success:
                     self.assertEqual(iterm_tab.register_file_launch(launch, native, ledger)["pid"], 8)
