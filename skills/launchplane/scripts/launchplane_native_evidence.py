@@ -374,7 +374,7 @@ def validate_native_execution_binding(
 
 def native_binding_receipt(binding: dict[str, Any]) -> dict[str, object]:
     try:
-        private_json = json.dumps(binding, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        private_json = json.dumps(binding, ensure_ascii=False, sort_keys=True).encode()
     except UnicodeEncodeError:
         raise LaunchplaneSafetyError("invalid_response") from None
     return {
