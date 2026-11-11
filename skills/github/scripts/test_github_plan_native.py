@@ -6,6 +6,7 @@
 import asyncio
 import copy
 import threading
+import time
 import json
 import io
 import importlib
@@ -232,6 +233,89 @@ class NativeFactsTests(unittest.IsolatedAsyncioTestCase):
 
 
 class NativeQueueTests(unittest.TestCase):
+    def test_slow_ownership_read_preserves_admission_and_refusal_before_queue_send(self) -> None:
+        import uuid
+        for admitted in (True, False):
+            with self.subTest(admitted=admitted), ReceiptFixture(str(uuid.uuid4())) as fixture:
+                with CLOSURE.resume_guard(fixture.session):
+                    CLOSURE.set_action_pending(fixture.session, False)
+                CLOSURE.admit_sources({fixture.session})
+                entered = []
+
+                def slow_claim_read(session: str) -> bool:
+                    entered.append(session)
+                    time.sleep(.15)
+                    return admitted
+
+                with patch.object(CLOSURE, "has_current_claim", side_effect=slow_claim_read), \
+                        patch.object(NATIVE, "read_timeout", return_value=.05):
+                    if admitted:
+                        result = asyncio.run(NATIVE.queue_input(fixture.home, fixture.session, "synthetic input"))
+                        self.assertEqual(result["delivery"], "turn_started")
+                        self.assertEqual(fixture.rpc_requests.count("thread/queue/add"), 1)
+                        self.assertFalse(CLOSURE.lease_state(fixture.session).get("successor_admitted"))
+                    else:
+                        with self.assertRaises(ValueError):
+                            asyncio.run(NATIVE.queue_input(fixture.home, fixture.session, "synthetic input"))
+                        self.assertFalse(fixture.mutations)
+                        self.assertTrue(CLOSURE.lease_state(fixture.session)["successor_admitted"])
+                        self.assertFalse(CLOSURE.action_pending(fixture.session))
+                self.assertEqual(entered, [fixture.session])
+
+    def test_default_native_stalls_keep_before_send_and_after_send_outcomes_distinct(self) -> None:
+        import uuid
+        for method in ("thread/read", "thread/queue/add"):
+            with self.subTest(method=method), ReceiptFixture(str(uuid.uuid4())) as fixture:
+                async def stalled(_request: dict) -> None:
+                    await asyncio.sleep(.2)
+
+                fixture.rpc_results[method] = stalled
+                with patch.object(NATIVE, "read_timeout", return_value=.05), self.assertRaises(ValueError) as caught:
+                    asyncio.run(NATIVE.queue_input(fixture.home, fixture.session, "synthetic input"))
+                self.assertEqual(fixture.rpc_requests.count(method), 1)
+                self.assertEqual(isinstance(caught.exception, NATIVE.QueueNotSent), method == "thread/read")
+                self.assertEqual(CLOSURE.action_pending(fixture.session), method == "thread/queue/add")
+
+    def test_default_native_pagination_spends_one_exchange_budget(self) -> None:
+        import uuid
+        with ReceiptFixture(str(uuid.uuid4())) as fixture:
+            async def continuing(request: dict) -> dict:
+                await asyncio.sleep(.02)
+                return {"data": [], "nextCursor": str(int(request["params"]["cursor"] or 0) + 1)}
+
+            fixture.rpc_results["thread/queue/list"] = continuing
+
+            async def read() -> None:
+                async with asyncio.timeout(1):
+                    async with NATIVE.connection(fixture.home) as request:
+                        await NATIVE.read_queue(request, fixture.session)
+
+            with patch.object(NATIVE, "read_timeout", return_value=.07), self.assertRaises(TimeoutError):
+                asyncio.run(read())
+            self.assertLess(fixture.rpc_requests.count("thread/queue/list"), 10)
+            self.assertFalse(fixture.mutations)
+
+    def test_caller_timeout_keeps_its_own_cause_and_failed_close_keeps_queue_uncertain(self) -> None:
+        import uuid
+        with ReceiptFixture(str(uuid.uuid4())) as fixture:
+            failure = TimeoutError("synthetic caller deadline")
+
+            async def read() -> None:
+                async with NATIVE.connection(fixture.home) as request:
+                    await NATIVE.read_thread(request, fixture.session)
+                    raise failure
+
+            with self.assertRaises(TimeoutError) as caught:
+                asyncio.run(read())
+            self.assertIs(caught.exception, failure)
+            transport = importlib.import_module("aiohttp")
+            with patch.object(transport.ClientWebSocketResponse, "exception", return_value=TimeoutError()), \
+                    self.assertRaises(ValueError) as caught:
+                asyncio.run(NATIVE.queue_input(fixture.home, fixture.session, "synthetic input"))
+            self.assertNotIsInstance(caught.exception, NATIVE.QueueNotSent)
+            self.assertEqual(fixture.rpc_requests.count("thread/queue/add"), 1)
+            self.assertTrue(CLOSURE.action_pending(fixture.session))
+
     def test_recovery_qualifies_the_recorded_resumed_generation_without_an_end_time(self) -> None:
         import uuid
         with ReceiptFixture(str(uuid.uuid4())) as fixture:
