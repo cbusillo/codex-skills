@@ -254,6 +254,24 @@ def test_native_operation_read_checks_exact_product_and_operation(field: str, va
     assert "PRIVATE_SENTINEL" not in json.dumps(output)
 
 
+@pytest.mark.parametrize("status", ["released", "absent", "held", "unknown"])
+def test_operation_read_retains_automatic_release_without_private_fields(status: str) -> None:
+    release = {"status": status, "reasons": ["native_inspection_unavailable"],
+        "plan_sha256": "a" * 64, "idempotency_key": "automatic"}
+    response = {"operation": {
+        "operation_id": "original-operation", "product": "example", "instance": "testing",
+        "status": "failed", "phase": "failed", "attempt": 1, "updated_at": "2026-10-17T00:00:00Z",
+        "candidate_release": {**release, "private": "PRIVATE_SENTINEL"},
+    }}
+    code, output, post, read, _ = invoke(args=[rebuild.READ_COMMAND, "--product", "example",
+        "--operation-id", "original-operation"], read_body=response)
+    assert code == 0
+    assert output["result"]["operation"]["candidate_release"] == release
+    assert "PRIVATE_SENTINEL" not in json.dumps(output)
+    post.assert_not_called()
+    read.assert_called_once()
+
+
 @pytest.mark.parametrize("args", [[rebuild.READ_COMMAND, "--product", "example", "--operation-id", "original-operation"],
     ["product-profile-read", "--product", "example"]])
 def test_shared_read_keeps_malformed_response_diagnostics(args: list[str]) -> None:

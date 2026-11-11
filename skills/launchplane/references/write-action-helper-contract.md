@@ -3056,6 +3056,15 @@ volume identity, which can include concurrent activity. A `released` result
 means the reviewed eligible resources are absent. Protected source volumes
 can remain.
 
+Optional candidate `references` retain each holding reason, record kind, safe
+record identifier and record hash. Empty references are omitted. Candidate and
+resource `readback` maps retain the producer's `pass`, `fail`, `unavailable` and
+`skipped` observations; absent or empty maps remain omitted. Optional
+`reason_code` retains the producer's outcome code. These observations do not
+change eligibility. `testing-rebuild-operation-read` also retains optional
+`operation.candidate_release` status, reasons, plan digest and automatic
+idempotency key from the operation record.
+
 On `held`, inspect the candidate and resource reasons. Any further attempt
 requires a fresh eligible plan and a new key if the previous key was used.
 On `outcome_unknown`, preserve the original request, evidence, digest and key

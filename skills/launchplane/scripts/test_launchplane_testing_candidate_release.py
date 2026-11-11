@@ -173,6 +173,7 @@ def test_held_plan_surfaces_evidence_and_cannot_apply(tmp_path: Path) -> None:
         "backing_sha256": digest,
         "free_bytes": 10,
         "private_path": "/private/volumes/one",
+        "readback": {"storage_consumers_exclusive": "unavailable", "resources_qualified": "skipped"},
     }
     candidate = {
         "namespace": "lp-testing-" + "a" * 32,
@@ -189,6 +190,11 @@ def test_held_plan_surfaces_evidence_and_cannot_apply(tmp_path: Path) -> None:
         "provider_evidence_sha256": digest,
         "lifecycle_snapshot_sha256": digest,
         "container_count": 1,
+        "readback": {"copy_native_files_readable": "fail", "copy_custody_matches": "pass"},
+        "references": [
+            {"reason": "source_inputs_preserved", "kind": "retained_volume", "record_id": "source-volume", "record_sha256": ""},
+            {"reason": "current_or_recovery_reference", "kind": "future_record", "record_id": "", "record_sha256": digest},
+        ],
         "resources": [resource],
         "physical_readback": {digest: {"before_bytes": 12, "after_bytes": 10, "observed_change_bytes": -2}},
     }
@@ -215,10 +221,12 @@ def test_held_plan_surfaces_evidence_and_cannot_apply(tmp_path: Path) -> None:
         capacity=[capacity],
         capacity_refusal="receiver_candidate_unavailable",
         reclaimable_bytes=None,
+        reason_code="provider_inventory_unavailable",
     )
     _, dry, _ = invoke(argv(), reply)
     projected = dry["result"]
     assert projected["status"] == "held"
+    assert projected["reason_code"] == "provider_inventory_unavailable"
     assert projected["reclaimable_bytes"] is None
     assert projected["capacity"] == [capacity]
     assert projected["capacity_refusal"] == "receiver_candidate_unavailable"
@@ -229,6 +237,12 @@ def test_held_plan_surfaces_evidence_and_cannot_apply(tmp_path: Path) -> None:
         ],
     }
     assert projected["candidates"][1] == unallocated
+    candidate["references"] = []
+    candidate["readback"] = {}
+    resource["readback"] = {}
+    empty = invoke(argv(), reply)[1]["result"]["candidates"][0]
+    assert "references" not in empty and "readback" not in empty
+    assert "readback" not in empty["resources"][0]
     candidate["physical_readback"] = {digest: {}}
     dry_unknown = invoke(argv(), reply)[1]
     assert dry_unknown["result"]["candidates"][0]["physical_readback"] == {
@@ -239,6 +253,23 @@ def test_held_plan_surfaces_evidence_and_cannot_apply(tmp_path: Path) -> None:
     assert code != 0 and not calls
     code, readback, _ = invoke(argv("readback"), reply)
     assert code != 0 and readback["status"] == "held"
+
+
+@pytest.mark.parametrize("reason", [None, "provider_inventory_unavailable"])
+def test_optional_reason_code_preserves_omission(reason: str | None) -> None:
+    code, result, _ = invoke(argv(), response(reason_code=reason))
+    assert code == 0
+    assert result["result"].get("reason_code") == reason
+    assert ("reason_code" in result["result"]) is (reason is not None)
+
+
+@pytest.mark.parametrize("readback", [{"copy_native_files_readable": "unknown"}, [], {"private": {"payload": "PRIVATE_SENTINEL"}}])
+def test_invalid_readback_never_becomes_an_observation(readback: object) -> None:
+    from launchplane_testing_candidate_release import project_readback
+    from test_launchplane_helpers import write_action
+
+    with pytest.raises(ValueError):
+        project_readback(write_action, readback)
 
 
 if __name__ == "__main__":
