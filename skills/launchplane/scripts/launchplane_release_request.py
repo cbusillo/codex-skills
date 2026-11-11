@@ -19,7 +19,6 @@ REVIEW_READ = "release-review-read"
 REVIEW_PAGE = "/ui/owner-review"
 REQUEST_SOURCE = "director_request"
 STANDING_ACCEPTANCE = "director_standing"
-CLIENT_APPROVAL_BLOCKER = "Client approval of this release is required."
 MAX_REASON_LENGTH = 1000
 MAX_KEY_LENGTH = 200
 SHA256_RE = re.compile(r"[a-f0-9]{64}")
@@ -29,14 +28,12 @@ DECISION_RE = re.compile(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/(
 CHECKLIST_CHANGED_DIAGNOSTICS: dict[str, object] = {"error_code": "release_checklist_changed"}
 
 REFUSAL_ADVICE = {
-    "not_director_standing": "This product's release needs its Client's acceptance; this command only serves Director-standing products.",
     "release_review_not_required": "Launchplane requires no release review for this product now.",
     "checklist_unavailable": "The checklist is unavailable. Resolve its evidence before requesting a release.",
     "release_already_decided": "A decision already exists for this release. Observe its existing outcome.",
     "temporary_hotfix_pending": "A temporary hotfix is awaiting its Client review first.",
     "no_new_release": "Production already runs the testing version.",
     "checklist_incomplete": "The checklist is incomplete. Finish its evidence before requesting a release.",
-    "checklist_blocked": "The checklist has blockers besides Client approval. Resolve them; this command never clears a blocker.",
     "service_not_opened": "Launchplane recorded no request for this checklist. Read it again with --plan and resolve what the release review reports.",
 }
 
@@ -70,7 +67,9 @@ class ReviewState(NamedTuple):
 
 
 def add_parser(subparsers: Any) -> None:
-    parser = subparsers.add_parser(COMMAND, help="Record an exact-checklist release request for a Director-standing product; never accepts or promotes.")
+    parser = subparsers.add_parser(
+        COMMAND, help="Request review of an exact release checklist under its recorded Client policy; never accepts or promotes."
+    )
     parser.add_argument("--product", required=True)
     target = parser.add_mutually_exclusive_group(required=True)
     target.add_argument("--plan", action="store_true", help="Read the current checklist and send nothing.")
@@ -128,8 +127,11 @@ def _read_acceptance(h: Any, settings: dict[str, str], product: str, timeout: fl
         timeout=timeout,
     )
     _require_known_fields(h, PROFILE_READ, response)
+    raw_profile = _require_mapping(h, response.get("profile"))
+    if "release_on_acceptance" not in raw_profile:
+        raise h.LaunchplaneSafetyError("invalid_response")
     # noinspection PyProtectedMember
-    profile = h._project_product_profile(response.get("profile"))
+    profile = h._project_product_profile(raw_profile)
     if response.get("status") != "ok" or profile["product"] != product:
         raise h.LaunchplaneSafetyError("invalid_response")
     return str(profile["release_on_acceptance"])
@@ -143,10 +145,12 @@ def _project_version(h: Any, value: object) -> dict[str, object]:
     return {"source_commit": commit, "carries_runtime_settings": version.get("runtime_settings") is not None}
 
 
-def _project_saved_request(h: Any, value: object) -> dict[str, Any] | None:
+def _project_saved_request(h: Any, value: object, product: str) -> dict[str, Any] | None:
     if value is None:
         return None
     saved = _require_mapping(h, value)
+    if saved.get("product") != product or not isinstance(saved.get("source"), str):
+        raise h.LaunchplaneSafetyError("invalid_response")
     for field, pattern in (("record_id", SHA256_RE), ("checklist_digest", SHA256_RE)):
         if not isinstance(saved.get(field), str) or not pattern.fullmatch(saved[field]):
             raise h.LaunchplaneSafetyError("invalid_response")
@@ -155,18 +159,17 @@ def _project_saved_request(h: Any, value: object) -> dict[str, Any] | None:
     return saved
 
 
-def _refusal(status: dict[str, Any], checklist: dict[str, Any] | None, blockers: list[str], *, hotfix: bool) -> str:
+def _review_prerequisite(status: dict[str, Any], checklist: dict[str, Any] | None, *, hotfix: bool) -> str:
     review_required = status.get("required") is True
     if not review_required:
         return "release_review_not_required"
     if status.get("unavailable_reason") is not None or checklist is None:
         return "checklist_unavailable"
     checks = (
-        ("release_already_decided", status.get("approved") is True or status.get("latest_decision") is not None),
         ("temporary_hotfix_pending", hotfix),
+        ("release_already_decided", status.get("approved") is True or status.get("latest_decision") is not None),
         ("no_new_release", status.get("no_new_release") is True or checklist.get("production") == checklist.get("candidate")),
         ("checklist_incomplete", status.get("checklist_complete") is not True),
-        ("checklist_blocked", blockers != [CLIENT_APPROVAL_BLOCKER]),
     )
     return next((code for code, failed in checks if failed), "")
 
@@ -187,14 +190,16 @@ def _project_review(h: Any, response: dict[str, Any], product: str) -> ReviewSta
     blockers = status.get("blockers") or []
     if not isinstance(digest, str) or (digest and not SHA256_RE.fullmatch(digest)) or not isinstance(blockers, list):
         raise h.LaunchplaneSafetyError("invalid_response")
+    if checklist is not None and not SHA256_RE.fullmatch(digest):
+        raise h.LaunchplaneSafetyError("invalid_response")
     production, candidate = _project_versions(h, checklist)
     return ReviewState(
         digest=digest,
         production=production,
         candidate=candidate,
         blocker_count=len(blockers),
-        refusal=_refusal(status, checklist, blockers, hotfix=response.get("reviewing_temporary_hotfix") is True),
-        saved=_project_saved_request(h, response.get("release_request")),
+        refusal=_review_prerequisite(status, checklist, hotfix=response.get("reviewing_temporary_hotfix") is True),
+        saved=_project_saved_request(h, response.get("release_request"), product),
     )
 
 
@@ -211,7 +216,12 @@ def _read_review(h: Any, settings: dict[str, str], product: str, timeout: float)
 
 def _matching_request(state: ReviewState, intent: Intent) -> dict[str, Any] | None:
     saved = state.saved
-    if saved is None or (saved["checklist_digest"], saved["decision_reference"], saved["reason"]) != (intent.digest, intent.decision_reference, intent.reason):
+    if saved is None or (saved["checklist_digest"], saved["decision_reference"], saved["reason"], saved["source"]) != (
+        intent.digest,
+        intent.decision_reference,
+        intent.reason,
+        REQUEST_SOURCE,
+    ):
         return None
     return saved
 
@@ -263,12 +273,74 @@ def _finish(
     return 0 if status == "ok" else 1
 
 
-def _finish_recorded(h: Any, settings: dict[str, str], intent: Intent, state: ReviewState, acceptance: str, saved: dict[str, Any], *, readback: bool = False) -> int:
-    result = _result(h, settings, intent, state, acceptance)
-    result.update(request_id=saved["record_id"], request_recorded=True, checklist_digest=intent.digest)
+def _finish_recorded(
+    h: Any,
+    settings: dict[str, str],
+    intent: Intent,
+    state: ReviewState,
+    acceptance: str,
+    saved: dict[str, Any],
+    *,
+    readback: bool = False,
+    delivery_confirmed: bool = False,
+    diagnostics: dict[str, object] | None = None,
+) -> int:
+    result: dict[str, object] = {
+        "release_on_acceptance": acceptance,
+        "checklist_digest": intent.digest,
+        "request_id": saved["record_id"],
+        "request_recorded": True,
+    }
+    standing = acceptance == STANDING_ACCEPTANCE
+    if not standing:
+        result["invitation_delivery"] = "confirmed" if delivery_confirmed else "unverified"
     if readback:
         result["verified_by_readback"] = True
-    return _finish(h, intent, "ok", result=result)
+    if state.digest and state.digest != intent.digest:
+        return _finish(h, intent, "stale", result=result, diagnostics=diagnostics or CHECKLIST_CHANGED_DIAGNOSTICS)
+    result.update(_result(h, settings, intent, state, acceptance))
+    result["checklist_digest"] = intent.digest
+    if state.refusal == "release_already_decided":
+        result["review_decided"] = True
+        return _finish(h, intent, "ok", result=result, refusal=state.refusal, diagnostics=diagnostics)
+    if state.refusal:
+        return _finish(h, intent, "refused", result=result, refusal=state.refusal, diagnostics=diagnostics)
+    if not standing and not delivery_confirmed:
+        return _finish(
+            h,
+            intent,
+            "accepted_unverified",
+            result=result,
+            diagnostics=diagnostics,
+            recommendation=(
+                "The request is recorded; Client invitation delivery is unverified. Keep the same digest, reason, decision reference and key. "
+                "Rerun those same inputs to ask the existing service route to confirm its receipt; do not create a replacement request."
+            ),
+        )
+    advice = (
+        RECOVERY["ok"]
+        if standing
+        else (
+            "The service confirmed its invitation receipt. Separate Client acceptance and the recorded release policy still govern the gated release; "
+            "this call never accepts or promotes."
+        )
+    )
+    return _finish(h, intent, "ok", result=result, diagnostics=diagnostics, recommendation=advice)
+
+
+def _finish_unmatched(
+    h: Any, settings: dict[str, str], intent: Intent, state: ReviewState, acceptance: str,
+    *, status: str, refusal: str = "", diagnostics: dict[str, object] | None = None,
+) -> int:
+    if state.digest and state.digest != intent.digest:
+        return _finish(h, intent, "stale", diagnostics=diagnostics or CHECKLIST_CHANGED_DIAGNOSTICS)
+    if _recorded_differently(state, intent):
+        status = "conflict"
+    return _finish(
+        h, intent, status, result=_result(h, settings, intent, state, acceptance),
+        refusal=state.refusal or refusal, diagnostics=diagnostics,
+        recommendation=RECOVERY.get(status, ""),
+    )
 
 
 def _settle_uncertain_post(
@@ -287,10 +359,8 @@ def _settle_uncertain_post(
     except (ValueError, OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException):
         return _finish(h, intent, "outcome_unknown", diagnostics=diagnostics)
     if (saved := _matching_request(state, intent)) is not None:
-        return _finish_recorded(h, settings, intent, state, acceptance, saved, readback=True)
-    if _recorded_differently(state, intent):
-        return _finish(h, intent, "conflict", diagnostics=diagnostics)
-    return _finish(h, intent, status, refusal=refusal, diagnostics=diagnostics)
+        return _finish_recorded(h, settings, intent, state, acceptance, saved, readback=True, diagnostics=diagnostics)
+    return _finish_unmatched(h, settings, intent, state, acceptance, status=status, refusal=refusal, diagnostics=diagnostics)
 
 
 def _submit(h: Any, settings: dict[str, str], intent: Intent, acceptance: str, timeout: float) -> int:
@@ -302,7 +372,14 @@ def _submit(h: Any, settings: dict[str, str], intent: Intent, acceptance: str, t
         "decision_reference": intent.decision_reference,
     }
     try:
-        response = h.request_launchplane(service_url=settings["service_url"], path=h.helper_command_path(COMMAND), settings=settings, body=body, timeout=timeout, idempotency_key=intent.key)
+        response = h.request_launchplane(
+            service_url=settings["service_url"],
+            path=h.helper_command_path(COMMAND),
+            settings=settings,
+            body=body,
+            timeout=timeout,
+            idempotency_key=intent.key,
+        )
         state = _project_review(h, response, intent.product)
     except urllib.error.HTTPError as error:
         try:
@@ -313,9 +390,17 @@ def _submit(h: Any, settings: dict[str, str], intent: Intent, acceptance: str, t
         diagnostics: dict[str, object] = {"error_code": "release_request_unverified", **h.service_response_diagnostics(error)}
         return _settle_uncertain_post(h, settings, intent, acceptance, timeout, status="outcome_unknown", diagnostics=diagnostics)
     if (saved := _matching_request(state, intent)) is not None:
-        return _finish_recorded(h, settings, intent, state, acceptance, saved)
-    status = "conflict" if _recorded_differently(state, intent) else "accepted_unverified"
-    return _finish(h, intent, status, diagnostics=h.service_response_diagnostics(response))
+        return _finish_recorded(
+            h,
+            settings,
+            intent,
+            state,
+            acceptance,
+            saved,
+            delivery_confirmed=True,
+            diagnostics=h.service_response_diagnostics(response),
+        )
+    return _finish_unmatched(h, settings, intent, state, acceptance, status="accepted_unverified", diagnostics=h.service_response_diagnostics(response))
 
 
 def _finish_refused_post(h: Any, settings: dict[str, str], intent: Intent, acceptance: str, timeout: float, error: urllib.error.HTTPError) -> int:
@@ -358,18 +443,12 @@ def execute(h: Any, args: argparse.Namespace) -> int:
         state = _read_review(h, settings, intent.product, args.timeout)
     except (ValueError, OSError, http.client.HTTPException) as error:
         return _finish_read_failure(h, intent, args.timeout, error)
-    if acceptance != STANDING_ACCEPTANCE:
-        return _finish(h, intent, "refused", refusal="not_director_standing")
     if args.plan:
         return _finish_plan(h, settings, intent, state, acceptance)
-    if (saved := _matching_request(state, intent)) is not None:
+    if (saved := _matching_request(state, intent)) is not None and (acceptance == STANDING_ACCEPTANCE or state.refusal or state.digest != intent.digest):
         return _finish_recorded(h, settings, intent, state, acceptance, saved)
-    if _recorded_differently(state, intent):
-        return _finish(h, intent, "conflict")
-    if state.digest and state.digest != intent.digest:
-        return _finish(h, intent, "stale", diagnostics=CHECKLIST_CHANGED_DIAGNOSTICS)
-    if state.refusal:
-        return _finish(h, intent, "refused", refusal=state.refusal)
+    if _recorded_differently(state, intent) or state.digest and state.digest != intent.digest:
+        return _finish_unmatched(h, settings, intent, state, acceptance, status="conflict")
     return _submit(h, settings, intent, acceptance, args.timeout)
 
 
@@ -378,6 +457,8 @@ def _finish_plan(h: Any, settings: dict[str, str], intent: Intent, state: Review
     saved = state.saved
     if saved is not None and saved["checklist_digest"] == state.digest:
         result.update(request_id=saved["record_id"], request_recorded=True)
+        if acceptance != STANDING_ACCEPTANCE:
+            result["invitation_delivery"] = "unverified"
     if state.refusal:
         return _finish(h, intent, "refused", result=result, refusal=state.refusal)
     return _finish(h, intent, "ok", result=result, recommendation=RECOVERY["plan"])
