@@ -183,7 +183,8 @@ class ReleaseTests(unittest.TestCase):
                   patch.object(helper.session_liveness, "process_started_at", side_effect=births.__getitem__),
                   patch.object(helper.session_liveness, "process_absent", side_effect=lambda pid, live=births: pid not in live),
                   patch.object(helper.session_liveness, "host_boot_time", return_value=boot),
-                  patch_attribute(tmux_terminal, "process_parents", return_value={pid: parent for pid in births})):
+                  patch_attribute(tmux_terminal, "process_parents", return_value={pid: parent for pid in births}),
+                  patch.object(helper.session_liveness.sys, "platform", "darwin")):
                 if recovered:
                     closed = helper.record_recovery(log, {**entry, "recovery": {"kind": "gone"}}, "supervisor")
                     helper.validate_finished(closed, "supervisor")
