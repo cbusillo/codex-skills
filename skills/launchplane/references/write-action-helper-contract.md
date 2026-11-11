@@ -1589,13 +1589,13 @@ URLs are exported. The read makes no plan or mutation.
 The private JSON packet has `kind: "route-authority-inputs"`, `schema_version: 1`,
 `scope: {product, context, instance}`, authoritative `production_use`,
 `expected_current: {state, record_sha256}` for a present binding,
-`recorded_binding: {domains, edge_endpoint_key, target_name, target_category,
+`recorded_binding: {domains, external_domains, edge_endpoint_key, target_name, target_category,
 provider_target_type, tls_owner, status}`, and
 `current_target: {target_id, target_type, tracked_domains, provider_domains}`.
 Recorded binding domains remain explicitly separate from the current tracked
 and provider domains. The latter use the existing inspect reader and identity
 comparison, and must agree in full. The current binding digest is reread before
-saving. Truncated, missing, unknown, mismatched or untraced evidence cannot
+saving. Over-limit, missing, unknown, mismatched or untraced evidence cannot
 produce a usable ingress packet. Missing `production_use` and explicit
 `unknown` return different error codes. The original untraced HTTP404 cause
 remains unknown; these projections do not diagnose it.
@@ -1611,14 +1611,22 @@ The saved packet is input, never authorization, a reviewed plan or a freshness
 claim: the continuation repeats its normal current-source comparisons and CAS.
 
 Confirmed absence instead saves `expected_current: {state: "absent"}`,
-`recorded_binding: null`, `ingress_payload: null` and
-`next_operation: "route-binding-dry-run"`. It invents no edge, target or binding;
+`recorded_binding: null` and `ingress_payload: null`. It invents no edge, target or binding;
 use that owning job without an ingress file. `route-binding-read --result-file`
 saves only the recorded binding projection and digest (or confirmed absence),
 without a product-profile or provider read, `production_use`, `current_target`
 or usable ingress payload. Its recorded domains are never current inventory.
-Private-file save failure reports `private_result_unavailable`; preserve any
-partial destination before choosing a new path.
+Valid non-edge bindings preserve their recorded empty edge and domains, with
+no usable ingress payload. Split ingress keeps `external_domains` separate;
+discovery returns `route_inputs_split_ingress_unsupported` rather than making
+one edge payload for independent routes. Recorded-only reads can export that
+bounded domain partition without its external evidence URL. Missing optional
+record metadata is null; an explicit empty or unknown value is preserved.
+`ingress_input_available` on stdout says whether the saved packet contains an
+ingress payload. Invalid private destinations are refused before any request
+with the existing `private_request_unavailable` or `repo_local_payload_unsupported`
+code. Private-file save failure reports `private_result_unavailable`; preserve
+any partial destination before choosing a new path.
 
 For the supported verification-to-reconciliation continuation, pass
 `--ingress-payload-file <private-file>` to `route-binding-dry-run`. It uses the same ingress input above and opts into

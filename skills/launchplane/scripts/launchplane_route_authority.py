@@ -395,32 +395,29 @@ def _readback(s: Session, kind: str, scope: dict[str, str], body: dict[str, Any]
             and expected.get("record_sha256") == response["result"].get("candidate_record_sha256"))
 
 
-
-def _complete(source: dict[str, Any]) -> None:
-    if any(value is True for key, value in source.items() if key.endswith("truncated")):
-        raise ValueError("route_inputs_truncated")
-
-
 def _private_code(h: Any, value: object) -> str | None:
-    if value is None or value == "":
-        return value
+    if value is None:
+        return None
+    if value == "":
+        return ""
     return h.public_code(value)
 
 
 def _recorded_binding(h: Any, record: dict[str, Any]) -> dict[str, Any]:
-    _complete(record)
     domains = record.get("domains")
     if not isinstance(domains, list) or len(domains) > 100:
         raise ValueError("invalid_plan_domains")
     ingress = h._require_dict(record.get("ingress"))
-    if not ingress.get("endpoint_key"):
-        raise ValueError("route_binding_edge_missing")
-    endpoint = h._plan_identifier(ingress.get("endpoint_key"), "edge_endpoint_key")
+    endpoint = ingress.get("endpoint_key")
+    if endpoint is not None and endpoint != "":
+        endpoint = h._plan_identifier(endpoint, "edge_endpoint_key")
+    external = record.get("external_ingress")
     target = h._require_dict(record.get("provider_target"))
     return {
-        "domains": h._plan_domains([h._require_dict(entry).get("domain_name") for entry in domains]),
+        "domains": h._plan_domains([h._require_dict(entry).get("domain_name") for entry in domains]) if domains else [],
+        "external_domains": h._plan_domains(h._require_dict(external).get("domains")) if external is not None else [],
         "edge_endpoint_key": endpoint,
-        "target_name": h._plan_identifier(target.get("target_name"), "target_name"),
+        "target_name": h.public_display_name(target.get("target_name")),
         "target_category": _private_code(h, target.get("target_category")),
         "provider_target_type": _private_code(h, target.get("provider_target_type")),
         "tls_owner": _private_code(h, h._require_dict(record.get("tls")).get("owner")),
@@ -428,52 +425,72 @@ def _recorded_binding(h: Any, record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _private_inputs(s: Session, scope: dict[str, str], expectation: dict[str, str],
-                    record: dict[str, Any] | None, profile: dict[str, Any] | None) -> dict[str, Any]:
+def _private_inputs(
+    s: Session, scope: dict[str, str], expectation: dict[str, str], record: dict[str, Any] | None, profile: dict[str, Any] | None
+) -> dict[str, Any]:
     h = s.h
-    packet: dict[str, Any] = {"kind": "route-authority-inputs", "schema_version": 1, "scope": scope,
-              "expected_current": expectation, "recorded_binding": None if record is None else _recorded_binding(h, record),
-              "ingress_payload": None, "next_operation": "route-binding-dry-run"}
+    packet: dict[str, Any] = {
+        "kind": "route-authority-inputs",
+        "schema_version": 1,
+        "scope": scope,
+        "expected_current": expectation,
+        "recorded_binding": None if record is None else _recorded_binding(h, record),
+        "ingress_payload": None,
+    }
     if profile is None:
         return packet
-    _complete(profile)
     production = profile.get("production_use")
-    if production not in {"prelaunch", "live", "unknown"}:
+    if "production_use" not in profile:
         raise ValueError("production_use_missing")
+    if production not in h.PRODUCT_PRODUCTION_USES:
+        raise ValueError("production_use_invalid")
     packet["production_use"] = production
     if production == "unknown":
         raise ValueError("production_use_unknown")
     if record is None:
         return packet
-    observed_body = h._domain_authority_plan_body(argparse.Namespace(**scope, reason="Read current route inputs"), s.read)
+    recorded = h._require_dict(packet["recorded_binding"])
+    if recorded["edge_endpoint_key"] is None:
+        raise ValueError("route_binding_edge_missing")
+    if recorded["edge_endpoint_key"] == "":
+        return packet
+    if recorded["external_domains"]:
+        raise ValueError("route_inputs_split_ingress_unsupported")
+    try:
+        observed_body = h._domain_authority_plan_body(argparse.Namespace(**scope, reason="Read current route inputs"), s.read)
+    except h.LaunchplaneSafetyError:
+        raise ValueError("ingress_current_target_required") from None
     observed = h._require_dict(s.reads[-1].get("inspect"))
-    for source in (observed, observed["tracked_target"], observed["provider"]):
-        _complete(source)
     if "domains" not in observed["tracked_target"]:
         raise ValueError("tracked_domains_missing")
     tracked = h._plan_domains(observed["tracked_target"].get("domains"))
     current_domains = observed_body["domains"]
     if set(tracked) != set(current_domains):
         raise ValueError("route_inputs_domain_drift")
-    packet["current_target"] = {"target_id": h._plan_identifier(observed_body["target_id"], "target_id"),
-                                "target_type": observed_body["target_type"],
-                                "tracked_domains": tracked, "provider_domains": current_domains}
+    packet["current_target"] = {
+        "target_id": h._plan_identifier(observed_body["target_id"], "target_id"),
+        "target_type": observed_body["target_type"],
+        "tracked_domains": tracked,
+        "provider_domains": current_domains,
+    }
     latest, _ = s.current(scope)
     if latest != expectation:
         raise ValueError("binding_current_mismatch")
-    packet["ingress_payload"] = {**scope, "reason": "Verify current recorded route authority",
-                                 "route": {"edge_endpoint_key": packet["recorded_binding"]["edge_endpoint_key"],
-                                           "domain_names": tracked}}
+    packet["ingress_payload"] = {
+        **scope,
+        "reason": "Verify current recorded route authority",
+        "route": {"edge_endpoint_key": recorded["edge_endpoint_key"], "domain_names": tracked},
+    }
     return packet
 
 
 def ingress_from_packet(packet: dict[str, Any]) -> dict[str, Any]:
     body = packet.get("ingress_payload")
-    if (packet.get("schema_version") != 1 or not isinstance(body, dict)
+    if (
+        packet.get("schema_version") != 1
+        or not isinstance(body, dict)
         or packet.get("scope") != {key: body.get(key) for key in ("product", "context", "instance")}
-        or packet.get("production_use") not in {"live", "prelaunch"}
-        or not isinstance(packet.get("expected_current"), dict)
-        or packet["expected_current"].get("state") != "present"):
+    ):
         raise ValueError("route_inputs_incomplete")
     return copy.deepcopy(body)
 
@@ -605,6 +622,7 @@ def execute(h: Any, args: Any) -> int:
             except ValueError:
                 raise ValueError("private_result_unavailable") from None
             result["private_result_saved"] = True
+            result["ingress_input_available"] = packet["ingress_payload"] is not None
         payload = h.base_payload(status="accepted", operation=args.command, request=request)
         payload["result"] = result
         if s.provider:
@@ -649,7 +667,8 @@ def execute(h: Any, args: Any) -> int:
         else:
             code = str(exc)
             if isinstance(exc, ValueError) and code in {
-                "production_use_missing", "production_use_unknown", "route_inputs_truncated", "route_inputs_domain_drift",
+                "production_use_missing", "production_use_unknown", "production_use_invalid", "route_inputs_domain_drift",
+                "route_inputs_split_ingress_unsupported",
                 "route_binding_edge_missing", "tracked_domains_missing", "route_inputs_trace_missing", "private_result_unavailable",
                 "plan_lane_not_unique",
                 "plan_endpoint_not_active", "invalid_plan_domains", "invalid_product",
@@ -658,7 +677,8 @@ def execute(h: Any, args: Any) -> int:
                 "ingress_current_settings_required", "ingress_current_observation_required", "ingress_route_drift",
             }:
                 payload = h.unavailable_payload(operation=args.command, request=request, status="invalid",
-                    code=code, message="Service evidence did not match the requested plan scope.")
+                    code=code, message=("The private result could not be saved." if code == "private_result_unavailable"
+                                        else "Service evidence did not match the requested plan scope."))
                 payload["summary"].update(error_code=code, **h.service_response_diagnostics(s.provider))
                 if code == "ingress_route_drift":
                     payload["result"] = {"dry_run": True, "status": "planned", "verification_usable": False, "apply_eligible": False}
