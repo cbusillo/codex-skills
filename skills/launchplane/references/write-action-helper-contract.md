@@ -3032,7 +3032,7 @@ approval. Inspect terminal outcomes before an intentional replacement; an expire
 source event for a replacement. The signed-in Director reviews
 and approves pending plans in the UI; no helper approval or apply path is added.
 
-## Release request for a Director-standing product
+## Release request under the recorded Client policy
 
 `release-request --product P --plan` reads the current checklist and sends
 nothing. It reports `checklist_digest`, both lanes' source commits, whether each
@@ -3046,11 +3046,17 @@ digest and returns `request_id` and `review_url`. `--decision-reference` is the
 recorded decision's GitHub comment URL. The reason and citation are hashed in the
 output. No new grant is involved: the service holds the Director-agent authority
 and records a request, never an acceptance or a promotion. Standing acceptance
-then starts the existing gated release; observe it and do not promote by hand.
+then starts the existing gated release for `director_standing` products; observe
+it and do not promote by hand. For Client products (`held`, `promote` or
+`promote_with_rollback_drill`), this sends only the review request. The Client
+must separately accept the exact release, and the recorded policy and server
+backup, rollback and release gates still apply. A held policy remains held.
+The result preserves `release_on_acceptance` and reports
+`client_acceptance_required`; it never changes the Client or policy.
 
-Both modes stop with `refused` and a `refusal_reason` unless the profile's
-`release_on_acceptance` is `director_standing`, a release review is required, the
-checklist is complete with no decision on it and a real candidate, and Client
+Both modes read the recorded product profile and stop on an unsupported or
+malformed response. They stop with `refused` and a `refusal_reason` unless a
+release review is required, the checklist is complete with no decision on it and a real candidate, and Client
 approval is its only blocker. The service keeps its own stricter gates, including
 that a standing product uses this route only for its first release carrying
 recorded production settings.

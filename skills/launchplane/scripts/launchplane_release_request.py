@@ -29,7 +29,6 @@ DECISION_RE = re.compile(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/(
 CHECKLIST_CHANGED_DIAGNOSTICS: dict[str, object] = {"error_code": "release_checklist_changed"}
 
 REFUSAL_ADVICE = {
-    "not_director_standing": "This product's release needs its Client's acceptance; this command only serves Director-standing products.",
     "release_review_not_required": "Launchplane requires no release review for this product now.",
     "checklist_unavailable": "The checklist is unavailable. Resolve its evidence before requesting a release.",
     "release_already_decided": "A decision already exists for this release. Observe its existing outcome.",
@@ -70,7 +69,7 @@ class ReviewState(NamedTuple):
 
 
 def add_parser(subparsers: Any) -> None:
-    parser = subparsers.add_parser(COMMAND, help="Record an exact-checklist release request for a Director-standing product; never accepts or promotes.")
+    parser = subparsers.add_parser(COMMAND, help="Request review of an exact release checklist under its recorded Client policy; never accepts or promotes.")
     parser.add_argument("--product", required=True)
     target = parser.add_mutually_exclusive_group(required=True)
     target.add_argument("--plan", action="store_true", help="Read the current checklist and send nothing.")
@@ -143,10 +142,12 @@ def _project_version(h: Any, value: object) -> dict[str, object]:
     return {"source_commit": commit, "carries_runtime_settings": version.get("runtime_settings") is not None}
 
 
-def _project_saved_request(h: Any, value: object) -> dict[str, Any] | None:
+def _project_saved_request(h: Any, value: object, product: str) -> dict[str, Any] | None:
     if value is None:
         return None
     saved = _require_mapping(h, value)
+    if saved.get("product") != product or saved.get("source") not in ("director_request", "finish_line"):
+        raise h.LaunchplaneSafetyError("invalid_response")
     for field, pattern in (("record_id", SHA256_RE), ("checklist_digest", SHA256_RE)):
         if not isinstance(saved.get(field), str) or not pattern.fullmatch(saved[field]):
             raise h.LaunchplaneSafetyError("invalid_response")
@@ -187,6 +188,8 @@ def _project_review(h: Any, response: dict[str, Any], product: str) -> ReviewSta
     blockers = status.get("blockers") or []
     if not isinstance(digest, str) or (digest and not SHA256_RE.fullmatch(digest)) or not isinstance(blockers, list):
         raise h.LaunchplaneSafetyError("invalid_response")
+    if checklist is not None and not SHA256_RE.fullmatch(digest):
+        raise h.LaunchplaneSafetyError("invalid_response")
     production, candidate = _project_versions(h, checklist)
     return ReviewState(
         digest=digest,
@@ -194,7 +197,7 @@ def _project_review(h: Any, response: dict[str, Any], product: str) -> ReviewSta
         candidate=candidate,
         blocker_count=len(blockers),
         refusal=_refusal(status, checklist, blockers, hotfix=response.get("reviewing_temporary_hotfix") is True),
-        saved=_project_saved_request(h, response.get("release_request")),
+        saved=_project_saved_request(h, response.get("release_request"), product),
     )
 
 
@@ -211,7 +214,12 @@ def _read_review(h: Any, settings: dict[str, str], product: str, timeout: float)
 
 def _matching_request(state: ReviewState, intent: Intent) -> dict[str, Any] | None:
     saved = state.saved
-    if saved is None or (saved["checklist_digest"], saved["decision_reference"], saved["reason"]) != (intent.digest, intent.decision_reference, intent.reason):
+    if saved is None or (saved["checklist_digest"], saved["decision_reference"], saved["reason"], saved["source"]) != (
+        intent.digest,
+        intent.decision_reference,
+        intent.reason,
+        REQUEST_SOURCE,
+    ):
         return None
     return saved
 
@@ -224,11 +232,14 @@ def _recorded_differently(state: ReviewState, intent: Intent) -> bool:
 def _result(h: Any, settings: dict[str, str], intent: Intent, state: ReviewState, acceptance: str) -> dict[str, object]:
     return {
         "release_on_acceptance": acceptance,
+        "client_acceptance_required": acceptance != STANDING_ACCEPTANCE,
         "checklist_digest": state.digest,
         "production": state.production,
         "candidate": state.candidate,
         "blocker_count": state.blocker_count,
-        "review_url": h.build_launchplane_url(settings["service_url"], REVIEW_PAGE, query=urllib.parse.urlencode({"product": intent.product})),
+        "review_url": h.build_launchplane_url(
+            settings["service_url"], REVIEW_PAGE, query=urllib.parse.urlencode({"product": intent.product})
+        ),
     }
 
 
@@ -249,7 +260,12 @@ def _finish(
     if refusal:
         summary["refusal_reason"] = refusal
     service_advice = summary.get("recommendation")
-    advice = recommendation or REFUSAL_ADVICE.get(refusal) or RECOVERY.get(status) or (service_advice if isinstance(service_advice, str) else "Inspect the service refusal before retrying.")
+    advice = (
+        recommendation
+        or REFUSAL_ADVICE.get(refusal)
+        or RECOVERY.get(status)
+        or (service_advice if isinstance(service_advice, str) else "Inspect the service refusal before retrying.")
+    )
     summary["recommendation"] = advice
     output["summary"] = summary
     if result is not None:
@@ -263,12 +279,28 @@ def _finish(
     return 0 if status == "ok" else 1
 
 
-def _finish_recorded(h: Any, settings: dict[str, str], intent: Intent, state: ReviewState, acceptance: str, saved: dict[str, Any], *, readback: bool = False) -> int:
+def _finish_recorded(
+    h: Any,
+    settings: dict[str, str],
+    intent: Intent,
+    state: ReviewState,
+    acceptance: str,
+    saved: dict[str, Any],
+    *,
+    readback: bool = False,
+) -> int:
+    if state.digest != intent.digest:
+        return _finish(h, intent, "stale", diagnostics=CHECKLIST_CHANGED_DIAGNOSTICS)
     result = _result(h, settings, intent, state, acceptance)
     result.update(request_id=saved["record_id"], request_recorded=True, checklist_digest=intent.digest)
     if readback:
         result["verified_by_readback"] = True
-    return _finish(h, intent, "ok", result=result)
+    advice = (
+        RECOVERY["ok"]
+        if acceptance == STANDING_ACCEPTANCE
+        else "Request recorded for the Client's separate review. This call grants no acceptance and starts no production release; the recorded release policy still applies."
+    )
+    return _finish(h, intent, "ok", result=result, recommendation=advice)
 
 
 def _settle_uncertain_post(
@@ -302,7 +334,14 @@ def _submit(h: Any, settings: dict[str, str], intent: Intent, acceptance: str, t
         "decision_reference": intent.decision_reference,
     }
     try:
-        response = h.request_launchplane(service_url=settings["service_url"], path=h.helper_command_path(COMMAND), settings=settings, body=body, timeout=timeout, idempotency_key=intent.key)
+        response = h.request_launchplane(
+            service_url=settings["service_url"],
+            path=h.helper_command_path(COMMAND),
+            settings=settings,
+            body=body,
+            timeout=timeout,
+            idempotency_key=intent.key,
+        )
         state = _project_review(h, response, intent.product)
     except urllib.error.HTTPError as error:
         try:
@@ -318,7 +357,9 @@ def _submit(h: Any, settings: dict[str, str], intent: Intent, acceptance: str, t
     return _finish(h, intent, status, diagnostics=h.service_response_diagnostics(response))
 
 
-def _finish_refused_post(h: Any, settings: dict[str, str], intent: Intent, acceptance: str, timeout: float, error: urllib.error.HTTPError) -> int:
+def _finish_refused_post(
+    h: Any, settings: dict[str, str], intent: Intent, acceptance: str, timeout: float, error: urllib.error.HTTPError
+) -> int:
     # noinspection PyProtectedMember
     provider = h._error_payload_from_http(error)
     projected = h.summarize_http_error(operation=COMMAND, request=intent.request, exc=error, provider_payload=provider)
@@ -327,7 +368,9 @@ def _finish_refused_post(h: Any, settings: dict[str, str], intent: Intent, accep
     if code == "release_checklist_changed":
         return _finish(h, intent, "stale", diagnostics=diagnostics, recommendation=RECOVERY["stale"])
     if code == "release_review_not_opened":
-        return _settle_uncertain_post(h, settings, intent, acceptance, timeout, status="refused", refusal="service_not_opened", diagnostics=diagnostics)
+        return _settle_uncertain_post(
+            h, settings, intent, acceptance, timeout, status="refused", refusal="service_not_opened", diagnostics=diagnostics
+        )
     if error.code >= 500:
         return _settle_uncertain_post(h, settings, intent, acceptance, timeout, status="outcome_unknown", diagnostics=diagnostics)
     return _finish(h, intent, projected["status"], diagnostics=diagnostics)
@@ -358,8 +401,6 @@ def execute(h: Any, args: argparse.Namespace) -> int:
         state = _read_review(h, settings, intent.product, args.timeout)
     except (ValueError, OSError, http.client.HTTPException) as error:
         return _finish_read_failure(h, intent, args.timeout, error)
-    if acceptance != STANDING_ACCEPTANCE:
-        return _finish(h, intent, "refused", refusal="not_director_standing")
     if args.plan:
         return _finish_plan(h, settings, intent, state, acceptance)
     if (saved := _matching_request(state, intent)) is not None:

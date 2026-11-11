@@ -6,6 +6,8 @@ import copy
 import io
 import json
 import urllib.error
+import urllib.parse
+import urllib.request
 from contextlib import redirect_stdout
 from typing import Any
 from unittest.mock import patch
@@ -98,7 +100,7 @@ def invoke(
     *,
     reviews: list[Any],
     posts: list[Any] | None = None,
-    acceptance: str = "director_standing",
+    acceptance: str = "promote_with_rollback_drill",
 ) -> tuple[int, dict[str, Any], list[Any]]:
     pending_reviews = iter(reviews)
 
@@ -128,8 +130,9 @@ def assert_private_values_absent(payload: dict[str, Any]) -> None:
         assert private not in rendered, private
 
 
-def test_plan_reports_the_exact_checklist_and_sends_nothing() -> None:
-    code, payload, posts = invoke(plan_args(), reviews=[review()])
+@pytest.mark.parametrize("acceptance", ["held", "promote", "promote_with_rollback_drill", "director_standing"])
+def test_plan_reports_the_exact_checklist_and_sends_nothing(acceptance: str) -> None:
+    code, payload, posts = invoke(plan_args(), reviews=[review()], acceptance=acceptance)
     assert code == 0 and posts == []
     result = payload["result"]
     assert result["checklist_digest"] == DIGEST
@@ -139,13 +142,12 @@ def test_plan_reports_the_exact_checklist_and_sends_nothing() -> None:
     assert_private_values_absent(payload)
 
 
-@pytest.mark.parametrize("acceptance",["held", "promote", "promote_with_rollback_drill"])
+@pytest.mark.parametrize("acceptance", ["unsupported", "", None])
 @pytest.mark.parametrize("args", [plan_args(), request_args()])
-def test_only_director_standing_products_can_request(acceptance: str, args: list[str]) -> None:
+def test_unsupported_profile_cannot_request(acceptance: Any, args: list[str]) -> None:
     code, payload, posts = invoke(args, reviews=[review()], acceptance=acceptance)
     assert code == 1 and posts == []
-    assert payload["status"] == "refused"
-    assert payload["summary"]["refusal_reason"] == "not_director_standing"
+    assert payload["status"] == "invalid"
 
 
 @pytest.mark.parametrize(
@@ -193,14 +195,18 @@ def test_service_checklist_refusal_is_stale_and_never_retried() -> None:
     assert_private_values_absent(payload)
 
 
-def test_request_binds_the_reviewed_digest_decision_and_key() -> None:
-    code, payload, posts = invoke(request_args(), reviews=[review()], posts=[review(saved=saved_request())])
+@pytest.mark.parametrize("acceptance", ["held", "promote", "promote_with_rollback_drill", "director_standing"])
+def test_request_binds_the_reviewed_digest_decision_and_key(acceptance: str) -> None:
+    code, payload, posts = invoke(request_args(), reviews=[review()], posts=[review(saved=saved_request())], acceptance=acceptance)
     assert code == 0 and len(posts) == 1
     call = posts[0].kwargs
     assert call["path"] == h.helper_command_path(COMMAND)
     assert call["idempotency_key"] == OPERATION_KEY
     assert call["body"] == {"product": "site", "checklist_digest": DIGEST, "reason": REASON, "source": "director_request", "decision_reference": DECISION}
     assert payload["status"] == "ok"
+    assert payload["result"]["release_on_acceptance"] == acceptance
+    if acceptance != "director_standing":
+        assert payload["result"]["client_acceptance_required"] is True
     assert payload["result"]["request_id"] == RECORD_ID
     assert payload["result"]["review_url"] == REVIEW_URL
     assert payload["summary"]["idempotency_key"] == OPERATION_KEY
@@ -220,7 +226,19 @@ def test_a_recorded_request_is_reported_without_sending_again() -> None:
     assert payload["result"]["request_id"] == RECORD_ID
 
 
-@pytest.mark.parametrize("recorded", [saved_request(decision=OTHER_DECISION), saved_request(reason=OTHER_REASON)])
+@pytest.mark.parametrize("lost_response", [False, True])
+def test_saved_request_cannot_report_current_candidate_for_a_changed_checklist(lost_response: bool) -> None:
+    current = review(digest=NEW_DIGEST, saved=saved_request())
+    code, payload, posts = invoke(
+        request_args(), reviews=[review(), current] if lost_response else [current],
+        posts=[TimeoutError("lost")] if lost_response else None,
+    )
+    assert code == 1 and len(posts) == int(lost_response)
+    assert payload["status"] == "stale"
+    assert "candidate" not in payload.get("result", {})
+
+
+@pytest.mark.parametrize("recorded", [saved_request(decision=OTHER_DECISION), saved_request(reason=OTHER_REASON), {**saved_request(), "source": "finish_line"}])
 def test_a_request_recorded_with_another_decision_or_reason_conflicts(recorded: dict[str, object]) -> None:
     code, payload, posts = invoke(request_args(), reviews=[review(saved=recorded)])
     assert code == 1 and posts == []
@@ -253,7 +271,7 @@ def test_unproven_outcome_stays_unknown_and_keeps_the_key(readback: object) -> N
     assert_private_values_absent(payload)
 
 
-@pytest.mark.parametrize("recorded", [saved_request(decision=OTHER_DECISION), saved_request(reason=OTHER_REASON)])
+@pytest.mark.parametrize("recorded", [saved_request(decision=OTHER_DECISION), saved_request(reason=OTHER_REASON), {**saved_request(), "source": "finish_line"}])
 @pytest.mark.parametrize("make_failure", [lambda: TimeoutError("lost"), lambda: http_error(409, "release_review_not_opened")])
 def test_readback_showing_a_different_request_is_a_conflict(recorded: dict[str, object], make_failure: Any) -> None:
     code, payload, posts = invoke(request_args(), reviews=[review(), review(saved=recorded)], posts=[make_failure()])
@@ -280,6 +298,10 @@ def test_denied_request_is_reported_without_retry() -> None:
     [
         lambda body: body.update(unexpected_field=True),
         lambda body: body["review"].update(checklist_digest="not-a-digest"),
+        lambda body: body["review"].update(checklist_digest=""),
+        lambda body: body.update(release_request={**saved_request(), "product": "another-product"}),
+        lambda body: body.update(release_request={**saved_request(), "source": "unsupported"}),
+        lambda body: body.update(release_request={**saved_request(), "source": []}),
         lambda body: body["review"]["checklist"]["candidate"].update(source_commit="not-a-commit"),
         lambda body: body.update(product="another-product"),
     ],
@@ -308,6 +330,51 @@ def test_incomplete_requests_stop_before_any_network(args: list[str]) -> None:
             code = h.main(args)
     assert code == 2 and not settings.called
     assert json.loads(output.getvalue())["status"] == "invalid"
+
+
+@pytest.mark.parametrize("acceptance", ["held", "promote", "promote_with_rollback_drill", "director_standing"])
+def test_typed_transport_plans_requests_and_deduplicates_without_accepting(acceptance: str) -> None:
+    saved: dict[str, object] | None = None
+    calls: list[tuple[str, str]] = []
+
+    def transport(request: urllib.request.Request, **_kwargs: Any) -> io.BytesIO:
+        nonlocal saved
+        route = urllib.parse.urlsplit(request.full_url)
+        assert route.netloc == urllib.parse.urlsplit(SERVICE_URL).netloc
+        method = request.get_method()
+        calls.append((method, route.path))
+        if route.path == h.helper_command_path("product-profile-read").format(product="site"):
+            assert method == "GET"
+            body = profile(acceptance)
+        elif route.path == h.internal_helper_path("release-review-read"):
+            assert method == "GET" and urllib.parse.parse_qs(route.query) == {"product": ["site"]}
+            body = review(saved=saved)
+        else:
+            assert (method, route.path) == ("POST", h.helper_command_path(COMMAND))
+            data = request.data
+            assert isinstance(data, bytes)
+            envelope = json.loads(data)
+            assert envelope == {
+                "product": "site", "checklist_digest": DIGEST, "reason": REASON,
+                "source": "director_request", "decision_reference": DECISION,
+            }
+            assert request.get_header("Idempotency-key") == OPERATION_KEY
+            saved = saved_request()
+            body = review(saved=saved)
+        return io.BytesIO(json.dumps(body).encode())
+
+    settings = {"service_url": SERVICE_URL, "token": "fictional-token"}
+    with patch_attr("prepare_operator_settings", return_value=settings), patch_attr("safe_urlopen", side_effect=transport):
+        for args in (plan_args(), request_args(), request_args()):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                assert h.main(args) == 0
+            payload = json.loads(output.getvalue())
+            assert payload["result"]["release_on_acceptance"] == acceptance
+            assert payload["result"]["client_acceptance_required"] == (acceptance != "director_standing")
+            assert_private_values_absent(payload)
+            assert "fictional-token" not in output.getvalue()
+    assert [path for method, path in calls if method != "GET"] == [h.helper_command_path(COMMAND)]
 
 
 if __name__ == "__main__":
