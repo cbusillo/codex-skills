@@ -202,6 +202,24 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
                     self.assertFalse(report["unresolved_invocations"])
                     self.assertEqual(report["targets"], {("test/a", 5)} if command == COMMAND else set())
 
+    def test_inert_error_guards_preserve_complete_native_effects(self) -> None:
+        for error in ("Error()", 'Error("readback mismatch")', "new Error", 'new Error("readback mismatch")'):
+            with self.subTest(error=error):
+                rows = self.recorded_display(COMMAND, computed=True)
+                rows[0]["payload"]["input"] = (
+                    'for(const id of [1,2]){const c=load("comments").find(c=>c.id===id);'
+                    f'if(!c||!c.body.startsWith("Released claim "))throw {error};}}'
+                    'text(await tools.apply_patch(load("patch")));' + rows[0]["payload"]["input"]
+                )
+                event = copy.deepcopy(rows[1])
+                event["payload"]["item"] = {"type": "FileChange", "id": "patch", "status": "completed"}
+                rows.insert(1, event)
+                for index, row in enumerate(rows):
+                    row["ordinal"] = index
+                report = check_claims.history.literal_targets(rows, SESSION)
+                self.assertFalse(report["unresolved_invocations"], report)
+                self.assertEqual(report["targets"], {("test/a", 5)})
+
     def test_recorded_effects_require_complete_attributed_terminal_evidence(self) -> None:
         for kind in (
             "missing",
@@ -246,6 +264,28 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
 
     def test_recorded_effects_do_not_accept_capability_escapes_or_unknown_counts(self) -> None:
         for source in (
+            'const Error=()=>"hidden";Error("x");',
+            '(Error=>Error("x"))(load("constructor"));',
+            'class Error{};throw new Error("x");',
+            'try{}catch(Error){throw Error("x");}',
+            'Error=load("constructor");',
+            'const E=Error;E("x");',
+            'Error.prepareStackTrace=()=>tools.exec_command({cmd:"echo x"});',
+            'Error["captureStackTrace"]({});',
+            'Error.call(null,"x");',
+            'Error.apply(null,["x"]);',
+            'Error.bind(null)("x");',
+            'Error({toString(){return tools.exec_command({cmd:"echo x"});}});',
+            'Error(load("message"));',
+            'Error(tools.exec_command({cmd:"echo x"}));',
+            "Error(unknown());",
+            "Error(`message`);",
+            "Error``;",
+            'Error(...["x"]);',
+            'Error("x",{cause:"y"});',
+            'Error("x").constructor("return tools")();',
+            'try{throw Error("x");tools.exec_command({cmd:"echo skipped"});}catch(e){}',
+            'await load("jobs").map(async n=>{if(!n)throw Error("x");return tools.exec_command({cmd:n});});',
             "const alias=tools.exec_command;",
             'tools[load("tool")]({});',
             'globalThis.tools.exec_command({cmd:"echo x"});',

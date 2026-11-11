@@ -860,7 +860,7 @@ def closed_stdin(arguments: Node) -> bool:
 
 
 def native_capabilities(root: Node) -> None:
-    globals_allowed = NATIVE_NAMES | {"Date", "RegExp", "Math", "Number", "Boolean", "Array", "image", "notify"}
+    globals_allowed = NATIVE_NAMES | {"Date", "RegExp", "Error", "Math", "Number", "Boolean", "Array", "image", "notify"}
     static_methods = {
         "Object": {"keys", "values", "entries"},
         "JSON": {"parse", "stringify"},
@@ -920,6 +920,20 @@ def native_capabilities(root: Node) -> None:
             }:
                 if node == node.parent.child_by_field_name("left") or node == node.parent.child_by_field_name("argument"):
                     raise ValueError("native assignment")
+            if name == "Error":
+                call = node.parent
+                arguments = call.child_by_field_name("arguments")
+                args = children(arguments) if arguments is not None else []
+                if (
+                    call.type not in {"call_expression", "new_expression"}
+                    or call.child_by_field_name("function" if call.type == "call_expression" else "constructor") != node
+                    or arguments is not None
+                    and arguments.type != "arguments"
+                    or len(args) > 1
+                    or args
+                    and args[0].type != "string"
+                ):
+                    raise ValueError("native reflection")
             if name == "tools":
                 member = node.parent
                 call = member.parent
@@ -962,7 +976,7 @@ def native_capabilities(root: Node) -> None:
                     checker = JavascriptData()
                     checker.statement(root, checker.environment)
                     typed_members = True
-        if kind == "new_expression" and source(node.child_by_field_name("constructor")) not in {"Date", "RegExp"}:
+        if kind == "new_expression" and source(node.child_by_field_name("constructor")) not in {"Date", "RegExp", "Error"}:
             raise ValueError("constructor")
         if kind == "call_expression":
             callee = node.child_by_field_name("function")
