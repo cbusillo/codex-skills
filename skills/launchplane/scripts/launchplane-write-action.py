@@ -630,8 +630,29 @@ class ServiceResponseError(ValueError):
         self.response_diagnostics = diagnostics
 
 
-def service_response_diagnostics(source: object) -> dict[str, object]:
-    """Retain each safe diagnostic independently of invalid neighboring fields."""
+def _service_diagnostic_value(key: str, value: object) -> str:
+    if key == "trace_id":
+        return public_trace_id(value)
+    if key == "error_code":
+        return public_code(value)
+    if key == "blocking_deployment_id":
+        projected = public_identifier(value)
+        public_summary_string(projected, max_length=128)
+        return projected
+    if key in {"error_reason", "waiting_on", "wait_reason", "next_actor"}:
+        try:
+            code = public_code(value)
+        except LaunchplaneSafetyError:
+            return public_service_text(value)
+        if "_" not in code and "-" not in code and CREDENTIAL_LIKE_WORD_RE.fullmatch(code):
+            raise LaunchplaneSafetyError("unsafe_response_shape")
+        return code
+    if isinstance(value, str) and re.fullmatch(r"[\w-]*[_-][\w-]*", value):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    return public_service_text(value)
+
+
+def service_response_diagnostics(source: object, *, controller: bool = False) -> dict[str, object]:
     if isinstance(source, ServiceResponseError):
         return dict(source.response_diagnostics)
     diagnostics: dict[str, object] = {}
@@ -640,26 +661,33 @@ def service_response_diagnostics(source: object) -> dict[str, object]:
         diagnostics["http_status"] = status
     if not isinstance(source, dict):
         return diagnostics
-    error = source.get("error")
-    candidates = {"trace_id": source.get("trace_id")}
-    if isinstance(error, dict):
-        candidates["error_code"] = error.get("code")
-        candidates["error_reason"] = error.get("reason")
+    candidates = {"trace_id": [source.get("trace_id")]}
+    result = source.get("result")
+    sources = [source, result] if isinstance(result, dict) else [source]
+    errors = [item[key] for item in sources for key in ("error", "blocking_reason") if isinstance(item.get(key), dict)]
+    for key, field in (("error_code", "code"), ("error_reason", "reason"), ("error_message", "message")):
+        code_sources = errors if controller else [source["error"]] if isinstance(source.get("error"), dict) else []
+        candidates[key] = [item.get(field) for item in (code_sources if key == "error_code" else errors)]
     details = source.get("details")
     if isinstance(details, dict):
-        candidates["blocking_deployment_id"] = details.get("blocking_deployment_id")
-    for key, value in candidates.items():
-        try:
-            if key == "blocking_deployment_id":
-                projected = public_identifier(value)
-                public_summary_string(projected, max_length=128)
-            else:
-                projected = public_trace_id(value) if key == "trace_id" else public_code(value)
-            if projected:
+        candidates["blocking_deployment_id"] = [details.get("blocking_deployment_id")]
+    for key in ("waiting_on", "wait_reason", "next_actor", "next_action"):
+        candidates[key] = [item.get(key) for item in [*errors, *([details] if isinstance(details, dict) else []), *sources]]
+    for key, values in candidates.items():
+        for value in values:
+            try:
+                projected = _service_diagnostic_value(key, value)
+                if not projected or projected == "[redacted]":
+                    if value:
+                        diagnostics["explanation_withheld"] = True
+                    continue
                 assert_public_safe_shape(projected)
                 diagnostics[key] = projected
-        except LaunchplaneSafetyError:
-            pass
+                break
+            except LaunchplaneSafetyError:
+                if key not in {"trace_id", "error_code", "blocking_deployment_id"} and value is not None and value != "":
+                    diagnostics["explanation_withheld"] = True
+                continue
     return diagnostics
 
 
@@ -5285,13 +5313,20 @@ def _require_exact_fields(value: object, fields: set[str]) -> dict[str, Any]:
     return source
 
 
+def service_error_response(content: bytes, status: int) -> dict[str, object]:
+    try:
+        parsed = json.loads(content)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        parsed = {}
+    return _ServiceResponse(parsed if isinstance(parsed, dict) else {}, status)
+
+
 def _error_payload_from_http(exc: urllib.error.HTTPError) -> dict[str, object]:
     try:
-        raw = exc.read().decode()
-        parsed = json.loads(raw)
-    except (UnicodeDecodeError, json.JSONDecodeError, http.client.HTTPException, OSError):
-        parsed = {}
-    return _ServiceResponse(parsed if isinstance(parsed, dict) else {}, exc.code)
+        content = exc.read()
+    except (http.client.HTTPException, OSError):
+        content = b""
+    return service_error_response(content, exc.code)
 
 
 def _status_for_http_error(code: int, provider_payload: dict[str, object]) -> str:
@@ -5398,7 +5433,8 @@ def summarize_success(
             if operation.endswith("-dry-run") else "Check the independent binding metadata readback."
         ) + FIRST_EMPTY_RETRY_ADVICE
     if operation == "merge-train-controller-run-once":
-        summary.update(_controller_error_diagnostics(provider_payload))
+        summary.update({key: value for key, value in _controller_error_diagnostics(provider_payload).items()
+                        if key in {"http_status", "trace_id", "error_code", "pull_request_number"}})
         if unrecognized:
             # Newer than this skill's pinned schema: dropped from the result, not a failure.
             summary["unrecognized_fields"] = ",".join(unrecognized)
@@ -5605,33 +5641,11 @@ def summarize_success(
 
 
 def _controller_error_diagnostics(provider_payload: dict[str, Any]) -> dict[str, object]:
-    """Retain independently validated identifiers even when the rest is unprojectable."""
-    diagnostics: dict[str, object] = {}
+    diagnostics = service_response_diagnostics(provider_payload, controller=True)
     details = provider_payload.get("details")
     number = details.get("pull_request_number") if isinstance(details, dict) else None
     if isinstance(number, int) and not isinstance(number, bool) and number > 0:
         diagnostics["pull_request_number"] = number
-    try:
-        trace_id = public_trace_id(provider_payload.get("trace_id"))
-        if trace_id:
-            diagnostics["trace_id"] = trace_id
-    except (LaunchplaneSafetyError, TypeError):
-        pass
-    result = provider_payload.get("result")
-    sources = [provider_payload]
-    if isinstance(result, dict):
-        sources.append(result)
-    for source in sources:
-        for key in ("error", "blocking_reason"):
-            error = source.get(key)
-            if isinstance(error, dict):
-                try:
-                    code = public_code(error.get("code"))
-                    assert_public_safe_shape(code)
-                    diagnostics["error_code"] = code
-                    return diagnostics
-                except (LaunchplaneSafetyError, TypeError):
-                    pass
     return diagnostics
 
 
@@ -11048,7 +11062,7 @@ def execute_verified_apply(
             if error_summary.get("error_code") == "invalid_dokploy_target_setup":
                 unknown = _apply_outcome_unknown(operation=operation, request=request, label=label)
                 _require_dict(unknown["summary"]).update({
-                    field: error_summary[field] for field in ("http_status", "trace_id", "error_code")
+                    field: value for field, value in error_summary.items() if field != "recommendation"
                 })
                 emit(unknown)
             else:
@@ -11070,9 +11084,7 @@ def execute_verified_apply(
                                                  provider_payload=error_payload)
                     unknown_summary = _require_dict(unknown["summary"])
                     error_summary = _require_dict(error["summary"])
-                    unknown_summary.update({field: error_summary[field] for field in (
-                        "http_status", "trace_id", "error_code",
-                    )})
+                    unknown_summary.update({field: value for field, value in error_summary.items() if field != "recommendation"})
                     if error_summary["error_code"] == "dokploy_source_partial_outcome" or request.get("source_inputs"):
                         unknown_summary["recommendation"] = (
                             "Source setup may have partially changed the provider. Require admin "

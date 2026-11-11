@@ -379,9 +379,39 @@ def public_operator_text(
     return public_summary_string(redacted, max_length=max_length)
 
 
+def _redact_service_ipv6(match: re.Match[str]) -> str:
+    try:
+        ipaddress.IPv6Address(match[0])
+    except ValueError:
+        return match[0]
+    return "[redacted]"
+
+
 def public_service_text(value: object, *, max_length: int = 500) -> str:
-    return public_operator_text(
-        value, max_length=max_length, redact_denied_markers=True, redact_opaque_words=False,
+    if isinstance(value, str) and (
+        any(character in value for character in "{}")
+        or re.search(r"\[\s*(?:[\"'\d\[{]|null\b|true\b|false\b)", value)
+        or "-----BEGIN" in value
+        or any(
+            is_denied_key(match[1]) and _compact_key(match[1]) not in {"request", "value", "values"}
+            for match in CREDENTIAL_ASSIGNMENT_HEAD_RE.finditer(value)
+        )
+    ):
+        return public_summary_string("[redacted]", max_length=max_length)
+    text = public_operator_text(
+        value,
+        max_length=max_length,
+        redact_denied_markers=True,
+        redact_opaque_words=False,
+    )
+    text = re.sub(r"(?i)\bBasic\s+[A-Za-z0-9+/]+=*", "[redacted]", text)
+    text = re.sub(r"[^\s<>\"'@]+@[^\s<>\"']+", "[redacted]", text)
+    text = re.sub(r"(?:[A-Za-z]:)?[\w.~+-]*[/\\][^\s,;\"'<>]*", "[redacted]", text)
+    text = re.sub(r"(?:[0-9a-fA-F]{0,4}:){2,}[0-9a-fA-F]{0,4}", _redact_service_ipv6, text)
+    return re.sub(
+        r"\b(?:[\w-]+\.)+[^\W\d_]{2,63}\b|\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b|\blocalhost(?::[0-9]+)?\b",
+        "[redacted]",
+        text,
     )
 
 

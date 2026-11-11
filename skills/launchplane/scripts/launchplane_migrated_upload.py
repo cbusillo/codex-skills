@@ -87,7 +87,15 @@ def load_manifest(path: Path, *, product: str) -> dict[str, Any]:
 
 
 class UploadRefused(ValueError):
-    pass
+    def __init__(self, code: str, diagnostics: dict[str, object] | None = None) -> None:
+        super().__init__(code)
+        self.response_diagnostics = diagnostics or {}
+
+
+class UploadUnavailable(OSError):
+    def __init__(self, diagnostics: dict[str, object]) -> None:
+        super().__init__("migrated_upload_unavailable")
+        self.response_diagnostics = diagnostics
 
 
 def validated_private_address(value: str) -> str:
@@ -150,9 +158,12 @@ def private_request(
         response = connection.getresponse()
         content = response.read(1024 * 1024 + 1)
         if response.status >= 500:
-            raise OSError("migrated_upload_unavailable")
+            raise UploadUnavailable(h.service_response_diagnostics(h.service_error_response(content, response.status)))
         if response.status != 200:
-            raise UploadRefused("authorization_denied" if response.status in {401, 403} else "migrated_upload_refused")
+            raise UploadRefused(
+                "authorization_denied" if response.status in {401, 403} else "migrated_upload_refused",
+                h.service_response_diagnostics(h.service_error_response(content, response.status)),
+            )
         if len(content) > 1024 * 1024:
             raise UploadRefused("invalid_migrated_upload_response")
         try:
@@ -217,12 +228,16 @@ def private_send(
                     raise ValueError("invalid_migrated_upload_response")
                 return result
         except InvalidStatus as error:
+            diagnostics = h.service_response_diagnostics(h.service_error_response(bytes(error.response.body), error.response.status_code))
             if error.response.status_code >= 500:
-                raise OSError("migrated_upload_unavailable") from error
-            raise UploadRefused("migrated_upload_refused") from error
+                raise UploadUnavailable(diagnostics) from error
+            raise UploadRefused("migrated_upload_refused", diagnostics) from error
         except ConnectionClosed as error:
             if error.rcvd is not None and error.rcvd.code == 1008:
-                raise UploadRefused("migrated_upload_refused") from error
+                raise UploadRefused(
+                    "migrated_upload_refused",
+                    h.service_response_diagnostics({"error": {"message": error.rcvd.reason}}),
+                ) from error
             raise OSError("migrated_upload_incomplete") from error
         except InvalidHandshake as error:
             raise OSError("migrated_upload_incomplete") from error
@@ -357,10 +372,13 @@ def execute(h: Any, args: argparse.Namespace) -> int:
             code=str(error) if isinstance(error, UploadRefused) else "invalid_migrated_upload_response",
             message="Retain the original pair and operation. Inspect its state, original intent and connection settings before another upload.",
         )
-        output["summary"] = {"recommendation": "Inspect the original intent and private connection settings."}
+        output["summary"] = {
+            **(error.response_diagnostics if isinstance(error, UploadRefused) else {}),
+            "recommendation": "Inspect the original intent and private connection settings.",
+        }
         h.emit(output)
         return 2
-    except (OSError, http.client.HTTPException):
+    except (OSError, http.client.HTTPException) as error:
         output = h.unavailable_payload(
             operation=COMMAND,
             request=request,
@@ -368,5 +386,7 @@ def execute(h: Any, args: argparse.Namespace) -> int:
             code="migrated_upload_incomplete",
             message="Retain the original pair. Read the original rebuild and repeat this upload command without --restart-part to inspect and resume its exact prefix.",
         )
+        if isinstance(error, UploadUnavailable):
+            output["summary"] = error.response_diagnostics
         h.emit(output)
         return 1

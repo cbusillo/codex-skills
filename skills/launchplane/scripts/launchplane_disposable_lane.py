@@ -535,9 +535,7 @@ def _outcome_unknown(h: Any, args: argparse.Namespace, request: dict[str, object
     preparation = args.command == PREFIX + "prepare-rebuild"
     output = h._apply_outcome_unknown(operation=args.command, request=request,
                                     label="testing replacement preparation" if preparation else "disposable lane observation")
-    for key in ("trace_id", "error_code", "http_status"):
-        if key in diagnostics:
-            output["summary"][key] = diagnostics[key]
+    output["summary"].update(diagnostics)
     output["summary"]["recommendation"] = (
         "The retained testing preparation may or may not be stored. " + PREPARATION_RECOVERY
         if preparation else

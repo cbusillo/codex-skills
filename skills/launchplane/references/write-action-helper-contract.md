@@ -1444,8 +1444,8 @@ the helper retains that record id as proof metadata.
 Output uses the existing envelope, retaining bounded status, scope, counts,
 agreement booleans, the ingress audit record id and service trace. Domains,
 host and target ids, endpoint keys, upstream configuration, certificate refs,
-provider prose and reasons are dropped. HTTP refusal preserves the service
-error code and trace with no retry or identity change. Malformed or changing
+provider prose and reasons are dropped. HTTP refusal uses the shared
+[service diagnostics](#service-refusal-diagnostics), with no retry or identity change. Malformed or changing
 plan evidence returns an invalid response with its validated trace.
 
 ### Reviewed route-authority record repairs
@@ -2347,8 +2347,8 @@ Reconciliation results retain `active_action`, `active_phase` and
 record identifiers are returned as null. Blocked landing results retain the
 landing-plan record id in `result`, and the error code in `summary`. HTTP error
 bodies and non-projectable 2xx bodies retain independently validated trace ids
-and error codes when present; raw error messages and unsafe identifiers are
-omitted. A non-projectable response remains invalid, with no projected result.
+and error codes when present; unsafe identifiers are omitted. Refusal text uses
+the shared [service diagnostics](#service-refusal-diagnostics). A non-projectable response remains invalid, with no projected result.
 
 When the controller returns `controller_action: block`, the helper preserves a
 public-safe `blocking_reason` code and message plus the bounded merge-readiness
@@ -2570,11 +2570,9 @@ that cannot verify the effect of a server error still override it with
 Service outages remain `unavailable`;
 inspect the original outcome before supported recovery of a write.
 
-Service `error.reason` and `details.blocking_deployment_id` are projected as
-`summary.error_reason` and `summary.blocking_deployment_id` through the existing
-public-code and identifier checks. Each field is checked independently. Missing
-legacy fields remain unknown. Service prose and extra fields are omitted;
-message edits do not change diagnostics or original-operation recovery advice.
+`details.blocking_deployment_id` uses the existing identifier check. Other
+refusal fields follow [service diagnostics](#service-refusal-diagnostics). Message
+edits never change classification or original-operation recovery advice.
 
 Preview-feedback projection failures retain independently validated
 `summary.error_code`, `summary.trace_id` and transport `summary.http_status`
@@ -2586,7 +2584,7 @@ traces are never reconstructed from body text, exception messages or headers.
 The private saved Client-review reader uses the same diagnostic projection:
 failed reads remain nonzero with `ok=false` and the existing generic `error`,
 adding bounded `error_code`, `trace_id` and `status_code` when available. It
-does not emit provider prose, URLs, credentials or arbitrary error fields.
+uses the same safe refusal prose; URLs, credentials and arbitrary fields stay omitted.
 
 Public timestamp projections accept UTC timestamps with optional fractional
 seconds (up to six digits), preserving their exact value. Policy preflight thus
@@ -2896,7 +2894,8 @@ a GitHub App (`template_not_github_app`). The service's review still decides
 whether the App installation and required checks support it. A 422 response
 with `merge_train_target_not_ready` returns local repair advice for the standard
 ruleset pair, required CI checks and policy enqueue label before proposing again;
-it does not expose the service's error prose or grant permission to apply changes.
+its service explanation uses [service diagnostics](#service-refusal-diagnostics)
+and grants no permission to apply changes.
 
 On a timeout, HTTP 5xx or response-verification failure, retain the same envelope and
 source event for reconciliation/replay. Never substitute a new identity or a new
@@ -3006,7 +3005,8 @@ reasons in `launchplane_review_withdrawal.py`'s `REFUSAL_ADVICE`;
 its recommendation comes from local bounded text. An unlabeled request reports
 `no_pending_labeled_request`: there is no labeled Client review request to
 withdraw. Missing, unknown or malformed reasons keep the generic refusal;
-service/provider prose is never copied. Recovery or uncertain-effect reasons
+independent service explanation follows [service diagnostics](#service-refusal-diagnostics).
+Recovery or uncertain-effect reasons
 are not eligibility reasons. Applied receipts, stale plans and
 uncertain outcomes take precedence over a supplied reason. Older consumers and services without reasons keep the same generic refusal
 code.
@@ -3219,3 +3219,32 @@ retry automatically, replace the key or infer recovery eligibility locally.
 Current route authority is independently required; a route digest cannot
 replace native binding proof. Source delivery lifts no hold, acceptance,
 custody, backup, release or receiver prerequisite and proves no target effect.
+
+## Service refusal diagnostics
+
+All HTTP commands in the write-action caller share the same refusal projection. `summary.error_code`
+retains a valid service code; `error_reason` retains a safe structured reason
+or explanatory sentence, and `error_message` retains bounded service prose.
+When supplied by the service, `waiting_on`, `wait_reason`, `next_actor` and
+`next_action` are shown independently. Controller errors use this same path,
+including nested `result.error` and `result.blocking_reason`. Nested codes remain
+controller-only so other commands retain their existing classification inputs. Invalid neighboring
+fields do not discard safe diagnostics. The existing local `status`, exit code
+and recovery `recommendation` remain authoritative caller classifications;
+service prose supplies explanation, never permission or retry clearance.
+
+Prose uses the shared service-text projection, including path and address removal. Credential
+assignments, token-like values, URLs, paths, host/IP addresses, key blocks and embedded JSON are
+withheld or redacted. Opaque single-word prose identifiers are withheld; structured
+reason, wait and actor codes retain their existing validation. Missing fields
+stay omitted and their content remains UNKNOWN. Supplied explanations that are
+malformed, overlong or wholly redacted set `summary.explanation_withheld: true`;
+their content is omitted. No arbitrary details or request payload is copied.
+
+`testing-rebuild-migrated-upload` also uses this projection for its private GET
+and rejected WebSocket handshake, including service-unavailable responses. A WebSocket policy close retains its reason
+when one exists; an empty close supplies no cause. The local
+`migrated_upload_refused` warning remains distinct from any service code in the
+summary. No retry, upload, receipt reconciliation or disposition is implied.
+The existing migrated-source state GET alone does not expose every upload
+prerequisite. It cannot prove that another upload may start.
