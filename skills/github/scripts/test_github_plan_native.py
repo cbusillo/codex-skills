@@ -1659,8 +1659,6 @@ class NativeQueueTests(unittest.TestCase):
 
     def test_saved_recovery_rechecks_guarded_replacement_without_changing_source_identity(self):
         import uuid
-        SESSIONS.native_helpers()
-        tmux_terminal = importlib.import_module("tmux_terminal")
         for changed in (None, "fresh_local", "source_resume", "unregistered_remote", "orphan", "source_pid"):
             with self.subTest(changed=changed), ReceiptFixture(str(uuid.uuid4())) as f:
                 CLOSURE.replace_rows([])
@@ -1671,8 +1669,8 @@ class NativeQueueTests(unittest.TestCase):
                 parents = {99: 1, 455: 99, 456: 455}
                 f.native_state = "notLoaded"
                 f.process_rows = [(455, entry["tty"], "replacement-root"), (456, entry["tty"], " ".join(native))]
-                with patch.object(tmux_terminal.Terminal, "list", return_value=[]), \
-                        patch.object(tmux_terminal, "process_parents", side_effect=lambda: dict(parents)), \
+                with patch("tmux_terminal.Terminal.list", return_value=[]), \
+                        patch("tmux_terminal.process_parents", side_effect=lambda: dict(parents)), \
                         patch.object(CLOSURE, "process_started_at", side_effect=lambda pid: root_at + timedelta(seconds=pid != 455)), \
                         patch.object(f.release, "recovery_claims"):
                     f.managed(native)
