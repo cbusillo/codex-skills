@@ -39,9 +39,11 @@ does not trigger a global repository scan, cache sweep, or retirement workflow.
    and claim release is verified, use
    [qualified retirement](../github/references/worktrees.md#retirement) from
    outside the tree. Never invoke the host primitive directly; its filesystem
-   checks do not prove ownership. The catalog's next `dev-worktree` creation runs the same guarded
+   checks do not prove ownership. The catalog's next ordinary `dev-worktree` creation runs the same guarded
    retirement for that repository, with kept reasons; no separate after-landing
-   cleanup handoff is needed. Bulk passes use `landed_worktrees.py --all`, with
+   cleanup handoff is needed. A task with an explicit foreign-custody boundary uses
+   [scoped creation](../github/references/worktrees.md) with `--task-only`; that
+   invocation performs no broader housekeeping. Bulk passes use `landed_worktrees.py --all`, with
    preview before `--apply`, rather than exact retirement for every listed path.
    Before handing off continuing work, record retained-tree custody and its
    `Refs` or exact-branch associations on the existing claimed work record;
