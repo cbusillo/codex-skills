@@ -2929,15 +2929,13 @@ and approves pending plans in the UI; no helper approval or apply path is added.
 
 ## Release request under the recorded Client policy
 
-`release-request --product P --plan` reads the current profile and checklist and
-sends nothing. It reports `release_on_acceptance`, `checklist_digest`, both lanes'
+`release-request --product P --plan` reads the current profile through
+`product-profile-read` and the current checklist, and sends nothing. It reports `release_on_acceptance`, `checklist_digest`, both lanes'
 source commits, whether they carry runtime settings, blocker count and `review_url`.
 A plan with a structured current prerequisite reports `refused` and
 `refusal_reason`. Blocker text is counted, never interpreted as caller policy.
 Item text, settings, artifact ids, blocker prose, saved reason and actor stay private.
-An omitted profile `release_on_acceptance` uses the shared profile projection's
-held default; malformed values still fail closed. Omission never enables acceptance
-or clears a hold. The profile supplies the configured policy; the review's similarly named field
+The profile supplies the configured policy; the review's similarly named field
 supplies the effective release action and cannot replace it.
 
 For a qualified first Odoo release, production projects as `state: absent`,
