@@ -34,17 +34,19 @@ from check_operation import (
 from session_record import load_ledger, normalize_ledger_entry, session_status
 
 SCRIPTS = Path(__file__).resolve().parent
+GH_PLAN = SCRIPTS.parents[1] / "github/scripts/gh-plan.py"
 
 if TYPE_CHECKING:
     from skills.github.scripts.github_catalog_health import MARKER as OPERATION_MARKER
     from skills.github.scripts.github_plan_claim import (
         live_lines,
         session_fields,
+        status_names_actor,
         unquoted_text,
     )
 else:
     from github_catalog_health import MARKER as OPERATION_MARKER
-    from github_plan_claim import live_lines, session_fields, unquoted_text
+    from github_plan_claim import live_lines, session_fields, status_names_actor, unquoted_text
 
 
 def require(condition: bool, gate: str, reason: str) -> None:
@@ -243,6 +245,68 @@ def verify_handoff(entry: dict, args: argparse.Namespace, operation: Operation, 
     entry["handoff_url"] = selected
 
 
+def handoff_successor(entry: dict, args: argparse.Namespace) -> str | None:
+    recovery = entry.get("recovery", {}).get("kind")
+    selected = entry["recovery"]["successor_session"] if recovery == "handoff" else getattr(args, "successor_session", None)
+    if recovery == "gone" or not entry.get("worker_cap"):
+        require(not selected or bool(recovery), "successor", "only a lead's handoff moves ownership to a successor")
+        return None
+    if not selected and not entry.get("launch_started_at"):
+        return None
+    rows = load_ledger(args.ledger)
+    active = {row["session_id"] for row in rows}
+    candidates = [row for row in release.successor_candidates(entry, rows, selected)
+                  if row.get("worker_cap") and row["session_id"] in active]
+    if not candidates and (recovery or not selected):
+        return None
+    require(len(candidates) == 1, "successor",
+            "a handed-off lead needs one active matching successor lead; select --successor-session")
+    try:
+        release.require_successor(entry, candidates[0])
+    except ValueError as error:
+        raise GateFailed("successor", str(error)) from error
+    return candidates[0]["session_id"]
+
+
+def adopt_workers(ledger: Path, source: str, successor: str) -> None:
+    with closure.store_lock(ledger, create=True):
+        rows = json.loads(ledger.read_text())
+        leads = [row for row in rows if row.get("session_id") == source]
+        require(len(leads) == 1 and not leads[0].get("worker_launches"), "successor",
+                "source lead has unsettled worker launches; recover them before its handoff closes")
+        require(any(row.get("session_id") == successor for row in rows), "successor",
+                "successor left the active ledger; select a current successor")
+        workers = [row for row in rows if row.get("lead_session_id") == source]
+        for row in workers:
+            row["lead_session_id"] = successor
+        if workers:
+            save_state(ledger, rows)
+
+
+def status_records_naming(finish_evidence: Path, session: str) -> list[dict]:
+    try:
+        output = json.loads(json.loads(finish_evidence.read_text())["stdout"])
+        return [row for report in output["reports"] if report.get("session_id") == session
+                for row in report.get("retained_status_claims") or []]
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+
+
+def repoint_status_actors(operation: Operation, source: str, successor: str) -> bool:
+    reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 120)
+    moved = False
+    for row in status_records_naming(operation.evidence / "finish.json", source):
+        repo, number = row["repository"], row["issue"]
+        issue = reader.get_json(f"/repos/{repo}/issues/{number}", step="repoint_status")
+        if not status_names_actor(unquoted_text(issue.get("body") or ""), source):
+            continue
+        operation.run(f"repoint-{repo.replace('/', '-')}-{number}",
+                      ["uv", "run", str(GH_PLAN), "--repo", repo, "update-section", str(number), "Current Status",
+                       "--next-actor", f"agent:{successor}"], once=True)
+        moved = True
+    return moved
+
+
 def closeout_mutations_settled(state: dict) -> bool:
     retired = bool(state.get("generation")) and state.get("retired_generation") == state["generation"]
     return all(step.get("complete") is True or retired and gate in {"quit", "close"} and step.get("complete") is False
@@ -312,6 +376,7 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
         if isinstance(saved, dict) and saved.get("closure_kind") == "claim_free_recovery":
             entry["recovery"] = saved["recovery"]
     ready(entry, args.supervisor_session)
+    successor = handoff_successor(entry, args)
     backend = entry.get("backend", "iterm")
     selected_terminal = entry.get("tmux_session_id" if backend == "tmux" else "iterm_session_id")
     if (not isinstance(selected_terminal, str) or not selected_terminal) and entry.get("recovery", {}).get("kind") != "gone":
@@ -416,6 +481,8 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
         claims()
         if not entry.get("recovery") or entry["recovery"]["kind"] == "handoff":
             verify_handoff(entry, args, operation, retired=False)
+        if successor:
+            adopt_workers(args.ledger, args.session_id, successor)
         if not session_liveness.process_absent(entry.get("pid")) and not operation.state["steps"].get("quit"):
             operation.gate = "native_idle"
             asyncio.run(native_idle(entry))
@@ -434,9 +501,9 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
             )
         wait_for_exit()
     ready(entry, args.supervisor_session)
-    finish = operation.run(
-        "finish",
-        [
+    require(all(step.get("complete") is True for gate, step in operation.state["steps"].items() if gate.startswith("repoint-")),
+            "repoint", "a Current Status re-point is uncertain; read that issue back before rerunning")
+    finish_command = [
             "uv", "run",
             str(SCRIPTS / "release_session_claims.py"),
             "finish",
@@ -449,9 +516,13 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
             *(["--successor-session", entry["recovery"]["successor_session"]]
               if entry.get("recovery", {}).get("kind") == "handoff" else []),
             *(["--handoff-url", entry["handoff_url"]] if entry.get("recovery") and entry.get("handoff_url") else []),
-        ],
-        timeout=660,
-    )
+    ]
+    try:
+        finish = operation.run("finish", finish_command, timeout=660)
+    except GateFailed:
+        if not (successor and repoint_status_actors(operation, args.session_id, successor)):
+            raise
+        finish = operation.run("finish", finish_command, timeout=660)
     require(
         finish.get("ok") is True and finish.get("needs_reconciliation") is False,
         "finish",
@@ -487,7 +558,7 @@ def main() -> int:
     parser.add_argument("--evidence", type=Path, required=True)
     parser.add_argument("--handoff-url", help="explicit posted handoff after source verification, including a different work issue")
     parser.add_argument("--recover-ended", action="store_true", help="Recover a claim-free gone or proven handed-off generation")
-    parser.add_argument("--successor-session", help="Exact successor ledger row for handed-off recovery")
+    parser.add_argument("--successor-session", help="Exact successor ledger row of a handed-off lead; its workers and Current Status actors move to it")
     parser.add_argument("--exit-seconds", type=float, default=30)
     args = parser.parse_args()
     try:
