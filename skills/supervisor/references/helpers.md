@@ -2286,7 +2286,7 @@ Recovery also accepts `--unresolved-cells-decision` under the same Q1354 checks
 as normal closeout, using the same audit and once-only note journal. Legacy rows
 without issue metadata require one unambiguous source-session work record in
 the fresh exact-release evidence. The canonical closure retains the accepted
-cells, original note URL and inventory owner. Later validation repeats fresh
+cells, original note URL and the inventory's `--owner` value. Later validation repeats fresh
 claim checks and verifies that unchanged note; it posts nothing. The finish
 helper takes `--unresolved-cells-check <original-closeout-operation.json>` to
 consume the confirmed check during `finish --recover-ended`.
