@@ -626,7 +626,11 @@ Repository windows are committed together only after the complete receipt is
 flushed, so a stopped collection or output failure leaves the original windows
 for the next audit. An exit-1 attempt with complete JSON and `weekly_skipped`
 can advance the read repositories' windows; use its findings as well as the
-next receipt. The audit is bounded to 30 minutes and sends nothing.
+next receipt. The audit is bounded to 30 minutes and sends nothing. Its GitHub
+subprocess reads, including discovery and archive sizing, have a one-minute
+bound and name the failed endpoint in stderr. The runner passes its read
+deadline to the collector with time reserved to flush an incomplete attempt;
+that attempt does not count as a recorded weekly audit.
 
 The calendar uses the Mac's system timezone: verify it is US Eastern for a
 7:30 AM ET schedule. launchd coalesces a missed calendar invocation after sleep;
@@ -636,6 +640,8 @@ suppresses duplicate kickstarts. Exit 3 from the collector is archived with
 coverage warnings and retained as `scan_exit_code: 3` in the daily receipt.
 Other collector failures retain output without posting. Scan and archive have
 15-minute and two-minute bounds, respectively.
+Runner failures retain the actual exception and the command's stderr location
+in the existing reconciliation event; inspect those before retrying.
 
 After filling the private configuration, render, install and start only this job:
 

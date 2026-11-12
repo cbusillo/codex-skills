@@ -19,6 +19,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from typing import BinaryIO
 
 import services
 import stranded_archive
@@ -89,14 +90,21 @@ def render(config_path, output):
     return target
 
 
-def command(argv, cwd, stdin, stdout, stderr, stopped, timeout):
+def command(argv: list[str], cwd: Path, stdin: int, stdout: int | BinaryIO, stderr: int | BinaryIO,
+            stopped: threading.Event, timeout: float) -> int:
+    read_deadline = time.time() + timeout - min(30, timeout / 5)
+    inherited = os.environ.get("GITHUB_RETRY_DEADLINE_AT")
+    if inherited:
+        read_deadline = min(read_deadline, float(inherited))
     child = subprocess.Popen(argv, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr,
-                             start_new_session=True)
+                             start_new_session=True, env={**os.environ, "GITHUB_RETRY_DEADLINE_AT": str(read_deadline)})
     try:
         deadline = time.monotonic() + timeout
         while child.poll() is None:
             if stopped.wait(0.1) or time.monotonic() >= deadline:
-                raise TimeoutError("daily command stopped or timed out")
+                reason = "stopped" if stopped.is_set() else f"timed out after {timeout:g}s"
+                script = next((Path(arg).name for arg in argv if arg.endswith(".py")), Path(argv[0]).name)
+                raise TimeoutError(f"{script} {reason}; inspect {getattr(stderr, 'name', 'command stderr')}")
         return child.returncode
     finally:
         services.stop_child(child)
@@ -200,8 +208,8 @@ def run_weekly(config_path, stopped):
 def guarded(action):
     try:
         return action()
-    except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError):
-        services.emit("reconciliation_required", reason="inspect retained scan and delivery evidence")
+    except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as error:
+        services.emit("reconciliation_required", reason=str(error))
         return 1
 
 
@@ -243,8 +251,8 @@ def main(argv=None):
         config_path = args.config.resolve()
         daily_code = guarded(lambda: run_once(config_path, stopped, retry_unsent=args.command == "retry-unsent"))
         return guarded(lambda: run_weekly(config_path, stopped)) or daily_code
-    except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError):
-        services.emit("reconciliation_required", reason="inspect retained scan and delivery evidence")
+    except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as error:
+        services.emit("reconciliation_required", reason=str(error))
         return 1
     finally:
         for sig, handler in previous.items():

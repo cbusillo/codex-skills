@@ -19,6 +19,7 @@ import pathlib
 import re
 import runpy
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -365,13 +366,35 @@ def _parse_time(value: Any) -> dt.datetime | None:
 
 
 NOT_FOUND_RE = re.compile(r"\bHTTP 404\b")
+READ_TIMEOUT_SECONDS = 60
+
+
+def read_command(args: list[str], *, gh: str) -> subprocess.CompletedProcess[bytes]:
+    timeout = min(READ_TIMEOUT_SECONDS, github_api.remaining_retry_timeout_seconds())
+    if timeout <= 0:
+        raise AuditError(f"GitHub read {args[1]} exceeded the read deadline before starting")
+    with subprocess.Popen([gh, *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, start_new_session=True) as child:
+        try:
+            output, error = child.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            try:
+                os.killpg(child.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            _output, error = child.communicate()
+            message = f"GitHub read {args[1]} timed out after {timeout:.1f}s: {error.decode(errors='replace').strip()[:400]}"
+            print(message, file=sys.stderr, flush=True)
+            raise AuditError(message) from exc
+        return subprocess.CompletedProcess(child.args, child.returncode, output, error)
 
 
 def gh_json(args: list[str], *, gh: str) -> Any:
-    proc = subprocess.run([gh, *args], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    proc = read_command(args, gh=gh)
     if proc.returncode != 0:
-        error = ReferenceNotFound if NOT_FOUND_RE.search(proc.stderr) else AuditError
-        raise error(f"{gh} {' '.join(args)} failed: {proc.stderr.strip()[:400]}")
+        detail = proc.stderr.decode(errors="replace").strip()
+        error = ReferenceNotFound if NOT_FOUND_RE.search(detail) else AuditError
+        raise error(f"{gh} {' '.join(args)} failed: {detail[:400]}")
     try:
         return json.loads(proc.stdout or "null")
     except json.JSONDecodeError as exc:
@@ -2161,11 +2184,7 @@ def default_branch_net_lines(
 
 
 def tarball_text_lines(repo: str, sha: str, *, gh: str) -> int:
-    try:
-        proc = subprocess.run([gh, "api", f"repos/{repo}/tarball/{sha}"], capture_output=True,
-                              timeout=github_api.remaining_retry_timeout_seconds())
-    except subprocess.TimeoutExpired as exc:
-        raise AuditError("tarball read exceeded the read deadline") from exc
+    proc = read_command(["api", f"repos/{repo}/tarball/{sha}"], gh=gh)
     if proc.returncode != 0:
         raise AuditError(f"tarball read failed: {proc.stderr.decode(errors='replace').strip()[:400]}")
     lines = 0

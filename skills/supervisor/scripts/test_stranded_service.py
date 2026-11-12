@@ -13,7 +13,10 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from unittest import mock
 
@@ -265,6 +268,23 @@ class DailyTests(unittest.TestCase):
         self.assertIsNotNone(children[0].poll())
         with self.assertRaises(ProcessLookupError):
             os.killpg(children[0].pid, 0)
+
+    def test_command_passes_a_deadline_before_its_outer_timeout(self) -> None:
+        started = time.time()
+        output = self.root / "deadline.json"
+        with output.open("wb") as stream, (self.root / "error").open("wb") as error:
+            code = daily.command([sys.executable, "-c", "import os;print(os.environ.get('GITHUB_RETRY_DEADLINE_AT'))"],
+                                 self.root, subprocess.DEVNULL, stream, error, threading.Event(), 5)
+        self.assertEqual(code, 0)
+        self.assertGreater(float(output.read_text()), started)
+        self.assertLess(float(output.read_text()), started + 5)
+
+    def test_guarded_failure_retains_the_actual_read_reason(self) -> None:
+        output = StringIO()
+        with redirect_stdout(output):
+            code = daily.guarded(lambda: (_ for _ in ()).throw(TimeoutError("GET installation/repositories timed out")))
+        self.assertEqual(code, 1)
+        self.assertIn("installation/repositories", json.loads(output.getvalue())["reason"])
 
 
 if __name__ == "__main__":
