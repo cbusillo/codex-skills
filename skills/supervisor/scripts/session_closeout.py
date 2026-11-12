@@ -71,9 +71,9 @@ def unresolved_cell_claims(entry: dict, args: argparse.Namespace, operation: Ope
     operation.gate = "claims"
     decision = args.unresolved_cells_decision
     require(
-        entry["harness"] == "codex" and not entry.get("recovery"),
+        entry["harness"] == "codex",
         "claims",
-        "unresolved-cell retirement requires a normal finished Codex session",
+        "unresolved-cell retirement requires a Codex session",
     )
     require(
         decision == UNRESOLVED_CELLS_DECISION,
@@ -143,6 +143,45 @@ def unresolved_cell_claims(entry: dict, args: argparse.Namespace, operation: Ope
         f"```json\n{json.dumps(cells, indent=2)}\n```\n\n"
         "Only this unresolved-cell outcome is accepted. Retirement still requires every remaining closeout gate.\n"
     )
+    return result
+
+
+def check_claims(entry: dict, owner: str, operation: Operation, decision: str | None) -> dict:
+    try:
+        result = operation.run("claims", [
+            "uv", "run",
+            str(SCRIPTS.parents[1] / "work-closeout/scripts/check_claims.py"),
+            "--owner", owner,
+            "--session", entry["session_id"],
+            "--transcript", entry["transcript"],
+            *(["--require-released-claims"] if entry.get("recovery") or decision else []),
+            *(["--inventory-owner", owner] if decision else []),
+        ], timeout=660)
+    except GateFailed:
+        if not decision:
+            raise
+        audited = json.loads((operation.evidence / "claims.json").read_text())
+        require(audited.get("exit_code") == 1, "claims", "unresolved-cell decision needs a completed claims audit")
+        result = unresolved_cell_claims(entry, argparse.Namespace(unresolved_cells_decision=decision), operation, json.loads(audited["stdout"]))
+    require(
+        accepted_unresolved_claims(entry, operation, result)
+        or result.get("claims_clear") is True and result.get("coverage", {}).get("complete") is True,
+        "claims",
+        "claim releases or discovery coverage are incomplete",
+    )
+    return result
+
+
+def recovery_claim_operation(entry: dict) -> Operation:
+    return Operation(Path(entry["recovery"]["claims_evidence"]), [entry["session_id"]])
+
+
+def check_recovery_claims(entry: dict) -> dict:
+    operation = recovery_claim_operation(entry)
+    result = check_claims(entry, entry["repository"].split("/")[0], operation,
+                          entry["recovery"]["unresolved_cells_decision"])
+    if accepted_unresolved_claims(entry, operation, result) and not entry.get("_recovery_preview"):
+        post_unresolved_cells(entry, operation)
     return result
 
 
@@ -228,6 +267,8 @@ def ready(entry: dict, supervisor: str) -> dict:
 
 
 def claim_evidence(entry: dict, operation: Operation, key: str) -> list[dict]:
+    if entry.get("recovery", {}).get("unresolved_cells_decision"):
+        operation = recovery_claim_operation(entry)
     path = operation.evidence / "claims.json"
     if not path.exists():
         return []
@@ -488,6 +529,9 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
         saved = closure.source_records({args.session_id}).get(args.session_id)
         if isinstance(saved, dict) and saved.get("closure_kind") == "claim_free_recovery":
             entry["recovery"] = saved["recovery"]
+        if decision := getattr(args, "unresolved_cells_decision", None):
+            entry["recovery"].update(unresolved_cells_decision=decision,
+                                     claims_evidence=str(operation.evidence / "recovery-claims"))
     ready(entry, args.supervisor_session)
     successor = handoff_successor(entry, args)
     backend = entry.get("backend", "iterm")
@@ -501,29 +545,10 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
         return operation.run(gate, [*terminal, action, "--session-id", terminal_id, *extra], once=once)
 
     def claims() -> dict:
-        decision = getattr(args, "unresolved_cells_decision", None)
-        try:
-            result = operation.run("claims", [
-                "uv", "run",
-                str(SCRIPTS.parents[1] / "work-closeout/scripts/check_claims.py"),
-                "--owner", args.owner,
-                "--session", args.session_id,
-                "--transcript", entry["transcript"],
-                *(["--require-released-claims"] if entry.get("recovery") or decision else []),
-                *(["--inventory-owner", args.owner] if decision else []),
-            ], timeout=660)
-        except GateFailed:
-            if not decision:
-                raise
-            audited = json.loads((operation.evidence / "claims.json").read_text())
-            require(audited.get("exit_code") == 1, "claims", "unresolved-cell decision needs a completed claims audit")
-            result = unresolved_cell_claims(entry, args, operation, json.loads(audited["stdout"]))
-        require(
-            accepted_unresolved_claims(entry, operation, result)
-            or result.get("claims_clear") is True and result.get("coverage", {}).get("complete") is True,
-            "claims",
-            "claim releases or discovery coverage are incomplete",
-        )
+        if entry.get("recovery", {}).get("unresolved_cells_decision"):
+            result = release.recovery_claims(entry)
+        else:
+            result = check_claims(entry, args.owner, operation, getattr(args, "unresolved_cells_decision", None))
         operation.gate = "review_wait"
         reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 120)
         actor = github_identity.automation_login()
@@ -635,6 +660,9 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
             "--owner", args.owner,
             "--confirm-session-ended", "--apply",
             *(["--recover-ended"] if entry.get("recovery") else []),
+            *(["--unresolved-cells-decision", entry["recovery"]["unresolved_cells_decision"],
+               "--claims-evidence", entry["recovery"]["claims_evidence"]]
+              if entry.get("recovery", {}).get("unresolved_cells_decision") else []),
             *(["--successor-session", entry["recovery"]["successor_session"]]
               if entry.get("recovery", {}).get("kind") == "handoff" else []),
             *(["--handoff-url", entry["handoff_url"]] if entry.get("recovery") and entry.get("handoff_url") else []),

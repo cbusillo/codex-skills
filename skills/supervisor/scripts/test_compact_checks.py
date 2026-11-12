@@ -7,6 +7,7 @@ import argparse
 import asyncio
 import json
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -76,7 +77,7 @@ class OperationTests(unittest.TestCase):
         args = argparse.Namespace(owner="owner", unresolved_cells_decision=session_closeout.UNRESOLVED_CELLS_DECISION)
         decision = {"user": {"login": "agent[bot]"}, "created_at": "2026-01-01T00:00:00Z",
                     "updated_at": "2026-01-01T00:00:00Z"}
-        for obstruction in ("none", "held", "search", "error", "shell", "recovery", "decision", "edited", "wrong_url"):
+        for obstruction in ("none", "held", "search", "error", "shell", "decision", "edited", "wrong_url"):
             with self.subTest(obstruction=obstruction):
                 checked = json.loads(json.dumps(report))
                 current = dict(entry)
@@ -208,6 +209,87 @@ class OperationTests(unittest.TestCase):
             session_closeout.closeout(args, operation)
             transcript.write_text(transcript.read_text() + json.dumps({"type": "user", "sessionId": "native",
                 "timestamp": "2026-01-02T00:00:00Z", "message": {"content": "resumed"}}) + "\n")
+            with self.assertRaises(ValueError):
+                session_closeout.closeout(args, operation)
+
+    def test_recovery_decision_retires_unresolved_cells_but_preserves_held_claims(self) -> None:
+        ledger = self.root / "ledger.json"
+        transcript = self.root / "source.jsonl"
+        transcript.write_text(json.dumps({"type": "session_meta", "timestamp": "2026-01-01T00:00:00Z", "payload": {"id": "native"}}) + "\n")
+        source = {"session_id": "native", "harness": "codex", "supervisor_owned": True,
+                  "pid": 123, "tty": "ttys001", "transcript": str(transcript.resolve()), "backend": "tmux",
+                  "tmux_session_id": "terminal", "repository": "owner/repo", "issue": 1}
+        other = {**source, "session_id": "other", "pid": 124}
+        ledger.write_text(json.dumps([source, other]))
+        log = self.root / "closed.json"
+        args = argparse.Namespace(ledger=ledger, session_id="native", supervisor_session="supervisor", owner="test",
+                                  recover_ended=True, successor_session=None, handoff_url=None, exit_seconds=.1,
+                                  unresolved_cells_decision=session_closeout.UNRESOLVED_CELLS_DECISION)
+        claims = {"ok": False, "claims_clear": False, "session_ids": ["native"],
+                  "coverage": {"complete": False, "search_errors": []}, "blocked": [],
+                  "unresolved_invocations": [{"session": "native", "call_id": "opaque", "reason": "computed", "code_mode": True}]}
+        decision = {"user": {"login": "fixture[bot]"}, "created_at": "2026-01-01T00:00:00Z",
+                    "updated_at": "2026-01-01T00:00:00Z"}
+        notes = []
+
+        def command(argv: list[str], **_: Any) -> subprocess.CompletedProcess:
+            if any(str(word).endswith("check_claims.py") for word in argv):
+                self.assertIn("--require-released-claims", argv)
+                self.assertIn("--inventory-owner", argv)
+                return subprocess.CompletedProcess(argv, 1, json.dumps(claims), "")
+            self.assertIn("gh-comment", argv[0])
+            notes.append(Path(argv[argv.index("--body-file") + 1]).read_text())
+            return subprocess.CompletedProcess(argv, 0, json.dumps({"ok": True}), "")
+
+        release = session_closeout.release
+
+        original_run = check_operation.Operation.run
+
+        def run(current: check_operation.Operation, gate: str, argv: list[str], **kwargs: Any) -> dict | list:
+            if gate == "finish":
+                main_args = ["release_session_claims.py", *argv[argv.index("finish"):]]
+                with patch.object(sys, "argv", main_args):
+                    self.assertEqual(release.main(), 0)
+                return {"ok": True, "needs_reconciliation": False}
+            if gate in {"terminals", "disappearance"}:
+                return []
+            return original_run(current, gate, argv, **kwargs)
+
+        with (patch.object(check_operation.Operation, "run", run),
+              patch.object(subprocess, "run", side_effect=command),
+              patch.object(session_closeout, "GitHubReader", return_value=SimpleNamespace(get_json=lambda *_, **__: decision)),
+              patch.object(session_closeout.github_identity, "automation_login", return_value="fixture[bot]"),
+              patch.object(session_closeout.closure, "closed_log", return_value=log),
+              patch.object(session_closeout.closure, "ownership", return_value=nullcontext()),
+              patch.object(session_closeout.session_liveness, "process_absent", return_value=True),
+              patch.object(session_closeout.session_liveness, "inventory", return_value=[]),
+              patch_attr(release, "inventory", return_value=[]),
+              patch.object(release.native_closure, "verify_source_process"),
+              patch.object(release, "transcript_roots", return_value=[str(self.root)])):
+            operation = check_operation.Operation(self.root / "recovery", [str(ledger), "native"])
+            claims["blocked"] = ["held claim"]
+            with self.assertRaises(ValueError):
+                session_closeout.closeout(args, operation)
+            self.assertEqual(json.loads(ledger.read_text()), [source, other])
+            self.assertEqual(notes, [])
+            claims["blocked"] = []
+            preview = ["release_session_claims.py", "finish", "--ledger", str(ledger), "--session-id", "native",
+                       "--supervisor-session", "supervisor", "--owner", "owner", "--recover-ended", "--confirm-session-ended",
+                       "--unresolved-cells-decision", args.unresolved_cells_decision,
+                       "--claims-evidence", str(operation.evidence / "recovery-claims")]
+            with patch.object(sys, "argv", preview):
+                self.assertEqual(release.main(), 0)
+            self.assertEqual(notes, [])
+            self.assertFalse(log.exists())
+            session_closeout.closeout(args, operation)
+            self.assertEqual(len(notes), 1)
+            self.assertIn("opaque", notes[0])
+            self.assertEqual(json.loads(ledger.read_text()), [other])
+            closed = json.loads(log.read_text())[0]
+            self.assertEqual({key: closed[key] for key in source}, source)
+            self.assertNotIn("verdict_at", closed)
+            session_closeout.closeout(args, operation)
+            transcript.write_text(transcript.read_text() + json.dumps({"type": "event_msg", "timestamp": "2026-01-02T00:00:00Z", "payload": {"type": "user_message", "message": "resumed"}}) + "\n")
             with self.assertRaises(ValueError):
                 session_closeout.closeout(args, operation)
 

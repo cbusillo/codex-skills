@@ -236,6 +236,9 @@ def transcript_roots(harness: str, configured: Path | None, explicit: list[Path]
 
 
 def recovery_claims(entry: dict) -> dict:
+    if entry.get("recovery", {}).get("unresolved_cells_decision"):
+        from session_closeout import check_recovery_claims
+        return check_recovery_claims(entry)
     result = subprocess.run(["uv", "run", str(GITHUB.parents[1] / "work-closeout/scripts/check_claims.py"),
                              "--session", entry["session_id"], "--transcript", entry["transcript"],
                              "--require-released-claims"], capture_output=True, text=True, timeout=660)
@@ -1178,6 +1181,8 @@ def main():
     parser.add_argument("--recover-ended", action="store_true", help="Record claim-free ended custody without inventing a final verdict")
     parser.add_argument("--successor-session", help="Exact successor row for a handed-off generation")
     parser.add_argument("--handoff-url", help="Posted Safe handoff for handed-off recovery")
+    parser.add_argument("--unresolved-cells-decision", help="Apply Q1354 to unresolved code-mode cells during recovery")
+    parser.add_argument("--claims-evidence", type=Path, help="Original recovery claim-check journal")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--deadline-seconds", type=int, default=600)
     parser.add_argument("--account-config", type=Path)
@@ -1189,6 +1194,9 @@ def main():
     try:
         if args.mode == "backfill" and args.checkout_root is None:
             raise ValueError("backfill requires --checkout-root for canonical release preflight")
+        if (args.unresolved_cells_decision or args.claims_evidence) and not (
+                args.mode == "finish" and args.recover_ended and args.unresolved_cells_decision and args.claims_evidence):
+            raise ValueError("unresolved-cell recovery requires finish --recover-ended, the decision and claim-check evidence")
         if args.mode != "finish" and (args.recover_ended or args.successor_session or args.handoff_url):
             raise ValueError("recovery options belong to finish")
         if (args.successor_session or args.handoff_url) and not args.recover_ended:
@@ -1222,6 +1230,10 @@ def main():
                          "successor_session": args.successor_session} if args.successor_session else {"kind": "gone"}
                 saved = closure.source_records({entry["session_id"]}).get(entry["session_id"])
                 entry["recovery"] = saved["recovery"] if saved and saved.get("closure_kind") == "claim_free_recovery" else basis
+                entry["_recovery_preview"] = not args.apply
+                if args.unresolved_cells_decision:
+                    entry["recovery"].update(unresolved_cells_decision=args.unresolved_cells_decision,
+                                             claims_evidence=str(args.claims_evidence.resolve()))
                 closed = record_recovery(args.closed_log, entry, args.supervisor_session, persist=args.apply)
                 print(json.dumps({"ok": True, "needs_reconciliation": False, "reports": [{
                     "session_id": entry["session_id"], "status": closed["closure_kind"], "dry_run": not args.apply}]}))

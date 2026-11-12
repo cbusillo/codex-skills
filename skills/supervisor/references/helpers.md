@@ -2280,6 +2280,15 @@ inventing a Safe verdict, then retires only that row. A missing terminal needs n
 terminal action. Live or uncertain processes, claims, incomplete reads and
 unresolved mutations still refuse.
 
+Recovery also accepts `--unresolved-cells-decision` under the same Q1354 checks
+as normal closeout. Every recovery validation repeats the fresh owner inventory
+and exact release checks, using the original `<evidence>/recovery-claims` journal
+for the once-only issue note. Closure retains that decision and journal pointer
+so later custody checks repeat the same checks. Keep this evidence with the
+canonical closure; unresolved note writes still need reconciliation.
+The finish helper accepts the same decision with `--claims-evidence` pointing
+to that original claim-check journal; this is only for `finish --recover-ended`.
+
 Recovery's process exit asks whether the recorded process still exists. Once its
 PID is gone, its old TTY blocks only for processes born before the session's last
 transcript activity, which counts once its last turn ended or the host has booted
