@@ -43,6 +43,7 @@ from session_record import LAUNCH_LEDGER_ENV, read_ledger
 CLAUDE_SUGGESTION_SETTING = "promptSuggestionEnabled"
 CLAUDE_AUTO_MEMORY_SETTING = "autoMemoryEnabled"
 CLAUDE_UNATTENDED_SETTINGS = (CLAUDE_SUGGESTION_SETTING, CLAUDE_AUTO_MEMORY_SETTING)
+CLAUDE_UNATTENDED_DENY_SETTING = "denyInsteadOfPrompting"
 CLAUDE_SUGGESTION_ENV = "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION"
 CLAUDE_AUTOCOMPACT_OPTION = "--autocompact"
 CLAUDE_QUESTION_TOOL = "AskUserQuestion"
@@ -452,16 +453,20 @@ def claude_settings(command_text, words):
                 settings = json.loads(read_launch_text(path))
                 # Keep file settings in the file: inlining exposes private values
                 # and changes the base for relative permission rules.
-                if isinstance(settings, dict) and all(settings.get(key) is False for key in CLAUDE_UNATTENDED_SETTINGS):
+                if (isinstance(settings, dict) and all(settings.get(key) is False for key in CLAUDE_UNATTENDED_SETTINGS)
+                        and isinstance(settings.get("permissions"), dict)
+                        and settings["permissions"].get(CLAUDE_UNATTENDED_DENY_SETTING) is True):
                     return None
                 raise ValueError()
-            if not isinstance(settings, dict):
+            if not isinstance(settings, dict) or not isinstance(settings.get("permissions", {}), dict):
                 raise ValueError()
         except (ValueError, OSError):
             raise ValueError("Claude --settings must be a readable literal JSON object or file; "
-                             f"file settings must set {' and '.join(CLAUDE_UNATTENDED_SETTINGS)} to false; "
+                             f"file settings must set {' and '.join(CLAUDE_UNATTENDED_SETTINGS)} to false "
+                             f"and permissions.{CLAUDE_UNATTENDED_DENY_SETTING} to true; "
                              "use an absolute file path for shell-expanded paths") from None
-    return {**settings, **dict.fromkeys(CLAUDE_UNATTENDED_SETTINGS, False)}
+    return {**settings, **dict.fromkeys(CLAUDE_UNATTENDED_SETTINGS, False),
+            "permissions": {**settings.get("permissions", {}), CLAUDE_UNATTENDED_DENY_SETTING: True}}
 
 
 def codex_daemon_without_ingress(command_text):
