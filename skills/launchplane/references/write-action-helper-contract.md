@@ -2929,8 +2929,8 @@ and approves pending plans in the UI; no helper approval or apply path is added.
 
 ## Release request under the recorded Client policy
 
-`release-request --product P --plan` reads the current profile and checklist and
-sends nothing. It reports `release_on_acceptance`, `checklist_digest`, both lanes'
+`release-request --product P --plan` reads the current profile through
+`product-profile-read` and the current checklist, and sends nothing. It reports `release_on_acceptance`, `checklist_digest`, both lanes'
 source commits, whether they carry runtime settings, blocker count and `review_url`.
 A plan with a structured current prerequisite reports `refused` and
 `refusal_reason`. Blocker text is counted, never interpreted as caller policy.
