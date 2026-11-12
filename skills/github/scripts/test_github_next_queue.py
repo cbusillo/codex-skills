@@ -78,8 +78,67 @@ def test_session_actor_uses_current_process_without_changing_waits_or_custody() 
             {'worker': 'worker', 'session': session, 'branch': 'work/source', 'claimed_at': '2026-10-01T00:00:00Z'})},
         {'id': 2, 'author': 'bot', 'created_at': '2026-10-01T00:01:00Z', 'body': 'Released claim 1'}]
     with patch.object(queue.github_plan_sessions, 'actor_state', return_value=lease.UNKNOWN):
-        assert classify(row)['reason'] == 'next_actor_session_released'
+        assert classify(row)['reason'] == 'next_actor_session_unknown'
+    with patch.object(queue.github_plan_sessions, 'actor_state', side_effect=AssertionError('roles have no session')):
+        role = item(actor='agent:worker')
+        role['discussion']['comments'] = row['discussion']['comments']
+        assert classify(role)['reason'] == 'next_actor_session_released'
 
+
+def test_idle_live_sessions_with_lapsed_claim_leases_stay_owned() -> None:
+    import json
+    import tempfile
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    born = datetime(2026, 11, 9, 23, 53, 17, tzinfo=timezone.utc)
+    lead, executor, worker = ('01a1c2bb-02a1-7871-bca0-960c4db86144', '01a1af86-fed7-7980-8b79-f8b78d3104c1',
+                              '3c4ff9ed-0078-460d-86de-f925326fe722')
+    with tempfile.TemporaryDirectory() as folder:
+        rows = [{'session_id': lead, 'harness': 'codex', 'pid': 101, 'launch_pid': 101, 'launch_started_at': born.isoformat()},
+                {'session_id': executor, 'harness': 'codex', 'pid': 102, 'launch_pid': 102, 'launch_started_at': born.isoformat()},
+                {'session_id': worker, 'harness': 'claude', 'pid': 103}]
+        ledger = Path(folder) / 'ledger.json'
+        ledger.write_text(json.dumps([{**row, 'transcript': str(Path(folder) / f"{row['session_id']}.jsonl")} for row in rows]))
+        records = queue.github_plan_sessions.native_helpers()[1]
+        liveness = queue.github_plan_sessions.process_liveness()
+
+        def classify_claimed(claimant: str) -> dict:
+            row = item(actor=f'agent:{claimant}')
+            row['discussion']['comments'] = [{'id': 1, 'author': 'bot', 'created_at': '2026-11-11T18:27:00Z',
+                'body': claim.marker({'worker': 'worker', 'session': claimant, 'branch': 'work/source',
+                                      'claimed_at': '2026-11-11T18:27:00Z'})}]
+            return classify(row)
+
+        with patch.dict('os.environ', {records.LAUNCH_LEDGER_ENV: str(ledger)}), \
+                patch.object(lease, 'state', return_value=lease.EXPIRED), \
+                patch.object(lease, 'session_is_live', return_value=False), \
+                patch.object(lease, 'uses_live_claims', return_value=False), \
+                patch.object(liveness, 'process_started_at', return_value=born), \
+                patch.object(liveness, 'native_arguments', return_value=['claude', '--session-id', worker, '--', 'brief']):
+            for live_claims in (False, True):
+                with patch.object(liveness, 'process_absent', return_value=False), \
+                        patch.object(lease, 'uses_live_claims', return_value=live_claims):
+                    for session in (lead, executor, worker):
+                        result = classify_claimed(session)
+                        assert result['next_actor_session_state'] == lease.LIVE
+                        assert result['reason'] == 'named_recipient_requires_reconciliation'
+                        assert result['ownership_evidence'][0]['worker'] == session
+            with patch.object(liveness, 'process_absent', return_value=False), patch.object(lease, 'state', return_value=lease.LIVE):
+                released = item(actor=f'agent:{lead}')
+                released['discussion']['comments'] = [{'id': 1, 'author': 'bot', 'created_at': '2026-11-11T18:27:00Z',
+                    'body': claim.marker({'worker': 'worker', 'session': lead, 'branch': 'work/source',
+                                          'claimed_at': '2026-11-11T18:27:00Z'})},
+                    {'id': 2, 'author': 'bot', 'created_at': '2026-11-11T18:28:00Z', 'body': 'Released claim 1'}]
+                assert classify(released)['reason'] == 'named_recipient_requires_reconciliation'
+            with patch.object(liveness, 'process_absent', return_value=False), \
+                    patch.object(liveness, 'native_arguments', side_effect=OSError('ps unavailable')), \
+                    patch.object(liveness, 'process_started_at', side_effect=OSError('ps unavailable')):
+                for session in (lead, executor, worker):
+                    assert classify_claimed(session)['reason'] == 'next_actor_session_unknown'
+            with patch.object(liveness, 'process_absent', return_value=True):
+                for session in (lead, executor, worker):
+                    assert classify_claimed(session)['reason'] == 'next_actor_session_released'
 
 
 def test_empty_status_fields_do_not_consume_following_fields() -> None:
