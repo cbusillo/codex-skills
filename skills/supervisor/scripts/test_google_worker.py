@@ -97,8 +97,19 @@ class GoogleWorkerTests(unittest.TestCase):
                 with patch.object(termination, "inventory", return_value=[(8, "ttys001", "agy")]):
                     with self.assertRaises(ValueError):
                         termination.verify(record, session)
+                transcript.with_name(transcript.name + "-wal").touch()
+                self.assertEqual(termination.verify(record, session)["session_id"], session)
+                with sqlite3.connect(transcript) as database:
+                    database.execute("PRAGMA journal_mode=WAL")
+                    database.execute("UPDATE steps SET step_payload=?",
+                                     (protobuf({1: 15, 4: 3, 5: metadata, 20: protobuf({1: b"More work"})}),))
+                    database.commit()
+                    os.utime(transcript, (at.timestamp(),) * 2)
+                    with self.assertRaises(ValueError):
+                        termination.verify(record, session)
                 with sqlite3.connect(transcript) as database:
                     database.execute("UPDATE trajectory_meta SET cascade_id='another-session'")
+                os.utime(transcript, (at.timestamp(),) * 2)
                 with self.assertRaises(ValueError):
                     termination.verify(record, session)
 

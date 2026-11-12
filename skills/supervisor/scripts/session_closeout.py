@@ -121,6 +121,9 @@ def explicit_session(body: str, session: str) -> bool:
 
 
 def post_unresolved_cells(entry: dict, operation: Operation) -> None:
+    if entry.get("recovery", {}).get("unresolved_cells"):
+        release.recovery_claims(entry)
+        return
     gate = "unresolved_cells_note"
     replaying = gate in operation.state["steps"]
     destination = operation.state.get("unresolved_cells", {}).get("destination", entry)
@@ -584,7 +587,7 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
             "--confirm-session-ended", "--apply",
             *(["--recover-ended"] if entry.get("recovery") else []),
             *(["--unresolved-cells-check", str(operation.path)]
-              if entry.get("recovery") and operation.state.get("unresolved_cells") else []),
+              if entry.get("recovery") and operation.state["steps"].get("unresolved_cells_note", {}).get("complete") is True else []),
             *(["--successor-session", entry["recovery"]["successor_session"]]
               if entry.get("recovery", {}).get("kind") == "handoff" else []),
             *(["--handoff-url", entry["handoff_url"]] if entry.get("recovery") and entry.get("handoff_url") else []),

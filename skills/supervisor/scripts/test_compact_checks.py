@@ -213,90 +213,111 @@ class OperationTests(unittest.TestCase):
                 session_closeout.closeout(args, operation)
 
     def test_recovery_decision_retires_unresolved_cells_but_preserves_held_claims(self) -> None:
-        ledger = self.root / "ledger.json"
-        transcript = self.root / "source.jsonl"
-        transcript.write_text(json.dumps({"type": "session_meta", "timestamp": "2026-01-01T00:00:00Z", "payload": {"id": "native"}}) + "\n")
-        source = {"session_id": "native", "harness": "codex", "supervisor_owned": True,
-                  "pid": 123, "tty": "ttys001", "transcript": str(transcript.resolve()), "backend": "tmux",
-                  "tmux_session_id": "terminal"}
-        other = {**source, "session_id": "other", "pid": 124}
-        ledger.write_text(json.dumps([source, other]))
-        log = self.root / "closed.json"
-        args = argparse.Namespace(ledger=ledger, session_id="native", supervisor_session="supervisor", owner="test",
-                                  recover_ended=True, successor_session=None, handoff_url=None, exit_seconds=.1,
-                                  unresolved_cells_decision=session_closeout.UNRESOLVED_CELLS_DECISION)
-        claims = {"ok": False, "claims_clear": False, "session_ids": ["native"],
-                  "coverage": {"complete": False, "search_errors": []}, "blocked": [],
-                  "released_claims": [{"source_session": "native", "repository": "owner/repo", "record": 1}],
-                  "unresolved_invocations": [{"session": "native", "call_id": "opaque", "reason": "computed", "code_mode": True}]}
-        decision = {"user": {"login": "fixture[bot]"}, "created_at": "2026-01-01T00:00:00Z",
-                    "updated_at": "2026-01-01T00:00:00Z"}
-        notes = []
-
-        def command(argv: list[str], **_: Any) -> subprocess.CompletedProcess:
-            if any(str(word).endswith("check_claims.py") for word in argv):
-                self.assertIn("--require-released-claims", argv)
-                self.assertIn("--inventory-owner", argv)
-                return subprocess.CompletedProcess(argv, 1, json.dumps(claims), "")
-            self.assertIn("gh-comment", argv[0])
-            notes.append(Path(argv[argv.index("--body-file") + 1]).read_text())
-            return subprocess.CompletedProcess(argv, 0, json.dumps({"ok": True, "url": "https://github.com/owner/repo/issues/1#issuecomment-9"}), "")
-
-        release = session_closeout.release
-
-        original_run = check_operation.Operation.run
-
-        def run(current: check_operation.Operation, gate: str, argv: list[str], **kwargs: Any) -> dict | list:
-            if gate == "finish":
-                main_args = ["release_session_claims.py", *argv[argv.index("finish"):]]
-                with patch.object(sys, "argv", [word for word in main_args if word != "--apply"]):
-                    self.assertEqual(release.main(), 0)
-                self.assertEqual(len(notes), 1)
-                self.assertFalse(log.exists())
-                with patch.object(sys, "argv", main_args):
-                    self.assertEqual(release.main(), 0)
-                return {"ok": True, "needs_reconciliation": False}
-            if gate in {"terminals", "disappearance"}:
-                return []
-            return original_run(current, gate, argv, **kwargs)
-
-        with (patch.object(check_operation.Operation, "run", run),
-              patch.object(subprocess, "run", side_effect=command),
-              patch.object(session_closeout, "GitHubReader", return_value=SimpleNamespace(get_json=lambda *_, **__: decision)),
-              patch.object(release, "GitHubReader", return_value=SimpleNamespace(get_json=lambda path, **__: (
-                  {**decision, "issue_url": "https://api.github.com/repos/owner/repo/issues/1", "body": notes[0]}
-                  if path.endswith("/9") else decision))),
-              patch.object(session_closeout.github_identity, "automation_login", return_value="fixture[bot]"),
-              patch.object(session_closeout.closure, "closed_log", return_value=log),
-              patch.object(session_closeout.closure, "ownership", return_value=nullcontext()),
-              patch.object(session_closeout.session_liveness, "process_absent", return_value=True),
-              patch.object(session_closeout.session_liveness, "inventory", return_value=[]),
-              patch_attr(release, "inventory", return_value=[]),
-              patch.object(release.native_closure, "verify_source_process"),
-              patch.object(release, "transcript_roots", return_value=[str(self.root)])):
-            operation = check_operation.Operation(self.root / "recovery", [str(ledger), "native"])
-            claims["blocked"] = ["held claim"]
-            with self.assertRaises(ValueError):
-                session_closeout.closeout(args, operation)
-            self.assertEqual(json.loads(ledger.read_text()), [source, other])
-            self.assertEqual(notes, [])
-            claims["blocked"] = []
-            session_closeout.closeout(args, operation)
-            self.assertEqual(len(notes), 1)
-            self.assertIn("opaque", notes[0])
-            self.assertEqual(json.loads(ledger.read_text()), [other])
-            closed = json.loads(log.read_text())[0]
-            self.assertEqual({key: closed[key] for key in source}, source)
-            self.assertNotIn("verdict_at", closed)
-            session_closeout.closeout(args, operation)
-            self.assertEqual(len(notes), 1)
-            fresh = check_operation.Operation(self.root / "different-evidence", [str(ledger), "native"])
-            with self.assertRaises(ValueError):
+        for settles in (False, True):
+            root = self.root / str(settles)
+            root.mkdir()
+            ledger = root / "ledger.json"
+            transcript = root / "source.jsonl"
+            transcript.write_text(json.dumps({"type": "session_meta", "timestamp": "2026-01-01T00:00:00Z", "payload": {"id": "native"}}) + "\n")
+            source = {"session_id": "native", "harness": "codex", "supervisor_owned": True,
+                      "pid": 123, "tty": "ttys001", "transcript": str(transcript.resolve()), "backend": "tmux",
+                      "tmux_session_id": "terminal"}
+            other = {**source, "session_id": "other", "pid": 124}
+            ledger.write_text(json.dumps([source, other]))
+            log = root / "closed.json"
+            args = argparse.Namespace(ledger=ledger, session_id="native", supervisor_session="supervisor", owner="test",
+                                      recover_ended=True, successor_session=None, handoff_url=None, exit_seconds=.1,
+                                      unresolved_cells_decision=session_closeout.UNRESOLVED_CELLS_DECISION)
+            claims = {"ok": False, "claims_clear": False, "session_ids": ["native"],
+                      "coverage": {"complete": False, "search_errors": []}, "blocked": [],
+                      "released_claims": [{"source_session": "native", "repository": "owner/repo", "record": 1}],
+                      "unresolved_invocations": [{"session": "native", "call_id": "opaque", "reason": "computed", "code_mode": True}]}
+            decision = {"user": {"login": "fixture[bot]"}, "created_at": "2026-01-01T00:00:00Z",
+                        "updated_at": "2026-01-01T00:00:00Z"}
+            notes = []
+            reads = 0
+            stop_disappearance = True
+    
+            def command(argv: list[str], **_: Any) -> subprocess.CompletedProcess:
+                nonlocal reads
+                if any(str(word).endswith("check_claims.py") for word in argv):
+                    self.assertIn("--require-released-claims", argv)
+                    reads += 1
+                    if settles and reads >= 3:
+                        return subprocess.CompletedProcess(argv, 0, json.dumps({**claims, "ok": True, "claims_clear": True,
+                            "coverage": {"complete": True}, "unresolved_invocations": []}), "")
+                    self.assertIn("--inventory-owner", argv)
+                    return subprocess.CompletedProcess(argv, 1, json.dumps(claims), "")
+                self.assertIn("gh-comment", argv[0])
+                notes.append(Path(argv[argv.index("--body-file") + 1]).read_text())
+                return subprocess.CompletedProcess(argv, 0, json.dumps({"ok": True, "url": "https://github.com/owner/repo/issues/1#issuecomment-9"}), "")
+    
+            release = session_closeout.release
+    
+            original_run = check_operation.Operation.run
+    
+            def run(current: check_operation.Operation, gate: str, argv: list[str], **kwargs: Any) -> dict | list:
+                nonlocal stop_disappearance
+                if gate == "disappearance" and stop_disappearance:
+                    stop_disappearance = False
+                    raise check_operation.GateFailed(gate, "fixture disappearance read failed")
+                if gate == "finish":
+                    main_args = ["release_session_claims.py", *argv[argv.index("finish"):]]
+                    before = log.read_bytes() if log.exists() else None
+                    with patch.object(sys, "argv", [word for word in main_args if word != "--apply"]):
+                        self.assertEqual(release.main(), 0)
+                    self.assertEqual(len(notes), int(not settles))
+                    self.assertEqual(log.read_bytes() if log.exists() else None, before)
+                    with patch.object(sys, "argv", main_args):
+                        self.assertEqual(release.main(), 0)
+                    return {"ok": True, "needs_reconciliation": False}
+                if gate in {"terminals", "disappearance"}:
+                    return []
+                return original_run(current, gate, argv, **kwargs)
+    
+            with (patch.object(check_operation.Operation, "run", run),
+                  patch.object(subprocess, "run", side_effect=command),
+                  patch.object(session_closeout, "GitHubReader", return_value=SimpleNamespace(get_json=lambda *_, **__: decision)),
+                  patch.object(release, "GitHubReader", return_value=SimpleNamespace(get_json=lambda path, **__: (
+                      {**decision, "issue_url": "https://api.github.com/repos/owner/repo/issues/1", "body": notes[0]}
+                      if path.endswith("/9") else decision))),
+                  patch.object(session_closeout.github_identity, "automation_login", return_value="fixture[bot]"),
+                  patch.object(session_closeout.closure, "closed_log", return_value=log),
+                  patch.object(session_closeout.closure, "ownership", return_value=nullcontext()),
+                  patch.object(session_closeout.session_liveness, "process_absent", return_value=True),
+                  patch.object(session_closeout.session_liveness, "inventory", return_value=[]),
+                  patch_attr(release, "inventory", return_value=[]),
+                  patch.object(release.native_closure, "verify_source_process"),
+                  patch.object(release, "transcript_roots", return_value=[str(root)])):
+                operation = check_operation.Operation(root / "recovery", [str(ledger), "native"])
+                claims["blocked"] = ["held claim"]
+                with self.assertRaises(ValueError):
+                    session_closeout.closeout(args, operation)
+                self.assertEqual(json.loads(ledger.read_text()), [source, other])
+                self.assertEqual(notes, [])
+                claims["blocked"] = []
+                with self.assertRaises(check_operation.GateFailed):
+                    session_closeout.closeout(args, operation)
+                self.assertEqual(json.loads(ledger.read_text()), [source, other])
+                closed = json.loads(log.read_text())[0]
+                if not settles:
+                    self.assertEqual(closed["recovery"]["unresolved_cells"]["cells"],
+                                     [{key: cell[key] for key in ("session", "call_id", "reason")} for cell in claims["unresolved_invocations"]])
+                    self.assertEqual(closed["recovery"]["unresolved_cells"]["note_url"], "https://github.com/owner/repo/issues/1#issuecomment-9")
+                    self.assertEqual(closed["recovery"]["owner"], args.owner)
+                    self.assertIn("opaque", notes[0])
+                fresh = check_operation.Operation(root / "different-evidence", [str(ledger), "native"])
                 session_closeout.closeout(args, fresh)
-            self.assertEqual(len(notes), 1)
-            transcript.write_text(transcript.read_text() + json.dumps({"type": "event_msg", "timestamp": "2026-01-02T00:00:00Z", "payload": {"type": "user_message", "message": "resumed"}}) + "\n")
-            with self.assertRaises(ValueError):
-                session_closeout.closeout(args, operation)
+                self.assertEqual(len(notes), int(not settles))
+                self.assertEqual(json.loads(ledger.read_text()), [other])
+                self.assertEqual({key: closed[key] for key in source}, source)
+                self.assertNotIn("verdict_at", closed)
+                session_closeout.closeout(args, fresh)
+                self.assertEqual(len(notes), int(not settles))
+                transcript.write_text(transcript.read_text() + json.dumps({"type": "event_msg", "timestamp": "2026-01-02T00:00:00Z", "payload": {"type": "user_message", "message": "resumed"}}) + "\n")
+                with self.assertRaises(ValueError):
+                    session_closeout.closeout(args, fresh)
+    
 
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()

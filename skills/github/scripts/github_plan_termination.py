@@ -121,17 +121,19 @@ def terminal_state(record):
 
 def transcript_snapshot(record, path):
     """Keep a crash-truncated final line intact; never tolerate interior corruption."""
-    paths = (path, path.with_name(path.name + "-wal")) if record["harness"] == "agy" else (path,)
-    before = {value: (value.stat().st_mtime_ns, value.stat().st_size) for value in paths if value.exists()}
+    reader = native_helpers()[0]
+    before = reader.transcript_revision(path)
     if record["harness"] == "agy":
-        records, truncated = native_helpers()[0].read_jsonl(path), False
+        if path.suffix != ".db":
+            raise ValueError("AGY termination requires its native conversation database")
+        records, truncated = reader.read_jsonl(path), False
     else:
         lines = native_helpers()[0].transcript_lines(path)
         records, truncated = native_transcript_records({**record, "transcript": str(path)}, lines, local_only=False)
-    after = {value: (value.stat().st_mtime_ns, value.stat().st_size) for value in paths if value.exists()}
+    after = reader.transcript_revision(path)
     if before != after:
         raise ValueError("Source transcript changed during termination checks")
-    return records, max(value[0] for value in after.values()), sum(value[1] for value in after.values()), truncated
+    return records, max(value[0] for value in after), sum(value[1] for value in after), truncated
 
 
 def transcript_records(record, lines, *, require_identity: bool = True):
