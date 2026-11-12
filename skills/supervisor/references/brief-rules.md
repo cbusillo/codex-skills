@@ -155,12 +155,12 @@ Scope: __REPOSITORIES__
 Admission: milestone (__MILESTONE__)
 Worker ledger: __SHARED_LEDGER__
 Worker cap: __WORKER_CAP__ concurrent workers, recorded on your lead ledger row.
-Allowed accounts: __ACCOUNTS__
+Providers: __PROVIDERS__
 
 How a lead works:
 1. Read the Director's overall and repository DIRECTION.md, the milestone's finish line, and gh-plan.py next. If a Track is supplied, read it and its native children too; do not claim the Track itself. Take only work belonging to this milestone. Keep a current forecast date in the milestone's due date field once the Director has seen it, with each date and its reasons on your Track when supplied, and leave the field blank while the milestone waits on a person or event.
 2. Brief workers for the next actionable items in that order: not waiting on a person or event, not natively blocked, not owned by another running session. Recheck ownership before dispatch; workers claim their own issues and use their own task worktrees. Choose each slice's tier under https://github.com/cbusillo/codex-skills/blob/main/skills/supervisor/SKILL.md#accounts-pace-and-launch-tier.
-3. Launch through the existing iterm_tab.py launcher on either terminal backend, into the shared ledger, with --lead-session-id <your-native-session-id> and an explicit --account from the allowed accounts. The launcher enforces your assigned cap across repositories and batches. Never raise the cap or use another account yourself. Put your native id and the native delivery pointers from the shared launch reference in each worker brief and use the shared brief rules. Handle worker-originated requests with --brief-issue on their child issues; do not send staffing requests to the Supervisor for launches within your assignment.
+3. Launch through the existing iterm_tab.py launcher on either terminal backend, into the shared ledger, with --lead-session-id <your-native-session-id> and --account-provider for an assigned provider. Follow Use next and report its targets under the account-selection reference below. The launcher enforces your assigned cap across repositories and batches. Stay within your assigned providers and cap. Put your native id and the native delivery pointers from the shared launch reference in each worker brief and use the shared brief rules. Handle worker-originated requests with --brief-issue on their child issues; do not send staffing requests to the Supervisor for launches within your assignment.
 4. Watch and review workers through handoff comments, issue status and the routine digest; leave diffs, CI logs, implementation, tests and the review of record to workers. Nudge stalls, record decisions and keep each issue's Current Status current. Close your workers with session_closeout.py on the same ledger, passing your native id as --supervisor-session; all existing claim, handoff, process and terminal checks apply. Recover a partial launch before dispatching more work. The Supervisor adopts your rows if you cannot continue.
 5. Idle at the native prompt between events so messages reach you. Reuse worker-finish notices, the existing foreign watch narrowed to the milestone's repositories, and native message delivery; use a rare backstop check every few hours, not a continuous turn or cache-warming schedule. On each wake, handle finished workers and new messages, scan child statuses naming your native id, then refill available capacity. Preserve coverage gaps as UNKNOWN. Reach the Supervisor only by setting the item's Current Status to `Next actor: agent:supervisor` with the action, which its routine check surfaces; never send text into the Supervisor's terminal, where it reads as the Director's own input.
 Hand off before context wears out: at the [digest's handoff point](../scripts/routine_check.py) (`LEAD_HANDOFF_*`), post a handoff on your anchor and set `Next actor: agent:supervisor`. Those limits are one night's judgment (https://github.com/cbusillo/direction/issues/98#issuecomment-6772030903), judged at the weekly audit.
@@ -177,7 +177,7 @@ Rules for this brief: https://github.com/cbusillo/codex-skills/blob/main/skills/
 
 Use [account selection](helpers.md#choosing-the-account) for optional Context Panel
 integration and the CLI-login baseline.
-Launchplane uses the optional route above. Private staffing targets, host worktree
+Launchplane uses the optional route above. Host worktree
 settings, persistent services and question queues are optional additions to the
 catalog defaults, subject to the Director's own stricter instructions. Use the
 brief's handoff anchor when no private handoff setting exists, and the existing

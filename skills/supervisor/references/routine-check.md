@@ -152,15 +152,10 @@ within the held roles; with no role they all apply.
    the unanswered-comment radar alone does not track unfinished requests.
    Load the owning skill before a launch, plan mutation or train/landing action;
    those actions are outside this no-reload reader entry. Preview each
-   provider with `account_choice.py` and read its `unused_at_pace`. When its
-   `refillsUnusedPoints` is above a few points and `runsOutBeforeRefill` is
-   false, start more productive work on that provider, or say in the check that
-   no work is available to fill it. When `accountsSpendingUsageCredits` is above
-   zero while points will refill unused, start new work on the first account in
-   the published launch order (`account_choice.py --count N`) whose weekly and
-   five-hour windows both have quota left, by name with `--account`, and note
-   the sessions still running on the empty one. A refused preview or `null`
-   value means the signal is unavailable; say so and continue. Refill
+   provider through [account selection](helpers.md#choosing-the-account).
+   Launch where Use next says and steer real work toward its published provider
+   and per-account targets; report when no productive work can fill them.
+   A refused preview or unknown target stays unavailable; say so and continue. Refill
    available capacity, handle `STALE` rows and deferred-question conditions,
    and act on the oldest `SUPERVISOR_ACTION` rows and unasked Director waits.
    A `PRODUCTION_READ_REFUSED` row follows its handoff in

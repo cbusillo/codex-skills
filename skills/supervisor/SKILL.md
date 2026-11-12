@@ -421,16 +421,15 @@ unresolved waits, point workers at the decision, and leave escalation labels
 for the weekly direction audit. Client test notes already settling acceptance
 need no new pre-merge question.
 
-Assign leads capacity and accounts, watch their responsiveness and milestone
+Assign leads worker caps and providers, watch their responsiveness and milestone
 handoffs, and launch work outside their milestones. Adopt a departed lead's
 worker rows for closeout. Recover retained worker registrations before resuming or retiring the
 lead's row; preserve it while any remain unknown. Leads idle between worker-finish, scoped foreign-watch
 and native-message events, with a rare backstop check; use their
 [lead brief](references/brief-rules.md#milestone-lead-briefs).
 Run [Routine check](references/routine-check.md) about every 30 minutes and act
-on finished notices immediately. Read optional host `[staffing]` `openai_workers` and
-`load1_limit` when present; missing tuning does not block available work. Refill below
-target in the same turn a worker closes. Add CPU-light work at high load and use
+on finished notices immediately. Read optional host `[staffing]` `load1_limit`
+when present; missing tuning does not block available work. Add CPU-light work at high load and use
 actionable unclaimed active issues/Cloud findings under the overall Order when
 `next` is thin. Require complete paginated staffing coverage; add no staffing
 label or parallel manual inventory. Compare sessions with DIRECTION.md; a
