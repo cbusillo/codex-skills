@@ -4394,34 +4394,6 @@ def test_blocked_read_honors_deadline_and_names_endpoint() -> None:
         assert float(deadline_file.read_text()) < inherited
 
 
-def test_terminating_audit_stops_its_inflight_read() -> None:
-    with tempfile.TemporaryDirectory() as folder:
-        ready = Path(folder) / "read.pid"
-        wrapper = Path(folder) / "gh"
-        wrapper.write_text(f"#!/bin/sh\necho $$ > '{ready}'\nexec sleep 30\n")
-        wrapper.chmod(0o700)
-        child = subprocess.Popen([sys.executable, str(SCRIPT), "--stale-waits-only", "--repo", "owner/catalog", "--gh", str(wrapper)],
-                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        try:
-            deadline = time.monotonic() + 5
-            while not ready.exists() and child.poll() is None and time.monotonic() < deadline:
-                time.sleep(0.01)
-            assert ready.exists(), child.communicate(timeout=2)
-            read_pid = int(ready.read_text())
-            child.terminate()
-            child.communicate(timeout=3)
-            try:
-                os.kill(read_pid, 0)
-            except ProcessLookupError:
-                pass
-            else:
-                raise AssertionError("Read survived termination of its audit")
-        finally:
-            if child.poll() is None:
-                child.kill()
-            child.wait(timeout=3)
-
-
 def main() -> int:
     tests = [value for name, value in globals().items() if name.startswith("test_") and callable(value)]
     for test in tests:

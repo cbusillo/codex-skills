@@ -270,16 +270,40 @@ class DailyTests(unittest.TestCase):
             os.killpg(children[0].pid, 0)
 
     def test_command_passes_a_deadline_before_its_outer_timeout(self) -> None:
-        started = time.time()
         output = self.root / "deadline.json"
-        inherited = started + 0.5
-        with (mock.patch.dict(os.environ, {"GITHUB_RETRY_DEADLINE_AT": str(inherited)}),
-              output.open("wb") as stream, (self.root / "error").open("wb") as error):
-            code = daily.command([sys.executable, "-c", "import os;print(os.environ.get('GITHUB_RETRY_DEADLINE_AT'))"],
-                                 self.root, subprocess.DEVNULL, stream, error, threading.Event(), 5)
-        self.assertEqual(code, 0)
-        self.assertGreater(float(output.read_text()), started)
-        self.assertLessEqual(float(output.read_text()), inherited)
+        for inherited in (None, 2000, 1000.5):
+            with (self.subTest(inherited=inherited), mock.patch.dict(os.environ),
+                  mock.patch.object(daily.time, "time", return_value=1000),
+                  output.open("wb") as stream, (self.root / "error").open("wb") as error):
+                os.environ.pop("GITHUB_RETRY_DEADLINE_AT", None)
+                if inherited is not None:
+                    os.environ["GITHUB_RETRY_DEADLINE_AT"] = str(inherited)
+                code = daily.command([sys.executable, "-c", "import os;print(os.environ.get('GITHUB_RETRY_DEADLINE_AT'))"],
+                                     self.root, subprocess.DEVNULL, stream, error, threading.Event(), 5)
+                self.assertEqual(code, 0)
+                deadline = float(output.read_text())
+                self.assertGreater(deadline, daily.time.time())
+                self.assertLess(deadline, daily.time.time() + 5)
+                if inherited is not None:
+                    self.assertLessEqual(deadline, inherited)
+
+    def test_command_reaps_descendants_after_the_leader_exits(self) -> None:
+        script = (
+            "import subprocess,sys\nfrom pathlib import Path\n"
+            "child=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)'])\n"
+            "Path('read.pid').write_text(str(child.pid))\n"
+        )
+        self.assertEqual(daily.command([sys.executable, "-c", script], self.root, subprocess.DEVNULL,
+                                       subprocess.DEVNULL, subprocess.DEVNULL, threading.Event(), 5), 0)
+        pid = int((self.root / "read.pid").read_text())
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.01)
+        self.fail("Read descendant survived its completed command")
 
     def test_guarded_command_failure_retains_the_stderr_location(self) -> None:
         output = StringIO()

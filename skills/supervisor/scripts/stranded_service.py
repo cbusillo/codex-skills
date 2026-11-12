@@ -108,6 +108,10 @@ def command(argv: list[str], cwd: Path, stdin: int, stdout: int | BinaryIO, stde
         return child.returncode
     finally:
         services.stop_child(child)
+        try:
+            os.killpg(child.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
 
 def run_once(config_path: Path, stopped: threading.Event, retry_unsent: bool = False) -> int:

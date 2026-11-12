@@ -627,8 +627,9 @@ flushed, so a stopped collection or output failure leaves the original windows
 for the next audit. An exit-1 attempt with complete JSON and `weekly_skipped`
 can advance the read repositories' windows; use its findings as well as the
 next receipt. The audit is bounded to 30 minutes and sends nothing. Its GitHub
-subprocess reads, including discovery and archive sizing, have a one-minute
-bound and name the failed endpoint in stderr. The runner passes its read
+JSON subprocess reads, including discovery, have a per-read deadline and name
+the failed endpoint in stderr. Archive sizing keeps the remaining audit budget.
+The runner passes its read
 deadline to the collector with time reserved to flush an incomplete attempt;
 that attempt does not count as a recorded weekly audit.
 
