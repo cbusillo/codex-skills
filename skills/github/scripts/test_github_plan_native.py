@@ -1664,6 +1664,9 @@ class NativeQueueTests(unittest.TestCase):
                 f.process_rows = [(455, entry["tty"], "replacement-root"), (456, entry["tty"], " ".join(native))]
                 with patch.object(TMUX.Terminal, "list", return_value=[]), \
                         patch.object(TMUX, "process_parents", side_effect=lambda: dict(parents)), \
+                        patch.object(SESSIONS.process_liveness(), "inventory", side_effect=lambda: list(f.process_rows)), \
+                        patch.object(SESSIONS.process_liveness(), "process_absent", side_effect=lambda pid: pid == entry["pid"] and all(row[0] != pid for row in f.process_rows)), \
+                        patch.object(SESSIONS.process_liveness(), "process_started_at", side_effect=lambda pid: root_at + timedelta(seconds=pid != 455)), \
                         patch.object(CLOSURE, "process_started_at", side_effect=lambda pid: root_at + timedelta(seconds=pid != 455)), \
                         patch.object(f.release, "recovery_claims"):
                     f.managed(native)
