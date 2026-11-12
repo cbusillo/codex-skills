@@ -70,7 +70,9 @@ class OperationTests(unittest.TestCase):
                   "released_claims": [{"source_session": "native", "claim_comment": 42}],
                   "handoff_comments": [{"source_session": "native", "comment": {"id": 43}}],
                   "unresolved_invocations": [{"session": "native", "transcript": str(transcript),
-                                              "call_id": "opaque-cell", "reason": "computed", "code_mode": True}]}
+                                              "call_id": "opaque-cell", "reason": "computed", "code_mode": True,
+                                              "refusals": [{"line": 1, "column": 5, "syntax": "object_pattern", "call": "private-source-material"}]},
+                                             {"session": "native", "call_id": "settling-cell", "reason": "computed", "code_mode": True}]}
         args = argparse.Namespace(owner="owner", unresolved_cells_decision=session_closeout.UNRESOLVED_CELLS_DECISION)
         decision = {"user": {"login": "agent[bot]"}, "created_at": "2026-01-01T00:00:00Z",
                     "updated_at": "2026-01-01T00:00:00Z"}
@@ -113,10 +115,15 @@ class OperationTests(unittest.TestCase):
                     for key in ("released_claims", "handoff_comments"):
                         self.assertEqual(session_closeout.claim_evidence(current, operation, key), report[key])
                     operation.state["steps"]["unresolved_cells_note"] = {"complete": False}
+                    note_before = (operation.evidence / "unresolved-cells.md").read_bytes()
+                    subset = {**checked, "unresolved_invocations": checked["unresolved_invocations"][:1]}
+                    session_closeout.unresolved_cell_claims(current, selected_args, operation, subset)
+                    self.assertEqual((operation.evidence / "unresolved-cells.md").read_bytes(), note_before)
                     changed = {**checked, "unresolved_invocations": [{**checked["unresolved_invocations"][0], "call_id": "another-cell"}]}
                     with self.assertRaises(ValueError):
                         session_closeout.unresolved_cell_claims(current, selected_args, operation, changed)
                     note = (operation.evidence / "unresolved-cells.md").read_text()
+                    self.assertNotIn("private-source-material", note)
                     for fact in ("opaque-cell", "computed", args.unresolved_cells_decision, "native"):
                         self.assertIn(fact, note)
                     post.assert_not_called()
@@ -236,6 +243,24 @@ class OperationTests(unittest.TestCase):
                     with self.assertRaises(check_operation.GateFailed):
                         session_closeout.post_unresolved_cells(entry, operation)
                     self.assertEqual(run.call_count, 1)
+
+    def test_old_not_started_receipt_cannot_clear_an_interrupted_later_post(self) -> None:
+        entry = {"repository": "owner/repo", "issue": 1}
+        with patch.object(subprocess, "run", side_effect=[
+            subprocess.CompletedProcess([], 1, json.dumps({"write_outcome": "not_started"}), ""),
+            KeyboardInterrupt, subprocess.CompletedProcess([], 0, json.dumps({"ok": True}), "")]) as run:
+            operation = check_operation.Operation(self.root, ["session"])
+            with self.assertRaises(check_operation.GateFailed):
+                session_closeout.post_unresolved_cells(entry, operation)
+            with self.assertRaises(KeyboardInterrupt):
+                session_closeout.post_unresolved_cells(entry, operation)
+            pending = operation.path.read_bytes()
+            for _ in range(2):
+                operation = check_operation.Operation(self.root, ["session"])
+                with self.assertRaises(check_operation.GateFailed):
+                    session_closeout.post_unresolved_cells(entry, operation)
+                self.assertEqual(operation.path.read_bytes(), pending)
+            self.assertEqual(run.call_count, 2)
 
     def test_finish_waits_for_full_source_exit_without_replaying_quit(self) -> None:
         for obstruction in (

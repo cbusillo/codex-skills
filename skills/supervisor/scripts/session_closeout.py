@@ -120,15 +120,19 @@ def unresolved_cell_claims(entry: dict, args: argparse.Namespace, operation: Ope
             "claims",
             "unresolved invocation is not an identified code-mode cell with a reason",
         )
-        cells.append({key: item[key] for key in ("session", "call_id", "reason", "refusals") if key in item})
-    revision = fingerprint({"decision": decision, "cells": cells, "repository": repo, "issue": number})
-    require(
-        not operation.state["steps"].get("unresolved_cells_note")
-        or operation.state.get("unresolved_cells", {}).get("revision") == revision,
-        "claims",
-        "unresolved cells or their destination changed; preserve the original posted check",
-    )
-    operation.state["unresolved_cells"] = {"decision": decision, "revision": revision, "report": fingerprint(result)}
+        cell = {key: item[key] for key in ("session", "call_id", "reason") if key in item}
+        if item.get("refusals"):
+            cell["refusals"] = [{key: refusal[key] for key in ("line", "column", "syntax") if key in refusal}
+                                for refusal in item["refusals"]]
+        cells.append(cell)
+    destination = {"repository": repo, "issue": number}
+    if operation.state["steps"].get("unresolved_cells_note"):
+        posted_cells = operation.state.get("unresolved_cells", {})
+        require(posted_cells.get("destination") == destination and all(cell in posted_cells.get("cells", []) for cell in cells),
+                "claims", "unresolved cells or their destination changed; preserve the original posted check")
+        cells = posted_cells["cells"]
+    operation.state["unresolved_cells"] = {"decision": decision, "cells": cells, "destination": destination,
+                                            "report": fingerprint(result)}
     save_state(operation.path, operation.state)
     note = operation.evidence / "unresolved-cells.md"
     note.write_text(
@@ -152,10 +156,13 @@ def explicit_session(body: str, session: str) -> bool:
 
 def post_unresolved_cells(entry: dict, operation: Operation) -> None:
     gate = "unresolved_cells_note"
+    replaying = gate in operation.state["steps"]
     try:
         operation.run(gate, [str(GH_PLAN.with_name("gh-comment")), "issue", str(entry["issue"]),
                       "--repo", entry["repository"], "--body-file", str(operation.evidence / "unresolved-cells.md")], once=True)
     except GateFailed:
+        if replaying:
+            raise
         result = json.loads((operation.evidence / (gate + ".json")).read_text())
         if (result.get("exit_code") not in {None, 0}
                 and json.loads(result.get("stdout") or "{}").get("write_outcome") == "not_started"):

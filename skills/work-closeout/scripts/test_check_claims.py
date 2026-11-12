@@ -677,6 +677,11 @@ class ClaimCloseoutTests(unittest.TestCase):
                 self.assertEqual(report["claims_clear"], released, report)
                 self.assertEqual(bool(report["blocked"]), not released)
         self.assertEqual(inventory.call_count, 2)
+        child = self.receipt_entry("child-session", records=())
+        with patch_attr(helper.history, "expand", return_value=helper.history.expand([entry, child])):
+            expanded = helper.check([entry], inventory_owner="cbusillo", require_released_claims=True)
+            self.assertTrue(expanded["claims_clear"], expanded)
+            self.assertEqual({row["source_session"] for row in expanded["released_claims"]}, {SESSION})
         with patch_attr(helper, "search_account", side_effect=ValueError("a client App is configured")):
             with self.assertRaises(ValueError):
                 helper.check([entry], inventory_owner="cbusillo", require_released_claims=True)
