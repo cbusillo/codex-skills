@@ -416,6 +416,10 @@ def whole_plan_wait(parent: dict[str, Any]) -> bool:
     return bool(re.search(r"\b(?:all|any|whole|entire)\s+(?:(?:source|further|engineering)\s+)?(?:work|preparation|implementation|plan)\b", conditions, re.I))
 
 
+def conditional_clause(clause: str) -> bool:
+    return bool(re.search(r"\b(?:if|once|after|when|until|only|unless|not|never)\b", clause, re.I))
+
+
 def parent_holds_child(parent: dict[str, Any], child: dict[str, Any]) -> bool:
     """A stale label is an issue finding; a real parent wait still has scope."""
     if parent.get("exclusion") not in {"waiting", "wait_review_required"}:
@@ -426,7 +430,7 @@ def parent_holds_child(parent: dict[str, Any], child: dict[str, Any]) -> bool:
     # Existing wait evidence can explicitly split out an independently
     # selectable child without clearing the parent's person/event wait.
     for clause in re.split(r"[;\n]|[.]\s+", evidence):
-        if re.search(r"\b(?:if|once|after|when|until|only|unless|not|never)\b", clause, re.I):
+        if conditional_clause(clause):
             continue
         if not re.search(r"\b(?:(?:owns?|is|remains?)\s+independently\s+selectable|can\s+proceed\s+independently)\b", clause, re.I):
             continue

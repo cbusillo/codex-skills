@@ -1109,13 +1109,14 @@ def record_drift(
         if "recheck" in entry and dt.datetime.fromisoformat(entry["recheck"]).date() < now.date():
             evidence.append({"kind": "overdue_recheck", "recheck": entry["recheck"], "recorded_at": f"{entry['recheck']}T00:00:00Z", "matched": entry["waiting_for"]})
     claimed = " ".join(f"{entry['waiting_for']} {entry['ends_when']}" for entry in waits
-                       if re.search(r"\b(?:answers?|decides?|chooses?|choice|decision|approval)\b", entry["waiting_for"], re.I))
+                       if director_question_gate.asked_person(repo.split("/")[0], entry["waiting_for"]) is not None)
     named = re.findall(r"(?im)^\s*(?:[-*]\s+)?(?:Next actor:\s*person:|Waiting for:).*$", status)
     cited = set(CITED_QUESTION.findall(f"{claimed} {' '.join(named)}"))
     trusted = {name.casefold() for name in github_plan_wait.authors(repo)} | {repo.split("/")[0].casefold()}
     own_comments = discussion(repo, number) if waits or cited else []
     wait_source = github_plan_wait.current_source(issue, own_comments or [], trusted)
-    wait_time = _parse_time((wait_source or {}).get("created_at"))
+    wait_time = _parse_time((issue.get("last_edited_at") or (issue.get("discussion") or {}).get("body_recorded_at"))
+                            if wait_source is issue else (wait_source or {}).get("created_at"))
     if cited and own_comments is not None:
         linked = {(ref[1] or ref[4] or repo, int(ref[3] or ref[5])) for ref in WAIT_REFERENCE.finditer(f"{claimed} {' '.join(named)}")}
         linked.discard((repo, number))
@@ -1131,10 +1132,8 @@ def record_drift(
                     answer = next((row for row in everything if row["url"] == question["answers"][0]), {})
                     evidence.append({"kind": "recorded_decision", "url": question["answers"][0], "question": question["url"], "recorded_at": answer.get("created_at")})
     for entry in waits:
-        if (entry.get("event") or {}).get("kind") == "date":
-            continue
         terms = set(re.findall(r"[a-z]{4,}", f"{entry['waiting_for']} {entry['ends_when']}".casefold())) - DRIFT_COMMON_TERMS
-        for row in own_comments or []:
+        for row in (own_comments or []) if (entry.get("event") or {}).get("kind") != "date" else []:
             if row["author"].casefold() not in trusted or (row["url"] and row["url"] in str((wait or {}).get("evidence"))):
                 continue
             statement_time = _parse_time(row.get("created_at"))
@@ -1147,11 +1146,18 @@ def record_drift(
                 break
         waiting_text = f"{github_plan_wait.first_step(entry['waiting_for'])}\n{entry['ends_when']}"
         references = github_direction_next.issue_references(waiting_text, repo=repo)
-        if any(ref.get("bare") for ref in references):
-            blockers, cut = fetch_paginated(f"repos/{repo}/issues/{number}/dependencies/blocked_by", fetch=lambda args: read(args[1]), max_pages=2)
-            if cut:
-                raise AuditError("wait blockers truncated")
-            references = github_direction_next.issue_references(waiting_text, repo=repo, native_blockers=blockers)
+        if any(ref.get("bare") for ref in references) and (issue.get("issue_dependencies_summary") or {}).get("total_blocked_by") != 0:
+            try:
+                blockers, cut = fetch_paginated(f"repos/{repo}/issues/{number}/dependencies/blocked_by", fetch=lambda args: read(args[1]), max_pages=2)
+                if cut:
+                    raise AuditError("wait blockers truncated")
+                status_refs = {(ref["repo"], ref["number"]) for ref in github_direction_next.issue_references(status, repo=repo) if not ref.get("bare")}
+                blockers = [blocker for blocker in blockers if any((ref["repo"], ref["number"]) in status_refs
+                            for ref in github_direction_next.issue_references(blocker.get("html_url") or blocker.get("url") or "", repo=None))]
+                references = github_direction_next.issue_references(waiting_text, repo=repo, native_blockers=blockers)
+            except AuditError:
+                errors.append({"number": number, "source": "drift_blockers", "reason": "unavailable"})
+                references = [ref for ref in references if not ref.get("bare")]
         named = {(ref["repo"], ref["number"]) for ref in references}
         for target_repo, target_number in sorted(named - {(repo, number)}):
             try:
@@ -1187,14 +1193,17 @@ def record_drift(
             children = []
         completed = set()
         outstanding = set()
-        for ref in WAIT_REFERENCE.finditer(status):
-            before, after = status[:ref.start()], status[ref.end():]
-            key = (ref[1] or ref[4] or repo, int(ref[3] or ref[5]))
-            if (re.search(r"\b(?:closed|delivered|merged)(?:\s+[\w-]+){0,2}\s*$", before, re.I)
-                    or re.match(r"\s*(?:(?:is|was|has been)\s+)?(?:closed|delivered|merged)\b", after, re.I)):
-                completed.add(key)
-            if re.search(r"\b(?:remaining work(?: is)?|continue|awaiting|waiting (?:on|for))\s*$", before, re.I):
-                outstanding.add(key)
+        for clause in re.split(r"[;\n]|[.]\s+", status):
+            for ref in WAIT_REFERENCE.finditer(clause):
+                before, after = clause[:ref.start()], clause[ref.end():]
+                key = (ref[1] or ref[4] or repo, int(ref[3] or ref[5]))
+                if (not github_direction_next.conditional_clause(clause)
+                        and (re.search(r"\b(?:closed|delivered|merged)(?:[ \t]+(?:reader|child|slice)){0,2}[ \t]*$", before, re.I)
+                             or re.match(r"\s*(?:(?:is|was|has been)\s+)?(?:closed|delivered|merged)\b", after, re.I))):
+                    completed.add(key)
+                if (re.search(r"\b(?:remaining work(?: is)?|continue|awaiting|waiting (?:on|for))\s*$", before, re.I)
+                        or re.search(r"\b(?:if|once|after|when|until|unless)\b", before, re.I)):
+                    outstanding.add(key)
         named_children = [child for child in children if (repo, child.get("number")) in refs - (completed - outstanding)]
         if named_children and all(child.get("state") == "closed" for child in named_children):
             if status_time is None:

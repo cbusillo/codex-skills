@@ -4293,6 +4293,10 @@ def test_completed_child_clauses_do_not_make_remaining_parent_work_stale() -> No
         assert evidence[0]["children"] == [12]
         row["body"] = status.replace("Continue remaining engineering.", "Remaining work is #11.")
         assert drift_report(module, row, responses)["items"][0]["evidence"][0]["children"] == [11]
+    for pending in ("Resume once #11 is merged.", "Parent closes after #11 is closed.",
+                    "#12 is closed and #11 is next.", "not yet merged #11", "merged\n- #11 is next"):
+        row["body"] = f"## Current Status\nNext action: {pending}\nLast verified: October 28, 2026.\n"
+        assert 11 in drift_report(module, row, responses)["items"][0]["evidence"][0]["children"]
 
 
 def test_implementing_a_decision_is_not_waiting_for_its_answer() -> None:
@@ -4303,6 +4307,10 @@ def test_implementing_a_decision_is_not_waiting_for_its_answer() -> None:
     status = "## Current Status\nNext actor: agent\nNext action: Build replay under Q71.\n"
     row = {**issue(7, "Replay", body=status), "state": "open", "structured_wait": wait}
     assert drift_report(module, row, {"repos/owner/catalog/issues/7/comments": [question, decision]})["items"] == []
+    for actor in ("Director approves Q71", "Director picks the rollout (Q71)", "Director: Q71", "Director"):
+        row["structured_wait"] = drift_wait(actor, f"The Director answers {question['html_url']}")
+        assert any(item["kind"] == "recorded_decision" for item in drift_report(
+            module, row, {"repos/owner/catalog/issues/7/comments": [question, decision]})["items"][0]["evidence"])
 
 
 def test_date_wait_is_not_impossible_because_of_old_trial_comment() -> None:
@@ -4312,6 +4320,10 @@ def test_date_wait_is_not_impossible_because_of_old_trial_comment() -> None:
     old = drift_comment(1, 7, "The three-seat trial judgment could never happen that way.")
     row = {**issue(7, "Trial"), "state": "open", "structured_wait": wait}
     assert drift_report(module, row, {"repos/owner/catalog/issues/7/comments": [old]})["items"] == []
+    row["structured_wait"] = {**wait, "waits": [{**wait["waits"][0], "waiting_for": "Date after owner/catalog#30 lands"}]}
+    report = drift_report(module, row, {"repos/owner/catalog/issues/7/comments": [old],
+                                     "repos/owner/catalog/issues/30": {"state": "closed", "state_reason": "not_planned"}})
+    assert report["items"][0]["evidence"][0]["kind"] == "impossible_ends_when"
 
 
 def test_replacement_event_wait_does_not_inherit_old_attempt_impossibility() -> None:
@@ -4327,12 +4339,22 @@ def test_replacement_event_wait_does_not_inherit_old_attempt_impossibility() -> 
     old["created_at"] = "2026-11-06T00:00:00Z"
     report = module.stale_wait_report([row], "owner/catalog", fetch=drift_fetch(responses), now=dt.datetime(2026, 11, 9, tzinfo=dt.UTC), read_waits=True)
     assert report["items"][0]["evidence"][0]["kind"] == "impossible_ends_when"
+    renewal = drift_comment(3, 7, module.github_plan_wait.marker(
+        {**wait, "waits": [{**wait["waits"][0], "recheck": "2026-11-25"}]}), created="2026-11-07T00:00:00Z")
+    responses["repos/owner/catalog/issues/7/comments"].append(renewal)
+    report = module.stale_wait_report([row], "owner/catalog", fetch=drift_fetch(responses), now=dt.datetime(2026, 11, 9, tzinfo=dt.UTC), read_waits=True)
+    assert report["items"][0]["evidence"][0]["kind"] == "impossible_ends_when"
+    row = {**row, "body": module.github_plan_wait.marker(wait), "last_edited_at": "2026-11-08T00:00:00Z"}
+    responses["repos/owner/catalog/issues/7/comments"] = [old]
+    report = module.stale_wait_report([row], "owner/catalog", fetch=drift_fetch(responses), now=dt.datetime(2026, 11, 9, tzinfo=dt.UTC), read_waits=True)
+    assert report["items"] == []
 
 
 def test_bare_dependency_uses_the_unique_native_blocker_not_a_closed_local_issue() -> None:
     module = load()
     wait = drift_wait("Production-use event on #142, then the handoff invitation", "OPW#142 records production use and the handoff is invited")
-    row = {**issue(7, "Track"), "state": "open", "structured_wait": wait, "issue_dependencies_summary": {"total_blocked_by": 1}}
+    row = {**issue(7, "Track", body="## Current Status\nWait validated: read owner/odoo-tenant-opw#142.\n"),
+           "state": "open", "structured_wait": wait, "issue_dependencies_summary": {"total_blocked_by": 1}}
     responses = {"repos/owner/catalog/issues/7/dependencies/blocked_by": [
         {"number": 142, "html_url": "https://github.com/owner/odoo-tenant-opw/issues/142", "state": "open"}],
         "repos/owner/odoo-tenant-opw/issues/142": {"state": "open"},
@@ -4340,6 +4362,14 @@ def test_bare_dependency_uses_the_unique_native_blocker_not_a_closed_local_issue
     assert drift_report(module, row, responses)["items"] == []
     row["structured_wait"] = drift_wait("Production-use event on owner/catalog#142", "Production use")
     assert drift_report(module, row, responses)["items"][0]["evidence"][0]["kind"] == "closed_dependency"
+    row["structured_wait"] = wait
+    row["body"] = ""
+    assert drift_report(module, row, responses)["items"][0]["evidence"][0]["kind"] == "closed_dependency"
+    row["structured_wait"] = {**wait, "waits": [{**wait["waits"][0], "recheck": "2026-11-01"}]}
+    responses["repos/owner/catalog/issues/7/dependencies/blocked_by"] = module.AuditError("denied")
+    report = drift_report(module, row, responses)
+    assert report["items"][0]["evidence"][0]["kind"] == "overdue_recheck"
+    assert report["complete"] is False
 
 
 def main() -> int:

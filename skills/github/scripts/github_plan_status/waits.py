@@ -233,8 +233,10 @@ def _select_record(issue: dict[str, Any], comments: list[dict[str, Any]], truste
             raise ValueError("Multiple structured records in one source; preserve them for review")
         if found:
             record = found[0]
-            keep_age = (prefix == PREFIX and selected is not None
-                        and record["state"] == selected["state"] and record["waits"] == selected["waits"])
+            keep_age = False
+            if prefix == PREFIX and selected is not None and record["state"] == selected["state"] == "waiting":
+                keep_age = ([{key: value for key, value in entry.items() if key not in {"recheck", "ask_url"}} for entry in record["waits"]]
+                            == [{key: value for key, value in entry.items() if key not in {"recheck", "ask_url"}} for entry in selected["waits"]])
             if prefix == PREFIX and "replaces" in record:
                 if selected is None or record["replaces"] != record_digest(selected):
                     continue
