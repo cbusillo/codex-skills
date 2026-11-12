@@ -406,7 +406,8 @@ or qualified record reference in claim commands.
 
 The check reads those issues and PRs, including closed records, plus the one
 search and the App's installation list when a command needs settling. It never
-scans repositories. It verifies every
+scans repositories by default. The explicit `--inventory-owner` audit inventories
+the configured account and requires `--require-released-claims`. It verifies every
 claim on each target against its exact authored release or validated Supervisor
 release, and checks each retained PR's handoff. Repeat `--session` and
 `--transcript` for any other session to include. A transcript belonging to
