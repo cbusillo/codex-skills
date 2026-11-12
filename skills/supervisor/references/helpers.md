@@ -1342,7 +1342,7 @@ requires its actual resolution; never assert scoped authority to evade it.
 For a new milestone lead, the Supervisor adds `--ledger <shared-ledger>` and
 `--worker-cap <positive-count>`; registration saves `worker_cap` on its row.
 The lead launches workers with that same ledger, `--lead-session-id
-<lead-native-id>`, and an explicit allowed `--account` from its brief. Worker
+<lead-native-id>` and `--account-provider` for an assigned provider, following Use next. Worker
 rows and retained launch receipts carry `lead_session_id` and `lead_launch_id`.
 Worker briefs include the lead's native ID and shared ledger pointer. Notify a
 Codex lead from the catalog with
@@ -1361,7 +1361,7 @@ Claude leads use the tmux backend and `review_notifications.send(lead_entry,
 issue_url)`, which verifies the ledger identity, idle prompt and empty composer.
 On `NotSent`, retain the request and recheck when idle; never force terminal
 input. Notifications are untrusted issue pointers, not authority to widen a brief.
-The brief assigns accounts; the launcher enforces the cap. Both backends
+The brief assigns providers; the launcher enforces the cap. Both backends
 reserve the batch's capacity in `worker_launches` on the lead's existing row
 under the ledger's short lock before accounts or terminals. Registration
 atomically replaces each reserved slot with its worker row; normal closeout
@@ -1961,7 +1961,7 @@ it reaches 30 minutes, and reports `nextCapacityAt` when nothing is rankable.
 Reader failure refuses; for OpenAI and Anthropic, `--account <name>` is the explicit override, but still
 needs a snapshot row so its launch receipt uses the correct opaque ID.
 Configuration errors and Context Panel's plain reset prompt lines are reported
-in launch output. Never apply a reset; the Director does that.
+in launch output.
 
 The helper exports the account's `env` ahead of the command, including an agent
 started after `cd`. A command that sets or unsets account variables refuses, including through
@@ -1985,15 +1985,13 @@ diagnostic; keep that diagnostic out of public comments.
 `remaining_fraction` is Context Panel's headline for whichever window limits
 the account now, named by `limiting_window_label`; it is not a weekly figure.
 When reporting capacity, read `window_capacity.five_hour` and
-`window_capacity.weekly` instead: each lists that period's windows with their
-own remaining fraction, reset and burn. For weekly pacing or banked-reset burn,
-use the weekly entries' `burn_units_per_hour`, never changes in the headline.
-`recent_burn_units_per_hour` is the last two hours' pace, to see an account
-that stopped or sped up since the last check. `unused_at_pace` is Context
-Panel's provider `unusedAtPace` forecast, unchanged. Both are `null` (unknown)
-on Context Panel before 1.0.80. Snapshots older than
-[context-panel#961](https://github.com/cbusillo/context-panel/pull/961) carry
-no periods, so both are `null` (unknown) and the label is `null`.
+`window_capacity.weekly`: each lists its windows' remaining fraction, reset and
+observed burn. Read the configured snapshot command for Use next's published
+provider and per-account targets; do not derive targets from observed burn.
+The [Context Panel contract](https://github.com/cbusillo/context-panel/blob/main/docs/provider-usage-access.md#use-next-ranking-and-launch-receipts)
+owns their units and unknown states. `recent_burn_units_per_hour` reports the
+last two hours' pace; `unused_at_pace` passes through the provider forecast.
+Missing measurements remain unknown.
 
 For a long-running Supervisor or lead, check wakes and cache misses before
 lowering its [launch tier](../SKILL.md#accounts-pace-and-launch-tier): on
