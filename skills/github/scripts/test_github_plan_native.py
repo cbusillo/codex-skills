@@ -23,6 +23,9 @@ import github_plan_closure as CLOSURE
 import github_plan_sessions as SESSIONS
 from test_github_plan_sessions import ReceiptFixture
 
+SESSIONS.native_helpers()
+TMUX: Any = importlib.import_module("tmux_terminal")
+
 
 class NativeFactsTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -786,9 +789,6 @@ class NativeQueueTests(unittest.TestCase):
 
     def test_removed_pane_closure_proves_replacement_tree_and_preserves_source_vetoes(self):
         import uuid
-        from github_plan_sessions import native_helpers
-        native_helpers()
-        import tmux_terminal
         for change in (None, "nonidle_root", "same_second", "orphan", "orphan_root", "missing_parent", "old_root", "source_pid",
                        "resume", "uncertain", "source_pane", "late_orphan", "unowned", "no_nonce", "unidentified_harness"):
             with self.subTest(change=change), ReceiptFixture(str(uuid.uuid4())) as f:
@@ -815,10 +815,10 @@ class NativeQueueTests(unittest.TestCase):
                     if change == "late_orphan" and "thread/read" in f.rpc_requests:
                         parents[456] = 1
                     return list(f.process_rows)
-                with patch.object(tmux_terminal.Terminal, "list", **(
+                with patch.object(TMUX.Terminal, "list", **(
                         {"side_effect": ValueError("uncertain inventory")} if change == "uncertain" else
                         {"return_value": [pane] if change == "source_pane" else []})), \
-                        patch.object(tmux_terminal, "process_parents", side_effect=lambda: dict(parents)), \
+                        patch.object(TMUX, "process_parents", side_effect=lambda: dict(parents)), \
                         patch.object(CLOSURE, "process_started_at", side_effect=lambda pid: root_at + timedelta(seconds=pid != 455 and change != "same_second")), \
                         patch.object(f.release, "inventory", side_effect=inventory):
                     if change in (None, "nonidle_root", "same_second"):
@@ -1501,7 +1501,6 @@ class NativeQueueTests(unittest.TestCase):
         from types import SimpleNamespace
         import github_plan_termination as termination
         with ReceiptFixture(str(uuid.uuid4())) as f:
-            import tmux_terminal
             other, _ledger, selected, _retained, deleted = self.cancel_setup(f)
             cutoff = (datetime.now(timezone.utc) - timedelta(days=1)).replace(microsecond=0)
             record = {**f.entry, "host": socket.gethostname(), "cause": "fixture terminal crash",
@@ -1516,13 +1515,13 @@ class NativeQueueTests(unittest.TestCase):
             values = {"session_id": "$1", "window_id": "@1", "pane_id": "%1", "pane_title": "ended",
                 "pane_tty": "/dev/" + f.entry["tty"], "pane_pid": "", "pane_dead": "1", "pane_dead_status": "0",
                 "@supervisor_identity": "a" * 32, "pid": "999", "pane_dead_time": str(int(cutoff.timestamp()))}
-            native = "\t".join(values.get(field, "") for field in tmux_terminal.PANE_FIELDS) + "\n"
+            native = "\t".join(values.get(field, "") for field in TMUX.PANE_FIELDS) + "\n"
             shared = termination.native_helpers()[1]
             state = CLOSURE.lease_path(f.session).read_bytes()
             with patch.object(termination, "inventory", return_value=[(88, f.entry["tty"], "codex --remote unix:///new-client")]), \
                     patch.object(shared, "process_started_at", return_value=cutoff + timedelta(seconds=1)), \
-                    patch.object(tmux_terminal.Terminal, "run", return_value=SimpleNamespace(returncode=0, stdout=native)), \
-                    patch.object(tmux_terminal.Terminal, "readonly_control_supported", return_value=True), \
+                    patch.object(TMUX.Terminal, "run", return_value=SimpleNamespace(returncode=0, stdout=native)), \
+                    patch.object(TMUX.Terminal, "readonly_control_supported", return_value=True), \
                     patch.object(CLOSURE, "guarded_launch_endpoint", return_value="/new-client"), \
                     patch.object(termination, "run_terminal", return_value=SimpleNamespace(
                         returncode=0, stdout="a" * 32 + "\t1\t1\n", stderr="")):
@@ -1580,9 +1579,6 @@ class NativeQueueTests(unittest.TestCase):
 
     def test_finish_keeps_one_native_cutoff_through_proof_and_later_safe_turn(self):
         import uuid
-        from github_plan_sessions import native_helpers
-        native_helpers()
-        import tmux_terminal
         for phase in ("first", "resumed", "later"):
             with self.subTest(phase=phase), ReceiptFixture(str(uuid.uuid4())) as f:
                 cutoff = datetime.now(timezone.utc) - timedelta(minutes=1)
@@ -1594,7 +1590,7 @@ class NativeQueueTests(unittest.TestCase):
                 if phase == "first": CLOSURE.replace_rows([])
                 if phase == "later":
                     CLOSURE.replace_rows([])
-                    with patch.object(tmux_terminal.Terminal, "list", return_value=[pane]):
+                    with patch.object(TMUX.Terminal, "list", return_value=[pane]):
                         original = f.release.record_closure(f.log, entry, "supervisor")
                 with CLOSURE.resume_guard(f.session, method="turn/start", home=f.home):
                     if phase == "resumed":
@@ -1618,7 +1614,7 @@ class NativeQueueTests(unittest.TestCase):
                 def panes():
                     reads.append(True)
                     return [pane] if phase != "later" and len(reads) == 1 else []
-                with patch.object(tmux_terminal.Terminal, "list", side_effect=panes), \
+                with patch.object(TMUX.Terminal, "list", side_effect=panes), \
                         patch.object(CLOSURE, "process_started_at", return_value=cutoff + timedelta(seconds=1)):
                     closed = f.release.record_closure(f.log, entry, "supervisor")
                     self.assertEqual(closed["tty_exited_at"], cutoff.isoformat())
@@ -1631,9 +1627,6 @@ class NativeQueueTests(unittest.TestCase):
 
     def test_saved_native_cutoff_preserves_guarded_replacement_identity(self):
         import uuid
-        from github_plan_sessions import native_helpers
-        native_helpers()
-        import tmux_terminal
         with ReceiptFixture(str(uuid.uuid4())) as f:
             CLOSURE.replace_rows([])
             cutoff = datetime.now(timezone.utc) - timedelta(minutes=1)
@@ -1642,7 +1635,7 @@ class NativeQueueTests(unittest.TestCase):
             pane = {"session_id": entry["tmux_session_id"], "pane_id": "%1", "pid": 789,
                     "tmux_socket": "fixture", "window_id": "$1", "tab_id": "@1", "tty": entry["tty"],
                     "dead": True, "exited_at": cutoff.isoformat()}
-            with patch.object(tmux_terminal.Terminal, "list", return_value=[pane]), \
+            with patch.object(TMUX.Terminal, "list", return_value=[pane]), \
                     patch.object(CLOSURE, "evidence", side_effect=ValueError("fixture optional receipt unavailable")):
                 closed = f.release.record_closure(f.log, entry, "supervisor")
             f.native_state = "notLoaded"
@@ -1656,6 +1649,46 @@ class NativeQueueTests(unittest.TestCase):
                 f.process_rows = [(456, entry["tty"], "codex --remote unix:///unregistered")]
                 with self.assertRaises(ValueError): NATIVE.verify_source_process(entry)
             self.assertFalse(f.mutations)
+
+    def test_saved_recovery_rechecks_guarded_replacement_without_changing_source_identity(self):
+        import uuid
+        for changed in (None, "fresh_local", "source_resume", "unregistered_remote", "orphan", "source_pid"):
+            with self.subTest(changed=changed), ReceiptFixture(str(uuid.uuid4())) as f:
+                CLOSURE.replace_rows([])
+                entry = {**f.entry, "recovery": {"kind": "gone"}, "tmux_socket": "fixture",
+                         "tmux_session_id": "tmux:fixture:" + "a" * 32}
+                root_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+                native = ["codex", "--remote", "unix://" + str(CLOSURE.daemon_endpoint(f.home))]
+                parents = {99: 1, 455: 99, 456: 455}
+                f.native_state = "notLoaded"
+                f.process_rows = [(455, entry["tty"], "replacement-root"), (456, entry["tty"], " ".join(native))]
+                with patch.object(TMUX.Terminal, "list", return_value=[]), \
+                        patch.object(TMUX, "process_parents", side_effect=lambda: dict(parents)), \
+                        patch.object(SESSIONS.process_liveness(), "inventory", side_effect=lambda: list(f.process_rows)), \
+                        patch.object(SESSIONS.process_liveness(), "process_absent", side_effect=lambda pid: pid == entry["pid"] and all(row[0] != pid for row in f.process_rows)), \
+                        patch.object(SESSIONS.process_liveness(), "process_started_at", side_effect=lambda pid: root_at + timedelta(seconds=pid != 455)), \
+                        patch.object(CLOSURE, "process_started_at", side_effect=lambda pid: root_at + timedelta(seconds=pid != 455)), \
+                        patch.object(f.release, "recovery_claims"):
+                    f.managed(native)
+                    f.process_rows[1] = (456, entry["tty"], " ".join(native))
+                    closed = f.release.record_recovery(f.log, entry, "supervisor")
+                    before = f.log.read_bytes()
+                    if changed == "source_resume":
+                        f.process_rows.append((789, "other-tty", "codex resume " + f.session))
+                    elif changed == "fresh_local":
+                        f.process_rows[1] = (456, entry["tty"], "codex")
+                    elif changed == "unregistered_remote":
+                        f.process_rows[1] = (456, entry["tty"], "codex --remote unix:///unregistered")
+                    elif changed == "orphan":
+                        parents[456] = 1
+                    elif changed == "source_pid":
+                        f.process_rows.append((entry["pid"], "other-tty", "codex"))
+                    if changed in {None, "fresh_local"}:
+                        self.assertEqual(f.release.validate_finished(closed, "supervisor")["state"], "turn_ended")
+                    else:
+                        with self.assertRaises(ValueError): f.release.validate_finished(closed, "supervisor")
+                    self.assertEqual(f.log.read_bytes(), before)
+                self.assertFalse(f.mutations)
 
     def test_finish_rechecks_source_process_after_native_resolution(self):
         import uuid
@@ -1836,9 +1869,6 @@ class NativeQueueTests(unittest.TestCase):
 
     def test_first_pending_finish_uses_native_cutoff_and_never_caller_hints(self):
         import uuid
-        from github_plan_sessions import native_helpers
-        native_helpers()
-        import tmux_terminal
         for obstruction in (None, "missing_pane", "source_pid", "source_resume"):
             with self.subTest(obstruction=obstruction), ReceiptFixture(str(uuid.uuid4())) as f:
                 CLOSURE.replace_rows([])
@@ -1855,7 +1885,7 @@ class NativeQueueTests(unittest.TestCase):
                 f.process_rows = [(456, entry["tty"], "new-unrelated-worker")]
                 if obstruction == "source_pid": f.process_rows = [(entry["pid"], "other", "codex")]
                 if obstruction == "source_resume": f.process_rows = [(456, "other", "codex resume " + f.session)]
-                with patch.object(tmux_terminal.Terminal, "list", return_value=[] if obstruction == "missing_pane" else [pane]), \
+                with patch.object(TMUX.Terminal, "list", return_value=[] if obstruction == "missing_pane" else [pane]), \
                         patch.object(CLOSURE, "process_started_at", return_value=cutoff + timedelta(seconds=1)):
                     if obstruction:
                         with self.assertRaises(ValueError): f.release.record_closure(f.log, entry, "supervisor")
@@ -1866,7 +1896,7 @@ class NativeQueueTests(unittest.TestCase):
                         self.assertEqual(closed["tty_exited_at"], cutoff.isoformat())
                         self.assertFalse(CLOSURE.action_pending(f.session))
                 if not obstruction:
-                    with patch.object(tmux_terminal.Terminal, "list", side_effect=AssertionError("pane already removed")), \
+                    with patch.object(TMUX.Terminal, "list", side_effect=AssertionError("pane already removed")), \
                             patch.object(CLOSURE, "process_started_at", return_value=cutoff + timedelta(seconds=1)):
                         retried = f.release.record_closure(f.log, entry, "supervisor")
                     self.assertEqual(retried["ended_at"], closed["ended_at"])
@@ -2029,8 +2059,6 @@ class NativeQueueTests(unittest.TestCase):
 
     def test_moved_generation_preserves_old_copy_and_reads_its_deconfigured_home(self):
         import uuid
-        from github_plan_sessions import native_helpers
-        native_helpers()
         import codex_session_proxy
         for legacy_path in (False, True):
             with self.subTest(legacy_path=legacy_path), ReceiptFixture(str(uuid.uuid4())) as f:

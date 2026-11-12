@@ -540,8 +540,6 @@ def _source_process(entry, saved, context=None, *, recorded=None):
         if cutoff is None and context is None and (effective.get("recovery")
                                                     or effective.get("closure_kind") == "claim_free_recovery"):
             cutoff = _ended_original_activity(effective)
-        if cutoff is not None:
-            effective["tty_exited_at"] = cutoff.isoformat()
     # A canonical closed-session receipt bounds this exact saved generation.
     # Keep it separate from caller hints and from persisted terminal metadata.
     if context is not None:
