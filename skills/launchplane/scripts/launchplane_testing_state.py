@@ -14,7 +14,7 @@ import os
 import re
 import urllib.error
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, BinaryIO
 
 PLAN_COMMAND = "testing-state-dry-run"
 APPLY_COMMAND = "testing-state-apply"
@@ -123,6 +123,26 @@ def request_summary(h: Any, intent: dict[str, str]) -> dict[str, object]:
     request.update(instance="testing", payload_source="private_file")
     h.assert_public_safe_shape(request)
     return request
+
+
+def open_private_response(h: Any, path: str) -> BinaryIO:
+    target = Path(path).expanduser().absolute()
+    if "task-evidence" not in target.parent.parts or target.parent.resolve(strict=True) != target.parent:
+        raise ValueError("private_task_evidence_required")
+    repository = h.active_repo_root()
+    if repository is not None and target.is_relative_to(repository):
+        raise ValueError("private_task_evidence_required")
+    descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    return os.fdopen(descriptor, "wb")
+
+
+def save_private_response(evidence: BinaryIO, raw: bytes) -> bool:
+    try:
+        evidence.write(raw)
+        evidence.flush()
+        return True
+    except (OSError, ValueError):
+        return False
 
 
 def write_staged(h: Any, path: str, staged: dict[str, Any]) -> str:
