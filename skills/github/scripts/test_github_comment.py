@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["PyYAML==6.0.3"]
 # ///
 
 from __future__ import annotations
@@ -14,7 +14,9 @@ import tempfile
 import sys
 import datetime as dt
 import math
+import io
 import urllib.parse
+from contextlib import redirect_stdout
 from typing import Any, Callable
 from unittest.mock import patch
 
@@ -26,6 +28,7 @@ os.environ["GH_WITH_ENV_TOKEN_EXPECTED_LOGIN"] = "fixture-automation"
 import github_api
 import github_comment
 from skills.direction.scripts import question_id as question_counter
+from skills.people.scripts import resolve_person
 from github_fixture_support import api_failure, api_success, with_call_stub
 
 
@@ -1622,7 +1625,7 @@ def test_attachment_passthrough_and_failures_never_replay() -> None:
                     patch.object(question_counter, "update", side_effect=update_question), \
                     patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_OWN_USER": "1", "GH_WITH_ENV_TOKEN_OWN_USER_LOGIN": github_comment.ATTACHMENT_OWNER}), \
                     patch.object(github_comment.github_identity, "acts_as_own_user", return_value=mode == "personal"), \
-                    patch.object(github_comment, "people_team", side_effect=lambda login: ["teammate"] if login == "client" else []), \
+                    patch.object(github_comment, "people_team", side_effect=lambda login, **_kwargs: ["teammate"] if login == "client" else []), \
                     patch.object(github_api.github_catalog_health, "marker_fields", return_value="catalog=fixture"), \
                     patch.object(github_comment.subprocess, "run", side_effect=run), \
                     patch.object(github_comment, "_call_api", side_effect=read_api):
@@ -1768,7 +1771,74 @@ def test_client_reply_reads_the_client_team_and_names_who_it_refuses() -> None:
 
         with (patch.object(github_comment.github_identity, "acts_as_own_user", return_value=False),
               patch.object(github_comment.github_identity, "configured_bot_logins", return_value=("own-app[bot]",)),
-              patch.object(github_comment, "people_team", side_effect=lambda login: teams.get(login, []))):
+              patch.object(github_comment, "people_team", side_effect=lambda login, **_kwargs: teams.get(login, []))):
+            with_call_stub(callback, run)
+
+
+def test_client_release_reply_recognizes_only_uniquely_owned_director_automation() -> None:
+    delivery = "launchplane-delivery-cb[bot]"
+    people = [
+        {"id": "director", "display_name": "Director", "organization": {"company": "Director Company"},
+         "github": {"username": "owner", "bot_usernames": [delivery]}},
+        {"id": "client", "display_name": "Client", "github": {"username": "client"}},
+        {"id": "colleague", "display_name": "Colleague", "organization": {"company": "Director Company"},
+         "github": {"username": "colleague", "bot_usernames": ["colleague-agent[bot]"]}},
+    ]
+    outsiders = {"outside_person": "outside", "outside_bot": "outside[bot]",
+                 "colleague": "colleague", "colleague_agent": "colleague-agent[bot]"}
+    for scenario in ("release", *outsiders, "shared_bot", "ambiguous_director", "unreadable_index", "writer"):
+        index = [*people]
+        if scenario == "shared_bot":
+            index.append({"id": "other", "display_name": "Other", "github": {"username": "outside", "bot_usernames": [delivery]}})
+        if scenario == "ambiguous_director":
+            index.append({"id": "other", "display_name": "Other", "github": {"username": "owner"}})
+
+        def callback(method: str, path: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
+            if path == "/user":
+                return success({"login": delivery if scenario == "writer" else "fixture-automation"})
+            if method == "POST":
+                return success(comment_body(1001, body=body["body"]))
+            if path.endswith("/issues/42"):
+                return success({"user": {"login": delivery.upper()}, "body": "@client please review this release."})
+            if "/issues/42/comments?" in path:
+                return success([
+                    comment_body(2, actor="client", body="Thanks."),
+                    comment_body(3, body="Release is ready."),
+                    *([comment_body(4, actor=outsiders[scenario])] if scenario in outsiders else []),
+                ])
+            raise AssertionError(path)
+
+        def run(calls: list[dict[str, Any]]) -> None:
+            try:
+                result = github_comment.comment("issue", 42, f"@client reminder from @{delivery.removesuffix('[bot]')}.",
+                                                repo="owner/repo", gh_cmd="fake-gh", client_logins=["client"], expected_actor=None)
+            except github_comment.CommentError as error:
+                assert scenario != "release", error
+                assert error.failure.write_outcome == "not_started"
+                assert error.failure.cause == "client_reply_refused"
+                assert error.failure.failed_step == "validate_client_reply"
+                assert all(call["method"] == "GET" for call in calls)
+            else:
+                assert scenario == "release", scenario
+                assert result["comment_action"] == "created"
+                assert sum(call["method"] == "POST" for call in calls) == 1
+
+        def run_resolver(argv: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+            output = io.StringIO()
+            code = 0
+            with patch.object(sys, "argv", argv[3:]), redirect_stdout(output):
+                try:
+                    resolve_person.main()
+                except SystemExit as error:
+                    code = int(error.code or 0)
+            return subprocess.CompletedProcess(argv, code, output.getvalue(), "")
+
+        with (patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_OWN_USER_LOGIN": "owner"}),
+              patch.object(github_comment.github_identity, "configured_bot_logins", return_value=()),
+              patch.object(github_comment.github_identity, "acts_as_own_user", return_value=False),
+              patch.object(resolve_person, "load_scoped_people", return_value=("ok", index, {}),
+                           side_effect=resolve_person.PeopleConfigError("invalid index") if scenario == "unreadable_index" else None),
+              patch.object(github_comment.subprocess, "run", side_effect=run_resolver)):
             with_call_stub(callback, run)
 
 

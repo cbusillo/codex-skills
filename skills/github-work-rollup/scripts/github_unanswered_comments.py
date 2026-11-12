@@ -487,7 +487,7 @@ def people_identities(self_logins: set[str], index_path: Path | None) -> dict[st
         # names rather than guess which match is the Director.
         return {**empty, "status": status, "director_ambiguous": len(directors) > 1, "automation": automation}
     [director] = directors
-    own_automation = [login for login in resolve_person.github_logins(director)[1] if len(login_people[login]) == 1]
+    own_automation = resolve_person.github_own_automation(self_logins, people)
     empty["own_automation"] = own_automation
     for login in own_automation:
         automation.pop(login)
