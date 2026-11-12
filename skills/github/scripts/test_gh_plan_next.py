@@ -2248,6 +2248,31 @@ def test_waiting_pr_does_not_become_an_invalid_issue_wait() -> None:
         assert not result["findings"] and not result["candidates"]
 
 
+def test_global_next_preserves_waiting_pr_author_when_reading_stale_evidence() -> None:
+    root = track("someone/direction", 1, "First")
+    pull = {**global_issue("someone/business", 120, wait_reviewed=False),
+            "pull_request": {"url": "https://api.github.com/repos/someone/business/pulls/120"},
+            "user": {"login": "someone", "type": "User"}}
+    with global_fixture([root], [], {}, discovered=[pull]) as (module, result, _reads):
+        wait = module.github_plan_wait.reviewed(evidence="External event recorded", waiting_for="External review cycle",
+                                               ends_when="The cycle completes", recheck="2000-01-01")
+        pull["body"] = module.github_plan_wait.marker(wait)
+
+        def annotate(items: list[dict[str, Any]], _args: Any) -> dict[str, Any]:
+            for item in items:
+                if item.get("record_type") == "pull_request":
+                    item["queue"] = {"wait": wait}
+            return {}
+
+        with patch.multiple(module, annotate_next_queue=annotate):
+            module.cmd_next(next_args())
+    report = result["stale_wait_report"]
+    stale = next(row for row in report["items"] if row["number"] == pull["number"])
+    assert stale["evidence"][0]["kind"] == "overdue_recheck"
+    assert stale["keeps_wait"] is True
+    assert not report["unavailable"]
+
+
 def active_track(repo: str, number: int, title: str, status: str) -> dict[str, Any]:
     return global_issue(
         repo, number, title=f"Track: {title}", labels=["plan", "plan:active"], body="## Current Status\n" + status,

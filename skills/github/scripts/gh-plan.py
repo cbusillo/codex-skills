@@ -6833,7 +6833,8 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     for name, observed in graph_queue_context.get("repositories", {}).items():
         queue_context.setdefault("repositories", {}).setdefault(name, observed)
     NEXT_READS.start_phase("wait_evidence")
-    pull_waits: list[dict[str, Any]] = [{**item, "pull_request": {}, "structured_wait": item["queue"]["wait"]}
+    pull_sources = {(raw["repo"].casefold(), raw["number"]): raw for raw in complete_inventory if raw.get("pull_request")}
+    pull_waits: list[dict[str, Any]] = [{**pull_sources[(item["repo"].casefold(), item["number"])], "structured_wait": item["queue"]["wait"]}
                                         for item in pull_items if (item.get("queue") or {}).get("wait")]
     wait_context = next_wait_context(
         [*filter(None, map(seeds.get, evidence_keys)), *pull_waits],
