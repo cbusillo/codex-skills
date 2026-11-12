@@ -613,5 +613,135 @@ def test_typed_transport_uses_the_same_request_route_for_client_confirmation(acc
     assert [path for method, path in calls if method != "GET"] == [h.helper_command_path(COMMAND)] * (1 if acceptance == "director_standing" else 2)
 
 
+INITIAL_NOTES = "PRIVATE_INITIAL_NOTES verify the complete fictional contact and follow-up workflow."
+
+
+def initial_review(*, prepared: bool = False, saved: dict[str, object] | None = None, standing: bool = False) -> dict[str, Any]:
+    body = review(NEW_DIGEST if prepared else DIGEST, saved=saved, checklist_complete=prepared)
+    body["review"]["checklist"]["production"] = {"state": "absent", "authority_sha256": "e" * 64, "recovery_backup_root": "/private/initial-backup-root"}
+    body["review"]["checklist"]["initial_version"] = {"client_test_notes": INITIAL_NOTES if prepared else "", "runtime_values": {"PRIVATE_INITIAL_SETTING": "private-initial-value"}}
+    body["initial_request_uses_standing_acceptance"] = standing
+    return body
+
+
+def initial_saved() -> dict[str, object]:
+    return {**saved_request(NEW_DIGEST), "initial_version_review": {"inputs_sha256": DIGEST, "client_test_notes": INITIAL_NOTES}}
+
+
+@pytest.fixture
+def notes_file(tmp_path: Path) -> Path:
+    file = tmp_path / "initial-notes.json"
+    file.write_text(json.dumps({"initial_version_test_notes": INITIAL_NOTES}))
+    file.chmod(0o600)
+    return file
+
+
+def notes_args(notes_file: Path) -> list[str]:
+    return [*request_args(), "--initial-version-test-notes-file", str(notes_file)]
+
+
+def assert_initial_private(payload: dict[str, Any]) -> None:
+    assert_private_values_absent(payload)
+    for value in (INITIAL_NOTES, "private-initial-value", "PRIVATE_INITIAL_SETTING", "/private/initial-backup-root", "e" * 64):
+        assert value not in json.dumps(payload)
+
+
+def test_initial_plan_projects_recorded_absence_and_keeps_the_snapshot_private() -> None:
+    code, payload, posts = invoke(plan_args(), reviews=[initial_review()])
+    assert code == 1 and not posts
+    assert payload["result"]["production"] == {"state": "absent"}
+    assert payload["result"]["checklist_digest"] == DIGEST
+    assert payload["summary"]["refusal_reason"] == "initial_test_notes_required"
+    assert_initial_private(payload)
+
+
+@pytest.mark.parametrize("acceptance", ["promote_with_rollback_drill", "director_standing"])
+def test_initial_request_acknowledges_only_the_prepared_digest_bound_to_its_notes(notes_file: Path, acceptance: str) -> None:
+    import hashlib
+
+    code, payload, posts = invoke(notes_args(notes_file), acceptance=acceptance, reviews=[initial_review(standing=acceptance == "director_standing")], posts=[initial_review(prepared=True, saved=initial_saved(), standing=acceptance == "director_standing")])
+    assert code == 0
+    assert payload["result"]["checklist_digest"] == NEW_DIGEST
+    assert payload["result"]["requested_checklist_digest"] == DIGEST
+    assert payload["request"]["initial_version_test_notes_sha256"] == hashlib.sha256(INITIAL_NOTES.encode()).hexdigest()
+    assert posts[0].kwargs["body"]["checklist_digest"] == DIGEST
+    assert posts[0].kwargs["body"]["initial_version_test_notes"] == INITIAL_NOTES
+    assert_initial_private(payload)
+
+
+@pytest.mark.parametrize("acceptance", ["promote_with_rollback_drill", "director_standing"])
+def test_initial_explicit_replay_confirms_the_same_client_receipt_or_observes_standing_policy(notes_file: Path, acceptance: str) -> None:
+    prepared = initial_review(prepared=True, saved=initial_saved(), standing=acceptance == "director_standing")
+    code, payload, posts = invoke(notes_args(notes_file), acceptance=acceptance, reviews=[prepared], posts=[prepared])
+    assert code == 0
+    assert len(posts) == (0 if acceptance == "director_standing" else 1)
+    assert payload["result"]["checklist_digest"] == NEW_DIGEST
+    if posts:
+        assert payload["result"]["invitation_delivery"] == "confirmed"
+        assert posts[0].kwargs["idempotency_key"] == OPERATION_KEY
+    assert_initial_private(payload)
+
+
+def test_lost_initial_reply_reads_back_d1_without_claiming_invitation_delivery(notes_file: Path) -> None:
+    prepared = initial_review(prepared=True, saved=initial_saved())
+    code, payload, posts = invoke(notes_args(notes_file), reviews=[initial_review(), prepared], posts=[http_error(409, "release_review_not_opened")])
+    assert code == 1 and len(posts) == 1
+    assert payload["status"] == "accepted_unverified"
+    assert payload["result"]["checklist_digest"] == NEW_DIGEST
+    assert payload["result"]["invitation_delivery"] == "unverified"
+    assert payload["summary"]["idempotency_key"] == OPERATION_KEY
+    assert_initial_private(payload)
+
+
+@pytest.mark.parametrize("damage", ["no_binding", "other_input", "other_notes", "current_digest", "current_notes"])
+def test_arbitrary_digest_drift_cannot_acknowledge_an_initial_request(notes_file: Path, damage: str) -> None:
+    prepared = initial_review(prepared=True, saved=initial_saved())
+    if damage == "no_binding":
+        prepared["release_request"].pop("initial_version_review")
+    elif damage == "other_input":
+        prepared["release_request"]["initial_version_review"]["inputs_sha256"] = "d" * 64
+    elif damage == "other_notes":
+        prepared["release_request"]["initial_version_review"]["client_test_notes"] = "other notes"
+    elif damage == "current_digest":
+        prepared["review"]["checklist_digest"] = "d" * 64
+    else:
+        prepared["review"]["checklist"]["initial_version"]["client_test_notes"] = "other notes"
+    code, payload, posts = invoke(notes_args(notes_file), reviews=[initial_review()], posts=[prepared])
+    assert code == 1 and len(posts) == 1
+    assert payload["status"] != "ok"
+    assert_initial_private(payload)
+
+
+@pytest.mark.parametrize("damage", ["fake_commit", "missing_authority", "bad_authority", "unknown_state", "missing_initial", "bad_notes", "bad_standing"])
+def test_malformed_initial_review_refuses_before_a_request(damage: str) -> None:
+    body = initial_review()
+    production = body["review"]["checklist"]["production"]
+    if damage == "fake_commit":
+        production["source_commit"] = PRODUCTION_COMMIT
+    elif damage == "missing_authority":
+        production.pop("authority_sha256")
+    elif damage == "bad_authority":
+        production["authority_sha256"] = "unknown"
+    elif damage == "unknown_state":
+        production["state"] = "unknown"
+    elif damage == "missing_initial":
+        body["review"]["checklist"].pop("initial_version")
+    elif damage == "bad_notes":
+        body["review"]["checklist"]["initial_version"]["client_test_notes"] = []
+    else:
+        body["initial_request_uses_standing_acceptance"] = "true"
+    code, payload, posts = invoke(request_args(), reviews=[body])
+    assert code == 1 and not posts
+    assert_initial_private(payload)
+
+
+@pytest.mark.parametrize("value", [{"initial_version_test_notes": ""}, {"initial_version_test_notes": "x" * 16001}, {"initial_version_test_notes": INITIAL_NOTES, "extra": "private"}])
+def test_initial_notes_file_refuses_invalid_shape_before_network(notes_file: Path, value: dict[str, object]) -> None:
+    notes_file.write_text(json.dumps(value))
+    code, payload, posts = invoke(notes_args(notes_file), reviews=[])
+    assert code != 0 and not posts
+    assert_initial_private(payload)
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
