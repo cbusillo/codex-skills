@@ -269,8 +269,23 @@ def unresolved_cell_check(entry: dict, decision: str, result: dict) -> dict:
     )
     repo, number = entry.get("repository"), entry.get("issue")
     if repo is None and number is None:
-        targets = {(row["repository"], row["record"]) for row in result.get("released_claims", [])
-                   if row.get("source_session") == entry["session_id"]}
+        released = [row for row in result.get("released_claims", []) if row.get("source_session") == entry["session_id"]]
+        targets = {(row["repository"], row["record"]) for row in released}
+        recovery = entry.get("recovery", {})
+        saved = recovery.get("unresolved_cells", {}).get("destination")
+        selected = (saved["repository"], saved["issue"]) if saved else None
+        if url := recovery.get("handoff_url"):
+            match = HANDOFF.fullmatch(url)
+            qualified = {(row["repository"], row["record"]) for row in released
+                         if match and row["repository"] == match[1] and row["record"] == int(match[2])
+                         and any((comment_match := HANDOFF.fullmatch(known)) and comment_match.groups() == match.groups()
+                                 for known in row.get("handoff_urls", []))}
+            require_claim_check(len(qualified) == 1, "claims", "handoff must be freshly verified for this source session")
+            target = qualified.pop()
+            require_claim_check(selected in {None, target}, "claims", "handoff differs from the saved claim-check destination")
+            selected = target
+        if selected is not None:
+            targets &= {selected}
         if len(targets) == 1:
             repo, number = targets.pop()
     require_claim_check(
