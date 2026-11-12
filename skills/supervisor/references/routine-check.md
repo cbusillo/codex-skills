@@ -19,6 +19,10 @@ table's instructions. No running-seat inventory is kept or read.
 | tooling | Current tool stops on the queue, then digest | Never redirects a milestone lead or edits a milestone issue status | Tool defects, refusals, Renovate, train, catalog verification, our helpers and services, and its Director questions |
 | cleanup | Stale, ask-link, closed-dependency, finished-session and watcher rows, then issue trial | Never launches product work; fits none: cleanup sorts it | Record reconciliation, finished sessions, watcher recovery and its Director questions |
 
+An explicit source seat presents its registered questions; when no unique seat
+is recorded, including own-project leads and unmatched sources, Cleanup presents
+them without taking ownership of the source work.
+
 Address a seat with `Next actor: agent:supervisor-milestone`,
 `agent:supervisor-tooling` or `agent:supervisor-cleanup`. Plain
 `agent:supervisor` reaches every seat as UNROUTED; route it using the table.
