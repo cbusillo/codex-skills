@@ -27,9 +27,14 @@ class NativeRequestRejected(ValueError):
     pass
 
 
+class NativeReadSizeError(ValueError):
+    pass
+
+
 @asynccontextmanager
-async def connection(home: Path, *, max_msg_size: int = 64 * 1024 * 1024, deadline_at=None):
+async def connection(home: Path, *, max_msg_size: int = 64 * 1024 * 1024, deadline_at=None, source_bytes: int | None = None):
     import aiohttp
+    connecting = time.monotonic()
     try:
         endpoint = closure.daemon_endpoint(home).resolve(strict=True)
         info = endpoint.stat()
@@ -48,20 +53,34 @@ async def connection(home: Path, *, max_msg_size: int = 64 * 1024 * 1024, deadli
                     ws = await client.ws_connect("http://localhost/", max_msg_size=max_msg_size,
                                                  timeout=aiohttp.ClientWSTimeout(ws_close=remaining))
                 except TimeoutError as connect_error:
-                    raise TimeoutError("native connect timed out (TimeoutError); preserve state before retrying") from connect_error
+                    raise TimeoutError(f"native connect timed out (TimeoutError); source_bytes={source_bytes}, "
+                                       f"limit_bytes={max_msg_size}, elapsed_seconds={time.monotonic() - connecting:.3f}; "
+                                       "preserve state before retrying") from connect_error
                 async with ws:
                     async def request(method: str, params: dict) -> Any:
                         nonlocal sequence, remaining
                         sequence += 1
                         started = time.monotonic()
+                        available = min(remaining, read_timeout(deadline_at))
+                        response_characters = None
+                        shape = {key: params[key] for key in ("includeTurns", "limit", "itemsView") if key in params}
+                        def diagnostics() -> str:
+                            return (f"request={sequence}, shape={shape}, source_bytes={source_bytes}, "
+                                    f"last_frame_characters={response_characters}, limit_bytes={max_msg_size}, "
+                                    f"elapsed_seconds={time.monotonic() - started:.3f}, available_seconds={available:.3f}")
                         try:
-                            async with asyncio.timeout(min(remaining, read_timeout(deadline_at))):
+                            async with asyncio.timeout(available):
                                 await ws.send_json({"id": sequence, "method": method, "params": params})
                                 while True:
-                                    try:
-                                        message = await ws.receive_json()
-                                    except aiohttp.WSMessageTypeError as error:
-                                        raise ValueError("native response is unavailable; preserve the uncertain operation and do not replay") from error
+                                    frame = await ws.receive()
+                                    if frame.type == aiohttp.WSMsgType.ERROR and isinstance(frame.data, aiohttp.WebSocketError) \
+                                            and frame.data.code == aiohttp.WSCloseCode.MESSAGE_TOO_BIG:
+                                        raise NativeReadSizeError(f"native {method} response exceeded its size limit ({frame.data}); "
+                                                                  f"{diagnostics()}") from frame.data
+                                    if frame.type != aiohttp.WSMsgType.TEXT:
+                                        raise ValueError("native response is unavailable; preserve the uncertain operation and do not replay")
+                                    response_characters = len(frame.data)
+                                    message = json.loads(frame.data)
                                     if not isinstance(message, dict):
                                         raise ValueError("native response is unavailable")
                                     if message.get("id") == sequence and "method" not in message:
@@ -73,7 +92,7 @@ async def connection(home: Path, *, max_msg_size: int = 64 * 1024 * 1024, deadli
                         except (TimeoutError, asyncio.CancelledError) as error:
                             if isinstance(error, asyncio.CancelledError) and not deadline.expired():
                                 raise
-                            raise TimeoutError(f"native {method} timed out (TimeoutError); preserve state before retrying") from error
+                            raise TimeoutError(f"native {method} timed out (TimeoutError); {diagnostics()}; preserve state before retrying") from error
                         finally:
                             remaining = max(0, remaining - (time.monotonic() - started))
                     initialized = await request("initialize", {"clientInfo": {"name": "codex_skills_claim", "version": "1"},
@@ -84,9 +103,16 @@ async def connection(home: Path, *, max_msg_size: int = 64 * 1024 * 1024, deadli
                         raise ValueError("native daemon home identity disagrees with the source")
                     async with asyncio.timeout(remaining):
                         await ws.send_json({"method": "initialized"})
-                    yield request
+                    try:
+                        yield request
+                    except asyncio.CancelledError as error:
+                        if not deadline.expired():
+                            raise
+                        raise TimeoutError(f"native proof deadline expired between exchanges; source_bytes={source_bytes}, "
+                                           f"limit_bytes={max_msg_size}, elapsed_seconds={time.monotonic() - connecting:.3f}") from error
                 if isinstance(close_error := ws.exception(), TimeoutError):
-                    raise TimeoutError("native connection cleanup timed out; preserve state before retrying") from close_error
+                    raise TimeoutError(f"native connection cleanup timed out; source_bytes={source_bytes}, limit_bytes={max_msg_size}, "
+                                       f"elapsed_seconds={time.monotonic() - connecting:.3f}; preserve state before retrying") from close_error
         except aiohttp.ClientError as transport_error:
             if isinstance(transport_error, (OSError, ValueError)):
                 raise  # Preserve existing known-absence and ordinary refusal handling.
@@ -97,10 +123,17 @@ def read_timeout(deadline_at=None):
     return 5 if deadline_at is None else max(0, deadline_at - time.time())
 
 
+def history_read_options(snapshots: dict, started: float, passes: int) -> dict:
+    source_bytes = sum(row["status"]["read_bytes"] for row in snapshots.values())
+    seconds = closure.history_read_seconds(passes * source_bytes, read_timeout())
+    return {"source_bytes": source_bytes, "max_msg_size": max(64 * 1024 * 1024, 2 * source_bytes + 65536),
+            "deadline_at": time.time() + max(0, started + seconds - time.monotonic())}
+
+
 async def pages(request, method, session, **params):
     cursor, seen = None, set()
     while True:
-        page = await request(method, {"threadId": session, "limit": 20, "cursor": cursor, **params})
+        page = await request(method, {"threadId": session, "limit": 100, "cursor": cursor, **params})
         if not isinstance(page, dict) or not isinstance(page.get("data"), list):
             raise ValueError("native read coverage is unavailable")
         yield page
@@ -148,9 +181,6 @@ async def read_executions(request, session):
                 raise ValueError("native execution identity is unavailable")
             state = item.get("status")
             execution = item["type"] in {"commandExecution", "dynamicToolCall", "mcpToolCall", "collabAgentToolCall"}
-            if execution and (not isinstance(item.get("id"), str) or not item["id"]
-                              or not isinstance(entry.get("turnId"), str) or not entry["turnId"]):
-                raise ValueError("native execution identity is unavailable")
             terminal = {"completed", "failed", "declined"} if item["type"] == "commandExecution" else {"completed", "failed"}
             if item["type"] == "collabAgentToolCall":
                 terminal.add("interrupted")
@@ -566,7 +596,7 @@ def _authenticated_paths(snapshots, homes):
 authenticated_paths = _authenticated_paths
 
 
-def source_snapshot(entry: dict, process: _SourceProcess | None = None, *, require_verdict: bool = True) -> dict:
+def source_snapshot(entry: dict, process: _SourceProcess | None = None, *, require_verdict: bool = True, deadline: float | None = None) -> dict:
     """Only file/process reads; safe to await in a cancellable worker thread."""
     from github_plan_sessions import configured_homes, native_helpers, observation_homes
     if process is None:
@@ -594,7 +624,7 @@ def source_snapshot(entry: dict, process: _SourceProcess | None = None, *, requi
     if source.get("codex_home") is not None:
         homes.add(Path(source["codex_home"]).expanduser().resolve(strict=True))
     read = closure.transcripts if require_verdict else closure.transcript_facts
-    snapshots = read(session, str(primary), include_status=True, additional_homes=homes)
+    snapshots = read(session, str(primary), include_status=True, additional_homes=homes, deadline=deadline)
     if context is not None:
         from github_plan_release import stamp
         for snapshot in snapshots.values():
@@ -680,14 +710,18 @@ async def prove_end(entry: dict, request: Any = None, *, process: _SourceProcess
                     require_verdict: bool = True) -> dict:
     """Return immutable read facts; the owner clears its barrier after awaiting."""
     session = entry["session_id"]
+    started = time.monotonic()
     action = closure.lease_state(session)
     options = {} if require_verdict else {"require_verdict": False}
     before = (await asyncio.to_thread(source_snapshot, entry, **options) if process is None else
               await asyncio.to_thread(source_snapshot, entry, process, **options))
+    reads = history_read_options(before["transcripts"], started, 2 * len(before["homes"]) + 2)
+    deadline = time.monotonic() + max(0, reads["deadline_at"] - time.time())
     async with AsyncExitStack() as connections:
         readers = {}
         for home in before["homes"]:
-            native = request if request is not None and getattr(request, "codex_home", None) == home else await connections.enter_async_context(connection(Path(home)))
+            native = request if request is not None and getattr(request, "codex_home", None) == home else await connections.enter_async_context(
+                connection(Path(home), **reads))
             readers[home] = native
         first = {}
         for home, native in readers.items():
@@ -703,7 +737,7 @@ async def prove_end(entry: dict, request: Any = None, *, process: _SourceProcess
         # The last native persistence read can commit buffered events. Read the
         # canonical source after that fence, never accept an earlier snapshot.
         try:
-            after = await asyncio.to_thread(source_snapshot, entry, before["process"], **options)
+            after = await asyncio.to_thread(source_snapshot, entry, before["process"], deadline=deadline, **options)
         except _SourceEndMismatch as error:
             # Qualification was already complete before the RPC sandwich.
             # New activity during it is a changed source, not another candidate.
@@ -906,6 +940,7 @@ async def cancel_queue(home: Path, session: str, *, ledger: Path | None = None,
     an unmanaged same-ID edit concurrent with the deletion. Never replay uncertainty.
     This top-level CLI coroutine normalizes cancellation after deletion may start.
     """
+    started = time.monotonic()
     import github_plan_termination as termination
     if (ledger is None) == (termination_record is None):
         raise ValueError("supply one original owned ledger or original termination record")
@@ -954,8 +989,9 @@ async def cancel_queue(home: Path, session: str, *, ledger: Path | None = None,
             before = await asyncio.to_thread(source)
             if target not in before["homes"]:
                 raise ValueError("target has no authenticated copy of the original source")
+            reads = history_read_options(before["transcripts"], started, 3 * len(before["homes"]) + 4)
             async with AsyncExitStack() as connections:
-                readers = {value: await connections.enter_async_context(connection(Path(value))) for value in before["homes"]}
+                readers = {value: await connections.enter_async_context(connection(Path(value), **reads)) for value in before["homes"]}
                 async def facts():
                     return {value: await read_thread_facts(request, session) for value, request in readers.items()}
                 first = await facts()

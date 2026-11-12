@@ -2144,6 +2144,13 @@ closed blocks. Open, mismatched or indented fences/verdicts never qualify.
 Recognition supplies a candidate, not authority; use a standalone final
 `Safe to exit: yes` and keep every shutdown gate below.
 
+Large Codex histories use decoded transcript sizes for read allowances and
+bounded native proof deadlines. The loaded persistence fence and complete
+thread-wide item proof remain required; item pages reduce round trips.
+Read failures distinguish response size limits from timeouts and report the
+read shape, source size and elapsed time. Resume the same saved closeout operation
+after a failed read; its completed quit receipt is retained rather than resent.
+
 ### Native shell-input proof
 
 `iterm_tab.py close --session-id <exact-iterm-id> --ledger <private-ledger.json>`
