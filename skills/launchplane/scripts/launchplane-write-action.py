@@ -227,32 +227,6 @@ PRODUCT_CONFIG_PREFLIGHT_RESULT_FIELDS = {
     "runtime_key_safety_findings",
     "key_safety_findings",
 }
-PRODUCT_CONFIG_APPLY_RESULT_FIELDS = {
-    "status",
-    "mode",
-    "product",
-    "context",
-    "instance",
-    "actor",
-    "source_label",
-    "reason",
-    "runtime_environment",
-    "runtime_key_safety",
-    "secrets",
-    "provider_key_adoption",
-    "summary",
-    "next_actions",
-    "public_hosts",
-    "odoo_business_hours",
-    "odoo_first_empty",
-}
-PROVIDER_KEY_ADOPTION_DISPOSITIONS = {
-    "adopted",
-    "template_default",
-    "already_recorded",
-    "refused_credential",
-    "missing",
-}
 PREVIEW_FEEDBACK_REMEDIATION_RESULT_FIELDS = {
     "schema_version",
     "remediation_id",
@@ -316,7 +290,9 @@ GENERIC_WEB_DEPLOY_RECOVERY_APPLY_FIELDS = {
 }
 
 
-def _is_relative_to(path: Path, base: Path) -> bool:
+def _is_relative_to(path: Path, base: Path | None) -> bool:
+    if base is None:
+        return False
     try:
         path.relative_to(base)
         return True
@@ -326,20 +302,25 @@ def _is_relative_to(path: Path, base: Path) -> bool:
         return any(parent.samefile(base) for parent in path.parents)
 
 
-def active_repo_root() -> Path:
+def active_repo_root() -> Path | None:
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
             check=True,
             capture_output=True,
             text=True,
+            env={**os.environ, "LC_ALL": "C"},
         )
         root = result.stdout.strip()
         if root:
             return Path(root).resolve(strict=True)
-    except (OSError, subprocess.CalledProcessError):
-        pass
-    return Path.cwd().resolve(strict=True)
+    except subprocess.CalledProcessError as exc:
+        if "not a git repository" in str(exc.stderr or ""):
+            return None
+        raise ValueError("repo_root_unavailable") from exc
+    except OSError as exc:
+        raise ValueError("repo_root_unavailable") from exc
+    raise ValueError("repo_root_unavailable")
 
 
 def path_with_resolved_parent(path: Path) -> Path:
@@ -719,50 +700,46 @@ def _read_service_response(response: Any, *, private_no_store: bool = False) -> 
     return _ServiceResponse(payload, status, etag=etag if isinstance(etag, str) else "")
 
 
-def request_launchplane(
-    *,
-    service_url: str,
-    path: str,
-    settings: dict[str, str],
-    body: dict[str, object],
-    timeout: float,
-    idempotency_key: str = "",
-    if_match: str = "",
-    no_store: bool = False,
-) -> dict[str, Any]:
-    data = json.dumps(body, separators=(",", ":")).encode()
-    request = urllib.request.Request(build_url(service_url, path), data=data, method="POST")
+def request_launchplane_response(
+    *, service_url: str, path: str, settings: dict[str, str], method: str,
+    body: object = None, query: Mapping[str, str | list[str]] | None = None,
+    timeout: float, idempotency_key: str = "", if_match: str = "", no_store: bool = False,
+) -> Any:
+    url = build_launchplane_url(service_url, path, query=urllib.parse.urlencode(query or {}, doseq=True))
+    data = None if body is None else json.dumps(body, separators=(",", ":")).encode()
+    request = urllib.request.Request(url, data=data, method=method)
     request.add_header("Accept", "application/json")
-    request.add_header("Content-Type", "application/json")
     request.add_header("Authorization", f"Bearer {settings['token']}")
+    if data is not None:
+        request.add_header("Content-Type", "application/json")
     if idempotency_key:
         request.add_header("Idempotency-Key", idempotency_key)
     if if_match:
         request.add_header("If-Match", if_match)
     if no_store:
         request.add_header("Cache-Control", "no-store")
-    with safe_urlopen(request, timeout=timeout) as response:
+    return safe_urlopen(request, timeout=timeout)
+
+
+def request_launchplane(
+    *, service_url: str, path: str, settings: dict[str, str], body: dict[str, object],
+    timeout: float, idempotency_key: str = "", if_match: str = "", no_store: bool = False,
+) -> dict[str, Any]:
+    with request_launchplane_response(
+        service_url=service_url, path=path, settings=settings, method="POST", body=body,
+        timeout=timeout, idempotency_key=idempotency_key, if_match=if_match, no_store=no_store,
+    ) as response:
         return _read_service_response(response, private_no_store=no_store)
 
 
 def request_launchplane_read(
-    *,
-    service_url: str,
-    path: str,
-    settings: dict[str, str],
-    query: Mapping[str, str | list[str]],
-    timeout: float,
-    no_store: bool = False,
+    *, service_url: str, path: str, settings: dict[str, str], query: Mapping[str, str | list[str]],
+    timeout: float, no_store: bool = False,
 ) -> dict[str, Any]:
-    encoded_query = urllib.parse.urlencode(query, doseq=True)
-    request = urllib.request.Request(
-        build_launchplane_url(service_url, path, query=encoded_query), method="GET"
-    )
-    request.add_header("Accept", "application/json")
-    request.add_header("Authorization", f"Bearer {settings['token']}")
-    if no_store:
-        request.add_header("Cache-Control", "no-store")
-    with safe_urlopen(request, timeout=timeout) as response:
+    with request_launchplane_response(
+        service_url=service_url, path=path, settings=settings, method="GET", query=query,
+        timeout=timeout, no_store=no_store,
+    ) as response:
         return _read_service_response(response, private_no_store=no_store)
 
 
@@ -1073,212 +1050,6 @@ def _project_runtime_environment(value: object) -> dict[str, object]:
     return projected
 
 
-def _project_runtime_key_safety(value: object) -> dict[str, object]:
-    source = _require_dict(value)
-    allowed = {
-        "required",
-        "status",
-        "policy_record_id",
-        "policy_sha256",
-        "target",
-        "checked_binding_keys",
-        "findings",
-        "reported",
-    }
-    if any(str(key) not in allowed for key in source):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
-    target = source.get("target")
-    if target is not None and any(
-        str(key) not in {"context", "instance", "environment_class"}
-        for key in _require_dict(target)
-    ):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
-    projected = _project_key_safety_summary(source)
-    required = _optional_bool(source.get("required"))
-    if required is not None:
-        projected["required"] = required
-    return projected
-
-
-SECRET_COPY_FROM_FIELDS = ("context", "instance", "version_id")
-
-
-def _project_secret_copy_from(value: object) -> dict[str, object]:
-    """The source a copied secret came from, as reviewed: lane and version id only."""
-    source = _require_dict(value)
-    if set(source) != set(SECRET_COPY_FROM_FIELDS):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
-    return {key: public_identifier(source[key]) for key in SECRET_COPY_FROM_FIELDS}
-
-
-def _project_secret_results(value: object) -> list[dict[str, object]]:
-    if not isinstance(value, list):
-        raise LaunchplaneSafetyError("invalid_response")
-    projected: list[dict[str, object]] = []
-    allowed = {
-        "action",
-        "scope",
-        "integration",
-        "name",
-        "binding_key",
-        "context",
-        "instance",
-        "secret_id",
-        "secret_class",
-        "sharing_reason",
-        "copy_from",
-    }
-    for item in value:
-        source = _require_dict(item)
-        if any(str(key) not in allowed for key in source):
-            raise LaunchplaneSafetyError("unsafe_response_shape")
-        result: dict[str, object] = {}
-        for key in ("action", "integration", "binding_key"):
-            if key in source:
-                result[key] = public_identifier(source[key])
-        if "secret_class" in source:
-            result["secret_class"] = public_code(source["secret_class"], default="unknown")
-        if source.get("sharing_reason") is not None:
-            result["sharing_reason"] = _project_sharing_reason(source["sharing_reason"])
-        if source.get("copy_from") is not None:
-            result["copy_from"] = _project_secret_copy_from(source["copy_from"])
-        projected.append(result)
-    return projected
-
-
-def _project_provider_key_adoption(value: object) -> list[dict[str, str]]:
-    """Each adopted key's name and disposition; the service never sends a value."""
-    if not isinstance(value, list) or len(value) > 256:
-        raise LaunchplaneSafetyError("invalid_response")
-    projected: list[dict[str, str]] = []
-    for item in value:
-        source = _require_dict(item)
-        if set(source) != {"key", "disposition"}:
-            raise LaunchplaneSafetyError("unsafe_response_shape")
-        key = source["key"]
-        disposition = source["disposition"]
-        if (
-            not isinstance(key, str)
-            or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", key) is None
-            or disposition not in PROVIDER_KEY_ADOPTION_DISPOSITIONS
-        ):
-            raise LaunchplaneSafetyError("invalid_response")
-        projected.append({"key": key, "disposition": str(disposition)})
-    if len({item["key"] for item in projected}) != len(projected):
-        raise LaunchplaneSafetyError("invalid_response")
-    return projected
-
-
-def _project_apply_summary(value: object) -> dict[str, object]:
-    source = _require_dict(value)
-    allowed = {"runtime_changed_key_count", "secret_change_count"}
-    if any(str(key) not in allowed for key in source):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
-    return {
-        key: _nonnegative_int(source[key])
-        for key in ("runtime_changed_key_count", "secret_change_count")
-        if key in source
-    }
-
-
-def _project_next_actions(value: object) -> list[dict[str, object]]:
-    if not isinstance(value, list):
-        raise LaunchplaneSafetyError("invalid_response")
-    projected: list[dict[str, object]] = []
-    allowed = {
-        "kind",
-        "required",
-        "status",
-        "target",
-        "changed_keys",
-        "dry_run",
-        "apply",
-        "instruction",
-    }
-    for item in value:
-        source = _require_dict(item)
-        if any(str(key) not in allowed for key in source):
-            raise LaunchplaneSafetyError("unsafe_response_shape")
-        for nested_key, nested_allowed in (
-            ("target", {"context", "instance", "target_type", "target_name"}),
-            ("dry_run", {"method", "endpoint", "mode"}),
-            ("apply", {"method", "endpoint", "mode"}),
-        ):
-            nested = source.get(nested_key)
-            if nested is not None and any(
-                str(key) not in nested_allowed for key in _require_dict(nested)
-            ):
-                raise LaunchplaneSafetyError("unsafe_response_shape")
-        action: dict[str, object] = {}
-        for key in ("kind", "status"):
-            if key in source:
-                action[key] = public_code(source[key])
-        required = _optional_bool(source.get("required"))
-        if required is not None:
-            action["required"] = required
-        if "changed_keys" in source:
-            action["changed_keys"] = _public_string_list(source["changed_keys"])
-        projected.append(action)
-    return projected
-
-
-def _project_product_config_public_hosts(value: object) -> dict[str, object]:
-    lists = ("before", "after", "added", "updated", "removed", "unchanged", "read_back_hosts")
-    source = _require_exact_fields(value, set(lists) | {
-        "plan_digest", "runtime_port", "https", "service_name", "certificate_type", "verified"
-    })
-    projected: dict[str, object] = {}
-    for key in lists:
-        hosts = source[key]
-        if not isinstance(hosts, list) or len(hosts) > 64:
-            raise LaunchplaneSafetyError("invalid_response")
-        if not all(isinstance(host, str) for host in hosts):
-            raise LaunchplaneSafetyError("invalid_response")
-        normalized = hosts
-        if any(
-            len(host) > 253 or len(host.split(".")) < 2 or host != host.lower()
-            or any(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label) is None
-                   for label in host.split(".")) or host.split(".")[-1].isdigit()
-            for host in normalized
-        ) or len(set(normalized)) != len(normalized):
-            raise LaunchplaneSafetyError("invalid_response")
-        projected[key] = normalized
-    port = source["runtime_port"]
-    if type(port) is not int or not 1 <= port <= 65535 or (
-        source["https"] is not True or source["service_name"] != "web"
-        or source["certificate_type"] != "none" or type(source["verified"]) is not bool
-    ):
-        raise LaunchplaneSafetyError("invalid_response")
-    if source["read_back_hosts"] != (source["after"] if source["verified"] else []):
-        raise LaunchplaneSafetyError("invalid_response")
-    projected.update(
-        plan_digest=_project_sha256(source["plan_digest"]), runtime_port=port,
-        https=True, service_name="web", certificate_type="none", verified=source["verified"],
-    )
-    # The first validated public host owns the prod base URL; no origin URL is copied.
-    projected["resolved_base_url"] = f"https://{source['after'][0]}" if source["after"] else ""
-    return projected
-
-
-CALENDAR_COMPANY_LIMIT = 128
-CALENDAR_RETRY_ADVICE = " Retain the original payload and idempotency key; never retry automatically."
-FIRST_EMPTY_RETRY_ADVICE = (
-    " Preserve the original request, reviewed evidence and idempotency key. "
-    "A missing binding does not prove absence of effects; use supported reconciliation before any retry."
-)
-
-
-def _product_config_retry_advice(request: dict[str, object]) -> str:
-    if request.get("odoo_first_empty"):
-        return FIRST_EMPTY_RETRY_ADVICE
-    return CALENDAR_RETRY_ADVICE if request.get("calendar_operation") else ""
-
-
-CALENDAR_QUALIFICATION_ADVICE = (
-    "Inspect and correct company/calendar/endpoint references and current authority. Read back the stored policy before recovery."
-)
-
-
 def _utc_timestamp(value: object) -> str:
     if not isinstance(value, str):
         raise LaunchplaneSafetyError("invalid_response")
@@ -1309,416 +1080,6 @@ def _project_business_hours_policy(value: object) -> dict[str, object] | None:
         "company_id": _positive_int(source["company_id"]),
         "private_endpoint_key": _calendar_reference(source.get("private_endpoint_key", ""), allow_empty=True),
     }
-
-
-def _project_business_hours(value: object) -> dict[str, object]:
-    required = {
-        "operation",
-        "policy_before",
-        "policy_after",
-        "changed",
-        "applied",
-        "apply_eligible",
-        "effective_when",
-        "company_scope",
-        "permitted_company_ids",
-        "companies",
-        "timezone",
-        "authority_digest",
-        "plan_digest",
-    }
-    source = _require_dict(value)
-    if not required.issubset(source) or source.keys() - required - {"runtime_identity", "company_id", "calendar_id", "window"}:
-        raise LaunchplaneSafetyError("invalid_response")
-    operation = source["operation"]
-    if (
-        not isinstance(operation, str)
-        or operation not in {"inspect", "set", "clear"}
-        or source["effective_when"] != "live"
-        or source["company_scope"] != "permitted_company_ids"
-    ):
-        raise LaunchplaneSafetyError("invalid_response")
-    if any(type(source[field]) is not bool for field in ("changed", "applied", "apply_eligible")):
-        raise LaunchplaneSafetyError("invalid_response")
-    permitted = source["permitted_company_ids"]
-    companies = source["companies"]
-    if (
-        not isinstance(permitted, list)
-        or len(permitted) > CALENDAR_COMPANY_LIMIT
-        or not isinstance(companies, list)
-        or len(companies) > CALENDAR_COMPANY_LIMIT
-    ):
-        raise LaunchplaneSafetyError("invalid_response")
-    permitted = [_positive_int(identifier) for identifier in permitted]
-    if len(set(permitted)) != len(permitted):
-        raise LaunchplaneSafetyError("invalid_response")
-    projected: dict[str, object] = {
-        field: source[field] for field in ("operation", "changed", "applied", "apply_eligible", "effective_when", "company_scope")
-    }
-    projected.update(
-        policy_before=_project_business_hours_policy(source["policy_before"]),
-        policy_after=_project_business_hours_policy(source["policy_after"]),
-        permitted_company_ids=permitted,
-    )
-    company_results: list[dict[str, object]] = []
-    for item in companies:
-        company = _require_exact_fields(item, {"company_id", "calendar_id", "label", "label_omitted"})
-        identifier = _positive_int(company["company_id"])
-        if identifier not in permitted or type(company["label_omitted"]) is not bool:
-            raise LaunchplaneSafetyError("invalid_response")
-        calendar_id = None if company["calendar_id"] is None else _positive_int(company["calendar_id"])
-        label = company["label"]
-        try:
-            safe_label = public_operator_text(label, max_length=160, redact_denied_markers=True)
-        except LaunchplaneSafetyError:
-            safe_label = ""
-        omitted = company["label_omitted"] or not safe_label or safe_label != label
-        company_results.append(
-            {
-                "company_id": identifier,
-                "calendar_id": calendar_id,
-                "label": "" if omitted else safe_label,
-                "label_omitted": bool(omitted),
-            }
-        )
-    if len({company["company_id"] for company in company_results}) != len(company_results):
-        raise LaunchplaneSafetyError("invalid_response")
-    projected["companies"] = company_results
-    for field in ("company_id", "calendar_id"):
-        if field in source:
-            projected[field] = None if source[field] is None else _positive_int(source[field])
-    for field in ("authority_digest", "plan_digest"):
-        projected[field] = "" if source[field] == "" else _project_sha256(source[field])
-    if operation != "clear" and (not permitted or not projected["authority_digest"]):
-        raise LaunchplaneSafetyError("invalid_response")
-    projected["timezone"] = _calendar_reference(source["timezone"], allow_empty=True)
-    identity = source.get("runtime_identity")
-    projected["runtime_identity"] = None
-    if identity is not None:
-        identity = _require_dict(identity)
-        projected["runtime_identity"] = {
-            field: _calendar_reference(identity.get(field))
-            for field in ("context", "instance", "deployment_record_id", "artifact_id", "source_git_ref")
-        }
-    window = source.get("window")
-    projected["window"] = None
-    if window is not None:
-        window = _require_exact_fields(window, {"applies", "blocked_reason", "next_release_at", "timezone"})
-        if type(window["applies"]) is not bool or not isinstance(window["blocked_reason"], str):
-            raise LaunchplaneSafetyError("invalid_response")
-        projected["window"] = {
-            "applies": window["applies"],
-            "blocked_reason": "",
-            "next_release_at": _utc_timestamp(window["next_release_at"]),
-            "timezone": _calendar_reference(window["timezone"], allow_empty=True),
-        }
-    if operation == "inspect":
-        if (
-            source["applied"]
-            or source["apply_eligible"]
-            or source["changed"]
-            or projected["plan_digest"]
-            or projected["policy_before"] != projected["policy_after"]
-        ):
-            raise LaunchplaneSafetyError("invalid_response")
-    elif not source["apply_eligible"] or not projected["plan_digest"] or companies:
-        raise LaunchplaneSafetyError("invalid_response")
-    if operation == "set" and (
-        projected.get("company_id") not in permitted
-        or projected.get("calendar_id") is None
-        or projected["policy_after"] is None
-        or projected["window"] is None
-        or not projected["timezone"]
-    ):
-        raise LaunchplaneSafetyError("invalid_response")
-    if operation == "clear" and (projected["policy_after"] is not None or identity is not None):
-        raise LaunchplaneSafetyError("invalid_response")
-    if source["changed"] != (projected["policy_before"] != projected["policy_after"]):
-        raise LaunchplaneSafetyError("invalid_response")
-    assert_public_safe_shape(projected)
-    return projected
-
-
-def _calendar_request(body: dict[str, object]) -> dict[str, object]:
-    calendar = _require_dict(body["odoo_business_hours"])
-    reviewed = {key: value for key, value in body.items() if key != "reviewed_plan_sha256"}
-    return {
-        "mode": body["mode"],
-        "payload_source": "private_file",
-        "payload_digest": metadata_review_digest(reviewed),
-        **{key: body[key] for key in ("product", "context", "instance")},
-        "calendar_operation": calendar["operation"],
-        **{key: calendar[key] for key in ("company_id", "expected_calendar_id", "private_endpoint_key") if key in calendar},
-    }
-
-
-def _validate_calendar_request(body: dict[str, object]) -> None:
-    allowed = {
-        "schema_version",
-        "mode",
-        "product",
-        "context",
-        "instance",
-        "reason",
-        "source_label",
-        "confirmation",
-        "odoo_business_hours",
-        "secrets",
-        "disable_secret_bindings",
-    }
-    if (
-        body.keys() - allowed
-        or any(field in body and body[field] != [] for field in ("secrets", "disable_secret_bindings"))
-        or body.get("instance") != "prod"
-    ):
-        raise ValueError("standalone_calendar_request_required")
-    for field in ("product", "context"):
-        if body.get(field) != _calendar_reference(body.get(field)):
-            raise ValueError(f"invalid_{field}")
-    for field in ("reason", "source_label"):
-        value = body.get(field)
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError(f"invalid_{field}")
-    calendar = _require_dict(body["odoo_business_hours"])
-    if calendar.keys() - {"operation", "company_id", "expected_calendar_id", "private_endpoint_key"}:
-        raise ValueError("invalid_calendar_request")
-    operation = calendar.get("operation")
-    if not isinstance(operation, str) or operation not in {"inspect", "set", "clear"}:
-        raise ValueError("invalid_calendar_operation")
-    if operation == "clear":
-        if calendar.keys() - {"operation"}:
-            raise ValueError("invalid_calendar_request")
-    else:
-        _calendar_reference(calendar.get("private_endpoint_key", ""), allow_empty=True)
-        if calendar.get("company_id") is not None:
-            _positive_int(calendar["company_id"])
-        if operation == "set":
-            _positive_int(calendar.get("company_id"))
-            _positive_int(calendar.get("expected_calendar_id"))
-        elif "expected_calendar_id" in calendar or body["mode"] == "apply":
-            raise ValueError("inspect_is_dry_run_only")
-
-
-def _calendar_result_matches_request(result: dict[str, Any], request: dict[str, object]) -> None:
-    calendar = _require_dict(result.get("odoo_business_hours"))
-    if (
-        any(result.get(field) != request.get(field) for field in ("product", "context", "instance", "mode"))
-        or calendar["operation"] != request.get("calendar_operation")
-        or calendar["applied"] != (request["mode"] == "apply")
-    ):
-        raise LaunchplaneSafetyError("invalid_response")
-    if calendar["operation"] == "set":
-        expected = {"company_id": request.get("company_id"), "private_endpoint_key": request.get("private_endpoint_key", "")}
-        if (
-            calendar["policy_after"] != expected
-            or calendar.get("company_id") != request.get("company_id")
-            or calendar.get("calendar_id") != request.get("expected_calendar_id")
-        ):
-            raise LaunchplaneSafetyError("invalid_response")
-    if calendar["operation"] == "inspect":
-        company_ids = {company["company_id"] for company in calendar["companies"]}
-        expected_ids = {request["company_id"]} if request.get("company_id") is not None else set(calendar["permitted_company_ids"])
-        if company_ids != expected_ids:
-            raise LaunchplaneSafetyError("invalid_response")
-    identity = calendar.get("runtime_identity")
-    if calendar["operation"] != "clear" and (
-        not isinstance(identity, dict) or identity["context"] != request["context"] or identity["instance"] != "prod"
-    ):
-        raise LaunchplaneSafetyError("invalid_response")
-
-
-def _execute_calendar_apply(args: argparse.Namespace, body: dict[str, object], request: dict[str, object]) -> int:
-    def finish(settings: dict[str, Any], provider: dict[str, Any], payload: dict[str, Any]) -> bool:
-        calendar = _require_dict(payload["result"]["odoo_business_hours"])
-        if calendar["plan_digest"] != body["reviewed_plan_sha256"]:
-            return False
-
-        def read_back() -> dict[str, object]:
-            response = request_launchplane_read(
-                service_url=settings["service_url"],
-                path=_product_read_path("product-profile-read", product=cast(str, body["product"])),
-                settings=settings,
-                query={},
-                timeout=args.timeout,
-            )
-            _require_read_fields("product-profile-read", response)
-            profile = _require_dict(response.get("profile"))
-            if (
-                response.get("status") != "ok"
-                or profile.get("product") != body["product"]
-                or type(profile.get("schema_version")) is not int
-                or profile["schema_version"] < 1
-                or any(
-                    not isinstance(profile.get(field), str) or not profile[field].strip()
-                    for field in ("display_name", "repository", "updated_at", "source")
-                )
-            ):
-                raise LaunchplaneSafetyError("invalid_response")
-            projected = _project_product_profile(profile)
-            return {field: projected[field] for field in ("product", "odoo_business_hours") if field in projected}
-
-        return attach_read_back(
-            payload,
-            read=read_back,
-            matches=lambda profile: profile.get("odoo_business_hours") == calendar["policy_after"],
-            label="stored business-hours policy",
-        )
-
-    return execute_verified_apply(
-        args=args,
-        operation=args.command,
-        request=request,
-        path=helper_command_path(args.command),
-        body=body,
-        preflight=lambda _settings: None,
-        finish=finish,
-        label="stored business-hours policy",
-    )
-
-
-def _project_first_empty_result(value: object) -> dict[str, object]:
-    source = _require_dict(value)
-    defaults = {"intent": "runtime_credentials", "data": "empty", "provenance": "service:original-target-storage", "applied": False}
-    if source.keys() - {*defaults, "plan_sha256"}:
-        raise LaunchplaneSafetyError("unsafe_response_shape")
-    if any(source.get(key, expected) != expected for key, expected in defaults.items() if key != "applied"):
-        raise LaunchplaneSafetyError("invalid_response")
-    if type(source.get("applied", False)) is not bool:
-        raise LaunchplaneSafetyError("invalid_response")
-    return {**defaults, **source, "plan_sha256": _project_sha256(source.get("plan_sha256"))}
-
-
-def _first_empty_result_matches_request(result: dict[str, Any], request: dict[str, object]) -> None:
-    selected = request.get("odoo_first_empty")
-    first_empty = result.get("odoo_first_empty")
-    if not selected and first_empty is None:
-        return
-    if selected != "runtime_credentials" or first_empty is None:
-        raise LaunchplaneSafetyError("invalid_response")
-    qualification = _project_first_empty_result(first_empty)
-    applied = request.get("mode") == "apply"
-    runtime = _require_dict(result.get("runtime_environment"))
-    safety = _require_dict(result.get("runtime_key_safety"))
-    summary = _require_dict(result.get("summary"))
-    secrets = result.get("secrets")
-    purposes = request.get("binding_keys")
-    if (
-        result.get("status") != "ok"
-        or result.get("mode") != request.get("mode")
-        or any(result.get(key) != request.get(key) for key in ("product", "context", "instance"))
-        or request.get("instance") != "prod"
-        or qualification["applied"] != applied
-        or (applied and qualification["plan_sha256"] != request.get("expected_plan_digest"))
-        or runtime.get("action") != "skipped"
-        or runtime.get("changed_keys")
-        or runtime.get("scope") != "instance"
-        or summary.get("runtime_changed_key_count") != 0
-        or result.get("provider_key_adoption")
-        or result.get("public_hosts") is not None
-        or result.get("odoo_business_hours") is not None
-        or safety.get("required") is not True
-        or safety.get("status") != "pass"
-        or safety.get("findings")
-        or safety.get("target") != {"context": request["context"], "instance": "prod", "environment_class": "prod"}
-        or not isinstance(secrets, list)
-        or not isinstance(purposes, list)
-        or len(secrets) != len(purposes)
-        or not isinstance(safety.get("checked_binding_keys"), list)
-        or sorted(safety["checked_binding_keys"]) != sorted(purposes)
-        or summary.get("secret_change_count") != len(purposes)
-    ):
-        raise LaunchplaneSafetyError("invalid_response")
-    keys = []
-    for item in secrets:
-        secret = _require_dict(item)
-        key = secret.get("binding_key")
-        if (
-            key not in purposes
-            or secret.get("name") != key
-            or secret.get("action") != "created"
-            or secret.get("scope") != "context_instance"
-            or secret.get("integration") != "runtime_environment"
-            or secret.get("context") != request["context"]
-            or secret.get("instance") != "prod"
-            or secret.get("secret_class") != "prod_only"
-            or secret.get("sharing_reason") is not None
-            or secret.get("copy_from") is not None
-            or secret.get("value_source") not in (None, "generated")
-            or not isinstance(secret.get("secret_id", ""), str)
-            or bool(secret.get("secret_id")) != applied
-        ):
-            raise LaunchplaneSafetyError("invalid_response")
-        keys.append(key)
-    if len(set(keys)) != len(purposes):
-        raise LaunchplaneSafetyError("invalid_response")
-
-
-def _project_product_config_apply_result(result: object) -> dict[str, object]:
-    source = _require_dict(result)
-    if any(str(key) not in PRODUCT_CONFIG_APPLY_RESULT_FIELDS for key in source):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
-    required = {
-        "status",
-        "mode",
-        "product",
-        "context",
-        "instance",
-        "runtime_environment",
-        "runtime_key_safety",
-        "secrets",
-        "summary",
-        "next_actions",
-    }
-    if not required.issubset(source):
-        raise LaunchplaneSafetyError("invalid_response")
-    projected: dict[str, object] = {}
-    for key in ("status", "mode"):
-        if key in source:
-            projected[key] = public_code(source[key])
-    if "product" in source:
-        projected["product"] = public_identifier(source["product"])
-    context = _optional_public_identifier(source["context"])
-    instance = _optional_public_identifier(source["instance"])
-    runtime_environment = _project_runtime_environment(source["runtime_environment"])
-    if context != runtime_environment.get("context") or instance != runtime_environment.get(
-        "instance"
-    ):
-        raise LaunchplaneSafetyError("invalid_response")
-    if context is not None:
-        projected["context"] = context
-    if instance is not None:
-        projected["instance"] = instance
-    projected["runtime_environment"] = runtime_environment
-    for key, projector in (
-        ("runtime_key_safety", _project_runtime_key_safety),
-        ("secrets", _project_secret_results),
-        ("provider_key_adoption", _project_provider_key_adoption),
-        ("summary", _project_apply_summary),
-        ("next_actions", _project_next_actions),
-        ("public_hosts", _project_product_config_public_hosts),
-        ("odoo_business_hours", _project_business_hours),
-    ):
-        if key in source:
-            value = source[key]
-            if key == "odoo_business_hours":
-                value = {"policy_before": None, "policy_after": None, **_require_dict(value)}
-            if key == "secrets" and source.get("odoo_first_empty") is not None:
-                if not isinstance(value, list) or any(
-                    _require_dict(secret).get("value_source") not in (None, "generated") for secret in value
-                ):
-                    raise LaunchplaneSafetyError("invalid_response")
-                value = [{field: item for field, item in _require_dict(secret).items() if field != "value_source"} for secret in value]
-            projected[key] = projector(value)
-    if source.get("odoo_first_empty") is not None:
-        projected["odoo_first_empty"] = _project_first_empty_result(source["odoo_first_empty"])
-    if "public_hosts" in source and (
-        instance != "prod" or source["public_hosts"]["verified"] != (source["mode"] == "apply")
-    ):
-        raise LaunchplaneSafetyError("invalid_response")
-    # Hostnames are validated as DNS names by their typed projector. Generic
-    # token heuristics would misclassify legitimate names such as desk-app.example.
-    assert_public_safe_shape({key: value for key, value in projected.items() if key != "public_hosts"})
-    return projected
 
 
 def _project_merge_component(value: object, *, include_membership: bool = False) -> dict[str, object]:
@@ -3386,10 +2747,8 @@ def _project_product_activity(value: object) -> dict[str, object]:
     return projected
 
 
-
 PROTECTED_ARTIFACTS_MAX_ENTRIES = 100
 PROTECTED_ARTIFACTS_MAX_WARNINGS = 50
-
 
 
 def _protected_artifact_identifier(value: object) -> str:
@@ -5168,25 +4527,6 @@ def _project_success_output(
         return records, _project_product_config_preflight_result(
             provider_payload.get("result")
         )
-    if operation in {"product-config-dry-run", "product-config-apply"}:
-        records = _project_records(
-            provider_payload.get("records"),
-            {"product_config_record_id", "dry_run_record_id", "apply_record_id"},
-        )
-        result = provider_payload.get("result")
-        if isinstance(result, dict) and "intent" in result:
-            if request and request.get("odoo_first_empty"):
-                raise LaunchplaneSafetyError("invalid_response")
-            return records, _project_product_config_preflight_result(result)
-        _first_empty_result_matches_request(_require_dict(result), request or {})
-        projected_config = _project_product_config_apply_result(result)
-        if "public_hosts" in projected_config and projected_config.get("mode") != (
-            "apply" if operation == "product-config-apply" else "dry-run"
-        ):
-            raise LaunchplaneSafetyError("invalid_response")
-        if "odoo_business_hours" in projected_config or (request or {}).get("calendar_operation"):
-            _calendar_result_matches_request(projected_config, request)
-        return records, projected_config
     if operation == "preview-feedback-remediation":
         result = _require_dict(provider_payload.get("result"))
         if (
@@ -5444,12 +4784,6 @@ def summarize_success(
         "trace_id": public_trace_id(provider_payload.get("trace_id")),
         "recommendation": "Review the redacted result before deciding the next action.",
     }
-    if request.get("odoo_first_empty"):
-        summary["recommendation"] = (
-            "Save this dry-run evidence and review the same canonical request and plan digest. "
-            "The service must match its same-caller dry-run marker before apply."
-            if operation.endswith("-dry-run") else "Check the independent binding metadata readback."
-        ) + FIRST_EMPTY_RETRY_ADVICE
     if operation == "merge-train-controller-run-once":
         summary.update({key: value for key, value in _controller_error_diagnostics(provider_payload).items()
                         if key in {"http_status", "trace_id", "error_code", "pull_request_number"}})
@@ -5705,10 +5039,6 @@ def summarize_http_error(
         and error_code in APPLICATION_STATE_VOLUME_NEXT_STEPS
     ):
         summary["recommendation"] = APPLICATION_STATE_VOLUME_NEXT_STEPS[error_code]
-    if request.get("calendar_operation") and error_code == "calendar_qualification_unavailable":
-        summary["recommendation"] = CALENDAR_QUALIFICATION_ADVICE + CALENDAR_RETRY_ADVICE
-    if request.get("odoo_first_empty"):
-        summary["recommendation"] = "Stop this action and inspect the original refusal and trace." + FIRST_EMPTY_RETRY_ADVICE
     payload["summary"] = summary
     if operation == "privileged-policy-propose" and (exc.code in {404, 409} or 500 <= exc.code < 600):
         payload["status"] = (
@@ -5828,8 +5158,8 @@ def read_payload_file(path: str) -> dict[str, object]:
         absolute_payload_path = path_with_resolved_parent(payload_path)
         resolved_payload_path = payload_path.resolve(strict=True)
         repo_root = active_repo_root()
-        repo_local = _is_relative_to(absolute_payload_path, repo_root) or _is_relative_to(
-            resolved_payload_path, repo_root
+        repo_local = repo_root is not None and (
+            _is_relative_to(absolute_payload_path, repo_root) or _is_relative_to(resolved_payload_path, repo_root)
         )
     except OSError:
         raise ValueError("invalid_payload_path") from None
@@ -6012,7 +5342,6 @@ def _require_apply_eligible_recovery_dry_run(
         if not isinstance(request, dict) or request.get("recovery_request_sha256") != expected_request_sha256:
             raise ValueError("reviewed_dry_run_not_apply_eligible")
     return cast(str, action)
-
 
 
 def _require_apply_eligible_odoo_addon_settings_dry_run(
@@ -6600,7 +5929,6 @@ def summarize_product_activity_read(
             "product-environment-read."
         ),
     )
-
 
 
 def summarize_protected_artifacts_read(
@@ -7952,278 +7280,6 @@ def product_config_preflight_body(args: argparse.Namespace) -> dict[str, object]
         body["destination"] = destination
     if args.idempotency_key:
         body["idempotency_key"] = args.idempotency_key
-    return body
-
-
-def _validate_product_config_secret_copies(body: dict[str, object]) -> None:
-    """A copy entry names its source lane and reviewed version, and carries no value."""
-    secrets = body.get("secrets")
-    if not isinstance(secrets, list):
-        return
-    for secret in secrets:
-        if not isinstance(secret, dict) or secret.get("copy_from") is None:
-            continue
-        if secret.get("value") is not None:
-            raise ValueError("secret_copy_with_value")
-        copy_from = secret["copy_from"]
-        if (
-            not isinstance(copy_from, dict)
-            or set(copy_from) != set(SECRET_COPY_FROM_FIELDS)
-            or not all(
-                isinstance(copy_from[key], str) and copy_from[key].strip()
-                for key in SECRET_COPY_FROM_FIELDS
-            )
-        ):
-            raise ValueError("invalid_secret_copy_from")
-
-
-def _first_empty_payload(body: dict[str, object]) -> dict[str, object]:
-    allowed = {
-        "schema_version",
-        "mode",
-        "product",
-        "context",
-        "instance",
-        "source_label",
-        "reason",
-        "confirmation",
-        "secrets",
-        "reviewed_plan_sha256",
-        "odoo_first_empty",
-        "runtime_env",
-        "runtime_environment",
-        "public_hosts",
-        "odoo_business_hours",
-        "disable_secret_bindings",
-    }
-    if (
-        body.keys() - allowed
-        or body.get("odoo_first_empty") != "runtime_credentials"
-        or body.get("instance") != "prod"
-        or type(body.get("schema_version", 1)) is not int
-        or cast(int, body.get("schema_version", 1)) < 1
-        or any(body.get(key) is not None for key in ("runtime_env", "runtime_environment", "public_hosts", "odoo_business_hours"))
-        or body.get("disable_secret_bindings", []) != []
-    ):
-        raise ValueError("invalid_first_empty_request")
-    normalized = {key: body.get(key, "") for key in ("product", "context", "reason", "source_label", "confirmation")}
-    if any(not isinstance(value, str) for value in normalized.values()):
-        raise ValueError("invalid_first_empty_request")
-    normalized = {key: cast(str, value).strip() for key, value in normalized.items()}
-    if not all(normalized[key] for key in ("product", "context", "reason")):
-        raise ValueError("invalid_first_empty_request")
-    normalized["source_label"] = normalized["source_label"] or "product-config-api"
-    secrets = body.get("secrets")
-    if not isinstance(secrets, list) or not secrets or any(not isinstance(secret, dict) for secret in secrets):
-        raise ValueError("invalid_first_empty_request")
-    entries: list[dict[str, object]] = []
-    for secret in secrets:
-        key = secret.get("binding_key") or secret.get("name")
-        expected = {
-            "scope": "context_instance",
-            "integration": "runtime_environment",
-            "name": key,
-            "binding_key": key,
-            "context": normalized["context"],
-            "instance": "prod",
-            "generate": "odoo_first_empty",
-            "secret_class": "prod_only",
-            "value": None,
-            "sharing_reason": None,
-            "value_source": "generated",
-        }
-        if (
-            not isinstance(key, str)
-            or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", key) is None
-            or secret.keys() - {*expected, "description", "copy_from", "adopt_from_provider"}
-            or any(secret.get(field, value) != value for field, value in expected.items())
-            or secret.get("generate") != expected["generate"]
-            or secret.get("secret_class") != expected["secret_class"]
-            or secret.get("copy_from") is not None
-            or secret.get("adopt_from_provider") is not None
-            or not isinstance(secret.get("description", ""), str)
-        ):
-            raise ValueError("invalid_first_empty_request")
-        entries.append({**expected, "description": secret.get("description", "").strip()})
-    if len({entry["binding_key"] for entry in entries}) != len(entries):
-        raise ValueError("invalid_first_empty_request")
-    reviewed = body.get("reviewed_plan_sha256", "")
-    if not isinstance(reviewed, str) or (body["mode"] == "dry-run" and reviewed):
-        raise ValueError("invalid_first_empty_request")
-    return {
-        **normalized,
-        "schema_version": body.get("schema_version", 1),
-        "mode": body["mode"],
-        "instance": "prod",
-        "odoo_first_empty": "runtime_credentials",
-        "secrets": entries,
-        **({"reviewed_plan_sha256": reviewed} if reviewed else {}),
-    }
-
-
-def _first_empty_request(body: dict[str, object]) -> dict[str, object]:
-    reviewed = {key: value for key, value in body.items() if key != "reviewed_plan_sha256"}
-    return {
-        "mode": body["mode"],
-        "payload_source": "private_file",
-        "payload_digest": metadata_review_digest(reviewed),
-        **{key: body[key] for key in ("product", "context", "instance", "odoo_first_empty")},
-        "binding_keys": [secret["binding_key"] for secret in cast(list[dict[str, object]], body["secrets"])],
-        **({"expected_plan_digest": body["reviewed_plan_sha256"]} if body.get("reviewed_plan_sha256") else {}),
-    }
-
-
-def _execute_first_empty_apply(args: argparse.Namespace, body: dict[str, object], request: dict[str, object]) -> int:
-    def read_back(settings: dict[str, str]) -> dict[str, object]:
-        response = request_launchplane_read(
-            service_url=settings["service_url"],
-            settings=settings,
-            timeout=args.timeout,
-            query={},
-            path=_product_read_path("product-secret-bindings-read", product=cast(str, body["product"])),
-        )
-        _require_read_fields("product-secret-bindings-read", response)
-        if response.get("status") != "ok":
-            raise LaunchplaneSafetyError("invalid_response")
-        observed = _project_product_secret_bindings(response)
-        return {
-            **{key: observed[key] for key in ("product", "bindings", "bindings_truncated", "projection_coverage")},
-            "coverage_status": _require_dict(observed["coverage"])["status"],
-        }
-
-    def matches(observed: dict[str, Any]) -> bool:
-        if (
-            observed["product"] != request["product"]
-            or observed["coverage_status"] != "complete"
-            or observed["projection_coverage"] != "complete"
-            or observed["bindings_truncated"]
-        ):
-            return False
-        for key in cast(list[str], request["binding_keys"]):
-            rows = [
-                row
-                for row in observed["bindings"]
-                if row["binding_key"] == key and row["context"] == request["context"] and row["instance"] == "prod"
-            ]
-            if (
-                len(rows) != 1
-                or any(
-                    rows[0].get(field) != value
-                    for field, value in {
-                        "scope": "context_instance",
-                        "secret_class": "prod_only",
-                        "name": key,
-                        "sharing_reason": None,
-                    }.items()
-                )
-                or not rows[0].get("version_id")
-            ):
-                return False
-        return True
-
-    def finish(settings: dict[str, str], _response: dict[str, Any], payload: dict[str, Any]) -> bool:
-        return attach_read_back(
-            payload, read=lambda: read_back(settings), matches=matches, label="original runtime binding metadata"
-        )
-
-    request["idempotency_key_fingerprint"] = repository_inventory_idempotency_key_fingerprint(args.idempotency_key)
-    return execute_verified_apply(
-        args=args,
-        operation=args.command,
-        request=request,
-        path=helper_command_path(args.command),
-        body=body,
-        preflight=lambda _settings: None,
-        finish=finish,
-        label="original runtime binding metadata",
-    )
-
-
-def product_config_payload_body(args: argparse.Namespace, *, mode: str) -> dict[str, object]:
-    body = read_payload_file(args.payload_file)
-    _validate_product_config_secret_copies(body)
-    body["mode"] = mode
-    secrets = body.get("secrets")
-    first_empty_generation = isinstance(secrets, list) and any(
-        isinstance(secret, dict) and secret.get("generate") == "odoo_first_empty" for secret in secrets
-    )
-    if body.get("odoo_first_empty") is not None or first_empty_generation:
-        body = _first_empty_payload(body)
-    if mode == "apply":
-        _require_idempotency(args)
-        if not args.reviewed_dry_run:
-            raise ValueError("reviewed_dry_run_required")
-        reason = body.get("reason")
-        if not isinstance(reason, str) or not reason.strip():
-            raise ValueError("reason_required")
-    if body.get("odoo_first_empty") is not None:
-        if mode == "apply":
-            digest = _reviewed_apply_digest(args)
-            if body.get("reviewed_plan_sha256", digest) != digest:
-                raise ValueError("reviewed_dry_run_not_apply_eligible")
-            evidence, result = _load_reviewed_evidence(
-                args,
-                operation="product-config-dry-run",
-                expected_digest=digest,
-                digest_result_key="odoo_first_empty",
-            )
-            request = _first_empty_request(body)
-            purposes = cast(list[str], request["binding_keys"])
-            if any(
-                evidence["request"].get(key) != value
-                for key, value in request.items()
-                if key not in {"mode", "expected_plan_digest"}
-            ):
-                raise ValueError("reviewed_dry_run_not_apply_eligible")
-            try:
-                qualification = _project_first_empty_result(result["odoo_first_empty"])
-                selected_secrets = result.get("secrets")
-                if (
-                    qualification["applied"]
-                    or evidence["request"].get("mode") != "dry-run"
-                    or any(result.get(key) != request[key] for key in ("product", "context", "instance"))
-                    or not isinstance(selected_secrets, list)
-                    or len(selected_secrets) != len(purposes)
-                    or any(
-                        not isinstance(secret, dict) or not isinstance(secret.get("binding_key"), str) for secret in selected_secrets
-                    )
-                    or sorted(secret.get("binding_key", "") for secret in selected_secrets) != sorted(purposes)
-                    or any(
-                        secret.get("action") != "created"
-                        or secret.get("secret_class") != "prod_only"
-                        or secret.get("integration") != "runtime_environment"
-                        for secret in selected_secrets
-                    )
-                ):
-                    raise ValueError("reviewed_dry_run_not_apply_eligible")
-            except LaunchplaneSafetyError as exc:
-                raise ValueError("reviewed_dry_run_not_apply_eligible") from exc
-            body["reviewed_plan_sha256"] = digest
-    elif "odoo_business_hours" in body:
-        body.setdefault("source_label", "product-config-api")
-        try:
-            _validate_calendar_request(body)
-        except LaunchplaneSafetyError as exc:
-            raise ValueError("invalid_calendar_request") from exc
-        if mode == "apply":
-            digest = _reviewed_apply_digest(args)
-            evidence, result = _load_reviewed_evidence(
-                args,
-                operation="product-config-dry-run",
-                expected_digest=digest,
-                digest_field="plan_digest",
-                digest_result_key="odoo_business_hours",
-            )
-            request = _calendar_request(body)
-            if evidence["request"].get("payload_digest") != request["payload_digest"]:
-                raise ValueError("reviewed_dry_run_not_apply_eligible")
-            calendar = _project_business_hours(result["odoo_business_hours"])
-            _calendar_result_matches_request({**result, "odoo_business_hours": calendar}, {**request, "mode": "dry-run"})
-            if not calendar["apply_eligible"] or calendar["operation"] == "inspect":
-                raise ValueError("reviewed_dry_run_not_apply_eligible")
-            body["reviewed_plan_sha256"] = digest
-    elif getattr(args, "expected_plan_digest", "") or getattr(args, "dry_run_evidence_file", ""):
-        raise ValueError("calendar_review_flags_require_calendar_request")
     return body
 
 
@@ -11186,7 +10242,6 @@ def execute_verified_apply(
             cast(dict[str, object], payload["summary"])["recommendation"] = (
                 f"Launchplane accepted the apply, but it could not be verified against the "
                 f"reviewed plan. Read back the {label} before any retry."
-                + _product_config_retry_advice(request)
             )
         for part in ("result", "summary", "warnings"):
             assert_public_safe_shape(payload[part])
@@ -11215,11 +10270,6 @@ def execute_verified_apply(
             unknown = _apply_outcome_unknown(operation=operation, request=request, label=label)
             error_payload = _error_payload_from_http(exc)
             _require_dict(unknown["summary"]).update(service_response_diagnostics(error_payload))
-            if (
-                request.get("calendar_operation")
-                and _require_dict(unknown["summary"]).get("error_code") == "calendar_qualification_unavailable"
-            ):
-                _require_dict(unknown["summary"])["recommendation"] = CALENDAR_QUALIFICATION_ADVICE + CALENDAR_RETRY_ADVICE
             if operation.startswith("dokploy-target-"):
                 try:
                     error = summarize_http_error(operation=operation, request=request, exc=exc,
@@ -11284,7 +10334,6 @@ def _apply_response_unverified(
             "The apply response was not safe to project; do not retry before read-back.",
         )
     ]
-    _require_dict(payload["summary"])["recommendation"] += _product_config_retry_advice(request)
     return payload
 
 
@@ -11303,7 +10352,6 @@ def _apply_outcome_unknown(
     payload["warnings"] = [
         warning("apply_outcome_unknown", "Do not retry this apply until read-back resolves it.")
     ]
-    _require_dict(payload["summary"])["recommendation"] += _product_config_retry_advice(request)
     return payload
 
 
@@ -12477,20 +11525,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     preflight.add_argument("--destination-instance")
     preflight.add_argument("--idempotency-key", default="")
 
-    dry_run = subparsers.add_parser(
-        "product-config-dry-run", help="Submit a private product-config dry-run payload."
-    )
-    dry_run.add_argument("--payload-file", required=True, help="Private local JSON payload file.")
-    dry_run.add_argument("--idempotency-key", default="")
-
-    apply = subparsers.add_parser(
-        "product-config-apply", help="Submit a reviewed private product-config apply payload."
-    )
-    apply.add_argument("--payload-file", required=True, help="Private local JSON payload file.")
-    apply.add_argument("--idempotency-key", required=True)
-    apply.add_argument("--reviewed-dry-run", action="store_true")
-    apply.add_argument("--expected-plan-digest", default="")
-    apply.add_argument("--dry-run-evidence-file", default="")
     for command in ("product-expected-config-dry-run", "product-expected-config-apply"):
         expected_config = subparsers.add_parser(command, help="Add or remove declared product configuration requirements; never credential values.")
         expected_config.add_argument("--payload-file", required=True, help="Private local JSON metadata file.")
@@ -13559,19 +12593,6 @@ def main(argv: list[str]) -> int:
                 request=request,
                 body=body,
             )
-        if args.command in {"product-config-dry-run", "product-config-apply"}:
-            mode = "apply" if args.command.endswith("-apply") else "dry-run"
-            body = product_config_payload_body(args, mode=mode)
-            request = {"mode": mode, "payload_source": "private_file"}
-            if body.get("odoo_first_empty") is not None:
-                request = _first_empty_request(body)
-                if mode == "apply":
-                    return _execute_first_empty_apply(args, body, request)
-            elif "odoo_business_hours" in body:
-                request = _calendar_request(body)
-                if mode == "apply":
-                    return _execute_calendar_apply(args, body, request)
-            return execute_post(args=args, operation=args.command, path=helper_command_path(args.command), request=request, body=body)
         if args.command in {
             "merge-train-policy-import-dry-run",
             "merge-train-policy-import-apply",
