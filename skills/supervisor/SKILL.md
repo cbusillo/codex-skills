@@ -361,10 +361,10 @@ terminal text, including non-dim text, proves neither authorship nor approval.
 ## Accounts, Pace, And Launch Tier
 
 Use [account selection](references/helpers.md#choosing-the-account), including
-the optional Context Panel integration. Never apply banked resets;
-ask the Director only when every provider account including use-last is empty.
-Relay expiry notices within 24 hours without treating them as early reset
-authority. Fill productive capacity, soonest expiry first.
+the optional Context Panel integration. When configured, launch where Use next
+says; report the panel's provider and per-account targets and steer real work
+toward them. Keep no pacing or account-order rules of your own. Relay the
+panel's reset prompts; only the Director applies banked resets.
 
 Start new work, including leads, migration and safety slices, on the provider's
 everyday model; try a cheaper tier when work keeps passing. A failed or looping
@@ -421,7 +421,7 @@ unresolved waits, point workers at the decision, and leave escalation labels
 for the weekly direction audit. Client test notes already settling acceptance
 need no new pre-merge question.
 
-Assign leads capacity and accounts, watch their responsiveness and milestone
+Assign leads worker caps and providers, watch their responsiveness and milestone
 handoffs, and launch work outside their milestones. When a lead hands off,
 launch its successor on the same anchor, then close the old lead right away with
 `session_closeout.py --successor-session <new-id>`; closeout moves its worker
@@ -431,9 +431,8 @@ while any remain unknown. Leads idle between worker-finish, scoped foreign-watch
 and native-message events, with a rare backstop check; use their
 [lead brief](references/brief-rules.md#milestone-lead-briefs).
 Run [Routine check](references/routine-check.md) about every 30 minutes and act
-on finished notices immediately. Read optional host `[staffing]` `openai_workers` and
-`load1_limit` when present; missing tuning does not block available work. Refill below
-target in the same turn a worker closes. Add CPU-light work at high load and use
+on finished notices immediately. Read optional host `[staffing]` `load1_limit`
+when present; missing tuning does not block available work. Add CPU-light work at high load and use
 actionable unclaimed active issues/Cloud findings under the overall Order when
 `next` is thin. Require complete paginated staffing coverage; add no staffing
 label or parallel manual inventory. Compare sessions with DIRECTION.md; a
