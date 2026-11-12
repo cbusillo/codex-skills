@@ -4394,6 +4394,25 @@ def test_blocked_read_honors_deadline_and_names_endpoint() -> None:
         assert float(deadline_file.read_text()) < inherited
 
 
+def test_empty_parent_deadline_does_not_abort_a_read() -> None:
+    module = load()
+    with tempfile.TemporaryDirectory() as folder:
+        wrapper = Path(folder) / "gh"
+        wrapper.write_text("#!/bin/sh\nprintf '%s' \"$GITHUB_RETRY_DEADLINE_AT\"\n")
+        wrapper.chmod(0o700)
+        with patch.dict(os.environ, {"GITHUB_RETRY_DEADLINE_AT": ""}):
+            assert math.isfinite(module.gh_json(["api", "installation/repositories"], gh=str(wrapper)))
+
+
+def test_timed_out_installation_selection_keeps_discovery_incomplete() -> None:
+    module = load()
+
+    def blocked(_args: list[str]) -> Any:
+        raise module.AuditError("unavailable") from subprocess.TimeoutExpired("fixture-read", 0.2)
+
+    assert module.repository_listing_gaps(False, fetch=blocked)
+
+
 def main() -> int:
     tests = [value for name, value in globals().items() if name.startswith("test_") and callable(value)]
     for test in tests:

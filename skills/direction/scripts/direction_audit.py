@@ -372,7 +372,7 @@ def read_command(args: list[str], *, gh: str, timeout: float | None = None) -> s
     timeout = min(READ_TIMEOUT_SECONDS if timeout is None else timeout, github_api.remaining_retry_timeout_seconds())
     if timeout <= 0:
         raise AuditError(f"GitHub read {args[1]} exceeded the read deadline before starting")
-    deadline = min(time.time() + timeout, float(os.environ.get("GITHUB_RETRY_DEADLINE_AT", "inf")))
+    deadline = min(time.time() + timeout, float(os.environ.get("GITHUB_RETRY_DEADLINE_AT") or "inf"))
     environment = {**os.environ, "GITHUB_RETRY_DEADLINE_AT": str(deadline)}
     try:
         return subprocess.run([gh, *args], stdin=subprocess.DEVNULL, capture_output=True, env=environment, timeout=timeout + 5)
@@ -2227,8 +2227,9 @@ def repository_listing_gaps(cut: bool, *, fetch: Callable[[list[str]], Any]) -> 
         if isinstance(installation, dict) and installation.get("repository_selection") == "selected":
             # An App installed on chosen repositories cannot see the rest of the account.
             gaps.append({"source": "repositories", "reason": "installation_selected_repositories"})
-    except AuditError:
-        pass  # The Director's own login lists every repository it owns.
+    except AuditError as exc:
+        if isinstance(exc.__cause__, (subprocess.TimeoutExpired, github_next_reads.ReadDeadline)):
+            gaps.append({"source": "repositories", "reason": "installation_selection_unavailable"})
     return gaps
 
 

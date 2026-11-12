@@ -627,8 +627,8 @@ flushed, so a stopped collection or output failure leaves the original windows
 for the next audit. An exit-1 attempt with complete JSON and `weekly_skipped`
 can advance the read repositories' windows; use its findings as well as the
 next receipt. The audit is bounded to 30 minutes and sends nothing. Its GitHub
-JSON subprocess reads, including discovery, have a per-read deadline and name
-the failed endpoint in stderr. Archive sizing keeps the remaining audit budget.
+discovery REST reads have a per-read deadline and name the failed endpoint in
+stderr. Archive sizing keeps the remaining audit budget.
 The runner passes its read
 deadline to the collector with time reserved to flush an incomplete attempt;
 that attempt does not count as a recorded weekly audit.
@@ -642,7 +642,7 @@ coverage warnings and retained as `scan_exit_code: 3` in the daily receipt.
 Other collector failures retain output without posting. Scan and archive have
 15-minute and two-minute bounds, respectively.
 Runner timeout and scan failures retain their reason and stderr location in
-the existing reconciliation event. An incomplete weekly attempt names its
+the existing reconciliation event. A nonzero weekly audit exit names its
 output and stderr in `weekly_not_recorded`; inspect those before retrying.
 
 After filling the private configuration, render, install and start only this job:
