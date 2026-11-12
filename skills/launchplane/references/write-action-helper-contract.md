@@ -2938,6 +2938,26 @@ Item text, settings, artifact ids, blocker prose, saved reason and actor stay pr
 The profile supplies the configured policy; the review's similarly named field
 supplies the effective release action and cannot replace it.
 
+For a qualified first Odoo release, production projects as `state: absent`,
+without inventing a source commit. Use `--plan --result-file PRIVATE_FILE` to
+review the complete pinned sources and non-secret initial setup. An initial
+review missing only Client test notes reports `initial_test_notes_required` and
+its input digest D0. Supply `--initial-version-test-notes-file PRIVATE_JSON`
+alongside the normal request arguments and that D0. The private JSON has exactly
+one field, `initial_version_test_notes`, a nonempty string of at most 16,000
+characters. The file must be outside the repository; its contents and path are
+not echoed. Public output includes only the notes hash.
+
+The existing request route binds those notes to D0 and returns the prepared
+review D1. Acknowledgment requires the saved request's exact D0, notes, reason,
+reference and source, and the current D1. Output reports D1 as `checklist_digest`
+and D0 as `requested_checklist_digest`. Separate Client acceptance still applies;
+for the existing Director-standing policy, preparing and requesting D1 starts
+the gated release. The caller never accepts a review, changes policy or operates
+the target. Changed initial inputs require fresh review. Explicit replay keeps
+the original D0, notes and key to reconcile the same saved request and invitation
+receipt; a readback alone cannot confirm Client invitation delivery.
+
 `release-request --product P --checklist-digest D --reason R --decision-reference
 URL --idempotency-key K` calls the existing `POST /v1/release-review/requests`.
 The reference is the recorded Director request's GitHub comment URL. Reason and

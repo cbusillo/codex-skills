@@ -23,6 +23,7 @@ REVIEW_PAGE = "/ui/owner-review"
 REQUEST_SOURCE = "director_request"
 STANDING_ACCEPTANCE = "director_standing"
 MAX_REASON_LENGTH = 1000
+MAX_INITIAL_NOTES_LENGTH = 16000
 MAX_KEY_LENGTH = 200
 SHA256_RE = re.compile(r"[a-f0-9]{64}")
 COMMIT_RE = re.compile(r"[a-f0-9]{40}")
@@ -37,6 +38,7 @@ REFUSAL_ADVICE = {
     "temporary_hotfix_pending": "A temporary hotfix is awaiting its Client review first.",
     "no_new_release": "Production already runs the testing version.",
     "checklist_incomplete": "The checklist is incomplete. Finish its evidence before requesting a release.",
+    "initial_test_notes_required": "Review the complete initial version in a private --result-file. Supply its Client notes through --initial-version-test-notes-file with the same D0 digest; the service returns the exact prepared D1 for separate acceptance or the existing standing policy.",
     "service_not_opened": "Launchplane recorded no request for this checklist. Read it again with --plan and resolve what the release review reports.",
 }
 
@@ -58,6 +60,7 @@ class Intent(NamedTuple):
     decision_reference: str
     key: str
     request: dict[str, object]
+    initial_notes: str = ""
 
 
 class ReviewState(NamedTuple):
@@ -67,6 +70,8 @@ class ReviewState(NamedTuple):
     blocker_count: int
     refusal: str
     saved: dict[str, Any] | None
+    initial_notes: str | None = None
+    standing_initial_request: bool = False
 
 
 def add_parser(subparsers: Any) -> None:
@@ -81,6 +86,7 @@ def add_parser(subparsers: Any) -> None:
     parser.add_argument("--reason")
     parser.add_argument("--decision-reference", help="Recorded Director decision comment URL.")
     parser.add_argument("--idempotency-key")
+    parser.add_argument("--initial-version-test-notes-file", help="Private JSON file containing initial_version_test_notes for the complete initial version.")
 
 
 def _digest(value: str) -> str:
@@ -89,8 +95,16 @@ def _digest(value: str) -> str:
 
 def _intent(h: Any, args: argparse.Namespace) -> Intent:
     product = h.public_identifier(args.product)
+    notes = ""
+    if args.initial_version_test_notes_file is not None:
+        packet = h.read_payload_file(args.initial_version_test_notes_file)
+        value = packet.get("initial_version_test_notes")
+        if set(packet) != {"initial_version_test_notes"} or not isinstance(value, str) or not value.strip() or len(value.strip()) > MAX_INITIAL_NOTES_LENGTH:
+            raise ValueError("invalid_initial_version_test_notes")
+        notes = value.strip()
+    notes_echo = {"initial_version_test_notes_sha256": _digest(notes)} if notes else {}
     if args.plan:
-        return Intent(product, "", "", "", "", {"product": product, "mode": "plan"})
+        return Intent(product, "", "", "", "", {"product": product, "mode": "plan", **notes_echo}, notes)
     reason = (args.reason or "").strip()
     reference = (args.decision_reference or "").strip()
     key = (args.idempotency_key or "").strip()
@@ -106,9 +120,10 @@ def _intent(h: Any, args: argparse.Namespace) -> Intent:
         "checklist_digest": args.checklist_digest,
         "reason_sha256": _digest(reason),
         "decision_reference_sha256": _digest(reference),
+        **notes_echo,
     }
     h.assert_public_safe_shape(request)
-    return Intent(product, args.checklist_digest, reason, reference, key, request)
+    return Intent(product, args.checklist_digest, reason, reference, key, request, notes)
 
 
 def _require_mapping(h: Any, value: object) -> dict[str, Any]:
@@ -143,6 +158,10 @@ def _read_acceptance(h: Any, settings: dict[str, str], product: str, timeout: fl
 
 def _project_version(h: Any, value: object) -> dict[str, object]:
     version = _require_mapping(h, value)
+    if "state" in version:
+        if set(version) != {"state", "authority_sha256", "recovery_backup_root"} or version["state"] != "absent" or not isinstance(version["authority_sha256"], str) or SHA256_RE.fullmatch(version["authority_sha256"]) is None or not isinstance(version["recovery_backup_root"], str) or not version["recovery_backup_root"].startswith("/"):
+            raise h.LaunchplaneSafetyError("invalid_response")
+        return {"state": "absent"}
     commit = version.get("source_commit")
     if not isinstance(commit, str) or not COMMIT_RE.fullmatch(commit):
         raise h.LaunchplaneSafetyError("invalid_response")
@@ -160,6 +179,11 @@ def _project_saved_request(h: Any, value: object, product: str) -> dict[str, Any
             raise h.LaunchplaneSafetyError("invalid_response")
     if not isinstance(saved.get("decision_reference"), str) or not isinstance(saved.get("reason"), str):
         raise h.LaunchplaneSafetyError("invalid_response")
+    notes = saved.get("initial_version_review")
+    if notes is not None:
+        notes = _require_mapping(h, notes)
+        if set(notes) != {"inputs_sha256", "client_test_notes"} or not isinstance(notes["inputs_sha256"], str) or SHA256_RE.fullmatch(notes["inputs_sha256"]) is None or not isinstance(notes["client_test_notes"], str) or not notes["client_test_notes"].strip() or len(notes["client_test_notes"]) > MAX_INITIAL_NOTES_LENGTH:
+            raise h.LaunchplaneSafetyError("invalid_response")
     return saved
 
 
@@ -175,7 +199,11 @@ def _review_prerequisite(status: dict[str, Any], checklist: dict[str, Any] | Non
         ("no_new_release", status.get("no_new_release") is True or checklist.get("production") == checklist.get("candidate")),
         ("checklist_incomplete", status.get("checklist_complete") is not True),
     )
-    return next((code for code, failed in checks if failed), "")
+    refusal = next((code for code, failed in checks if failed), "")
+    initial = checklist.get("initial_version")
+    if refusal == "checklist_incomplete" and isinstance(initial, dict) and initial.get("client_test_notes") == "" and len(status.get("blockers") or []) == 1:
+        return "initial_test_notes_required"
+    return refusal
 
 
 def _project_versions(h: Any, checklist: dict[str, Any] | None) -> tuple[dict[str, object] | None, dict[str, object] | None]:
@@ -197,6 +225,18 @@ def _project_review(h: Any, response: dict[str, Any], product: str) -> ReviewSta
     if checklist is not None and not SHA256_RE.fullmatch(digest):
         raise h.LaunchplaneSafetyError("invalid_response")
     production, candidate = _project_versions(h, checklist)
+    initial = checklist.get("initial_version") if checklist is not None else None
+    initial_notes = None
+    if initial is not None:
+        initial = _require_mapping(h, initial)
+        initial_notes = initial.get("client_test_notes")
+        if not isinstance(initial_notes, str) or len(initial_notes) > MAX_INITIAL_NOTES_LENGTH or production != {"state": "absent"}:
+            raise h.LaunchplaneSafetyError("invalid_response")
+    if production == {"state": "absent"} and initial_notes is None:
+        raise h.LaunchplaneSafetyError("invalid_response")
+    standing = response.get("initial_request_uses_standing_acceptance", False)
+    if type(standing) is not bool:
+        raise h.LaunchplaneSafetyError("invalid_response")
     return ReviewState(
         digest=digest,
         production=production,
@@ -204,6 +244,8 @@ def _project_review(h: Any, response: dict[str, Any], product: str) -> ReviewSta
         blocker_count=len(blockers),
         refusal=_review_prerequisite(status, checklist, hotfix=response.get("reviewing_temporary_hotfix") is True),
         saved=_project_saved_request(h, response.get("release_request"), product),
+        initial_notes=initial_notes,
+        standing_initial_request=standing,
     )
 
 
@@ -224,19 +266,25 @@ def _read_review(h: Any, settings: dict[str, str], product: str, timeout: float,
 
 def _matching_request(state: ReviewState, intent: Intent) -> dict[str, Any] | None:
     saved = state.saved
-    if saved is None or (saved["checklist_digest"], saved["decision_reference"], saved["reason"], saved["source"]) != (
-        intent.digest,
-        intent.decision_reference,
-        intent.reason,
-        REQUEST_SOURCE,
-    ):
+    if saved is None or (saved["decision_reference"], saved["reason"], saved["source"]) != (intent.decision_reference, intent.reason, REQUEST_SOURCE):
+        return None
+    if not intent.initial_notes:
+        return saved if saved["checklist_digest"] == intent.digest else None
+    notes = saved.get("initial_version_review")
+    if not isinstance(notes, dict) or notes["inputs_sha256"] != intent.digest or notes["client_test_notes"] != intent.initial_notes:
+        return None
+    if state.digest == saved["checklist_digest"] and state.initial_notes != intent.initial_notes:
         return None
     return saved
 
 
 def _recorded_differently(state: ReviewState, intent: Intent) -> bool:
     saved = state.saved
-    return saved is not None and saved["checklist_digest"] == intent.digest and _matching_request(state, intent) is None
+    if saved is None:
+        return False
+    notes = saved.get("initial_version_review")
+    same_input = saved["checklist_digest"] == intent.digest or bool(intent.initial_notes and isinstance(notes, dict) and notes["inputs_sha256"] == intent.digest)
+    return same_input and _matching_request(state, intent) is None
 
 
 def _result(h: Any, settings: dict[str, str], intent: Intent, state: ReviewState, acceptance: str) -> dict[str, object]:
@@ -247,6 +295,7 @@ def _result(h: Any, settings: dict[str, str], intent: Intent, state: ReviewState
         "candidate": state.candidate,
         "blocker_count": state.blocker_count,
         "review_url": h.build_launchplane_url(settings["service_url"], REVIEW_PAGE, query=urllib.parse.urlencode({"product": intent.product})),
+        **({"initial_request_uses_standing_acceptance": True} if state.standing_initial_request else {}),
     }
 
 
@@ -304,10 +353,14 @@ def _finish_recorded(
         result["invitation_delivery"] = "confirmed" if delivery_confirmed else "unverified"
     if readback:
         result["verified_by_readback"] = True
-    if state.digest and state.digest != intent.digest:
+    acknowledged_digest = saved["checklist_digest"] if intent.initial_notes else intent.digest
+    result["checklist_digest"] = acknowledged_digest
+    if intent.initial_notes:
+        result["requested_checklist_digest"] = intent.digest
+    if state.digest and state.digest != acknowledged_digest:
         return _finish(h, intent, "stale", result=result, diagnostics=diagnostics or CHECKLIST_CHANGED_DIAGNOSTICS)
     result.update(_result(h, settings, intent, state, acceptance))
-    result["checklist_digest"] = intent.digest
+    result["checklist_digest"] = acknowledged_digest
     if state.refusal == "release_already_decided":
         result["review_decided"] = True
         return _finish(h, intent, "ok", result=result, refusal=state.refusal, diagnostics=diagnostics)
@@ -340,6 +393,8 @@ def _finish_unmatched(
     h: Any, settings: dict[str, str], intent: Intent, state: ReviewState, acceptance: str,
     *, status: str, refusal: str = "", diagnostics: dict[str, object] | None = None,
 ) -> int:
+    if intent.initial_notes and _recorded_differently(state, intent):
+        return _finish(h, intent, "conflict", result=_result(h, settings, intent, state, acceptance), diagnostics=diagnostics)
     if state.digest and state.digest != intent.digest:
         return _finish(h, intent, "stale", diagnostics=diagnostics or CHECKLIST_CHANGED_DIAGNOSTICS)
     if _recorded_differently(state, intent):
@@ -378,6 +433,7 @@ def _submit(h: Any, settings: dict[str, str], intent: Intent, acceptance: str, t
         "reason": intent.reason,
         "source": REQUEST_SOURCE,
         "decision_reference": intent.decision_reference,
+        **({"initial_version_test_notes": intent.initial_notes} if intent.initial_notes else {}),
     }
     try:
         response = h.request_launchplane(
@@ -475,9 +531,13 @@ def execute(h: Any, args: argparse.Namespace) -> int:
         return _finish_private_failure(h, intent, "unavailable")
     if args.plan:
         return _finish_plan(h, settings, intent, state, acceptance)
-    if (saved := _matching_request(state, intent)) is not None and (acceptance == STANDING_ACCEPTANCE or state.refusal or state.digest != intent.digest):
-        return _finish_recorded(h, settings, intent, state, acceptance, saved)
-    if _recorded_differently(state, intent) or state.digest and state.digest != intent.digest:
+    if state.refusal == "initial_test_notes_required" and not intent.initial_notes:
+        return _finish(h, intent, "refused", result=_result(h, settings, intent, state, acceptance), refusal=state.refusal)
+    saved = _matching_request(state, intent)
+    if saved is not None:
+        if acceptance == STANDING_ACCEPTANCE or state.refusal or state.digest != saved["checklist_digest"]:
+            return _finish_recorded(h, settings, intent, state, acceptance, saved)
+    elif _recorded_differently(state, intent) or state.digest and state.digest != intent.digest:
         return _finish_unmatched(h, settings, intent, state, acceptance, status="conflict")
     return _submit(h, settings, intent, acceptance, args.timeout)
 

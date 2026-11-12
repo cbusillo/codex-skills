@@ -595,7 +595,7 @@ BOUNDED_READ_RESPONSE_FIELDS: dict[str, frozenset[str]] = {
         "product-profile-read": {"status", "trace_id", "profile", "client_is_director"},
         "product-promotion-status-read": {"status", "trace_id", "promotion_status"},
         "release-review-read": {
-            "business_hours", "can_override", "can_start_temporary_hotfix", "display_name",
+            "initial_request_uses_standing_acceptance", "business_hours", "can_override", "can_start_temporary_hotfix", "display_name",
             "live_site_url", "owner_github_login", "product", "release_on_acceptance",
             "release_request", "release_run", "review", "reviewing_temporary_hotfix",
             "trace_id", "viewer_is_owner",
