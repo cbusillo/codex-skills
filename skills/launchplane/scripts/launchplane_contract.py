@@ -81,6 +81,13 @@ LOCAL_EXTENSION_ROUTES = {
         for mode in ("dry-run", "apply", "readback")
     },
     **{
+        command: {"method": "POST", "path": "/v1/products/{product}/releases/{decision_record_id}/backup-continuation", "mode": mode}
+        for command, mode in (("release-continuation-review", "dry-run"), ("release-continuation-apply", "apply"))
+    },
+    "odoo-promotion-operation-read": {
+        "method": "GET", "path": "/v1/odoo-prod-promotions/operations/{operation_id}", "mode": "read",
+    },
+    **{
         "testing-candidate-release-" + mode: {
             "method": "POST",
             "path": "/v1/products/{product}/testing-rebuild/{operation_id}/candidate-release",
@@ -560,6 +567,7 @@ BOUNDED_READ_RESPONSE_FIELDS: dict[str, frozenset[str]] = {
         "governance-projection-read": {"status", "trace_id", "projection"},
         "merge-train-policy-targets-read": {"status", "trace_id", "policy", "targets"},
         "odoo-host-source-grants-read": {"status", "trace_id", "result"},
+        "odoo-promotion-operation-read": {"status", "trace_id", "operation"},
         "path-check": {"status", "trace_id", "check"},
         "preview-history-read": {"status", "trace_id", "preview", "generations"},
         "private-health-endpoint-read": {

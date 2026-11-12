@@ -3236,6 +3236,44 @@ request; `stale_plan` requires refreshing and reviewing the exact dry-run. The f
 operation; public PR history contains the head, reason and Director citation.
 
 
+## Accepted release continuation
+
+`release-continuation-review` and `release-continuation-apply` use the producer's
+`POST /v1/products/{product}/releases/{decision_record_id}/backup-continuation`
+under its existing `client_release_backup.continue` action; review needs only
+`product_environment.read`. Both take `--product`, `--decision-record-id` and
+`--reason`. The producer's
+[release review guide](https://github.com/cbusillo/launchplane/blob/main/docs/release-review.md)
+owns which original operations qualify, including an Odoo promotion refused
+before dispatch.
+
+Review is inert. Save its JSON output outside the checkout; it binds the product,
+decision, reason digest and service URL digest, and carries the `review_digest`,
+the original `operation_id` and whether this identity is `apply_authorized`.
+Apply requires `--expected-digest` and `--review-evidence-file` and refuses
+before sending when the reason, digest, scope or service differ from that
+review. It sends the exact reviewed reason and digest with `apply: true`. Only a
+`queued` or `replayed` reply for the same digest and original operation is
+success. `provider_mutation: false` describes that call only; the normal release
+worker can still deliver to production afterward.
+
+A 409 `backup_continuation_review_changed` is `stale_review`: review again.
+Other 409 codes are `refused` with the producer's bounded code, and 404 is
+`not_found`. Transport loss, HTTP 408 or 5xx, or an unmatched reply after apply
+is `outcome_unknown`: resubmit the identical apply as the same identity. A
+committed continuation answers `replayed` and queues nothing twice.
+
+`odoo-promotion-operation-read --continuation-evidence-file <review or apply
+output> --context <prod context>` reads
+`GET /v1/odoo-prod-promotions/operations/{operation_id}` for the operation that
+evidence names. It accepts only the promotion family's view for that product,
+context and prod instance, and reports `pending`, `running`, `pass`, `fail`,
+`cancelled` or `reconciliation_required` as the service states it, with the
+result's step statuses and record ids. Error messages are not printed. A
+`reconciliation_required` warning means effects are unknown and fenced. Any
+other view or scope is `invalid_response`, and a 404 is `not_found`; neither is
+evidence that the operation is absent or had no effect.
+
 ## Failed testing candidate release
 
 `testing-candidate-release-dry-run`, `-apply` and `-readback` use

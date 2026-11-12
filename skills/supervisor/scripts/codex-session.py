@@ -40,14 +40,24 @@ def recorded_lead_home(session: str, ledger: Path | None = None) -> Path:
     identities = set(github_agent.native_sessions(agent).values())
     if ledger is None or not ledger.is_absolute() or len(identities) != 1:
         raise ValueError("queue needs --codex-home or a managed launch ledger with one current native session")
+    caller = identities.pop()
     snapshot = read_ledger(ledger)
+    require_recorded_lead(snapshot, caller, session)
     lead = terminal_entry(ledger, "session_id", session, snapshot)
     home = lead.get("codex_home")
-    if (not caller_may_reach_lead(ledger, snapshot, identities.pop(), agent, lead) or lead.get("harness") != "codex"
+    if (not caller_may_reach_lead(ledger, snapshot, caller, agent, lead) or lead.get("harness") != "codex"
             or not isinstance(home, str) or not Path(home).is_absolute()):
         raise ValueError("queue without --codex-home requires a recorded Codex lead with a source home:"
                          " this worker's own lead, or a top-level lead for a caller with no ledger row")
     return Path(home)
+
+
+def require_recorded_lead(snapshot: object, caller: str, session: str) -> None:
+    rows = [entry for entry in snapshot if isinstance(entry, dict) and entry.get("session_id") == caller] \
+        if isinstance(snapshot, list) else []
+    recorded = rows[0].get("lead_session_id") if len(rows) == 1 else None
+    if recorded and recorded != session:
+        raise ValueError(f"this worker's recorded lead is now {recorded}, not {session}; queue to {recorded}")
 
 
 def caller_may_reach_lead(ledger: Path, snapshot: object, caller: str, agent: str | None, lead: dict) -> bool:
