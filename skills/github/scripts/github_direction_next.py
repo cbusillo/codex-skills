@@ -16,7 +16,7 @@ from github_plan_status.questions import recorded_decision
 
 import datetime as dt
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
@@ -416,6 +416,10 @@ def whole_plan_wait(parent: dict[str, Any]) -> bool:
     return bool(re.search(r"\b(?:all|any|whole|entire)\s+(?:(?:source|further|engineering)\s+)?(?:work|preparation|implementation|plan)\b", conditions, re.I))
 
 
+def conditional_clause(clause: str) -> bool:
+    return bool(re.search(r"\b(?:if|once|after|when|until|only|unless|not|never)\b", clause, re.I))
+
+
 def parent_holds_child(parent: dict[str, Any], child: dict[str, Any]) -> bool:
     """A stale label is an issue finding; a real parent wait still has scope."""
     if parent.get("exclusion") not in {"waiting", "wait_review_required"}:
@@ -426,7 +430,7 @@ def parent_holds_child(parent: dict[str, Any], child: dict[str, Any]) -> bool:
     # Existing wait evidence can explicitly split out an independently
     # selectable child without clearing the parent's person/event wait.
     for clause in re.split(r"[;\n]|[.]\s+", evidence):
-        if re.search(r"\b(?:if|once|after|when|until|only|unless|not|never)\b", clause, re.I):
+        if conditional_clause(clause):
             continue
         if not re.search(r"\b(?:(?:owns?|is|remains?)\s+independently\s+selectable|can\s+proceed\s+independently)\b", clause, re.I):
             continue
@@ -1001,7 +1005,8 @@ def waiting_records(issue: dict[str, Any], status_text: str, *, reference_reposi
     return records
 
 
-def issue_references(text: str, *, repo: str | None, known_repositories: set[str] | None = None) -> list[dict[str, Any]]:
+def issue_references(text: str, *, repo: str | None, known_repositories: set[str] | None = None,
+                     native_blockers: Iterable[dict[str, Any]] = ()) -> list[dict[str, Any]]:
     """Resolve repository shorthand only within its reporting owner's context."""
     plain = re.sub(r"\[([^]]+)]\(([^)]+)\)", r"\2", text)
     references: dict[tuple[str, int], dict[str, Any]] = {}
@@ -1025,6 +1030,12 @@ def issue_references(text: str, *, repo: str | None, known_repositories: set[str
             if ref.group(6) and target.casefold() not in {name.casefold() for name in (known_repositories or {repo})}:
                 continue
         number = int(ref.group(3) or ref.group(5) or ref.group(7) or ref.group(8))
+        if ref.group(8):
+            native = {item["repo"] for blocker in native_blockers
+                      for item in issue_references(blocker.get("html_url") or blocker.get("url") or "", repo=None)
+                      if item["number"] == number}
+            if len(native) == 1:
+                target = native.pop()
         previous_end = ref.end()
         key = (target.casefold(), number)
         # A bare #N only assumes this repository; any named form of it makes it explicit.
