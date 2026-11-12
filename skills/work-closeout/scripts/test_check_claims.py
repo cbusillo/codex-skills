@@ -3203,12 +3203,23 @@ print(root)"""
             'text(ALL_TOOLS.filter(x=>/launchplane|dokploy/i.test(x.name)));',
             'text(ALL_TOOLS.filter(x=>x.name.includes("launchplane")));',
             'text(await tools.exec_command({cmd:"git status --short"}));',
+            'const ids=[41,42];const settled=await Promise.allSettled(ids.map(session_id=>'
+            'tools.write_stdin({session_id,chars:""})));settled.forEach(r=>text({running:'
+            'r.status==="fulfilled"?Boolean(r.value.session_id):undefined}));',
         ):
             with self.subTest(source=source):
                 report = helper.check([self.stored_claim_entry(source)])
                 self.assertTrue(report["claims_clear"], report)
                 self.assertTrue(report["coverage"]["complete"], report)
                 self.assertEqual(report["unresolved_invocations"], [], report)
+
+    def test_boolean_conversion_cannot_hide_an_opaque_call(self) -> None:
+        for source in (
+            'const Boolean=load("converter");text(Boolean(1));',
+            'text(Boolean(load("converter")(1)));',
+        ):
+            with self.subTest(source=source):
+                self.assert_coverage_gap(helper.check([self.stored_claim_entry(source)]))
 
     def test_hidden_stored_claim_setter_keeps_its_own_uncertainty(self) -> None:
         root = self.stored_claim_entry(

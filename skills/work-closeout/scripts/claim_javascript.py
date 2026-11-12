@@ -14,7 +14,7 @@ LITERAL_SHELL_VALUE = re.compile(r"[A-Za-z0-9_./@:+,%-][A-Za-z0-9_./@:+,%#-]*")
 LITERAL_EXPANSION_BYTES = 1 << 20
 LITERAL_LOOP_VALUES = 64
 
-NATIVE_NAMES = {"tools", "text", "store", "load", "exit", "Promise", "JSON", "Object", "String", "ALL_TOOLS", "undefined"}
+NATIVE_NAMES = {"tools", "text", "store", "load", "exit", "Promise", "JSON", "Object", "String", "Boolean", "ALL_TOOLS", "undefined"}
 SHELL_TOOLS = {"exec_command", "shell_command", "shell", "write_stdin"}
 GITHUB_READ_TOOL = re.compile(r"mcp__codex_apps__github_(?:fetch|get|list|search|compare|download)(?:_[a-z0-9_]+)?")
 READ_TOOLS = {"clock__curr_time", "web__run", "view_image", "codex_tui__list_threads", "codex_tui__read_thread"}
@@ -281,7 +281,7 @@ class JavascriptData:
         if callee.type == "identifier" and (
             source(callee) in {"text", "image", "store", "load", "exit"} and source(callee) not in environment
             or environment.get(source(callee), (None,))[0] == "function"
-            or source(callee) == "String"
+            or source(callee) in {"String", "Boolean"}
             and len(args) <= 1
         ):
             pass
@@ -860,7 +860,7 @@ def closed_stdin(arguments: Node) -> bool:
 
 
 def native_capabilities(root: Node) -> None:
-    globals_allowed = NATIVE_NAMES | {"Date", "RegExp", "Error", "Math", "Number", "Boolean", "Array", "image", "notify"}
+    globals_allowed = NATIVE_NAMES | {"Date", "RegExp", "Error", "Math", "Number", "Array", "image", "notify"}
     static_methods = {
         "Object": {"keys", "values", "entries"},
         "JSON": {"parse", "stringify"},

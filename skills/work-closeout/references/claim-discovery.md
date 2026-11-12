@@ -120,6 +120,8 @@ JSON parsing, filtering, mapping and output-formatting shapes. Inline callbacks
 and local arrow functions are checked under their own data bindings. Calls are
 limited to supported non-constructor builtins, checked local functions and inline
 callbacks; callback references stay conditional except `forEach(text)`.
+String and Boolean conversions accept at most one checked argument; rebinding
+either name, spread arguments and constructor calls remain conditional.
 Local reassignment preserves the data kind; number, array and function kinds
 cannot be reassigned. Only numeric `let` counters may be incremented. Explicit property writes,
 mutating method names and loop assignment targets stay conditional. Literal
