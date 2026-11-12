@@ -72,7 +72,7 @@ def current_workflow_runs(runs: list[dict[str, Any]], head_sha: str) -> dict[str
             uncertain_attempt = candidate["run_attempt"] > 1 and (
                 not candidate.get("run_started_at") or not winner.get("run_started_at")
             )
-            if candidate["id"] != winner["id"] and (candidate.get("status") != "completed" or uncertain_attempt):
+            if candidate["id"] != winner["id"] and uncertain_attempt:
                 current.append(candidate)
             else:
                 superseded.append(candidate)
