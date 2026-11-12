@@ -96,8 +96,9 @@ outside-mention check. A refusal names the
 participant; it is not permission to omit the
 flag. The Director's configured bots and uniquely owned automation in the
 people index count as own participants, including a configured delivery App.
-Unknown and third-party
-bots are outside participants. Link screenshot evidence in the
+Record a delivery App under the Director's `contacts.github.bot_usernames` in
+the private people index, rather than passing it as the Client's identity.
+Unknown and third-party bots are outside participants. Link screenshot evidence in the
 reply; answer inline review comments on the PR timeline through this flow.
 For a post in the Director's voice, ask approval of the exact text as its own
 question, never bundled with push or code approval. Other authorized flows,
