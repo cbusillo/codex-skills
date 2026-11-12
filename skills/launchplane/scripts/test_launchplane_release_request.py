@@ -3,12 +3,14 @@
 # dependencies = ["pytest==9.2.0"]
 # ///
 import copy
+import importlib
 import io
 import json
 import urllib.error
 import urllib.parse
 import urllib.request
 from contextlib import redirect_stdout
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
@@ -31,8 +33,8 @@ SERVICE_URL = "https://plane.example.invalid"
 REVIEW_URL = f"{SERVICE_URL}{REVIEW_PAGE}?product=site"
 
 
-def patch_attr(name: str, *args: Any, **kwargs: Any) -> Any:
-    return patch.object(h, name, *args, **kwargs)
+def patch_attr(name: str, *args: Any, target: Any = h, **kwargs: Any) -> Any:
+    return patch.object(target, name, *args, **kwargs)
 
 
 def plan_args() -> list[str]:
@@ -100,10 +102,13 @@ def invoke(
     reviews: list[Any],
     posts: list[Any] | None = None,
     acceptance: str = "promote_with_rollback_drill",
+    read_calls: list[Any] | None = None,
 ) -> tuple[int, dict[str, Any], list[Any]]:
     pending_reviews = iter(reviews)
 
     def read(**kwargs: Any) -> object:
+        if read_calls is not None:
+            read_calls.append(kwargs)
         if "/product-profiles/" in kwargs["path"]:
             return profile(acceptance)
         reply = next(pending_reviews)
@@ -138,6 +143,116 @@ def test_plan_reports_the_exact_checklist_and_sends_nothing() -> None:
     assert result["candidate"] == {"source_commit": CANDIDATE_COMMIT, "carries_runtime_settings": True}
     assert result["review_url"] == REVIEW_URL
     assert_private_values_absent(payload)
+
+
+@pytest.fixture
+def private_result(tmp_path: Path) -> Path:
+    directory = tmp_path / "task-evidence"
+    directory.mkdir()
+    return directory / "review.json"
+
+
+@pytest.mark.parametrize("complete", [True, False])
+def test_private_plan_preserves_full_review_before_public_projection(private_result: Path, complete: bool) -> None:
+    body = review(checklist_complete=complete)
+    body["review"]["checklist"]["candidate"].update(shared_addons_digest="d" * 64, website_settings_digest="e" * 64)
+    code, payload, posts = invoke([*plan_args(), "--result-file", str(private_result)], reviews=[body])
+    assert code == (0 if complete else 1) and posts == []
+    assert json.loads(private_result.read_text()) == body
+    assert private_result.stat().st_mode & 0o777 == 0o600
+    assert_private_values_absent(payload)
+    baseline_code, baseline, _ = invoke(plan_args(), reviews=[body])
+    assert baseline_code == code
+    for key in ("status", "result", "summary", "warnings", "request"):
+        assert payload[key] == baseline[key]
+    if not complete:
+        assert payload["summary"]["refusal_reason"] == "checklist_incomplete"
+
+
+@pytest.mark.parametrize("kind", ["existing", "symlink", "parent_symlink", "repository", "outside_evidence", "missing_parent"])
+def test_private_plan_rejects_unsafe_destination_before_transport(private_result: Path, kind: str) -> None:
+    destination = private_result
+    if kind == "existing":
+        destination.write_text("preserve")
+    elif kind == "symlink":
+        target = destination.with_name("original")
+        target.write_text("preserve")
+        destination.symlink_to(target)
+    elif kind == "parent_symlink":
+        link = destination.parent.with_name("redirect")
+        link.symlink_to(destination.parent, target_is_directory=True)
+        destination = link / destination.name
+    elif kind == "outside_evidence":
+        destination = destination.parent.parent / destination.name
+    elif kind == "missing_parent":
+        destination = destination.parent / "missing" / destination.name
+    reads: list[Any] = []
+    caller = importlib.import_module("launchplane-call")
+    repository = private_result.parent.parent if kind == "repository" else Path(__file__).resolve().parent
+    with patch.object(caller.operator, "active_repo_root", return_value=repository):
+        code, payload, posts = invoke([*plan_args(), "--result-file", str(destination)], reviews=[], read_calls=reads)
+    assert reads == []
+    assert code != 0 and posts == []
+    assert payload["status"] == "invalid"
+    assert payload["summary"]["error_code"] == "private_result_unavailable"
+    if kind in {"existing", "symlink"}:
+        assert destination.read_text() == "preserve"
+
+
+def test_result_file_cannot_be_used_to_send_a_request(private_result: Path) -> None:
+    reads: list[Any] = []
+    code, _, posts = invoke([*request_args(), "--result-file", str(private_result)], reviews=[review()], read_calls=reads)
+    assert reads == []
+    assert code != 0 and posts == [] and not private_result.exists()
+
+
+def test_private_plan_reserves_destination_before_authenticated_gets(private_result: Path) -> None:
+    def transport(request: urllib.request.Request, **_kwargs: Any) -> io.BytesIO:
+        assert private_result.exists() and private_result.stat().st_mode & 0o777 == 0o600
+        assert request.get_method() == "GET" and request.data is None
+        path = urllib.parse.urlsplit(request.full_url).path
+        body = profile() if "/product-profiles/" in path else review()
+        return io.BytesIO(json.dumps(body).encode())
+
+    settings = {"service_url": SERVICE_URL, "token": "fictional-token"}
+    with patch_attr("prepare_operator_settings", return_value=settings), patch_attr("safe_urlopen", side_effect=transport):
+        with redirect_stdout(io.StringIO()):
+            assert h.main([*plan_args(), "--result-file", str(private_result)]) == 0
+    assert json.loads(private_result.read_text()) == review()
+
+
+@pytest.mark.parametrize("error", [http_error(403, "authorization_denied"), TimeoutError("PRIVATE_SERVICE_PROSE")])
+def test_private_plan_read_failure_is_not_an_unknown_write(private_result: Path, error: Exception) -> None:
+    code, payload, posts = invoke([*plan_args(), "--result-file", str(private_result)], reviews=[error])
+    assert code == 1 and posts == []
+    assert payload["status"] in {"denied", "unavailable"}
+    assert not private_result.exists() or not private_result.read_bytes()
+    assert_private_values_absent(payload)
+
+
+def test_private_save_failure_never_claims_a_success_or_unknown_write(private_result: Path) -> None:
+    caller = importlib.import_module("launchplane-call")
+    with patch_attr("save_evidence", target=caller, return_value=False):
+        code, payload, posts = invoke([*plan_args(), "--result-file", str(private_result)], reviews=[review()])
+    assert code == 1 and posts == [] and payload["status"] == "unavailable"
+    assert payload["summary"]["error_code"] == "private_result_unavailable"
+    assert_private_values_absent(payload)
+
+
+@pytest.mark.parametrize("unknown_field", [False, True])
+def test_private_save_uses_existing_field_contract_before_public_projection(private_result: Path, unknown_field: bool) -> None:
+    body = review()
+    if unknown_field:
+        body["unexpected_producer_field"] = "private"
+    else:
+        body["review"]["checklist"]["candidate"]["source_commit"] = "invalid"
+    code, payload, posts = invoke([*plan_args(), "--result-file", str(private_result)], reviews=[body])
+    assert code == 1 and posts == []
+    assert payload["status"] == "invalid"
+    if unknown_field:
+        assert not private_result.exists() or not private_result.read_bytes()
+    else:
+        assert json.loads(private_result.read_text()) == body
 
 
 @pytest.mark.parametrize(
