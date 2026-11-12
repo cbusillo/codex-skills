@@ -12013,6 +12013,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         binding = subparsers.add_parser(command, help="Read or reconcile service-owned route authority.")
         for field in ("product", "context", "instance"):
             binding.add_argument(f"--{field}", required=True)
+        if command in {"route-authority-discover", "route-binding-read"}:
+            binding.add_argument("--result-file", help="New private exact-scope input packet outside the repository.")
         if command in {"route-binding-dry-run", "route-binding-apply"}:
             binding.add_argument("--reason", required=True)
             if command == "route-binding-dry-run":
@@ -12239,6 +12241,9 @@ def _ingress_plan_input(
 ) -> dict[str, Any]:
     body = read_payload_file(payload_file or args.payload_file)
     if verify_route_binding:
+        if body.get("kind") == "route-authority-inputs":
+            from launchplane_route_authority import ingress_from_packet
+            body = ingress_from_packet(body)
         body["verify_route_binding"] = True
     if body.keys() - {"product", "context", "instance", "route", "expected_host_id", "reason", "verify_route_binding"}:
         raise ValueError("unsupported_ingress_plan_field")
