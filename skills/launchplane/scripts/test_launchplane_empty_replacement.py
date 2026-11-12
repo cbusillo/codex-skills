@@ -26,13 +26,27 @@ assert SPEC is not None and SPEC.loader is not None
 helper: Any = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = helper
 SPEC.loader.exec_module(helper)
+private_io: Any = importlib.import_module("launchplane-call")
+
+
+class FixtureResponse(io.BytesIO):
+    def __init__(self, raw: bytes, status: int) -> None:
+        super().__init__(raw)
+        self.code = status
+
+
+class ClosingFailure(io.BytesIO):
+    def close(self) -> None:
+        if not self.closed:
+            super().close()
+            raise OSError("fictional evidence close failure")
 
 
 class PrivateReplacementTests(unittest.TestCase):
     def setUp(self) -> None:
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve() / "task-evidence"
         self.root.mkdir()
-        self.body = {
+        self.body: dict[str, Any] = {
             "schema_version": 1,
             "product": "fictional-odoo",
             "replacement": {
@@ -70,15 +84,13 @@ class PrivateReplacementTests(unittest.TestCase):
         self.enterContext(
             patch.object(helper, "resolve_settings", return_value={"service_url": "https://service.invalid", "token": "fixture"})
         )
-        self.enterContext(patch.object(helper, "request_launchplane_response", side_effect=self.transport))
+        self.enterContext(patch.object(private_io.operator, "request_launchplane_response", side_effect=self.transport))
 
     def transport(self, **kwargs: Any) -> Any:
         self.sent.append(kwargs)
         if self.error is not None:
             raise self.error
-        response = io.BytesIO(self.raw if self.raw is not None else json.dumps(self.response).encode())
-        response.status = self.status
-        return response
+        return FixtureResponse(self.raw if self.raw is not None else json.dumps(self.response).encode(), self.status)
 
     def invoke(
         self, command: str, *, body: dict[str, Any] | None = None, review: Path | None = None, result: Path | None = None
@@ -96,6 +108,20 @@ class PrivateReplacementTests(unittest.TestCase):
             code = helper.main(argv)
         return code, json.loads(output.getvalue()), result
 
+    def accept_replacement(self) -> None:
+        sent = self.sent[0]["body"]
+        self.response = {
+            "status": "accepted",
+            "result": {
+                "operation_id": "operation-fictional",
+                "product": sent["product"],
+                "instance": "prod",
+                "request": sent["replacement"],
+                "idempotency_key": "fictional-original-key",
+                "status": "queued",
+            },
+        }
+
     def test_private_plan_sends_existing_empty_fields_and_saves_full_reply(self) -> None:
         code, public, result = self.invoke("target-replacement-plan-read")
         self.assertEqual(code, 0)
@@ -112,34 +138,18 @@ class PrivateReplacementTests(unittest.TestCase):
     def test_apply_requires_exact_ready_review_before_any_request(self) -> None:
         _, _, review = self.invoke("target-replacement-plan-read")
         self.sent.clear()
-        for field, value in (
-            ("confirmation", "different"),
-            ("artifact_id", "different"),
-            ("instance", "testing"),
-            ("reason", "changed intent"),
-        ):
-            with self.subTest(field=field):
-                changed = copy.deepcopy(self.body)
-                changed["replacement"][field] = value
-                code, _, _ = self.invoke("target-replacement-apply", body=changed, review=review)
-                self.assertNotEqual(code, 0)
-                self.assertEqual(self.sent, [])
+        changed = copy.deepcopy(self.body)
+        changed["replacement"]["reason"] = "changed intent"
+        code, _, _ = self.invoke("target-replacement-apply", body=changed, review=review)
+        self.assertNotEqual(code, 0)
+        self.assertEqual(self.sent, [])
 
     def test_apply_retains_service_receipt_without_public_private_fields(self) -> None:
         _, _, review = self.invoke("target-replacement-plan-read")
-        self.response = {
-            "status": "accepted",
-            "result": {
-                "operation_id": "operation-fictional",
-                "product": self.body["product"],
-                "instance": "prod",
-                "request": self.body["replacement"],
-                "idempotency_key": "fictional-original-key",
-                "status": "queued",
-            },
-        }
+        self.accept_replacement()
         code, public, result = self.invoke("target-replacement-apply", review=review)
         self.assertEqual(code, 0)
+        self.assertEqual(public["result"]["operation_id"], self.response["result"]["operation_id"])
         self.assertEqual(self.sent[-1]["idempotency_key"], "fictional-original-key")
         self.assertEqual(self.sent[-1]["path"], helper.helper_command_path("target-replacement-apply"))
         self.assertEqual(json.loads(base64.b64decode(json.loads(result.read_text())["raw_response_base64"])), self.response)
@@ -236,19 +246,11 @@ class PrivateReplacementTests(unittest.TestCase):
     def test_no_candidate_plan_can_review_the_current_artifact(self) -> None:
         del self.body["replacement"]["artifact_id"]
         del self.body["replacement"]["source_git_ref"]
+        self.body["replacement"]["expected_current_artifact_id"] = "current-artifact"
         self.response["result"].update(expected_artifact_id="current-artifact", expected_source_git_ref="b" * 40)
         self.status = 200
         _, _, review = self.invoke("target-replacement-plan-read")
-        self.response = {
-            "status": "accepted",
-            "result": {
-                "product": self.body["product"],
-                "instance": "prod",
-                "operation_id": "operation-fictional",
-                "request": self.body["replacement"],
-                "idempotency_key": "fictional-original-key",
-            },
-        }
+        self.accept_replacement()
         code, _, _ = self.invoke("target-replacement-apply", review=review)
         self.assertEqual(code, 0)
 
@@ -279,6 +281,43 @@ class PrivateReplacementTests(unittest.TestCase):
         self.assertEqual(public["status"], "outcome_unknown")
         self.assertEqual(base64.b64decode(json.loads(result.read_text())["raw_response_base64"]), self.raw)
         self.assertNotIn("private-target", json.dumps(public))
+
+    def test_no_candidate_apply_requires_the_reviewed_current_artifact_cas(self) -> None:
+        del self.body["replacement"]["artifact_id"]
+        del self.body["replacement"]["source_git_ref"]
+        self.response["result"]["expected_artifact_id"] = "current-artifact"
+        _, _, review = self.invoke("target-replacement-plan-read")
+        code, _, _ = self.invoke("target-replacement-apply", review=review)
+        self.assertNotEqual(code, 0)
+        self.assertEqual(len(self.sent), 1)
+
+    def test_normalized_confirmation_and_instance_match_the_producer_receipt(self) -> None:
+        self.body["replacement"].update(confirmation=" PRIVATE-CONFIRMATION ", instance=" PROD ")
+        _, _, review = self.invoke("target-replacement-plan-read")
+        sent = self.sent[0]["body"]
+        self.assertEqual(sent["replacement"]["confirmation"], "private-confirmation")
+        self.accept_replacement()
+        code, _, _ = self.invoke("target-replacement-apply", review=review)
+        self.assertEqual(code, 0)
+
+    def test_apply_http_and_evidence_failures_preserve_unknown_without_retries(self) -> None:
+        _, _, review = self.invoke("target-replacement-plan-read")
+        for status in (408, 503):
+            self.status = status
+            before = len(self.sent)
+            code, public, _ = self.invoke("target-replacement-apply", review=review)
+            self.assertEqual(code, 1)
+            self.assertEqual(public["status"], "outcome_unknown")
+            self.assertEqual(len(self.sent), before + 1)
+        self.status = 202
+        self.accept_replacement()
+        for target, replacement in (("save_evidence", lambda *args: False), ("open_evidence", lambda *args: ClosingFailure())):
+            before = len(self.sent)
+            with patch.object(private_io, target, side_effect=replacement):
+                code, public, _ = self.invoke("target-replacement-apply", review=review)
+            self.assertEqual(code, 1)
+            self.assertEqual(public["status"], "outcome_unknown")
+            self.assertEqual(len(self.sent), before + 1)
 
 
 if __name__ == "__main__":

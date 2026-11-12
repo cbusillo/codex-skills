@@ -6183,13 +6183,17 @@ def _target_replacement_plan_candidate(args: argparse.Namespace) -> dict[str, st
     return candidate
 
 
-PRIVATE_REPLACEMENT_COMMANDS = frozenset({
-    "target-replacement-apply", "prelaunch-rebuild-policy-dry-run", "prelaunch-rebuild-policy-apply",
-})
+PRIVATE_REPLACEMENT_COMMANDS = frozenset(
+    {
+        "target-replacement-apply",
+        "prelaunch-rebuild-policy-dry-run",
+        "prelaunch-rebuild-policy-apply",
+    }
+)
 
 
 def _private_replacement_body(args: argparse.Namespace) -> dict[str, Any]:
-    body = read_payload_file(args.payload_file)
+    body: dict[str, Any] = read_payload_file(args.payload_file)
     policy = args.command.startswith("prelaunch-rebuild-policy-")
     if policy:
         fields = {
@@ -6211,6 +6215,9 @@ def _private_replacement_body(args: argparse.Namespace) -> dict[str, Any]:
         required = {"product", "replacement"}
     if not required <= body.keys() or body.keys() - fields:
         raise ValueError("invalid_private_replacement_request")
+    if not isinstance(body["product"], str):
+        raise ValueError("invalid_private_replacement_request")
+    body["product"] = body["product"].strip()
     if "schema_version" in body and (type(body["schema_version"]) is not int or body["schema_version"] != 1):
         raise ValueError("invalid_private_replacement_request")
     if policy:
@@ -6222,19 +6229,30 @@ def _private_replacement_body(args: argparse.Namespace) -> dict[str, Any]:
         body["mode"] = "apply" if args.command.endswith("apply") else "dry-run"
         return body
     replacement = body["replacement"]
-    fields = {
-        "schema_version",
-        "product",
-        "instance",
-        "strategy",
-        "data_source_mode",
-        "allow_empty_data",
-        "confirmation",
-        "artifact_id",
-        "source_git_ref",
-        "expected_current_artifact_id",
-        "reason",
-    }
+    fields = TARGET_REPLACEMENT_REQUEST_FIELDS - {
+        "verify_health",
+        "verify_canonical",
+        "verify_logo",
+        "no_cache",
+        "timeout_seconds",
+        "health_timeout_seconds",
+    } | {"reason"}
+    if isinstance(replacement, dict):
+        for field in (
+            "product",
+            "instance",
+            "confirmation",
+            "artifact_id",
+            "source_git_ref",
+            "expected_current_artifact_id",
+            "reason",
+        ):
+            if field in replacement:
+                if not isinstance(replacement[field], str):
+                    raise ValueError("invalid_private_replacement_request")
+                replacement[field] = replacement[field].strip()
+                if field in {"instance", "confirmation"}:
+                    replacement[field] = replacement[field].lower()
     if (
         not isinstance(replacement, dict)
         or replacement.keys() - fields
@@ -6255,10 +6273,12 @@ def _private_replacement_body(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _private_replacement_review(args: argparse.Namespace, body: dict[str, Any], service_url: str) -> None:
+    from launchplane_testing_rebuild import service_fingerprint
+
     if not args.reviewed_plan_file:
         raise ValueError("reviewed_private_plan_required")
     _require_idempotency(args)
-    saved = read_payload_file(args.reviewed_plan_file)
+    saved: dict[str, Any] = read_payload_file(args.reviewed_plan_file)
     policy = args.command.startswith("prelaunch-rebuild-policy-")
     operation = "prelaunch-rebuild-policy-dry-run" if policy else "target-replacement-plan-read"
     expected = {**body, "mode": "dry-run"} if policy else body
@@ -6272,7 +6292,7 @@ def _private_replacement_review(args: argparse.Namespace, body: dict[str, Any], 
     if (
         saved.get("operation") != operation
         or saved.get("request") != expected
-        or saved.get("service_fingerprint") != metadata_review_digest({"service_url": service_url.rstrip("/")})
+        or saved.get("service_fingerprint") != service_fingerprint(sys.modules[__name__], service_url)
         or type(saved.get("http_status")) is not int
         or not 200 <= saved["http_status"] < 300
         or response.get("status") != "accepted"
@@ -6313,12 +6333,16 @@ def _private_replacement_review(args: argparse.Namespace, body: dict[str, Any], 
     ):
         raise ValueError("reviewed_private_plan_mismatch")
 
+    if not policy and not body["replacement"].get("artifact_id"):
+        current = body["replacement"].get("expected_current_artifact_id")
+        if not current or current != result.get("expected_artifact_id"):
+            raise ValueError("reviewed_current_artifact_required")
+
 
 def execute_private_replacement(args: argparse.Namespace) -> int:
-    from launchplane_testing_rebuild import aligned_receipt
+    from launchplane_testing_rebuild import aligned_receipt, service_fingerprint
 
     private_io = importlib.import_module("launchplane-call")
-
     operation = args.command
     body = _private_replacement_body(args)
     applying = operation.endswith("apply")
@@ -6335,39 +6359,33 @@ def execute_private_replacement(args: argparse.Namespace) -> int:
     saved: dict[str, Any] = {
         "operation": operation,
         "request": body,
-        "service_fingerprint": metadata_review_digest({"service_url": settings["service_url"].rstrip("/")}),
+        "service_fingerprint": service_fingerprint(sys.modules[__name__], settings["service_url"]),
     }
-    output = base_payload(status="unavailable", operation=operation, request=request)
+    output: dict[str, Any] = base_payload(status="unavailable", operation=operation, request=request)
+    summary: dict[str, Any] = {}
+    output["summary"] = summary
     code = 1
-    with evidence:
+    try:
         try:
+            status, raw = private_io.exchange(
+                settings,
+                "POST",
+                helper_command_path(operation),
+                {},
+                body,
+                args.idempotency_key.strip() if applying else "",
+                args.timeout,
+            )
+            saved.update(http_status=status, raw_response_base64=base64.b64encode(raw).decode("ascii"))
             try:
-                response = request_launchplane_response(
-                    service_url=settings["service_url"],
-                    path=helper_command_path(operation),
-                    settings=settings,
-                    method="POST",
-                    body=body,
-                    timeout=args.timeout,
-                    idempotency_key=args.idempotency_key.strip() if applying else "",
-                    no_store=True,
-                )
-            except urllib.error.HTTPError as error:
-                response = error
-            with response:
-                status = response.status
-                raw = response.read()
-            saved["http_status"] = status
-            saved["raw_response_base64"] = base64.b64encode(raw).decode("ascii")
-            try:
-                payload = json.loads(raw)
+                payload: dict[str, Any] = _require_dict(json.loads(raw))
             except (ValueError, UnicodeDecodeError):
-                payload = None
-            output["summary"] = {"http_status": status}
-            if isinstance(payload, dict):
-                diagnostics = service_response_diagnostics(payload)
-                output["summary"].update({key: diagnostics[key] for key in ("trace_id", "error_code") if key in diagnostics})
-            accepted = isinstance(payload, dict) and payload.get("status") == "accepted" and isinstance(payload.get("result"), dict)
+                payload = {}
+            summary["http_status"] = status
+            diagnostics = service_response_diagnostics(payload)
+            summary.update({key: diagnostics[key] for key in ("trace_id", "error_code") if key in diagnostics})
+            accepted = payload.get("status") == "accepted" and isinstance(payload.get("result"), dict)
+            result: dict[str, Any] = _require_dict(payload["result"]) if accepted else {}
             if accepted and operation == "target-replacement-apply":
                 try:
                     receipt = aligned_receipt(sys.modules[__name__], payload, body, args.idempotency_key.strip())
@@ -6375,13 +6393,13 @@ def execute_private_replacement(args: argparse.Namespace) -> int:
                 except (LaunchplaneSafetyError, ValueError):
                     accepted = False
             if accepted and operation == "prelaunch-rebuild-policy-apply":
-                accepted = payload["result"].get("applied") is True and payload["result"].get("mode") == "apply"
+                accepted = result.get("applied") is True and result.get("mode") == "apply"
             if 200 <= status < 300 and accepted:
                 output["status"] = "accepted"
                 code = 0
                 if operation == "target-replacement-plan-read":
-                    plan_status = payload["result"].get("plan_status")
-                    if plan_status in {"ready", "blocked"}:
+                    plan_status = result.get("plan_status")
+                    if plan_status in ("ready", "blocked"):
                         output["result"] = {"plan_status": plan_status}
             elif applying and (status == 408 or status >= 500 or 200 <= status < 300):
                 output["status"] = "outcome_unknown"
@@ -6393,12 +6411,18 @@ def execute_private_replacement(args: argparse.Namespace) -> int:
         if not private_io.save_evidence(evidence, json.dumps(saved, ensure_ascii=False).encode()):
             code = 1
             output["status"] = "outcome_unknown" if applying else "unavailable"
+    finally:
+        try:
+            evidence.close()
+        except OSError:
+            code = 1
+            output["status"] = "outcome_unknown" if applying else "unavailable"
     if applying:
-        output["summary"]["recommendation"] = (
-            "Preserve the original private request, saved response and key. Reconcile the original operation through "
-            "its supported readback before any retry; never change intent or use a new key. "
-            "For replacement, use target-replacement-operation-read with the saved operation ID. "
-            "Acceptance queues work; it does not prove completion."
+        summary["recommendation"] = (
+            "Preserve the original private request, saved response and key. Reconcile the original operation before "
+            "any retry; never change intent or use a new key. Replacement uses target-replacement-operation-read "
+            "with the saved ID; policy uses product-profile-read for the exact product. Readback does not settle "
+            "the original operation. Acceptance queues replacement work; it does not prove completion."
         )
     emit(output)
     return code

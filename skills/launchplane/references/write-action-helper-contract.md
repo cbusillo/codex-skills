@@ -1153,6 +1153,10 @@ installed local helper bindings.
   Read the [producer schemas](https://github.com/cbusillo/launchplane/blob/main/docs/agent-operator-contract.md)
   for field meanings. Classification and runtime sync are separate operations.
   File-based plan inputs cannot mix with the reader's argument-based inputs below.
+  Without a candidate pair, an apply needs a nonempty
+  `expected_current_artifact_id` in the planned request matching the reviewed
+  `expected_artifact_id`. Replan with that CAS input if absent. A first-empty
+  apply with no current artifact supplies the explicit candidate pair instead.
 
   Each result is a new mode-0600 file under an existing task-evidence directory,
   opened exclusively before the request. Its private envelope contains
@@ -1163,6 +1167,8 @@ installed local helper bindings.
   plan status or an accepted replacement's operation ID. Target names, domains,
   volumes, confirmation and keys are never projected. Never upload these files
   to public workflow artifacts or print them into public logs.
+  The [generic caller's private-file rules](agent-operator-contract.md#generic-caller)
+  apply, including no symlinked parent and no result inside the active repository.
 
   Apply requires the unchanged private plan from the same service and exact
   request; replacement needs a ready plan, policy forwards its reviewed digest.
@@ -1170,8 +1176,8 @@ installed local helper bindings.
   The producer still enforces CAS, confirmation, empty-storage, Live, backup and
   release protections. A replacement receipt queues work, not completion; use
   `target-replacement-operation-read` with its saved ID. Policy success requires
-  `mode=apply` and `applied=true`; read the exact profile back separately.
-  Transport loss, malformed apply replies or HTTP408/5xx leave outcome unknown.
+  `mode=apply` and `applied=true`; use `product-profile-read --product` for readback.
+  Transport loss, malformed apply replies or HTTP 408/5xx leave outcome unknown.
   Preserve the original request, response and key; reconcile that original
   operation before any retry, without a new key or changed intent. No automatic
   retry, target inspection, runtime sync, classification or workflow dispatch occurs.
