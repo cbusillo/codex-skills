@@ -1657,6 +1657,43 @@ class NativeQueueTests(unittest.TestCase):
                 with self.assertRaises(ValueError): NATIVE.verify_source_process(entry)
             self.assertFalse(f.mutations)
 
+    def test_saved_recovery_rechecks_guarded_replacement_without_changing_source_identity(self):
+        import uuid
+        SESSIONS.native_helpers()
+        import tmux_terminal
+        for changed in (None, "source_resume", "unguarded", "orphan", "source_pid"):
+            with self.subTest(changed=changed), ReceiptFixture(str(uuid.uuid4())) as f:
+                CLOSURE.replace_rows([])
+                entry = {**f.entry, "recovery": {"kind": "gone"}, "tmux_socket": "fixture",
+                         "tmux_session_id": "tmux:fixture:" + "a" * 32}
+                root_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+                native = ["codex", "--remote", "unix://" + str(CLOSURE.daemon_endpoint(f.home))]
+                parents = {99: 1, 455: 99, 456: 455}
+                f.native_state = "notLoaded"
+                f.process_rows = [(455, entry["tty"], "replacement-root"), (456, entry["tty"], " ".join(native))]
+                with patch.object(tmux_terminal.Terminal, "list", return_value=[]), \
+                        patch.object(tmux_terminal, "process_parents", side_effect=lambda: dict(parents)), \
+                        patch.object(CLOSURE, "process_started_at", side_effect=lambda pid: root_at + timedelta(seconds=pid != 455)), \
+                        patch.object(f.release, "recovery_claims"):
+                    f.managed(native)
+                    f.process_rows[1] = (456, entry["tty"], " ".join(native))
+                    closed = f.release.record_recovery(f.log, entry, "supervisor")
+                    before = f.log.read_bytes()
+                    if changed == "source_resume":
+                        f.process_rows.append((789, "other-tty", "codex resume " + f.session))
+                    elif changed == "unguarded":
+                        f.process_rows[1] = (456, entry["tty"], "codex --remote unix:///unregistered")
+                    elif changed == "orphan":
+                        parents[456] = 1
+                    elif changed == "source_pid":
+                        f.process_rows.append((entry["pid"], "other-tty", "codex"))
+                    if changed is None:
+                        self.assertEqual(f.release.validate_finished(closed, "supervisor")["state"], "turn_ended")
+                    else:
+                        with self.assertRaises(ValueError): f.release.validate_finished(closed, "supervisor")
+                    self.assertEqual(f.log.read_bytes(), before)
+                self.assertFalse(f.mutations)
+
     def test_finish_rechecks_source_process_after_native_resolution(self):
         import uuid
         for command in ("source_pid", "source_resume"):
