@@ -860,7 +860,7 @@ def closed_stdin(arguments: Node) -> bool:
 
 
 def native_capabilities(root: Node) -> None:
-    globals_allowed = NATIVE_NAMES | {"Date", "RegExp", "Error", "Math", "Number", "Boolean", "Array", "image", "notify"}
+    globals_allowed = NATIVE_NAMES | {"Date", "RegExp", "Error", "Math", "Number", "Array", "image", "notify"}
     static_methods = {
         "Object": {"keys", "values", "entries"},
         "JSON": {"parse", "stringify"},

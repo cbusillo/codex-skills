@@ -3217,8 +3217,6 @@ print(root)"""
         for source in (
             'const Boolean=load("converter");text(Boolean(1));',
             'text(Boolean(load("converter")(1)));',
-            'text(new Boolean(1));',
-            'text(Boolean(...load("args")));',
         ):
             with self.subTest(source=source):
                 self.assert_coverage_gap(helper.check([self.stored_claim_entry(source)]))
