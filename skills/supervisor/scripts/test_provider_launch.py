@@ -13,7 +13,6 @@ import fcntl
 import importlib.util
 import json
 import os
-from pathlib import Path
 import runpy
 import shlex
 import socket
@@ -21,19 +20,23 @@ import subprocess
 import sys
 import tempfile
 import time
-from types import SimpleNamespace
-from typing import Any
 import unittest
 import uuid
+from datetime import UTC, datetime
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
 import account_choice
 import agent_tools
-import iterm_tab
 import codex_session_proxy
-from codex_session_proxy import MEMORY_SETTING
-import tmux_terminal
+import iterm_tab
 import session_liveness
+import tmux_terminal
+from check_operation import closure
+from codex_session_proxy import MEMORY_SETTING
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
 
 
@@ -776,6 +779,242 @@ class ResumeLaunchTests(unittest.TestCase):
                         {"session_id": self.session, "resumed_generation": {**generation, **change}}]):
                     failed = iterm_tab.source_launch_metadata({"session_id": "terminal-id", "tty": "/dev/fixture-tty"}, self.choice)
                     self.assertTrue(failed["launch_identity_unavailable"])
+
+
+class ClaudeResumeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
+        self.enterContext(patch.dict(os.environ, {"HOME": str(self.root)}))
+        self.home = self.root / "account"
+        self.session = str(uuid.uuid4())
+        self.transcript = self.home / "projects/fictional" / (self.session + ".jsonl")
+        self.transcript.parent.mkdir(parents=True)
+        self.record = {"type": "user", "sessionId": self.session, "cwd": str(self.root), "message": {"content": "Fictional"}}
+        self.transcript.write_text(json.dumps(self.record) + "\n")
+        self.account = {"provider": "anthropic", "name": "original", "env": {"CLAUDE_CONFIG_DIR": str(self.home)}}
+        self.choice: dict[str, Any] = {**self.account, "storage_root": self.root, "account_id": "fictional"}
+        self.entry = {
+            "session_id": self.session,
+            "harness": "claude",
+            "supervisor_owned": True,
+            "transcript": str(self.transcript),
+            "pid": 123,
+            "tty": "old-fictional",
+            "account": {
+                "name": self.account["name"],
+                "provider": self.account["provider"],
+                "account_id": self.choice["account_id"],
+                "file_native": {"harness": "claude", "session_id": self.session, "home": str(self.home)},
+            },
+        }
+        self.result: dict[str, Any] = {
+            "session_id": "fictional-iterm", "tty": "/dev/new-fictional", "pid": 456,
+            "window_id": "window", "tab_id": "tab", "backend": "iterm",
+        }
+        self.ledger = self.root / "ledger.json"
+        self.ledger.write_text(json.dumps([self.entry]))
+        self.args = argparse.Namespace(
+            resume_session_id=self.session,
+            ledger=self.ledger,
+            command_file=None,
+            brief_file=None,
+            account_provider="anthropic",
+            account_config=None,
+            account=None,
+        )
+        self.config = self.enterContext(patch.object(account_choice, "load_config", return_value={"accounts": [self.account]}))
+        self.select = self.enterContext(patch.object(account_choice, "select", return_value=self.choice))
+        self.prepare = self.enterContext(patch.object(account_choice, "prepare_launch"))
+        self.daemon_checks = {
+            name: self.enterContext(patch.object(iterm_tab, name))
+            for name in ("inspect_codex_daemon", "check_codex_daemon")
+        }
+        self.enterContext(patch.object(session_liveness, "process_absent", return_value=True))
+        self.enterContext(patch.object(session_liveness, "inventory", return_value=[]))
+        self.log = self.root / "closed.json"
+        self.enterContext(patch.object(closure, "closed_log", return_value=self.log))
+        self.enterContext(patch.object(iterm_tab, "CHROME_OPT_IN", self.root / "absent-chrome-opt-in"))
+
+    def test_generated_command_preserves_original_cwd_home_and_disables_account_move(self) -> None:
+        commands, _choices = iterm_tab.prepare_launches(self.args)
+        agent = self.root / "claude"
+        agent.write_text(
+            f'#!{sys.executable}\nimport json,os,sys\nprint(json.dumps([os.getcwd(),os.environ.get("CLAUDE_CONFIG_DIR"),os.environ.get("CLAUDE_ACCOUNT_MOVE_ENABLED"),sys.argv[1:]]))\n'
+        )
+        agent.chmod(0o700)
+        result = subprocess.run(
+            ["/bin/sh", "-c", commands[0]],
+            capture_output=True,
+            text=True,
+            check=True,
+            env={"PATH": str(self.root) + ":/usr/bin:/bin", "HOME": str(self.root)},
+        )
+        cwd, home, move, argv = json.loads(result.stdout)
+        self.assertEqual(Path(cwd).resolve(), self.root)
+        self.assertEqual(Path(home).resolve(), self.home)
+        self.assertEqual(move, "0")
+        self.assertEqual(argv, ["--resume", self.session])
+        for check in self.daemon_checks.values():
+            check.assert_not_called()
+
+    def test_bad_source_identity_or_root_cwd_refuses_before_account_preparation(self) -> None:
+        entries = []
+        for changes in (
+            {"supervisor_owned": False},
+            {"harness": "codex"},
+            {"account": []},
+            {"account": {"provider": "anthropic", "file_native": []}},
+        ):
+            entries.append({**self.entry, **changes})
+        for changes in ({"home": "relative"}, {"session_id": "foreign"}, {"harness": "codex"}):
+            item = json.loads(json.dumps(self.entry))
+            item["account"]["file_native"].update(changes)
+            entries.append(item)
+        for entry in entries:
+            with self.subTest(entry=entry):
+                self.ledger.write_text(json.dumps([entry]))
+                with self.assertRaises((ValueError, OSError)):
+                    iterm_tab.prepare_launches(self.args)
+                self.prepare.assert_not_called()
+        self.ledger.write_text(json.dumps([self.entry]))
+        for record in (
+            {**self.record, "cwd": "relative"},
+            {k: v for k, v in self.record.items() if k != "cwd"},
+            {**self.record, "sessionId": "foreign"},
+        ):
+            with self.subTest(record=record):
+                self.transcript.write_text(json.dumps(record) + "\n")
+                with self.assertRaises((ValueError, OSError)):
+                    iterm_tab.prepare_launches(self.args)
+                self.prepare.assert_not_called()
+
+    def test_wrong_selected_home_provider_or_alias_refuses_before_preparation(self) -> None:
+        for changes in (
+            {"env": {"CLAUDE_CONFIG_DIR": str(self.root)}},
+            {"env": {"CLAUDE_CONFIG_DIR": "relative"}},
+            {"provider": "openai"},
+            {"name": "foreign"},
+            {"account_id": "foreign"},
+        ):
+            with self.subTest(changes=changes):
+                self.select.return_value = {**self.choice, **changes}
+                with self.assertRaises(ValueError):
+                    iterm_tab.prepare_launches(self.args)
+                self.prepare.assert_not_called()
+        self.select.return_value = self.choice
+        self.config.return_value = {"accounts": [self.account, {**self.account, "name": "alias"}]}
+        with self.assertRaises(ValueError):
+            iterm_tab.prepare_launches(self.args)
+        self.prepare.assert_not_called()
+
+    def test_plain_install_keeps_exact_existing_home(self) -> None:
+        self.config.return_value = {"accounts": [], "snapshot_command": None}
+        _commands, choices = iterm_tab.prepare_launches(self.args)
+        selected = choices[0]
+        assert isinstance(selected, dict)
+        self.assertEqual(selected["env"], self.account["env"])
+        self.select.assert_called_once_with("anthropic", None)
+
+    def test_shared_project_storage_keeps_original_account_selection(self) -> None:
+        shared = self.root / "shared-projects"
+        (self.home / "projects").rename(shared)
+        (self.home / "projects").symlink_to(shared, target_is_directory=True)
+        _commands, choices = iterm_tab.prepare_launches(self.args)
+        selected = choices[0]
+        assert isinstance(selected, dict)
+        self.assertEqual(selected["env"], self.account["env"])
+        self.select.assert_called_once_with("anthropic", None, self.account["name"])
+
+    def test_iterm_registration_uses_same_source_and_refuses_changed_custody(self) -> None:
+        self.choice.update(resume_session_id=self.session, resume_source=self.entry)
+        result = dict(self.result)
+        before = self.ledger.read_bytes()
+        born = datetime.now(UTC)
+        with (
+            patch.object(session_liveness, "inventory", return_value=[(456, "new-fictional", "claude --resume " + self.session)]),
+            patch.object(session_liveness, "process_arguments", return_value=(["claude", "--resume", self.session], True)),
+            patch.object(session_liveness, "native_process_details", return_value={"pid": 456, "identity": {"uniqueId": 1}}),
+            patch.object(session_liveness, "process_started_at", return_value=born),
+        ):
+            unmanaged = {**result, "backend": "tmux", "session_id": "tmux:fictional:server:%1", "tmux_socket": "fictional"}
+            with self.assertRaises(ValueError):
+                iterm_tab.claude_resume_metadata(unmanaged, self.choice)
+            self.assertEqual(self.ledger.read_bytes(), before)
+            foreign = {**self.entry, "lead_session_id": "foreign-owner"}
+            self.ledger.write_text(json.dumps([foreign]))
+            changed = self.ledger.read_bytes()
+            with self.assertRaises(ValueError):
+                asyncio.run(iterm_tab.register_resumed_launch(self.ledger, dict(result), self.choice))
+            self.assertEqual(self.ledger.read_bytes(), changed)
+            self.ledger.write_bytes(before)
+            asyncio.run(iterm_tab.register_resumed_launch(self.ledger, result, self.choice))
+        row = json.loads(self.ledger.read_text())[0]
+        self.assertEqual(row["session_id"], self.session)
+        self.assertEqual(row["iterm_session_id"], result["session_id"])
+        self.assertEqual(row["launch_pid"], 456)
+        self.assertNotIn("codex_home", row)
+
+    def test_live_duplicate_closed_unknown_and_frozen_sources_preserve_ledger(self) -> None:
+        before = self.ledger.read_bytes()
+        with patch.object(session_liveness, "inventory", return_value=[(456, "different-tty", "claude --resume " + self.session)]):
+            with self.assertRaises(ValueError):
+                iterm_tab.prepare_launches(self.args)
+        self.assertEqual(self.ledger.read_bytes(), before)
+        self.log.write_text(json.dumps([{"session_id": self.session, "harness": "claude"}]))
+        with self.assertRaises(ValueError):
+            iterm_tab.prepare_launches(self.args)
+        self.log.unlink()
+        for state in ({"claim_admission_unknown": {}}, {"action_pending": True}, {"successor_admitted": True}):
+            with closure.ownership(self.session, create=True):
+                closure.write_lease_state(self.session, {"session_id": self.session, **state})
+            with self.subTest(state=state), patch.object(closure, "has_current_claim", return_value=False):
+                with self.assertRaises(ValueError):
+                    iterm_tab.prepare_launches(self.args)
+            self.assertEqual(self.ledger.read_bytes(), before)
+        self.prepare.assert_not_called()
+
+    def test_existing_source_lease_spans_new_operation_and_busy_source_refuses(self) -> None:
+        called = []
+
+        async def operation(launch_args: argparse.Namespace) -> bool:
+            called.append(launch_args)
+            with closure.lease_path(self.session).open("r+") as other:
+                with self.assertRaises(BlockingIOError):
+                    fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+
+        guarded = iterm_tab.guard_lead_launch(operation)
+        args = argparse.Namespace(command="new", resume_session_id=self.session, account_provider="anthropic")
+        self.assertTrue(asyncio.run(guarded(args)))
+        called.clear()
+        with closure.lease_path(self.session).open("r+") as held:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with self.assertRaises(closure.LeaseBusy):
+                asyncio.run(guarded(args))
+        self.assertFalse(called)
+
+    def test_replacement_process_between_discovery_and_native_identity_refuses(self) -> None:
+        self.choice.update(resume_session_id=self.session, resume_source=self.entry)
+        result = dict(self.result)
+        replaced = False
+
+        def arguments(_pid: int, _command: str) -> tuple[list[str], bool]:
+            candidate = ["claude", "--resume", "foreign"] if replaced else ["claude", "--resume", self.session]
+            return candidate, True
+
+        def incarnation(_pid: int) -> dict:
+            nonlocal replaced
+            replaced = True
+            return {"pid": 456, "identity": {"uniqueId": 2}}
+
+        with (
+            patch.object(session_liveness, "inventory", return_value=[(456, "new-fictional", "claude --resume " + self.session)]),
+            patch.object(session_liveness, "process_arguments", side_effect=arguments),
+            patch.object(session_liveness, "native_process_details", side_effect=incarnation),
+            patch.object(session_liveness, "process_started_at", return_value=datetime.now(UTC)),
+        ):
+            with self.assertRaises(ValueError):
+                iterm_tab.claude_resume_metadata(result, self.choice)
 
 
 class ProviderLaunchTests(unittest.TestCase):
