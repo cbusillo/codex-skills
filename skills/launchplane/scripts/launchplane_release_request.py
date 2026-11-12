@@ -147,8 +147,6 @@ def _read_acceptance(h: Any, settings: dict[str, str], product: str, timeout: fl
     )
     _require_known_fields(h, PROFILE_READ, response)
     raw_profile = _require_mapping(h, response.get("profile"))
-    if "release_on_acceptance" not in raw_profile:
-        raise h.LaunchplaneSafetyError("invalid_response")
     # noinspection PyProtectedMember
     profile = h._project_product_profile(raw_profile)
     if response.get("status") != "ok" or profile["product"] != product:

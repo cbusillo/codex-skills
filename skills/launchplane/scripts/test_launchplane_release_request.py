@@ -45,10 +45,13 @@ def request_args(digest: str = DIGEST, decision: str = DECISION, key: str = OPER
     return ["release-request", "--product", "site", "--checklist-digest", digest, "--reason", REASON, "--decision-reference", decision, "--idempotency-key", key]
 
 
-def profile(acceptance: str = "promote_with_rollback_drill") -> dict[str, Any]:
+def profile(acceptance: str | None = "promote_with_rollback_drill") -> dict[str, Any]:
     body: dict[str, Any] = copy.deepcopy(_product_profile_response())
     body["profile"]["product"] = "site"
-    body["profile"]["release_on_acceptance"] = acceptance
+    if acceptance is None:
+        body["profile"].pop("release_on_acceptance", None)
+    else:
+        body["profile"]["release_on_acceptance"] = acceptance
     return body
 
 
@@ -101,7 +104,7 @@ def invoke(
     *,
     reviews: list[Any],
     posts: list[Any] | None = None,
-    acceptance: str = "promote_with_rollback_drill",
+    acceptance: str | None = "promote_with_rollback_drill",
     read_calls: list[Any] | None = None,
 ) -> tuple[int, dict[str, Any], list[Any]]:
     pending_reviews = iter(reviews)
@@ -152,21 +155,30 @@ def private_result(tmp_path: Path) -> Path:
     return directory / "review.json"
 
 
-@pytest.mark.parametrize("complete", [True, False])
-def test_private_plan_preserves_full_review_before_public_projection(private_result: Path, complete: bool) -> None:
-    body = review(checklist_complete=complete)
+@pytest.mark.parametrize("acceptance", [None, "held", "director_standing", "promote_with_rollback_drill"])
+@pytest.mark.parametrize("kind", ["complete", "incomplete", "initial"])
+def test_private_plan_preserves_full_review_before_public_projection(
+    private_result: Path, acceptance: str | None, kind: str
+) -> None:
+    complete = kind == "complete"
+    body = initial_review() if kind == "initial" else review(checklist_complete=complete)
     body["review"]["checklist"]["candidate"].update(shared_addons_digest="d" * 64, website_settings_digest="e" * 64)
-    code, payload, posts = invoke([*plan_args(), "--result-file", str(private_result)], reviews=[body])
+    code, payload, posts = invoke([*plan_args(), "--result-file", str(private_result)], reviews=[body], acceptance=acceptance)
+    assert payload["result"]["release_on_acceptance"] == ("held" if acceptance is None else acceptance)
     assert code == (0 if complete else 1) and posts == []
     assert json.loads(private_result.read_text()) == body
     assert private_result.stat().st_mode & 0o777 == 0o600
     assert_private_values_absent(payload)
-    baseline_code, baseline, _ = invoke(plan_args(), reviews=[body])
+    baseline_code, baseline, _ = invoke(plan_args(), reviews=[body], acceptance=acceptance)
     assert baseline_code == code
     for key in ("status", "result", "summary", "warnings", "request"):
         assert payload[key] == baseline[key]
+    if kind == "initial":
+        assert_initial_private(payload)
     if not complete:
-        assert payload["summary"]["refusal_reason"] == "checklist_incomplete"
+        assert payload["summary"]["refusal_reason"] == (
+            "initial_test_notes_required" if kind == "initial" else "checklist_incomplete"
+        )
 
 
 @pytest.mark.parametrize("kind", ["existing", "symlink", "parent_symlink", "repository", "outside_evidence", "missing_parent"])
@@ -548,17 +560,20 @@ def test_incomplete_requests_stop_before_any_network(args: list[str]) -> None:
     assert json.loads(output.getvalue())["status"] == "invalid"
 
 
-def test_missing_policy_is_not_inferred_as_held() -> None:
+@pytest.mark.parametrize("args", [plan_args(), request_args()])
+@pytest.mark.parametrize("value", [None, "", "unsupported", True, 1, [], {}])
+def test_malformed_policy_fails_closed_before_review_or_request(value: object, args: list[str]) -> None:
     body = profile()
-    del body["profile"]["release_on_acceptance"]
+    body["profile"]["release_on_acceptance"] = value
     with (
         patch_attr("prepare_operator_settings", return_value={"service_url": SERVICE_URL}),
-        patch_attr("request_launchplane_read", return_value=body),
+        patch_attr("request_launchplane_read", return_value=body) as read,
         patch_attr("request_launchplane") as post,
     ):
         output = io.StringIO()
         with redirect_stdout(output):
-            assert h.main(plan_args()) == 1
+            assert h.main(args) == 1
+    assert read.call_count == 1
     assert json.loads(output.getvalue())["status"] == "invalid"
     assert not post.called
 
@@ -571,8 +586,8 @@ def test_temporary_hotfix_explains_the_actual_review_prerequisite() -> None:
     assert payload["summary"]["refusal_reason"] == "temporary_hotfix_pending"
 
 
-@pytest.mark.parametrize("acceptance", ["held", "promote", "promote_with_rollback_drill", "director_standing"])
-def test_typed_transport_uses_the_same_request_route_for_client_confirmation(acceptance: str) -> None:
+@pytest.mark.parametrize("acceptance", [None, "held", "promote", "promote_with_rollback_drill", "director_standing"])
+def test_typed_transport_uses_the_same_request_route_for_client_confirmation(acceptance: str | None) -> None:
     saved: dict[str, object] | None = None
     calls: list[tuple[str, str]] = []
 
@@ -655,8 +670,8 @@ def test_initial_plan_projects_recorded_absence_and_keeps_the_snapshot_private()
     assert_initial_private(payload)
 
 
-@pytest.mark.parametrize("acceptance", ["promote_with_rollback_drill", "director_standing"])
-def test_initial_request_acknowledges_only_the_prepared_digest_bound_to_its_notes(notes_file: Path, acceptance: str) -> None:
+@pytest.mark.parametrize("acceptance", [None, "held", "promote_with_rollback_drill", "director_standing"])
+def test_initial_request_acknowledges_only_the_prepared_digest_bound_to_its_notes(notes_file: Path, acceptance: str | None) -> None:
     import hashlib
 
     code, payload, posts = invoke(notes_args(notes_file), acceptance=acceptance, reviews=[initial_review(standing=acceptance == "director_standing")], posts=[initial_review(prepared=True, saved=initial_saved(), standing=acceptance == "director_standing")])
@@ -669,8 +684,8 @@ def test_initial_request_acknowledges_only_the_prepared_digest_bound_to_its_note
     assert_initial_private(payload)
 
 
-@pytest.mark.parametrize("acceptance", ["promote_with_rollback_drill", "director_standing"])
-def test_initial_explicit_replay_confirms_the_same_client_receipt_or_observes_standing_policy(notes_file: Path, acceptance: str) -> None:
+@pytest.mark.parametrize("acceptance", [None, "held", "promote_with_rollback_drill", "director_standing"])
+def test_initial_explicit_replay_confirms_the_same_client_receipt_or_observes_standing_policy(notes_file: Path, acceptance: str | None) -> None:
     prepared = initial_review(prepared=True, saved=initial_saved(), standing=acceptance == "director_standing")
     code, payload, posts = invoke(notes_args(notes_file), acceptance=acceptance, reviews=[prepared], posts=[prepared])
     assert code == 0

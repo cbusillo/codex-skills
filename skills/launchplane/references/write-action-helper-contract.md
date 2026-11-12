@@ -2935,7 +2935,9 @@ source commits, whether they carry runtime settings, blocker count and `review_u
 A plan with a structured current prerequisite reports `refused` and
 `refusal_reason`. Blocker text is counted, never interpreted as caller policy.
 Item text, settings, artifact ids, blocker prose, saved reason and actor stay private.
-The profile supplies the configured policy; the review's similarly named field
+An omitted profile `release_on_acceptance` uses the shared profile projection's
+held default; malformed values still fail closed. Omission never enables acceptance
+or clears a hold. The profile supplies the configured policy; the review's similarly named field
 supplies the effective release action and cannot replace it.
 
 For a qualified first Odoo release, production projects as `state: absent`,
