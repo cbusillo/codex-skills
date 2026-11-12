@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager, contextmanager, redirect_stdout
 from concurrent.futures import ThreadPoolExecutor
 from collections.abc import AsyncIterator, Callable
 from datetime import datetime, timedelta, timezone
+from typing import Any
 import unittest
 from unittest.mock import patch
 
@@ -28,7 +29,7 @@ class NativeFactsTests(unittest.IsolatedAsyncioTestCase):
         self.session = "source"
         self.path = "/fixture/source.jsonl"
         self.calls = []
-        self.responses = {
+        self.responses: dict[str, Any] = {
             "thread/read": {"thread": {"id": self.session, "path": self.path, "historyMode": "paginated", "status": {"type": "idle"}}},
             "thread/queue/list": {"data": [], "nextCursor": None},
             "thread/items/list": {"data": [], "nextCursor": None},
@@ -182,7 +183,7 @@ class NativeFactsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_long_session_reads_full_continuation_chain_within_caller_deadline(self):
         total = 2101  # more than the 2,000 entries the old fixed page count allowed
-        async def chain(params):
+        async def chain(params: dict[str, Any]) -> dict[str, Any]:
             start = int(params["cursor"] or 0)
             end = min(start + params["limit"], total)
             return {"data": [{"turnId": "turn", "item": {"id": f"command-{index}", "type": "commandExecution",
@@ -190,6 +191,14 @@ class NativeFactsTests(unittest.IsolatedAsyncioTestCase):
                     "nextCursor": str(end) if end < total else None}
         self.responses["thread/items/list"] = chain
         self.assertEqual(len((await NATIVE.read_executions(self.request, self.session))["items"]), total)
+        async def orphaned(params: dict[str, Any]) -> dict[str, Any]:
+            page = await chain(params)
+            if page["nextCursor"] is None:
+                page["data"][-1]["turnId"] = ""
+            return page
+        self.responses["thread/items/list"] = orphaned
+        with self.assertRaises(ValueError):
+            await NATIVE.read_thread_facts(self.request, self.session)
         async def loop(params):
             return {"data": [], "nextCursor": "b" if params["cursor"] == "a" else "a"}
         async def malformed(params):
@@ -232,7 +241,42 @@ class NativeFactsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(facts["background"], [(pair["itemId"], pair["processId"])])
 
 
+
 class NativeQueueTests(unittest.TestCase):
+    def test_history_reads_scale_the_existing_budget_and_report_actual_size_failures(self) -> None:
+        import uuid
+        with ReceiptFixture(str(uuid.uuid4())) as f:
+            records = f.transcript.read_text()
+            f.transcript.write_text(json.dumps({"type": "session_meta", "payload": {"id": f.session,
+                "fictional_context": "history " * (512 * 1024)}}) + "\n" + "\n".join(records.splitlines()[1:]) + "\n")
+            async def delayed(request: dict) -> dict:
+                if request["params"].get("includeTurns"):
+                    await asyncio.sleep(.15)
+                return {"thread": {"id": f.session, "path": str(f.transcript), "historyMode": "paginated",
+                    "status": {"type": "idle"}, "turns": [{"id": "source-turn", "status": "completed", "items": []}]}}
+            f.rpc_results["thread/read"] = delayed
+            original_timeout = NATIVE.read_timeout
+            with patch.object(NATIVE, "read_timeout", side_effect=lambda deadline=None: .05 if deadline is None else original_timeout(deadline)), CLOSURE.ownership(f.session):
+                closeout = importlib.import_module("session_closeout")
+                for compressed in (False, True):
+                    if compressed:
+                        import zstandard
+                        packed = f.transcript.with_suffix(".jsonl.zst")
+                        packed.write_bytes(zstandard.ZstdCompressor().compress(f.transcript.read_bytes()))
+                        f.transcript.unlink()
+                        f.transcript = packed
+                    asyncio.run(closeout.native_idle(f.entry))
+                    asyncio.run(NATIVE.prove_end(f.entry))
+            f.rpc_results["thread/read"] = {"thread": {"id": f.session, "text": "large response" * 4096}}
+            async def limited() -> None:
+                async with NATIVE.connection(f.home, max_msg_size=4096) as request:
+                    await NATIVE.read_thread(request, f.session, include_turns=True)
+            with self.assertRaises(NATIVE.NativeReadSizeError) as failure:
+                asyncio.run(limited())
+            self.assertIn("thread/read", str(failure.exception))
+            self.assertIn("4096", str(failure.exception))
+            self.assertFalse(f.mutations)
+
     def test_acknowledged_native_reads_and_queue_survive_peer_eof_during_client_close(self) -> None:
         import uuid
         with ReceiptFixture(str(uuid.uuid4())) as fixture:
@@ -929,6 +973,28 @@ class NativeQueueTests(unittest.TestCase):
                         queued_submission_id=selected["id"], entry_sha256=digest))
                     self.assertTrue(result["ok"])
                     self.assertEqual(len(deleted), 1)
+
+    def test_large_loaded_peer_queue_cleanup_uses_same_read_budget(self) -> None:
+        import uuid
+        with ReceiptFixture(str(uuid.uuid4())) as f:
+            selected: dict[str, Any]
+            other, ledger, selected, _retained, deleted = self.cancel_setup(f)
+            digest = self.cancel_digest(other, f, ledger)
+            f.home_states[str(f.home)] = "idle"
+            f.home_queues[str(f.home)] = []
+            with f.transcript.open("a") as stream:
+                stream.write(json.dumps({"type": "world_state", "payload": {"fictional_context": "history " * (512 * 1024)}}) + "\n")
+            async def delayed(request: dict) -> dict:
+                if request["params"].get("includeTurns"):
+                    await asyncio.sleep(.15)
+                return {"thread": {"id": f.session, "path": str(f.transcript), "historyMode": "paginated", "status": {"type": "idle"}}}
+            f.rpc_results[(str(f.home), "thread/read")] = delayed
+            original_timeout = NATIVE.read_timeout
+            with patch.object(NATIVE, "read_timeout", side_effect=lambda deadline=None: .05 if deadline is None else original_timeout(deadline)):
+                result = asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger, apply=True,
+                    queued_submission_id=selected["id"], entry_sha256=digest))
+            self.assertTrue(result["ok"])
+            self.assertEqual(len(deleted), 1)
 
     def cancel_digest(self, other, f, ledger):
         preview = asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger))
@@ -1685,7 +1751,7 @@ class NativeQueueTests(unittest.TestCase):
                                     stream.write(json.dumps({"type": "event_msg", "timestamp": "2026-10-02T00:00:00Z",
                                         "payload": {"type": kind, "turn_id": "unsafe-later-turn"}}) + "\n")
                     return {"thread": {"id": f.session, "path": str(f.transcript), "status": {"type": "idle"},
-                                       "historyMode": "paginated"}}
+                                       "historyMode": "paginated", "turns": [{"id": "source-turn", "status": "completed", "items": []}]}}
                 f.rpc_results["thread/read"] = thread
                 f.rpc_results["thread/turns/list"] = {"data": [{"id": "source-turn", "status": "completed"}], "nextCursor": None}
                 with CLOSURE.ownership(f.session), self.assertRaises(ValueError):
@@ -1697,13 +1763,27 @@ class NativeQueueTests(unittest.TestCase):
         import uuid
         with ReceiptFixture(str(uuid.uuid4())) as f:
             with CLOSURE.resume_guard(f.session, method="turn/start", home=f.home): pass
+            output = "fictional completed command output\n" * (3 * 1024 * 1024)
+            records = f.transcript.read_text()
+            with f.transcript.open("w") as stream:
+                stream.write(records.splitlines(keepends=True)[0])
+                for kind in ("function_call_output", "exec_command_end"):
+                    stream.write(json.dumps({"type": "response_item" if kind == "function_call_output" else "event_msg",
+                        "timestamp": "2026-10-01T01:00:00Z", "payload": {"type": kind, "output": output}}) + "\n")
+                stream.write("".join(records.splitlines(keepends=True)[1:]))
             def thread(request):
                 value = {"id": f.session, "path": str(f.transcript), "status": {"type": "idle"}, "historyMode": "paginated"}
                 if request["params"].get("includeTurns"):
-                    value["turns"] = [{"id": "source-turn", "status": "completed", "items": [
-                        {"id": "long-message", "type": "agentMessage", "text": "source history " * 100000}]}]
+                    value["turns"] = [
+                        {"id": "older-turn", "status": "completed", "items": [{"id": "long-command",
+                         "type": "commandExecution", "status": "completed", "processId": "old-process",
+                         "exitCode": 0, "aggregatedOutput": output}]},
+                        {"id": "source-turn", "status": "completed", "items": [
+                         {"id": "final", "type": "agentMessage", "text": "Safe to exit: yes"}]}]
                 return {"thread": value}
             f.rpc_results["thread/read"] = thread
+            f.execution_items = [{"type": "commandExecution", "status": "completed", "processId": "old-process",
+                                  "exitCode": 0, "aggregatedOutput": output}]
             with CLOSURE.ownership(f.session):
                 proof = asyncio.run(NATIVE.prove_end(f.entry))
                 NATIVE.resolve_pending(f.session, proof)

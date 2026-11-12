@@ -78,6 +78,7 @@ async def native_idle(entry: dict) -> None:
     if entry["harness"] != "codex":
         return
 
+    started = time.monotonic()
     home = Path(entry["codex_home"]).expanduser().resolve(strict=True)
     action = closure.lease_state(entry["session_id"])
     homes = {home, *(Path(value).resolve() for value in closure.action_homes(action)["known"])}
@@ -89,8 +90,9 @@ async def native_idle(entry: dict) -> None:
     paths = native.authenticated_paths(snapshots, observation_homes(strict=True, additional_homes=homes))
     homes.update(Path(value) for value in paths)
     snapshot = {"path": entry["transcript"], "transcripts": snapshots, "home_paths": paths}
+    reads = native.history_read_options(snapshots, started, len(homes) + 1)
     for current in homes:
-        async with native.connection(current) as request:
+        async with native.connection(current, **reads) as request:
             facts = await native.read_thread_facts(request, entry["session_id"])
         native.require_quiet(facts, native.local_snapshot(snapshot, facts, str(current)), native.home_action(action, str(current)))
 

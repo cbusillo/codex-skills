@@ -303,13 +303,13 @@ class OperationTests(unittest.TestCase):
                 self.assertLessEqual(elapsed, args.exit_seconds)
 
     def test_closeout_uses_native_shapes_and_retires_only_verified_closures(self) -> None:
-        for outcome in ("complete", "google_complete", "harness_changed", "finish_refused", "uncertain_exit", "close_interrupted", "close_uncertain", "resumed", "draft_before_clear", "draft_after_idle", "turn_after_idle"):
+        for outcome in ("complete", "google_complete", "harness_changed", "finish_refused", "finish_timeout", "uncertain_exit", "close_interrupted", "close_uncertain", "resumed", "draft_before_clear", "draft_after_idle", "turn_after_idle"):
             with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 entry: dict[str, Any] = {"session_id": "native", "harness": "claude", "supervisor_owned": True,
                          "backend": "tmux", "tmux_session_id": "terminal", "transcript": "relative.jsonl",
                          "pid": 8, "tty": "ttys001", "handoff_url": "https://github.com/owner/repo/issues/1#issuecomment-2"}
-                if outcome in {"draft_before_clear", "draft_after_idle", "turn_after_idle"}:
+                if outcome in {"draft_before_clear", "draft_after_idle", "turn_after_idle", "finish_timeout"}:
                     entry["harness"] = "codex"
                 elif outcome == "google_complete":
                     entry["harness"] = "agy"
@@ -339,6 +339,8 @@ class OperationTests(unittest.TestCase):
                         payload = {"claims_clear": True, "coverage": {"complete": True}}
                     elif action == "finish":
                         payload = {"ok": outcome != "finish_refused", "needs_reconciliation": outcome == "finish_refused"}
+                        if outcome == "finish_timeout" and calls.count("finish") == 1:
+                            payload, code = {"ok": False, "error": "native thread/read timed out"}, 1
                     elif action == "list":
                         payload = [{"session_id": "terminal", "tty": "/dev/ttys001"}] if present else []
                     elif action == "read":
@@ -370,7 +372,7 @@ class OperationTests(unittest.TestCase):
                 close_identity = [str(ledger.resolve()), entry["session_id"]]
                 operation = check_operation.Operation(close_evidence, close_identity)
                 with (patch.object(subprocess, "run", side_effect=command),
-                      patch.object(session_closeout, "native_idle", side_effect=idle),
+                      patch.object(session_closeout, "native_idle", side_effect=idle) as idle_read,
                       patch.object(session_closeout.release, "handoff", return_value={"body": "Session: native"}),
                       patch.object(session_closeout.github_identity, "automation_login", return_value="agent[bot]"),
                       patch.object(session_liveness, "process_absent", side_effect=lambda _: not live),
@@ -387,20 +389,24 @@ class OperationTests(unittest.TestCase):
                         self.assertEqual(failure.exception.gate, "process" if outcome == "harness_changed" else "verdict" if outcome == "turn_after_idle" else "input")
                         self.assertFalse({"send", "finish", "close"}.intersection(calls))
                         self.assertEqual(json.loads(ledger.read_text()), [entry])
-                    elif outcome in {"uncertain_exit", "close_interrupted"}:
+                    elif outcome in {"uncertain_exit", "close_interrupted", "finish_timeout"}:
                         with self.assertRaises(check_operation.GateFailed):
                             session_closeout.closeout(args, operation)
-                        failed_receipt = close_evidence / ("quit.json" if outcome == "uncertain_exit" else "close.json")
+                        failed_receipt = close_evidence / ("quit.json" if outcome in {"uncertain_exit", "finish_timeout"} else "close.json")
                         preserved_receipt = failed_receipt.read_bytes()
+                        idle_calls = idle_read.call_count
                         session_closeout.closeout(args, check_operation.Operation(close_evidence, close_identity))
                         self.assertEqual(failed_receipt.read_bytes(), preserved_receipt)
+                        if outcome == "finish_timeout":
+                            self.assertEqual(idle_read.call_count, idle_calls)
+                            self.assertEqual(calls.count("finish"), 2)
                     elif outcome in {"finish_refused", "close_uncertain", "resumed"}:
                         with self.assertRaises(check_operation.GateFailed):
                             session_closeout.closeout(args, operation)
                         self.assertEqual(json.loads(ledger.read_text()), [entry])
                     else:
                         session_closeout.closeout(args, operation)
-                    if outcome in {"complete", "google_complete", "uncertain_exit", "close_interrupted"}:
+                    if outcome in {"complete", "google_complete", "uncertain_exit", "close_interrupted", "finish_timeout"}:
                         self.assertEqual(json.loads(ledger.read_text()), [])
                         self.assertEqual(calls.count("send"), 1)
                         calls.clear()
