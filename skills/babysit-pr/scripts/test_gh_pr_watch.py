@@ -3878,8 +3878,7 @@ def test_later_attempt_of_older_execution_is_current(monkeypatch, tmp_path, stat
 
 @pytest.mark.parametrize("newest", ["success", "queued", "failure"])
 def test_newest_run_settles_each_workflow_over_phantom_queued_runs(monkeypatch, tmp_path, newest):
-    # cbusillo/codex-skills#4172: four runs GitHub never started or cancelled,
-    # then a newer run of each of the same four workflows on the same head.
+    # https://github.com/cbusillo/codex-skills/pull/4172
     runs, checks = [], []
     for workflow in range(4):
         phantom = execution(10 + workflow, None, workflow_id=71 + workflow, status="queued")
