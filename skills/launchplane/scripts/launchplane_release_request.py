@@ -427,7 +427,7 @@ def _finish_refused_post(h: Any, settings: dict[str, str], intent: Intent, accep
 
 
 def _finish_read_failure(h: Any, intent: Intent, timeout: float, error: Exception) -> int:
-    if isinstance(error, h.LaunchplaneSafetyError) and error.code == "private_result_unavailable":
+    if isinstance(error, h.LaunchplaneSafetyError) and getattr(error, "code", None) == "private_result_unavailable":
         return _finish_private_failure(h, intent, "unavailable")
     if isinstance(error, urllib.error.HTTPError):
         try:
