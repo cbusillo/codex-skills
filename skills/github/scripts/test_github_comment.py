@@ -1622,7 +1622,7 @@ def test_attachment_passthrough_and_failures_never_replay() -> None:
                     patch.object(question_counter, "update", side_effect=update_question), \
                     patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_OWN_USER": "1", "GH_WITH_ENV_TOKEN_OWN_USER_LOGIN": github_comment.ATTACHMENT_OWNER}), \
                     patch.object(github_comment.github_identity, "acts_as_own_user", return_value=mode == "personal"), \
-                    patch.object(github_comment, "people_team", side_effect=lambda login: ["teammate"] if login == "client" else []), \
+                    patch.object(github_comment, "people_team", side_effect=lambda login, **_kwargs: ["teammate"] if login == "client" else []), \
                     patch.object(github_api.github_catalog_health, "marker_fields", return_value="catalog=fixture"), \
                     patch.object(github_comment.subprocess, "run", side_effect=run), \
                     patch.object(github_comment, "_call_api", side_effect=read_api):
@@ -1768,8 +1768,61 @@ def test_client_reply_reads_the_client_team_and_names_who_it_refuses() -> None:
 
         with (patch.object(github_comment.github_identity, "acts_as_own_user", return_value=False),
               patch.object(github_comment.github_identity, "configured_bot_logins", return_value=("own-app[bot]",)),
-              patch.object(github_comment, "people_team", side_effect=lambda login: teams.get(login, []))):
+              patch.object(github_comment, "people_team", side_effect=lambda login, **_kwargs: teams.get(login, []))):
             with_call_stub(callback, run)
+
+
+def test_client_release_reply_recognizes_only_uniquely_owned_director_automation() -> None:
+
+    delivery = "launchplane-delivery-cb[bot]"
+    people = [
+        {"id": "director", "display_name": "Director", "github": {"username": "owner", "bot_usernames": [delivery]}},
+        {"id": "client", "display_name": "Client", "github": {"username": "client"}},
+    ]
+    for scenario in ("release", "outside_person", "outside_bot", "shared_bot", "ambiguous_director", "unreadable_index", "writer"):
+        index = [*people]
+        if scenario == "shared_bot":
+            index.append({"id": "other", "display_name": "Other", "github": {"username": "outside", "bot_usernames": [delivery]}})
+        if scenario == "ambiguous_director":
+            index.append({"id": "other", "display_name": "Other", "github": {"username": "owner"}})
+
+        def callback(method: str, path: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
+            if path == "/user":
+                return success({"login": delivery if scenario == "writer" else "fixture-automation"})
+            if method == "POST":
+                return success(comment_body(1001, body=body["body"]))
+            if path.endswith("/issues/42"):
+                return success({"user": {"login": delivery.upper()}, "body": "@client please review this release."})
+            if "/issues/42/comments?" in path:
+                return success([
+                    comment_body(2, actor="client", body="Thanks."),
+                    comment_body(3, body="Release is ready."),
+                    *([comment_body(4, actor="outside" if scenario == "outside_person" else "outside[bot]")]
+                      if scenario in {"outside_person", "outside_bot"} else []),
+                ])
+            raise AssertionError(path)
+
+        def run(calls: list[dict[str, Any]]) -> None:
+            try:
+                result = github_comment.comment("issue", 42, f"@client reminder from @{delivery.removesuffix('[bot]')}.",
+                                                repo="owner/repo", gh_cmd="fake-gh", client_logins=["client"])
+            except github_comment.CommentError as error:
+                assert scenario != "release", error
+                assert error.failure.write_outcome == "not_started"
+                assert all(call["method"] == "GET" for call in calls)
+            else:
+                assert scenario == "release", scenario
+                assert result["comment_action"] == "created"
+                assert sum(call["method"] == "POST" for call in calls) == 1
+
+        with tempfile.TemporaryDirectory() as directory:
+            index_path = pathlib.Path(directory) / "skills/.local/people.yaml"
+            index_path.parent.mkdir(parents=True)
+            index_path.write_text("people: [invalid" if scenario == "unreadable_index" else json.dumps({"version": 1, "people": index}))
+            with (patch.dict(os.environ, {"CODE_HOME": directory, "GH_WITH_ENV_TOKEN_OWN_USER_LOGIN": "owner"}),
+                  patch.object(github_comment.github_identity, "configured_bot_logins", return_value=()),
+                  patch.object(github_comment.github_identity, "acts_as_own_user", return_value=False)):
+                with_call_stub(callback, run)
 
 
 def main() -> None:

@@ -485,6 +485,17 @@ def github_logins(person: dict[str, Any]) -> tuple[list[str], list[str]]:
     return clean(own), clean(automation)
 
 
+def github_own_automation(logins: set[str], people: list[dict[str, Any]]) -> list[str]:
+    directors = [person for person in people if set(github_logins(person)[0]) & logins]
+    if len(directors) != 1:
+        return []
+    holders: dict[str, set[str]] = {}
+    for person in people:
+        for login in sum(github_logins(person), []):
+            holders.setdefault(login, set()).add(str(person.get("id")))
+    return [login for login in github_logins(directors[0])[1] if len(holders[login]) == 1]
+
+
 def github_team(login: str, people: list[dict[str, Any]]) -> list[str]:
     """The GitHub logins, own and automation, of the person holding `login` and of everyone in their company."""
     login = login.strip().casefold().removeprefix("@")
@@ -611,6 +622,10 @@ def main() -> None:
         help="Treat the query as a GitHub login; print the logins of its person, their agents and their company",
     )
     parser.add_argument(
+        "--github-own-automation", action="store_true",
+        help="Treat the query as a Director's GitHub login; print only their uniquely owned automation logins",
+    )
+    parser.add_argument(
         "--self-test", action="store_true", help="Run built-in resolver smoke tests"
     )
     args = parser.parse_args()
@@ -640,8 +655,9 @@ def main() -> None:
                 "query": args.query,
                 "candidates": [],
             }
-        elif args.github_team:
-            team = github_team(args.query, people)
+        elif args.github_team or args.github_own_automation:
+            team = (github_own_automation({args.query.strip().casefold().removeprefix("@")}, people)
+                    if args.github_own_automation else github_team(args.query, people))
             payload = {"ok": True, "status": "matched" if team else "not_found", "query": args.query,
                        "logins": team}
         else:

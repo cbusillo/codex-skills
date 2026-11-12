@@ -94,8 +94,9 @@ attachment markup and the linked agent line. Keep all verified `--client-login`
 flags on the combined call; attachment basenames and alt text get the same
 outside-mention check. A refusal names the
 participant; it is not permission to omit the
-flag. The Director's agents not configured as own identities, such as the
-product's Launchplane bot, also go in `--client-login`. Unknown and third-party
+flag. The Director's configured bots and uniquely owned automation in the
+people index count as own participants, including a configured delivery App.
+Unknown and third-party
 bots are outside participants. Link screenshot evidence in the
 reply; answer inline review comments on the PR timeline through this flow.
 For a post in the Director's voice, ask approval of the exact text as its own

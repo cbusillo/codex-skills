@@ -529,10 +529,10 @@ def list_comments(
     )
 
 
-def people_team(login: str) -> list[str]:
-    """Logins the people index records for this login's person, their agents and their company; empty if unknown."""
+def people_team(login: str, *, own_automation: bool = False) -> list[str]:
     try:
-        result = subprocess.run(["uv", "run", "--quiet", str(PEOPLE_RESOLVER), login, "--github-team"],
+        result = subprocess.run(["uv", "run", "--quiet", str(PEOPLE_RESOLVER), login,
+                                 "--github-own-automation" if own_automation else "--github-team"],
                                 capture_output=True, text=True, timeout=30)
         logins = json.loads(result.stdout).get("logins") if result.returncode == 0 else []
     except (OSError, subprocess.TimeoutExpired, ValueError, AttributeError):
@@ -564,6 +564,8 @@ def validate_client_reply(
     own = bots | ({own_login.casefold()} if own_login else set())
     if actor.casefold() not in bots or github_identity.acts_as_own_user(repo):
         raise ValueError("Client replies require the configured automation identity")
+    if own_login:
+        own.update(login.casefold() for login in people_team(own_login, own_automation=True))
     allowed = own | client_team(client_logins)
     mention_logins = allowed | {login.removesuffix("[bot]") for login in allowed}
     context = dict(
