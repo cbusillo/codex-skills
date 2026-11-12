@@ -541,8 +541,8 @@ rules. Catalog-generated paths belong in `.gitignore`.
 Running sessions follow the recovery notice in [catalog_runtime.py](scripts/catalog_runtime.py).
 An independently required native-client restart keeps the same session ID and brief.
 Resume a stopped interactive client with `codex resume <session-id>` or
-`claude --resume <session-id>` in the same account. Supervisor-managed Codex
-clients use the [existing resume helper](skills/supervisor/references/helpers.md#terminal-launches).
+`claude --resume <session-id>` in the same account. Supervisor-managed Codex and
+Claude clients use the [guarded source resume](skills/supervisor/references/helpers.md#terminal-launches).
 Resume reopens a stopped session; it does not restart an active turn.
 
 The registered session-start hook also runs this catch-up for its bound catalog,

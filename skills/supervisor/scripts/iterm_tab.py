@@ -1001,7 +1001,8 @@ def with_account(command_text, choice, brief=None, *, coordinate=False):
         prefixes.append(f"export {CLAUDE_SUGGESTION_ENV}=false")
         if CHROME_OPT_IN.is_file():
             prefixes.append(f"export {agent_tools.CHROME_ENV}=0")
-        session_settings = "CLAUDE_ACCOUNT_MOVE_ENABLED=1 " + session_settings
+        move_enabled = int(not choice.get("resume_session_id"))
+        session_settings = f"CLAUDE_ACCOUNT_MOVE_ENABLED={move_enabled} " + session_settings
     command_text = scoped_environment(command_text, session_settings)
     return " && ".join([*prefixes, command_text])
 
@@ -1258,53 +1259,149 @@ def folder_trust_writes(command_text: str, choice: dict, config_path: Path | Non
     return claude_trust.plan(directory, choice, homes, codex_git_trust_root)
 
 
-def prepare_resume(args):
-    """Build only the maintained exact-source helper, never caller shell text."""
-    import session_record
+def claude_resume_identity(entry: dict) -> tuple[Path, Path]:
     import session_liveness
+    import session_record
+
+    session = entry["session_id"]
+    account = entry.get("account", {})
+    if not isinstance(account, dict):
+        raise ValueError("Claude resume account identity is malformed")
+    native = account.get("file_native", {})
+    if (
+        not isinstance(native, dict)
+        or session_liveness.native_uuid(session) != session
+        or account.get("provider") != "anthropic"
+        or native.get("harness") != "claude"
+        or native.get("session_id") != session
+        or not isinstance(native.get("home"), str)
+        or not Path(native["home"]).expanduser().is_absolute()
+    ):
+        raise ValueError("Claude resume requires its original native identity and account home")
+    home = Path(native["home"]).expanduser().resolve(strict=True)
+    transcript = session_record.recorded_transcript(entry["transcript"])
+    if transcript.name != session + ".jsonl" or transcript.parent.parent != (home / "projects").resolve() or not home.is_dir():
+        raise ValueError("Claude resume transcript is outside its original account")
+    records = session_record.read_jsonl(transcript)
+    claim_history.root_records(transcript, "claude", session, records)
+    directories = [record["cwd"] for record in records if record.get("sessionId") == session and "cwd" in record]
+    if not directories or not isinstance(directories[0], str) or not Path(directories[0]).is_absolute():
+        raise ValueError("Claude resume requires its native original working directory")
+    directory = Path(directories[0]).resolve(strict=True)
+    if not directory.is_dir():
+        raise ValueError("Claude resume working directory is unavailable")
+    return home, directory
+
+
+def require_claude_resume_source(entry: dict) -> None:
+    from check_operation import closure
+    from codex_session_proxy import require_resume_available
+
+    session = entry["session_id"]
+    source = closure.resume_record(session, closure.log_rows() if closure.closed_log().exists() else [])
+    if source is not None or closure.action_pending(session):
+        raise ValueError("Claude source has recorded closure or an unresolved action; preserve its existing recovery")
+    require_resume_available(session)
+
+
+def prepare_resume(args: argparse.Namespace) -> tuple[list[str], list[dict | None]]:
+    """Build only the maintained exact-source helper, never caller shell text."""
+    import session_liveness
+    import session_record
     from codex_session_proxy import source_endpoint
 
     session = args.resume_session_id
-    if (args.account_provider != "openai" or not getattr(args, "ledger", None)
-            or getattr(args, "command_file", None) or getattr(args, "brief_file", None) or getattr(args, "brief_issue", None)
-            or getattr(args, "computer_use", None)
-            or getattr(args, "require_browser", False) or getattr(args, "without_browser", False)):
-        raise ValueError("resume needs --account-provider openai and --ledger, without launch/brief files or browser/Computer Use flags")
+    provider = args.account_provider
+    if (
+        provider not in {"openai", "anthropic"}
+        or not getattr(args, "ledger", None)
+        or getattr(args, "command_file", None)
+        or getattr(args, "brief_file", None)
+        or getattr(args, "brief_issue", None)
+        or getattr(args, "computer_use", None)
+        or getattr(args, "require_browser", False)
+        or getattr(args, "without_browser", False)
+    ):
+        raise ValueError(
+            "resume needs --account-provider openai or anthropic and --ledger, without launch/brief files or browser/Computer Use flags"
+        )
     with preparation_read():
         entries = [entry for entry in session_record.load_ledger(args.ledger) if entry["session_id"] == session]
-    if len(entries) != 1 or entries[0].get("supervisor_owned") is not True or entries[0]["harness"] != "codex":
+    harness = "codex" if provider == "openai" else "claude"
+    if len(entries) != 1 or entries[0].get("supervisor_owned") is not True or entries[0]["harness"] != harness:
         raise ValueError("resume source is not uniquely Supervisor-owned in the ledger")
     entry = entries[0]
     if not session_liveness.generation_ended(entry):
         raise ValueError("resume needs the original source's verified exited PID")
-    if not isinstance(entry.get("codex_home"), str):
-        raise ValueError("resume ledger needs the source's absolute codex_home")
-    home = Path(entry["codex_home"]).expanduser()
-    if not home.is_absolute():
-        raise ValueError("resume ledger needs the source's absolute codex_home")
+    directory = None
+    variable = account_choice.ACCOUNT_VARIABLES[provider]
+    if harness == "claude":
+        with preparation_read():
+            home, directory = claude_resume_identity(entry)
+            require_claude_resume_source(entry)
+    else:
+        if not isinstance(entry.get("codex_home"), str):
+            raise ValueError("resume ledger needs the source's absolute codex_home")
+        home = Path(entry["codex_home"]).expanduser()
+        if not home.is_absolute():
+            raise ValueError("resume ledger needs the source's absolute codex_home")
     with preparation_read():
         home = home.resolve(strict=True)
-        transcript = Path(entry["transcript"])
-        if not any(transcript.is_relative_to((home / root).resolve()) for root in ("sessions", "archived_sessions")):
-            raise ValueError("resume transcript is outside the source account")
-        source_endpoint(session, home, transcript=transcript, for_resume=True)
+        if harness == "codex":
+            transcript = Path(entry["transcript"])
+            if not any(transcript.is_relative_to((home / root).resolve()) for root in ("sessions", "archived_sessions")):
+                raise ValueError("resume transcript is outside the source account")
+            source_endpoint(session, home, transcript=transcript, for_resume=True)
         config = account_choice.load_config(args.account_config)
-        accounts = [account for account in config["accounts"] if account["provider"] == "openai"
-                    and Path(account["env"]["CODEX_HOME"]).expanduser().resolve() == home]
+        accounts = [
+            account
+            for account in config["accounts"]
+            if account["provider"] == provider
+            and Path(
+                account["env"].get(variable, str(Path.home() / account_choice.DEFAULT_HOMES[provider]))
+                if harness == "claude"
+                else account["env"][variable]
+            )
+            .expanduser()
+            .resolve()
+            == home
+        ]
     if not config["accounts"] and not config.get("snapshot_command") and args.account is None:
-        choice = account_choice.select("openai", args.account_config)
+        choice = account_choice.select(provider, args.account_config)
     elif len(accounts) != 1 or (args.account is not None and args.account != accounts[0]["name"]):
         raise ValueError("resume requires the source's unique configured account; account switching is unsupported")
     else:
-        choice = account_choice.select("openai", args.account_config, accounts[0]["name"])
+        if harness == "claude" and entry["account"].get("name") != accounts[0]["name"]:
+            raise ValueError("resume configured account differs from the original source")
+        choice = account_choice.select(provider, args.account_config, accounts[0]["name"])
     with preparation_read():
-        if Path(choice["env"]["CODEX_HOME"]).expanduser().resolve() != home:
+        selected = (
+            choice["env"].get(variable, str(Path.home() / account_choice.DEFAULT_HOMES[provider]))
+            if harness == "claude"
+            else choice["env"][variable]
+        )
+        selected_path = Path(selected).expanduser()
+        if (
+            harness == "claude"
+            and (
+                choice.get("provider") != provider
+                or not selected_path.is_absolute()
+                or choice.get("name") != entry["account"].get("name")
+                or entry["account"].get("account_id")
+                and choice.get("account_id") != entry["account"]["account_id"]
+            )
+            or selected_path.resolve() != home
+        ):
             raise ValueError("selected resume account differs from the source")
     # Read the existing daemon only. Recovery never starts or restarts one.
-    preflight_codex_daemon(choice, exact_source=True)
+    if harness == "codex":
+        preflight_codex_daemon(choice, exact_source=True)
     account_choice.prepare_launch(choice)
     choice["resume_session_id"] = session
     choice["resume_source"] = entry
+    if harness == "claude":
+        command = f"cd {shlex.quote(str(directory))} && exec claude --resume {shlex.quote(session)}"
+        return [with_account(command, choice)], [choice]
     invocation = ["uv", "run", str(Path(__file__).with_name("codex-session.py").resolve()),
                   "resume", "--session-id", session, "--codex-home", str(home)]
     settings = [f"{key}={os.path.expanduser(value)}" for key, value in choice["env"].items()]
@@ -1737,7 +1834,100 @@ def validate_resume_input(text, *, tty=None):
         raise ValueError("Run codex-session.py resume --session-id <native-id> --codex-home <source-home> instead; TUI resume bypasses ownership coordination")
 
 
+def claude_resume_metadata(result: dict, choice: dict) -> dict:
+    import session_liveness
+    import tmux_terminal
+
+    source = choice["resume_source"]
+    home, _directory = claude_resume_identity(source)
+    session = choice["resume_session_id"]
+    if (
+        source["session_id"] != session
+        or choice["provider"] != "anthropic"
+        or choice.get("name") != source["account"].get("name")
+        or source["account"].get("account_id")
+        and choice.get("account_id") != source["account"]["account_id"]
+        or Path(choice["env"].get("CLAUDE_CONFIG_DIR", str(Path.home() / account_choice.DEFAULT_HOMES["anthropic"])))
+        .expanduser()
+        .resolve()
+        != home
+    ):
+        raise ValueError("resumed Claude account or native identity differs from its source")
+    if "native_session_id" in result and result["native_session_id"] != session:
+        raise ValueError("retained Claude native identity differs from its source")
+    native = choice.get("file_native")
+    if native is not None and (
+        not isinstance(native, dict)
+        or native.get("harness") != "claude"
+        or native.get("session_id") != session
+        or not isinstance(native.get("home"), str)
+        or Path(native["home"]).expanduser().resolve() != home
+    ):
+        raise ValueError("retained Claude account metadata differs from its source")
+    if result.get("transcript") and Path(result["transcript"]).resolve() != Path(source["transcript"]).resolve():
+        raise ValueError("resumed Claude transcript differs from its source")
+    tty = result.get("tty")
+    if not isinstance(tty, str) or not tty or not isinstance(result.get("session_id"), str):
+        raise ValueError("Claude resume terminal identity is unavailable")
+    if result.get("backend") == "tmux":
+        socket_name = result.get("tmux_socket", "supervisor")
+        if not isinstance(socket_name, str) or not re.fullmatch(r"tmux:" + re.escape(socket_name) + r":[0-9a-f]{32}", result["session_id"]):
+            raise ValueError("Claude resume registration requires its retained managed launch nonce")
+    matches = []
+    for pid, terminal, command in session_liveness.inventory():
+        argv, bounded = session_liveness.process_arguments(pid, command)
+        candidates, kind, exact = session_liveness.invocation(argv, bounded=bounded)
+        if session not in {session_liveness.native_uuid(value) or value for value in candidates}:
+            continue
+        if (
+            not bounded
+            or not argv
+            or session_liveness.harness_family(argv[0]) != "claude"
+            or exact != session
+            or kind != "resume"
+            or terminal != tty.removeprefix("/dev/")
+        ):
+            raise ValueError("Claude resume client is ambiguous or belongs to another terminal")
+        incarnation = session_liveness.native_process_details(pid)
+        if session_liveness.process_arguments(pid, command) != (argv, bounded):
+            raise ValueError("Claude resume client changed during native identification")
+        matches.append((pid, incarnation))
+    if len(matches) != 1:
+        raise ValueError("Claude resume client is not unique on the source terminal")
+    pid, incarnation = matches[0]
+    parent = result.get("pid")
+    if (
+        type(parent) is not int
+        or parent <= 0
+        or pid != parent
+        and not tmux_terminal.belongs_to(pid, parent, tmux_terminal.process_parents())
+    ):
+        raise ValueError("Claude resume client is outside its managed launch")
+    generation = {
+        "pid": pid,
+        "launch_pid": pid,
+        "launch_generation": result["session_id"],
+        "launch_started_at": session_liveness.process_started_at(pid).isoformat(),
+    }
+    current_terminals = [terminal for current, terminal, _command in session_liveness.inventory() if current == pid]
+    if (
+        current_terminals != [tty.removeprefix("/dev/")]
+        or session_liveness.native_process_details(pid) != incarnation
+        or any(result[key] != generation[key] for key in generation if key.startswith("launch_") and key in result)
+    ):
+        raise ValueError("Claude resume process generation changed")
+    result.update(generation, native_session_id=session, transcript=source["transcript"])
+    result.pop("launch_identity_unavailable", None)
+    return result
+
+
 def source_launch_metadata(result, choice):
+    if choice and choice.get("provider") == "anthropic" and choice.get("resume_session_id"):
+        try:
+            return claude_resume_metadata(result, choice)
+        except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+            result["launch_identity_unavailable"] = True
+            return result
     if not choice or choice.get("provider") != "openai":
         return result
     result.pop("launch_identity_unavailable", None)
@@ -1817,7 +2007,7 @@ def build_launch_result(args: argparse.Namespace, identity: dict, choice: dict |
     result = {**lead_metadata(args), **identity}
     if choice:
         result["account"] = account_choice.public(choice)
-        for key in ("native_receipt", "file_native", "claude_native", "repository", "issue"):
+        for key in ("native_receipt", "file_native", "claude_native", "resume_source", "repository", "issue"):
             if key in choice:
                 result[key] = choice[key]
         if choice.get("provider") == "openai":
@@ -1857,6 +2047,11 @@ def guard_lead_launch(operation: Callable[..., Coroutine[Any, Any, Any]]) -> Cal
             return await operation(*arguments)
         metadata = lead_metadata(args)
         if not metadata:
+            if getattr(args, "resume_session_id", None) and getattr(args, "account_provider", None) == "anthropic":
+                from check_operation import closure
+
+                with closure.ownership(args.resume_session_id, create=True):
+                    return await operation(*arguments)
             return await operation(*arguments)
         ledger = getattr(args, "ledger", None)
         if not isinstance(ledger, Path) or getattr(args, "resume_session_id", None):
@@ -1865,8 +2060,8 @@ def guard_lead_launch(operation: Callable[..., Coroutine[Any, Any, Any]]) -> Cal
             if "lead_session_id" in metadata or type(metadata["worker_cap"]) is not int or metadata["worker_cap"] <= 0:
                 raise ValueError("--worker-cap needs a positive cap assigned by the Supervisor to a lead")
             return await operation(*arguments)
-        from check_operation import closure
         from check_changes import save_state
+        from check_operation import closure
         with closure.store_lock(ledger, create=True):
             rows = read_launch_ledger(ledger)
             lead = lead_row(rows, metadata["lead_session_id"])
@@ -1972,8 +2167,12 @@ async def register_resumed_launch(path: Path, result: dict, choice: dict) -> Non
     from check_operation import closure as github_plan_closure
 
     session, source = choice["resume_session_id"], choice["resume_source"]
-    if choice.get("provider") != "openai" or source.get("harness") != "codex" or source.get("supervisor_owned") is not True:
-        raise ValueError("resume registration requires the original Supervisor-owned Codex source")
+    provider = choice.get("provider")
+    harness = "codex" if provider == "openai" else "claude" if provider == "anthropic" else None
+    if not harness or source.get("harness") != harness or source.get("supervisor_owned") is not True:
+        raise ValueError("resume registration requires the original Supervisor-owned source")
+    if "resume_source" in result and result["resume_source"] != source:
+        raise ValueError("retained resume source differs from its verified choice")
     result["resume_source"] = source
     if not all(result.get(key) for key in ("tty", "window_id", "tab_id")):
         await observe_resume_terminal(result)
@@ -1982,6 +2181,12 @@ async def register_resumed_launch(path: Path, result: dict, choice: dict) -> Non
     while True:
         try:
             with github_plan_closure.ownership(session, create=True):
+                if harness == "claude":
+                    saved = github_plan_closure.resume_record(
+                        session, github_plan_closure.log_rows() if github_plan_closure.closed_log().exists() else []
+                    )
+                    if saved is not None or github_plan_closure.action_pending(session):
+                        raise ValueError("Claude registration has closed or unresolved source authority")
                 source_launch_metadata(result, choice)
                 if not result.get("launch_identity_unavailable"):
                     refresh_resume_ledger(path, result, source, session)
@@ -1994,10 +2199,10 @@ async def register_resumed_launch(path: Path, result: dict, choice: dict) -> Non
 
 
 def refresh_resume_ledger(path: Path, result: dict, source: dict, session: str) -> None:
-    from check_operation import closure as github_plan_closure
     import session_liveness
     import session_record
     from check_changes import save_state
+    from check_operation import closure as github_plan_closure
 
     if result.get("native_session_id") != session or source["session_id"] != session:
         raise ValueError("resume native identity differs from its source")
@@ -2012,9 +2217,10 @@ def refresh_resume_ledger(path: Path, result: dict, source: dict, session: str) 
         entry.pop("handoff_url", None)
         if Path(result["transcript"]).resolve() != Path(source["transcript"]).resolve():
             raise ValueError("resumed account or transcript differs from the source")
-        for key in ("pid", "tty", "transcript", "codex_home", "launch_pid", "launch_generation", "launch_started_at",
-                    "window_id", "tab_id"):
+        for key in ("pid", "tty", "transcript", "launch_pid", "launch_generation", "launch_started_at", "window_id", "tab_id"):
             entry[key] = result[key]
+        if source["harness"] == "codex":
+            entry["codex_home"] = result["codex_home"]
         for key in ("tmux_session_id", "iterm_session_id", "tmux_socket"):
             entry.pop(key, None)
         entry["backend"] = result.get("backend", "iterm")
@@ -2038,8 +2244,13 @@ async def register_fresh_launch(args: argparse.Namespace, result: dict, choice: 
     result.update(lead_metadata(args))
     retained = not choice and bool(result.get("account", {}).get("resume_session_id"))
     if retained:
-        choice = {**result["account"], "resume_source": result["resume_source"],
-                  "env": {"CODEX_HOME": result["resume_source"]["codex_home"]}}
+        source = result["resume_source"]
+        if source.get("harness") == "claude":
+            home, _directory = claude_resume_identity(source)
+            environment = {"CLAUDE_CONFIG_DIR": str(home)}
+        else:
+            environment = {"CODEX_HOME": source["codex_home"]}
+        choice = {**result["account"], "resume_source": result["resume_source"], "env": environment}
         await observe_resume_terminal(result)
     if getattr(args, "resume_session_id", None) or retained:
         if not choice or choice.get("resume_session_id") != getattr(args, "resume_session_id", choice["resume_session_id"]):
@@ -2551,8 +2762,8 @@ def main():
                      help="child issue URL; append its Current Status Brief verbatim to --brief-file's standard header")
     new.add_argument("--agent-override", metavar="REASON",
                      help="explicit Director family exception; forwards the same reason to the worker claim")
-    new.add_argument("--resume-session-id", help="resume one exact Supervisor-owned Codex source from --ledger")
-    new.add_argument("--ledger", type=Path, help="private source ledger for resume or atomic fresh managed Codex registration")
+    new.add_argument("--resume-session-id", help="resume one exact exited Supervisor-owned Codex or Claude source from --ledger")
+    new.add_argument("--ledger", type=Path, help="private source ledger for exact resume or atomic fresh registration")
     new.add_argument("--lead-session-id", help="launch workers for this lead's native session in the shared ledger")
     new.add_argument("--worker-cap", type=int, help="Supervisor-assigned concurrent worker cap for a new milestone lead")
     new.add_argument(

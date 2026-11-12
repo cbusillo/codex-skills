@@ -7,15 +7,13 @@
 
 import argparse
 import asyncio
-from contextlib import nullcontext
-from datetime import datetime, timedelta, timezone
+import copy
 import json
 import os
-from pathlib import Path
 import shlex
-import socket
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -23,14 +21,20 @@ import threading
 import time
 import unittest
 import uuid
-from unittest.mock import AsyncMock, patch
+from contextlib import nullcontext
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import account_choice
+import check_operation
 import iterm2
-import session_liveness
 import iterm_tab
+import session_closeout
+import session_liveness
 import tmux_terminal
+from check_operation import closure, native, release
 
 
 class ViewTests(unittest.TestCase):
@@ -1248,6 +1252,166 @@ for line in sys.stdin:
             applied = self.terminal.close(row["session_id"], self.ledger)
         self.assertTrue(applied["close_requested"])
         self.assertNotIn(row["session_id"], {pane["session_id"] for pane in self.terminal.list()})
+
+
+class ManagedClaudeResumeTests(TmuxFixture):
+    def test_original_account_same_row_retained_registration_and_actual_exit_closeout(self) -> None:
+        self.qualify_resume(early=False)
+
+    def test_startup_stop_retains_source_before_native_metadata_for_registration(self) -> None:
+        self.qualify_resume(early=True)
+
+    def qualify_resume(self, *, early: bool) -> None:
+        self.choice["name"] = "fictional"
+        self.enterContext(patch.dict(os.environ, {"PATH": str(self.root) + os.pathsep + os.environ["PATH"]}))
+        self.enterContext(
+            patch.object(account_choice, "load_config", return_value={"accounts": [self.choice], "snapshot_command": None})
+        )
+        self.enterContext(patch.object(account_choice, "select", return_value=self.choice))
+        log = self.root / "canonical-closed.json"
+        self.enterContext(patch.object(closure, "closed_log", return_value=log))
+        self.agent.write_text(
+            f"#!{sys.executable}\n"
+            + """import json, os, sys
+from pathlib import Path
+from datetime import datetime, timezone
+selector = '--resume' if '--resume' in sys.argv else '--session-id'
+identity = sys.argv[sys.argv.index(selector) + 1]
+path = Path(os.environ['CLAUDE_CONFIG_DIR']) / 'projects/fictional' / (identity + '.jsonl')
+path.parent.mkdir(parents=True, exist_ok=True)
+with path.open('a') as stream:
+    stream.write(json.dumps({'type':'assistant','sessionId':identity,'cwd':os.getcwd(),'timestamp':datetime.now(timezone.utc).isoformat(),'message':{'content':'Safe to exit: yes','stop_reason':'end_turn'}}) + '\\n')
+print('READY:' + json.dumps({'session':identity,'home':os.environ.get('CLAUDE_CONFIG_DIR'),'move':os.environ.get('CLAUDE_ACCOUNT_MOVE_ENABLED'),'cwd':os.getcwd()}), flush=True)
+print('Working (0s • esc to interrupt)', flush=True)
+print('› ', end='', flush=True)
+for line in sys.stdin:
+    if line.strip() == '/exit':
+        break
+"""
+        )
+        self.launch(ledger=self.ledger)
+        original = json.loads(self.ledger.read_text())[0]
+        self.session = original["session_id"]
+        self.operate(
+            "send", session_id=original["tmux_session_id"], text="/exit", text_file=None, verified_target=True, no_submit=False
+        )
+        self.assertTrue(session_liveness.process_absent(original["pid"]))
+        original["lead_session_id"] = str(uuid.uuid4())
+        original["lead_launch_id"] = "existing-reservation"
+        peer = {**original, "session_id": original["lead_session_id"], "pid": 999999, "worker_cap": 1, "worker_launches": {}}
+        peer.pop("lead_session_id")
+        peer.pop("lead_launch_id")
+        self.ledger.write_text(json.dumps([original, peer]))
+        self.assertFalse(log.exists())
+        options = dict(
+            window_id=self.window,
+            resume_session_id=self.session,
+            ledger=self.ledger,
+            account_provider="anthropic",
+            account_config=None,
+            account=None,
+        )
+        failure_gate = (
+            patch.object(
+                iterm_tab,
+                "verify_startup",
+                side_effect=iterm_tab.StartupFailure({"dead": False, "screen": ["Fictional blocked startup"]}),
+            )
+            if early
+            else patch.object(iterm_tab, "refresh_resume_ledger", side_effect=ValueError("fictional post-start registration stop"))
+        )
+        with failure_gate:
+            with self.assertRaises(iterm_tab.LaunchFailure) as failure:
+                self.operate("new", **options)
+        receipt = failure.exception.detail["failed_launch"]["launch"]
+        self.assertEqual(json.loads(self.ledger.read_text()), [original, peer])
+        self.assertNotEqual(receipt["session_id"], original["tmux_session_id"])
+        self.wait_screen(receipt["session_id"], "READY:")
+        pane = self.terminal.select(receipt["session_id"])
+        lines = self.terminal.run("capture-pane", "-p", "-J", "-t", pane["pane_id"]).stdout.splitlines()
+        ready = next(line.split("READY:", 1)[1] for line in lines if "READY:" in line)
+        observed = json.loads(ready)
+        self.assertEqual(observed["session"], self.session)
+        environment = self.choice["env"]
+        assert isinstance(environment, dict)
+        self.assertEqual(Path(observed["home"]), Path(environment["CLAUDE_CONFIG_DIR"]))
+        self.assertEqual(observed["move"], "0")
+        self.assertEqual(Path(observed["cwd"]).resolve(), self.root.resolve())
+        self.assertEqual(receipt["resume_source"]["session_id"], original["session_id"])
+        for changes in (
+            {"native_session_id": str(uuid.uuid4())},
+            {"launch_generation": "foreign-generation"},
+            {"launch_started_at": "2000-01-01T00:00:00+00:00"},
+            {"pid": 0},
+            {"session_id": original["tmux_session_id"]},
+            {"transcript": str(self.root / "foreign.jsonl")},
+        ):
+            invalid = {**copy.deepcopy(receipt), **changes}
+            before_invalid = self.ledger.read_bytes()
+            with self.subTest(changes=changes), patch.object(iterm_tab, "LAUNCH_TIMEOUT", 0.01), self.assertRaises(ValueError):
+                asyncio.run(iterm_tab.register_fresh_launch(argparse.Namespace(ledger=self.ledger), invalid, None))
+            self.assertEqual(self.ledger.read_bytes(), before_invalid)
+        asyncio.run(iterm_tab.register_fresh_launch(argparse.Namespace(ledger=self.ledger), receipt, None))
+        refreshed, unchanged = json.loads(self.ledger.read_text())
+        self.assertEqual(unchanged, peer)
+        self.assertEqual(refreshed["session_id"], original["session_id"])
+        self.assertEqual(refreshed["account"], original["account"])
+        self.assertEqual(refreshed["lead_session_id"], original["lead_session_id"])
+        self.assertEqual(refreshed["lead_launch_id"], original["lead_launch_id"])
+        self.assertEqual(Path(refreshed["transcript"]).resolve(), Path(original["transcript"]).resolve())
+        self.assertNotEqual(refreshed["pid"], original["pid"])
+        self.assertEqual(refreshed["launch_pid"], refreshed["pid"])
+        self.assertEqual(refreshed["launch_generation"], receipt["session_id"])
+        self.assertFalse(log.exists())
+        ledger_before = self.ledger.read_bytes()
+        asyncio.run(iterm_tab.register_fresh_launch(argparse.Namespace(ledger=self.ledger), receipt, None))
+        self.assertEqual(self.ledger.read_bytes(), ledger_before)
+        with self.assertRaises(ValueError):
+            iterm_tab.prepare_launches(argparse.Namespace(**options))
+        with self.assertRaises(ValueError):
+            native.verify_source_process(refreshed)
+        self.operate("send", session_id=receipt["session_id"], text="/exit", text_file=None, verified_target=True, no_submit=False)
+        self.assertTrue(session_liveness.process_absent(refreshed["pid"]))
+        native.verify_source_process(refreshed)
+        operation = check_operation.Operation(self.root / "normal-closeout", [str(self.ledger), self.session])
+        args = argparse.Namespace(
+            ledger=self.ledger,
+            session_id=self.session,
+            supervisor_session=original["lead_session_id"],
+            owner="fictional",
+            exit_seconds=1,
+            handoff_url=None,
+        )
+        claims = {"ok": True, "claims_clear": True, "coverage": {"complete": True}, "released_claims": []}
+        gates = []
+
+        def run(_operation: object, gate: str, _command: list[str], **_kwargs: object) -> dict | list:
+            gates.append(gate)
+            if gate == "claims":
+                return claims
+            if gate == "finish":
+                release.record_closure(log, refreshed, args.supervisor_session)
+                return {"ok": True, "needs_reconciliation": False}
+            if gate in {"terminals", "disappearance"}:
+                return self.terminal.list()
+            if gate == "close":
+                return self.terminal.close(receipt["session_id"], self.ledger)
+            raise AssertionError(gate)
+
+        with (
+            patch.object(check_operation.Operation, "run", run),
+            patch.object(session_closeout, "verify_handoff"),
+            patch.object(session_closeout.github_identity, "automation_login", return_value="fictional[bot]"),
+            patch.object(release, "transcript_roots", return_value=[str(self.root / "account/projects")]),
+        ):
+            session_closeout.closeout(args, operation)
+        self.assertIn("finish", gates)
+        self.assertEqual(json.loads(self.ledger.read_text()), [peer])
+        closed = json.loads(log.read_text())[0]
+        self.assertEqual(closed["pid"], refreshed["pid"])
+        self.assertEqual(closed["launch_generation"], refreshed["launch_generation"])
+        self.assertTrue(closed["process_exit_verified"])
+        self.assertTrue(all(pane["session_id"] != receipt["session_id"] for pane in self.terminal.list()))
 
 
 class DetachedTerminalTests(TmuxFixture):

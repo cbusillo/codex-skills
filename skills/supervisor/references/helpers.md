@@ -2360,8 +2360,21 @@ current exit. Other owners/Apps never authorize identity switching. Disposable
 an action barrier/freeze; never delete leases or restart running/draining daemons.
 A stopped daemon may use its exact configured-home native `daemon start` route.
 
-An exited Codex source resumes through guarded `new --resume-session-id` on
-its original account. After retirement, verify its exact canonical closed-log
+An exited Supervisor-owned source in the active ledger resumes through guarded
+`new --resume-session-id` on its original account: `--account-provider openai`
+for Codex or `anthropic` for Claude. Claude retains its native original working
+directory and account home, including configured shared project storage; account
+moving is disabled for this exact-source invocation.
+
+A live manually resumed client without a maintained launch receipt stays
+unregistered. Its owning Supervisor finishes and exits that client first. A
+finished source can then use the existing guarded ended-session recovery above;
+a continuing source uses this exact-source launch, which refreshes its original
+row. For a managed partial launch, preserve its real returned launch object and use
+`register --receipt-file` without launching again, including after an early
+startup stop. Normal closeout still requires the refreshed process to exit.
+
+After a Codex source's retirement, verify its exact canonical closed-log
 source row and export that unchanged row to private JSON, preserving absolute
 native paths and original custody. Re-register it with `iterm_tab.py register
 --entry-file <verified-closed-source.json> --ledger <original-ledger.json>`.
@@ -2371,7 +2384,8 @@ native account. For a lead worker, the ledger lock protects counting it with act
 workers and pending reservations against the lead's existing cap. Restoration consumes
 no fresh launch reservation and does not resume the source. Fresh workers need their retained
 launch reservation; caller JSON alone never authorizes restoration.
-Then use the original owned ledger, with no command/brief/browser files:
+Use the original owned ledger, with no command/brief/browser files. This is the
+Codex example; Claude uses `--account-provider anthropic` in the same launch:
 
 ```sh
 uv run skills/supervisor/scripts/iterm_tab.py --backend tmux new --window-id <container-id> --resume-session-id <native-id> --ledger <original-ledger.json> --account-provider openai
