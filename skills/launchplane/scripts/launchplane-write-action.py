@@ -12409,6 +12409,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     add_candidate_release_parser(subparsers)
     from launchplane_release_request import add_parser as add_release_request_parser
     add_release_request_parser(subparsers)
+    from launchplane_release_continuation import add_parser as add_release_continuation_parser
+    add_release_continuation_parser(subparsers)
 
     subparsers.add_parser(
         "operator-config-diagnostic",
@@ -13414,6 +13416,9 @@ def main(argv: list[str]) -> int:
         from launchplane_release_request import COMMANDS as RELEASE_REQUEST_COMMANDS, execute as execute_release_request
         if args.command in RELEASE_REQUEST_COMMANDS:
             return execute_release_request(sys.modules[__name__], args)
+        from launchplane_release_continuation import COMMANDS as RELEASE_CONTINUATION_COMMANDS, execute as execute_release_continuation
+        if args.command in RELEASE_CONTINUATION_COMMANDS:
+            return execute_release_continuation(sys.modules[__name__], args)
         if args.command in NAMES_ONLY_READS:
             context = _request_identifier(args.context)
             instance = _request_identifier(args.instance) if args.command.startswith("instance-") else ""
