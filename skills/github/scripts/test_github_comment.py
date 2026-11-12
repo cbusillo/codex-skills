@@ -28,6 +28,7 @@ os.environ["GH_WITH_ENV_TOKEN_EXPECTED_LOGIN"] = "fixture-automation"
 import github_api
 import github_comment
 from skills.direction.scripts import question_id as question_counter
+from skills.people.scripts import resolve_person
 from github_fixture_support import api_failure, api_success, with_call_stub
 
 
@@ -1775,9 +1776,6 @@ def test_client_reply_reads_the_client_team_and_names_who_it_refuses() -> None:
 
 
 def test_client_release_reply_recognizes_only_uniquely_owned_director_automation() -> None:
-    sys.path.append(str(pathlib.Path(__file__).resolve().parents[2] / "people/scripts"))
-    import resolve_person
-
     delivery = "launchplane-delivery-cb[bot]"
     people = [
         {"id": "director", "display_name": "Director", "organization": {"company": "Director Company"},
