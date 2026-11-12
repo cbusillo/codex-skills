@@ -9,6 +9,7 @@ import argparse
 import http.client
 import importlib.util
 import json
+import os
 import sys
 import urllib.error
 import urllib.parse
@@ -17,7 +18,6 @@ from typing import Any, BinaryIO, NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from launchplane_safety import validate_service_url  # noqa: E402
-from launchplane_testing_state import open_private_response, save_private_response as save_evidence  # noqa: E402
 
 SPEC = importlib.util.spec_from_file_location("caller_operator", Path(__file__).with_name("launchplane-write-action.py"))
 assert SPEC is not None and SPEC.loader is not None
@@ -36,7 +36,23 @@ class Operation(NamedTuple):
 
 
 def open_evidence(path: str) -> BinaryIO:
-    return open_private_response(operator, path)
+    target = Path(path).expanduser().absolute()
+    if "task-evidence" not in target.parent.parts or target.parent.resolve(strict=True) != target.parent:
+        raise ValueError("private_task_evidence_required")
+    repository = operator.active_repo_root()
+    if repository is not None and target.is_relative_to(repository):
+        raise ValueError("private_task_evidence_required")
+    descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    return os.fdopen(descriptor, "wb")
+
+
+def save_evidence(evidence: BinaryIO, raw: bytes) -> bool:
+    try:
+        evidence.write(raw)
+        evidence.flush()
+        return True
+    except (OSError, ValueError):
+        return False
 
 
 def resolve_schema(schema: dict[str, Any], document: dict[str, Any]) -> dict[str, Any]:

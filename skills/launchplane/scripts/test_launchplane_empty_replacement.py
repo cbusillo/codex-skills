@@ -5,6 +5,7 @@
 # ///
 from __future__ import annotations
 
+import base64
 import copy
 import importlib.util
 import io
@@ -31,22 +32,44 @@ class PrivateReplacementTests(unittest.TestCase):
     def setUp(self) -> None:
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve() / "task-evidence"
         self.root.mkdir()
-        self.body = {"schema_version": 1, "product": "fictional-odoo", "replacement": {
-            "product": "fictional-odoo", "instance": "prod", "strategy": "recreate-in-place",
-            "data_source_mode": "empty", "allow_empty_data": True, "confirmation": "private-confirmation",
-            "artifact_id": "fictional-artifact", "source_git_ref": "a" * 40, "expected_current_artifact_id": "",
-        }}
-        self.response: Any = {"status": "accepted", "trace_id": "trace-fictional", "records": {}, "result": {
-            "product": self.body["product"], "instance": "prod", "plan_status": "ready", "strategy": "recreate-in-place",
-            "data_source_mode": "empty", "allow_empty_data": True,
-            "expected_artifact_id": "fictional-artifact", "expected_source_git_ref": "a" * 40,
-            "current_target": {"target_name": "private-target", "domains": ["private.invalid"], "volumes": ["private-volume"]},
-        }}
+        self.body = {
+            "schema_version": 1,
+            "product": "fictional-odoo",
+            "replacement": {
+                "product": "fictional-odoo",
+                "instance": "prod",
+                "strategy": "recreate-in-place",
+                "data_source_mode": "empty",
+                "allow_empty_data": True,
+                "confirmation": "private-confirmation",
+                "artifact_id": "fictional-artifact",
+                "source_git_ref": "a" * 40,
+                "expected_current_artifact_id": "",
+            },
+        }
+        self.response: Any = {
+            "status": "accepted",
+            "trace_id": "trace-fictional",
+            "records": {},
+            "result": {
+                "product": self.body["product"],
+                "instance": "prod",
+                "plan_status": "ready",
+                "strategy": "recreate-in-place",
+                "data_source_mode": "empty",
+                "allow_empty_data": True,
+                "expected_artifact_id": "fictional-artifact",
+                "expected_source_git_ref": "a" * 40,
+                "current_target": {"target_name": "private-target", "domains": ["private.invalid"], "volumes": ["private-volume"]},
+            },
+        }
         self.status = 202
         self.sent: list[dict[str, Any]] = []
         self.raw: bytes | None = None
         self.error: Exception | None = None
-        self.enterContext(patch.object(helper, "resolve_settings", return_value={"service_url": "https://service.invalid", "token": "fixture"}))
+        self.enterContext(
+            patch.object(helper, "resolve_settings", return_value={"service_url": "https://service.invalid", "token": "fixture"})
+        )
         self.enterContext(patch.object(helper, "request_launchplane_response", side_effect=self.transport))
 
     def transport(self, **kwargs: Any) -> Any:
@@ -57,13 +80,15 @@ class PrivateReplacementTests(unittest.TestCase):
         response.status = self.status
         return response
 
-    def invoke(self, command: str, *, body: dict[str, Any] | None = None, review: Path | None = None, result: Path | None = None) -> tuple[int, dict[str, Any], Path]:
+    def invoke(
+        self, command: str, *, body: dict[str, Any] | None = None, review: Path | None = None, result: Path | None = None
+    ) -> tuple[int, dict[str, Any], Path]:
         request_file = self.root / "request.json"
         request_file.write_text(json.dumps(self.body if body is None else body))
         result = result or self.root / f"result-{len(self.sent)}.json"
         argv = [command, "--payload-file", str(request_file), "--result-file", str(result)]
         if command.endswith("apply"):
-            argv += ["--idempotency-key", "fictional-original-key", "--reviewed-dry-run"]
+            argv += ["--idempotency-key", "fictional-original-key"]
             if review is not None:
                 argv += ["--reviewed-plan-file", str(review)]
         output = io.StringIO()
@@ -77,7 +102,7 @@ class PrivateReplacementTests(unittest.TestCase):
         self.assertEqual(self.sent[0]["body"], self.body)
         self.assertEqual(self.sent[0]["path"], helper.helper_command_path("target-replacement-plan-read"))
         saved = json.loads(result.read_text())
-        self.assertEqual(saved["response"], self.response)
+        self.assertEqual(json.loads(base64.b64decode(saved["raw_response_base64"])), self.response)
         self.assertEqual(saved["request"], self.body)
         self.assertEqual(stat.S_IMODE(result.stat().st_mode), 0o600)
         for private in ("private-target", "private.invalid", "private-volume", "private-confirmation", "fictional-original-key"):
@@ -87,7 +112,12 @@ class PrivateReplacementTests(unittest.TestCase):
     def test_apply_requires_exact_ready_review_before_any_request(self) -> None:
         _, _, review = self.invoke("target-replacement-plan-read")
         self.sent.clear()
-        for field, value in (("confirmation", "different"), ("artifact_id", "different"), ("instance", "testing"), ("allow_empty_data", False)):
+        for field, value in (
+            ("confirmation", "different"),
+            ("artifact_id", "different"),
+            ("instance", "testing"),
+            ("reason", "changed intent"),
+        ):
             with self.subTest(field=field):
                 changed = copy.deepcopy(self.body)
                 changed["replacement"][field] = value
@@ -97,19 +127,39 @@ class PrivateReplacementTests(unittest.TestCase):
 
     def test_apply_retains_service_receipt_without_public_private_fields(self) -> None:
         _, _, review = self.invoke("target-replacement-plan-read")
-        self.response = {"status": "accepted", "result": {"operation_id": "operation-fictional", "product": self.body["product"], "instance": "prod", "request": self.body["replacement"], "idempotency_key": "fictional-original-key", "status": "queued"}}
+        self.response = {
+            "status": "accepted",
+            "result": {
+                "operation_id": "operation-fictional",
+                "product": self.body["product"],
+                "instance": "prod",
+                "request": self.body["replacement"],
+                "idempotency_key": "fictional-original-key",
+                "status": "queued",
+            },
+        }
         code, public, result = self.invoke("target-replacement-apply", review=review)
         self.assertEqual(code, 0)
         self.assertEqual(self.sent[-1]["idempotency_key"], "fictional-original-key")
         self.assertEqual(self.sent[-1]["path"], helper.helper_command_path("target-replacement-apply"))
-        self.assertEqual(json.loads(result.read_text())["response"], self.response)
+        self.assertEqual(json.loads(base64.b64decode(json.loads(result.read_text())["raw_response_base64"])), self.response)
         self.assertNotIn("private-confirmation", json.dumps(public))
         self.assertEqual(len(self.sent), 2)
 
     def test_policy_apply_carries_reviewed_service_digest_and_exact_intent(self) -> None:
-        policy = {"schema_version": 1, "product": "fictional-odoo", "context": "fictional", "instance": "prod", "enabled": True,
-            "approval_issue_url": "https://github.com/example/fictional/issues/1", "data_source_mode": "empty", "confirmation": "private-confirmation",
-            "expected_target_name": "private-target", "expected_domains": ["private.invalid"], "reason": "Fictional qualification"}
+        policy = {
+            "schema_version": 1,
+            "product": "fictional-odoo",
+            "context": "fictional",
+            "instance": "prod",
+            "enabled": True,
+            "approval_issue_url": "https://github.com/example/fictional/issues/1",
+            "data_source_mode": "empty",
+            "confirmation": "private-confirmation",
+            "expected_target_name": "private-target",
+            "expected_domains": ["private.invalid"],
+            "reason": "Fictional qualification",
+        }
         self.response = {"status": "accepted", "result": {**policy, "mode": "dry-run", "plan_sha256": "b" * 64, "applied": False}}
         code, public, review = self.invoke("prelaunch-rebuild-policy-dry-run", body=policy)
         self.assertEqual(code, 0)
@@ -122,7 +172,12 @@ class PrivateReplacementTests(unittest.TestCase):
         self.assertEqual(len(self.sent), 2)
 
     def test_scope_rejects_unrelated_policy_or_replacement_inputs(self) -> None:
-        for replacement in ({"production_use": "prelaunch"}, {"runtime_sync": True}, {"verify_health": False}, {"strategy": "replace-and-cutover"}):
+        for replacement in (
+            {"production_use": "prelaunch"},
+            {"runtime_sync": True},
+            {"verify_health": False},
+            {"strategy": "replace-and-cutover"},
+        ):
             body = copy.deepcopy(self.body)
             body["replacement"].update(replacement)
             code, _, _ = self.invoke("target-replacement-plan-read", body=body)
@@ -130,11 +185,14 @@ class PrivateReplacementTests(unittest.TestCase):
         self.assertEqual(self.sent, [])
 
     def test_error_and_malformed_responses_are_saved_privately_without_retries(self) -> None:
-        for raw, status in ((b'{"error":{"code":"authorization_denied","message":"private-target private.invalid"}}', 403), (b"private-target malformed", 502)):
+        for raw, status in (
+            (b'{"error":{"code":"authorization_denied","message":"private-target private.invalid"}}', 403),
+            (b"private-target malformed", 502),
+        ):
             self.raw, self.status = raw, status
             code, public, result = self.invoke("target-replacement-plan-read")
             self.assertNotEqual(code, 0)
-            self.assertIn(raw.decode(), result.read_text() if status == 502 else json.dumps(json.loads(result.read_text())["response"], separators=(",", ":")))
+            self.assertEqual(base64.b64decode(json.loads(result.read_text())["raw_response_base64"]), raw)
             self.assertNotIn("private-target", json.dumps(public))
         self.assertEqual(len(self.sent), 2)
 
@@ -150,14 +208,16 @@ class PrivateReplacementTests(unittest.TestCase):
         _, _, review = self.invoke("target-replacement-plan-read")
         original = json.loads(review.read_text())
         self.sent.clear()
-        for field, value in (("service_fingerprint", "different"), ("response", []), ("http_status", 403)):
+        for field, value in (("service_fingerprint", "different"), ("raw_response_base64", "W10="), ("http_status", 403)):
             changed = {**original, field: value}
             review.write_text(json.dumps(changed))
             code, _, _ = self.invoke("target-replacement-apply", review=review)
             self.assertNotEqual(code, 0)
         for field, value in (("plan_status", "blocked"), ("instance", "testing"), ("data_source_mode", "existing")):
             changed = copy.deepcopy(original)
-            changed["response"]["result"][field] = value
+            response = json.loads(base64.b64decode(changed["raw_response_base64"]))
+            response["result"][field] = value
+            changed["raw_response_base64"] = base64.b64encode(json.dumps(response).encode()).decode()
             review.write_text(json.dumps(changed))
             code, _, _ = self.invoke("target-replacement-apply", review=review)
             self.assertNotEqual(code, 0)
@@ -172,6 +232,53 @@ class PrivateReplacementTests(unittest.TestCase):
         self.assertEqual(json.loads(result.read_text())["request"], self.body)
         self.assertNotIn("private-target", json.dumps(public))
         self.assertEqual(len(self.sent), 2)
+
+    def test_no_candidate_plan_can_review_the_current_artifact(self) -> None:
+        del self.body["replacement"]["artifact_id"]
+        del self.body["replacement"]["source_git_ref"]
+        self.response["result"].update(expected_artifact_id="current-artifact", expected_source_git_ref="b" * 40)
+        self.status = 200
+        _, _, review = self.invoke("target-replacement-plan-read")
+        self.response = {
+            "status": "accepted",
+            "result": {
+                "product": self.body["product"],
+                "instance": "prod",
+                "operation_id": "operation-fictional",
+                "request": self.body["replacement"],
+                "idempotency_key": "fictional-original-key",
+            },
+        }
+        code, _, _ = self.invoke("target-replacement-apply", review=review)
+        self.assertEqual(code, 0)
+
+    def test_policy_review_mismatch_and_unapplied_receipts_do_not_report_success(self) -> None:
+        policy = {
+            "product": "fictional-odoo",
+            "context": "fictional",
+            "instance": "prod",
+            "enabled": False,
+            "reason": "Fictional policy",
+        }
+        self.response = {"status": "accepted", "result": {"mode": "dry-run", "applied": False, "plan_sha256": "c" * 64}}
+        _, _, review = self.invoke("prelaunch-rebuild-policy-dry-run", body=policy)
+        before = len(self.sent)
+        code, _, _ = self.invoke("prelaunch-rebuild-policy-apply", body={**policy, "context": "other"}, review=review)
+        self.assertNotEqual(code, 0)
+        self.assertEqual(len(self.sent), before)
+        self.response = {"status": "accepted", "result": {"mode": "dry-run", "applied": False}}
+        code, public, _ = self.invoke("prelaunch-rebuild-policy-apply", body=policy, review=review)
+        self.assertNotEqual(code, 0)
+        self.assertEqual(public["status"], "outcome_unknown")
+
+    def test_misaligned_apply_receipt_is_unknown_and_private_raw_reply_survives(self) -> None:
+        _, _, review = self.invoke("target-replacement-plan-read")
+        self.raw = b'{"status":"accepted", "result":{"operation_id":"private-target"}, "duplicate":1,"duplicate":2}'
+        code, public, result = self.invoke("target-replacement-apply", review=review)
+        self.assertNotEqual(code, 0)
+        self.assertEqual(public["status"], "outcome_unknown")
+        self.assertEqual(base64.b64decode(json.loads(result.read_text())["raw_response_base64"]), self.raw)
+        self.assertNotIn("private-target", json.dumps(public))
 
 
 if __name__ == "__main__":
