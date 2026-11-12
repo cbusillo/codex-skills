@@ -1660,8 +1660,8 @@ class NativeQueueTests(unittest.TestCase):
     def test_saved_recovery_rechecks_guarded_replacement_without_changing_source_identity(self):
         import uuid
         SESSIONS.native_helpers()
-        import tmux_terminal
-        for changed in (None, "source_resume", "unguarded", "orphan", "source_pid"):
+        tmux_terminal = importlib.import_module("tmux_terminal")
+        for changed in (None, "fresh_local", "source_resume", "unregistered_remote", "orphan", "source_pid"):
             with self.subTest(changed=changed), ReceiptFixture(str(uuid.uuid4())) as f:
                 CLOSURE.replace_rows([])
                 entry = {**f.entry, "recovery": {"kind": "gone"}, "tmux_socket": "fixture",
@@ -1681,13 +1681,15 @@ class NativeQueueTests(unittest.TestCase):
                     before = f.log.read_bytes()
                     if changed == "source_resume":
                         f.process_rows.append((789, "other-tty", "codex resume " + f.session))
-                    elif changed == "unguarded":
+                    elif changed == "fresh_local":
+                        f.process_rows[1] = (456, entry["tty"], "codex")
+                    elif changed == "unregistered_remote":
                         f.process_rows[1] = (456, entry["tty"], "codex --remote unix:///unregistered")
                     elif changed == "orphan":
                         parents[456] = 1
                     elif changed == "source_pid":
                         f.process_rows.append((entry["pid"], "other-tty", "codex"))
-                    if changed is None:
+                    if changed in {None, "fresh_local"}:
                         self.assertEqual(f.release.validate_finished(closed, "supervisor")["state"], "turn_ended")
                     else:
                         with self.assertRaises(ValueError): f.release.validate_finished(closed, "supervisor")
