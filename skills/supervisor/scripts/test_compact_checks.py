@@ -237,7 +237,7 @@ class OperationTests(unittest.TestCase):
             notes = []
             reads = 0
             stop_disappearance = True
-    
+
             def command(argv: list[str], **_: Any) -> subprocess.CompletedProcess:
                 nonlocal reads
                 if any(str(word).endswith("check_claims.py") for word in argv):
@@ -251,11 +251,11 @@ class OperationTests(unittest.TestCase):
                 self.assertIn("gh-comment", argv[0])
                 notes.append(Path(argv[argv.index("--body-file") + 1]).read_text())
                 return subprocess.CompletedProcess(argv, 0, json.dumps({"ok": True, "url": "https://github.com/owner/repo/issues/1#issuecomment-9"}), "")
-    
+
             release = session_closeout.release
-    
+
             original_run = check_operation.Operation.run
-    
+
             def run(current: check_operation.Operation, gate: str, argv: list[str], **kwargs: Any) -> dict | list:
                 nonlocal stop_disappearance
                 if gate == "disappearance" and stop_disappearance:
@@ -274,7 +274,7 @@ class OperationTests(unittest.TestCase):
                 if gate in {"terminals", "disappearance"}:
                     return []
                 return original_run(current, gate, argv, **kwargs)
-    
+
             with (patch.object(check_operation.Operation, "run", run),
                   patch.object(subprocess, "run", side_effect=command),
                   patch.object(session_closeout, "GitHubReader", return_value=SimpleNamespace(get_json=lambda *_, **__: decision)),
@@ -317,7 +317,7 @@ class OperationTests(unittest.TestCase):
                 transcript.write_text(transcript.read_text() + json.dumps({"type": "event_msg", "timestamp": "2026-01-02T00:00:00Z", "payload": {"type": "user_message", "message": "resumed"}}) + "\n")
                 with self.assertRaises(ValueError):
                     session_closeout.closeout(args, fresh)
-    
+
 
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
