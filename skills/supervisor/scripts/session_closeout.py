@@ -1,12 +1,14 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["aiohttp==3.14.5", "zstandard==0.25.0"]
+# dependencies = ["aiohttp==3.14.5", "tree-sitter==0.26.0", "tree-sitter-bash==0.25.1", "tree-sitter-javascript==0.25.0", "zstandard==0.25.0"]
 # ///
 import argparse
 import asyncio
+import importlib
 import json
 import re
+import sys
 import time
 from pathlib import Path
 from subprocess import SubprocessError
@@ -35,6 +37,8 @@ from session_record import load_ledger, normalize_ledger_entry, session_status
 
 SCRIPTS = Path(__file__).resolve().parent
 GH_PLAN = SCRIPTS.parents[1] / "github/scripts/gh-plan.py"
+UNRESOLVED_CELLS_DECISION = "https://github.com/cbusillo/codex-skills/issues/3523#issuecomment-6828126999"
+sys.path.insert(0, str(SCRIPTS.parents[1] / "work-closeout/scripts"))
 
 if TYPE_CHECKING:
     from skills.github.scripts.github_catalog_health import MARKER as OPERATION_MARKER
@@ -46,12 +50,109 @@ if TYPE_CHECKING:
     )
 else:
     from github_catalog_health import MARKER as OPERATION_MARKER
-    from github_plan_claim import live_lines, session_fields, status_names_actor, unquoted_text
+    from github_plan_claim import (
+        live_lines,
+        session_fields,
+        status_names_actor,
+        unquoted_text,
+    )
 
 
 def require(condition: bool, gate: str, reason: str) -> None:
     if not condition:
         raise GateFailed(gate, reason)
+
+
+def unresolved_cell_claims(entry: dict, args: argparse.Namespace, operation: Operation) -> dict:
+    check_claims = importlib.import_module("check_claims")
+    operation.gate = "claims"
+    decision = args.unresolved_cells_decision
+    require(
+        entry["harness"] == "codex" and not entry.get("recovery"),
+        "claims",
+        "unresolved-cell retirement requires a normal finished Codex session",
+    )
+    require(
+        decision == UNRESOLVED_CELLS_DECISION,
+        "claims",
+        "requires the recorded Q1354 decision URL",
+    )
+    reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 120)
+    actor = github_identity.automation_login()
+    require(bool(actor), "identity", "configured automation identity is unknown")
+    match = claim_release.COMMENT_URL.fullmatch(decision)
+    posted = reader.get_json(f"/repos/{match[1]}/issues/comments/{match[3]}", step="closeout_decision")
+    require(
+        (posted.get("user") or {}).get("login") == actor
+        and bool(posted.get("created_at"))
+        and posted.get("created_at") == posted.get("updated_at"),
+        "claims",
+        "recorded Director decision was changed or is unavailable",
+    )
+    repo, number = entry.get("repository"), entry.get("issue")
+    require(
+        isinstance(repo, str) and release.REPO.fullmatch(repo) is not None and type(number) is int and number > 0,
+        "claims",
+        "requires the session's exact repository and issue",
+    )
+    check_claims.require_own_transcript(entry)
+    result = check_claims.check(
+        [entry],
+        owners=[args.owner],
+        require_released_claims=True,
+        inventory_owner=args.owner,
+    )
+    save_state(
+        operation.evidence / "claims.json",
+        {
+            "exit_code": int(result.get("ok") is not True),
+            "stdout": json.dumps(result),
+            "stderr": "",
+        },
+    )
+    unresolved = result.get("unresolved_invocations")
+    require(
+        result.get("ok") is False
+        and result.get("claims_clear") is False
+        and result.get("coverage", {}).get("complete") is False
+        and result.get("session_ids") == [entry["session_id"]]
+        and result.get("blocked") == []
+        and result.get("coverage", {}).get("search_errors") == []
+        and not result.get("error")
+        and isinstance(unresolved, list)
+        and bool(unresolved),
+        "claims",
+        "the decision accepts only unresolved code-mode cells with every claim released",
+    )
+    cells = []
+    for item in unresolved:
+        calls = check_claims.history.tool_details(check_claims.history.read_records(Path(item["transcript"])))
+        require(
+            any(call.identifier == item["call_id"] and call.javascript for call in calls)
+            and isinstance(item.get("reason"), str)
+            and bool(item["reason"]),
+            "claims",
+            "unresolved invocation is not an identified code-mode cell with a reason",
+        )
+        cells.append({key: item[key] for key in ("session", "call_id", "reason")})
+    revision = fingerprint({"decision": decision, "cells": cells, "repository": repo, "issue": number})
+    require(
+        operation.state.get("unresolved_cells", revision) == revision,
+        "claims",
+        "unresolved cells or their destination changed; preserve the original posted check",
+    )
+    operation.state["unresolved_cells"] = revision
+    save_state(operation.path, operation.state)
+    note = operation.evidence / "unresolved-cells.md"
+    note.write_text(
+        f"Retiring finished session under [Director decision Q1354]({decision}).\n\n"
+        f"Session: {entry['session_id']}\n\n"
+        "Fresh GitHub inventory and exact release checks confirm every session claim is released. "
+        "The strict audit remains incomplete for these code-mode cells:\n\n"
+        f"```json\n{json.dumps(cells, indent=2)}\n```\n\n"
+        "Only this unresolved-cell outcome is accepted. All other closeout gates remain required.\n"
+    )
+    return result
 
 
 def explicit_session(body: str, session: str) -> bool:
@@ -390,7 +491,8 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
         return operation.run(gate, [*terminal, action, "--session-id", terminal_id, *extra], once=once)
 
     def claims() -> None:
-        result = operation.run(
+        decision = getattr(args, "unresolved_cells_decision", None)
+        result = unresolved_cell_claims(entry, args, operation) if decision else operation.run(
             "claims",
             [
                 "uv", "run",
@@ -403,7 +505,7 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
             timeout=660,
         )
         require(
-            result.get("claims_clear") is True and result.get("coverage", {}).get("complete") is True,
+            bool(decision) or result.get("claims_clear") is True and result.get("coverage", {}).get("complete") is True,
             "claims",
             "claim releases or discovery coverage are incomplete",
         )
@@ -483,6 +585,9 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
         claims()
         if not entry.get("recovery") or entry["recovery"]["kind"] == "handoff":
             verify_handoff(entry, args, operation, retired=False)
+        if getattr(args, "unresolved_cells_decision", None):
+            operation.run("unresolved_cells_note", [str(GH_PLAN.with_name("gh-comment")), "issue", str(entry["issue"]),
+                          "--repo", entry["repository"], "--body-file", str(operation.evidence / "unresolved-cells.md")], once=True)
         if successor:
             adopt_workers(args.ledger, args.session_id, successor)
         if not session_liveness.process_absent(entry.get("pid")) and not operation.state["steps"].get("quit"):
@@ -559,6 +664,8 @@ def main() -> int:
     parser.add_argument("--owner", required=True)
     parser.add_argument("--evidence", type=Path, required=True)
     parser.add_argument("--handoff-url", help="explicit posted handoff after source verification, including a different work issue")
+    parser.add_argument("--unresolved-cells-decision", metavar="URL",
+                        help="Apply Q1354 only to unresolved code-mode cells after fresh exact claim-release checks")
     parser.add_argument("--recover-ended", action="store_true", help="Recover a claim-free gone or proven handed-off generation")
     parser.add_argument("--successor-session", help="Exact successor ledger row of a handed-off lead; its workers and Current Status actors move to it")
     parser.add_argument("--exit-seconds", type=float, default=30)
