@@ -10386,7 +10386,9 @@ def test_merge_policy_enrollment_projects_only_requested_repository() -> None:
             "updated_at": "2026-10-05T12:00:00Z", "policy_sha256": "a" * 64,
             "policy": {"policies": [
                 {"repository": "example/Repo", "base_branch": "release",
-                 "enqueue_label": "ship  it", "github_token": {"env_var": "PRIVATE_TOKEN"}},
+                 "enqueue_label": "ship  it", "github_token": {"env_var": "PRIVATE_TOKEN"},
+                 "enqueue": {"trusted_automation_github_user_ids": [7],
+                             "dependency_update_bots": [{"github_user_id": 7, "metadata_format": "renovate_metadata"}]}},
                 {"repository": "private/task-runner", "base_branch": "risk-fixes", "enqueue_label": "other"},
             ]},
         },
@@ -10394,7 +10396,8 @@ def test_merge_policy_enrollment_projects_only_requested_repository() -> None:
     request = {"repository": "EXAMPLE/repo"}
     projected = write_action.summarize_merge_train_policy_read(request=request, provider_payload=response)
     assert projected["result"]["enabled"] is True
-    assert projected["result"]["targets"] == [{"baseBranch": "release", "readyLabel": "ship  it"}]
+    assert projected["result"]["targets"] == [
+        {"baseBranch": "release", "readyLabel": "ship  it", "dependencyBotFormats": ["renovate_metadata"]}]
     assert "PRIVATE_TOKEN" not in json.dumps(projected)
     assert "private/task-runner" not in json.dumps(projected)
     request = {"repository": "example/absent"}

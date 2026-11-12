@@ -894,7 +894,8 @@ app_auth_for_command() {
 			return 2
 		fi
 		require_installation=1
-	elif [ -n "$target_repo" ] && is_write_command "$@"; then
+	elif [ -n "$target_repo" ] && is_write_command "$@" &&
+		{ [ "$own_user_opt_in" -eq 1 ] || ! verify_read_command "$@" 2>/dev/null; }; then
 		require_installation=1
 	fi
 	set -- app-auth
@@ -965,12 +966,9 @@ body = pathlib.Path(sys.argv[2]).read_text()
 context = github_api.infer_gh_command_context(args, input_text=body)
 if args and args[0] == "api" and context.bucket == "graphql":
     # Inspect all definitions because operationName can select a later mutation.
-    payload = github_api._try_parse_json(body) if body else None
-    if payload is None:
-        # Arguments gh rejects already made the context a write.
-        parsed = github_api.parse_gh_api_args(args[1:])
-        if parsed is not None and parsed.graphql_query is not None:
-            payload = {"query": parsed.graphql_query}
+    # Arguments gh rejects already made the context a write.
+    parsed = github_api.parse_gh_api_args(args[1:])
+    payload = github_api.graphql_body_sent(parsed, body) if parsed is not None else None
     if github_api.reader_request_is_write("POST", "/graphql", payload):
         context = github_api.CommandContext(True, context.transport, context.bucket)
 # Only API reads and the known read-only CLI families used by bulk helpers.

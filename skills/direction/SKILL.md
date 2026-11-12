@@ -55,7 +55,7 @@ commands:
     source: skill
     resource_path: scripts/repository_setup.py
     example_argv: ["uv", "run", "scripts/repository_setup.py", "--owner", "OWNER"]
-    purpose: Report missing merge-train enrollment, Renovate, standard rulesets, App installation, checkouts and Codex folder trust without fixing anything.
+    purpose: Report missing merge-train enrollment, Renovate and its train rows, standard rulesets, App installation, checkouts and Codex folder trust without fixing anything.
   - name: director-question-next
     source: skill
     resource_path: scripts/question_id.py
@@ -222,8 +222,8 @@ uv run <skill-dir>/scripts/repository_setup.py --owner OWNER
 ```
 
 It reads every repository the weekly audit lists and reports, per repository,
-missing merge-train enrollment, Renovate configuration, the standard ruleset
-pair, the automation App installation, a checkout under `~/Developer`, and
+missing merge-train enrollment, Renovate configuration, Renovate's train rows
+where Renovate runs on an enrolled repository, the standard ruleset pair, the automation App installation, a checkout under `~/Developer`, and
 Codex folder trust in each configured Codex home on this host. Claude folder
 trust is not checked: the Supervisor launcher writes it. Repository selection
 follows the shared classification in

@@ -363,7 +363,9 @@ The endpoint has a bounded local helper binding.
 
 On success, `status=available` and `result` contains `source=launchplane`,
 `status=enrolled|not_enrolled`, boolean `enabled`, per-branch `targets`
-(`baseBranch` and `readyLabel`), policy record id/time/digest, and a trace id.
+(`baseBranch`, `readyLabel`, and `dependencyBotFormats`, the metadata formats
+of the dependency bots that may enqueue there), policy record id/time/digest,
+and a trace id.
 The projection drops other repositories, authorization and credential source
 metadata. Matching ignores repository case; distinct branches remain separate.
 Only a complete active-policy response proves absence. Missing config, denial,

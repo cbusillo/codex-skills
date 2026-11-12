@@ -6934,6 +6934,7 @@ def summarize_merge_train_policy_read(
             targets.append({
                 "baseBranch": public_identifier(branch),
                 "readyLabel": raw_label,
+                "dependencyBotFormats": _dependency_bot_formats(target),
             })
             if request.get("include_config_authority"):
                 enabled = target.get("config_authority_events_enabled", False)
@@ -6956,6 +6957,13 @@ def summarize_merge_train_policy_read(
     payload = base_payload(status="available", operation="merge-train-policy-read", request=request)
     payload["result"] = summary
     return payload
+
+
+def _dependency_bot_formats(target: dict[str, Any]) -> list[str]:
+    bots = _require_dict(target.get("enqueue", {})).get("dependency_update_bots", [])
+    if not isinstance(bots, list):
+        raise LaunchplaneSafetyError("invalid_response")
+    return sorted({public_identifier(_require_dict(bot).get("metadata_format")) for bot in bots})
 
 
 def summarize_governance_projection_read(
