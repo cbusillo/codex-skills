@@ -238,16 +238,13 @@ class OperationTests(unittest.TestCase):
             decision = {"user": {"login": "fixture[bot]"}, "created_at": "2026-01-01T00:00:00Z",
                         "updated_at": "2026-01-01T00:00:00Z"}
             notes = []
-            reads = 0
-            settle_at = 999
+            settled = False
             stop_disappearance = True
 
             def command(argv: list[str], **_: Any) -> subprocess.CompletedProcess:
-                nonlocal reads
                 if any(str(word).endswith("check_claims.py") for word in argv):
                     self.assertIn("--require-released-claims", argv)
-                    reads += 1
-                    if settles and reads >= settle_at:
+                    if settled:
                         return subprocess.CompletedProcess(argv, 0, json.dumps({**claims, "ok": True, "claims_clear": True,
                             "coverage": {"complete": True}, "unresolved_invocations": []}), "")
                     self.assertIn("--inventory-owner", argv)
@@ -255,6 +252,11 @@ class OperationTests(unittest.TestCase):
                 self.assertIn("gh-comment", argv[0])
                 notes.append(Path(argv[argv.index("--body-file") + 1]).read_text())
                 return subprocess.CompletedProcess(argv, 0, json.dumps({"ok": True, "url": "https://github.com/owner/repo/issues/1#issuecomment-9"}), "")
+
+            def ownership(*_args: Any, **_kwargs: Any) -> Any:
+                nonlocal settled
+                settled = settles
+                return nullcontext()
 
             release = session_closeout.release
 
@@ -287,7 +289,7 @@ class OperationTests(unittest.TestCase):
                       if path.endswith("/9") else decision))),
                   patch.object(session_closeout.github_identity, "automation_login", return_value="fixture[bot]"),
                   patch.object(session_closeout.closure, "closed_log", return_value=log),
-                  patch.object(session_closeout.closure, "ownership", return_value=nullcontext()),
+                  patch.object(session_closeout.closure, "ownership", side_effect=ownership),
                   patch.object(session_closeout.session_liveness, "process_absent", return_value=True),
                   patch.object(session_closeout.session_liveness, "inventory", return_value=[]),
                   patch_attr(release, "inventory", return_value=[]),
@@ -307,8 +309,7 @@ class OperationTests(unittest.TestCase):
                         session_closeout.closeout(args, operation)
                     self.assertEqual(notes, [])
                     self.assertEqual(json.loads(ledger.read_text()), [source, other])
-                args.handoff_url = claims["released_claims"][0]["handoff_urls"][0]
-                settle_at = reads + 2
+                args.handoff_url = claims["released_claims"][0]["handoff_urls"][0].replace("/issues/", "/pull/")
                 with self.assertRaises(check_operation.GateFailed):
                     session_closeout.closeout(args, operation)
                 self.assertEqual(json.loads(ledger.read_text()), [source, other])
