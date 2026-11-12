@@ -278,7 +278,7 @@ def unresolved_cell_check(entry: dict, decision: str, result: dict) -> dict:
             match = HANDOFF.fullmatch(url)
             qualified = {(row["repository"], row["record"]) for row in released
                          if match and row["repository"] == match[1] and row["record"] == int(match[2])
-                         and any((handoff := HANDOFF.fullmatch(known)) and handoff.groups() == match.groups()
+                         and any((comment_match := HANDOFF.fullmatch(known)) and comment_match.groups() == match.groups()
                                  for known in row.get("handoff_urls", []))}
             require_claim_check(len(qualified) == 1, "claims", "handoff must be freshly verified for this source session")
             target = qualified.pop()

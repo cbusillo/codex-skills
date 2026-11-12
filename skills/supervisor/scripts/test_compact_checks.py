@@ -228,7 +228,7 @@ class OperationTests(unittest.TestCase):
             args = argparse.Namespace(ledger=ledger, session_id="native", supervisor_session="supervisor", owner="test",
                                       recover_ended=True, successor_session=None, handoff_url=None, exit_seconds=.1,
                                       unresolved_cells_decision=session_closeout.UNRESOLVED_CELLS_DECISION)
-            claims = {"ok": False, "claims_clear": False, "session_ids": ["native"],
+            claims: dict[str, Any] = {"ok": False, "claims_clear": False, "session_ids": ["native"],
                       "coverage": {"complete": False, "search_errors": []}, "blocked": [],
                       "released_claims": [{"source_session": "native", "repository": "owner/repo", "record": 1,
                                        "handoff_urls": ["https://github.com/owner/repo/issues/1#issuecomment-11"]},
