@@ -35,6 +35,7 @@ from session_record import load_ledger, normalize_ledger_entry, session_status
 
 SCRIPTS = Path(__file__).resolve().parent
 GH_PLAN = SCRIPTS.parents[1] / "github/scripts/gh-plan.py"
+UNRESOLVED_CELLS_DECISION = "https://github.com/cbusillo/codex-skills/issues/3523#issuecomment-6828126999"
 
 if TYPE_CHECKING:
     from skills.github.scripts.github_catalog_health import MARKER as OPERATION_MARKER
@@ -46,12 +47,103 @@ if TYPE_CHECKING:
     )
 else:
     from github_catalog_health import MARKER as OPERATION_MARKER
-    from github_plan_claim import live_lines, session_fields, status_names_actor, unquoted_text
+    from github_plan_claim import (
+        live_lines,
+        session_fields,
+        status_names_actor,
+        unquoted_text,
+    )
 
 
 def require(condition: bool, gate: str, reason: str) -> None:
     if not condition:
         raise GateFailed(gate, reason)
+
+
+def accepted_unresolved_claims(entry: dict, operation: Operation, result: dict) -> bool:
+    acceptance = operation.state.get("unresolved_cells", {})
+    return (acceptance.get("decision") == UNRESOLVED_CELLS_DECISION
+            and acceptance.get("report") == fingerprint(result)
+            and result.get("session_ids") == [entry["session_id"]])
+
+
+def unresolved_cell_claims(entry: dict, args: argparse.Namespace, operation: Operation, result: dict) -> dict:
+    operation.gate = "claims"
+    decision = args.unresolved_cells_decision
+    require(
+        entry["harness"] == "codex" and not entry.get("recovery"),
+        "claims",
+        "unresolved-cell retirement requires a normal finished Codex session",
+    )
+    require(
+        decision == UNRESOLVED_CELLS_DECISION,
+        "claims",
+        "requires the recorded Q1354 decision URL",
+    )
+    reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 120)
+    actor = github_identity.automation_login()
+    require(bool(actor), "identity", "configured automation identity is unknown")
+    match = claim_release.COMMENT_URL.fullmatch(decision)
+    posted = reader.get_json(f"/repos/{match[1]}/issues/comments/{match[3]}", step="closeout_decision")
+    require(
+        (posted.get("user") or {}).get("login") == actor
+        and bool(posted.get("created_at"))
+        and posted.get("created_at") == posted.get("updated_at"),
+        "claims",
+        "recorded Director decision was changed or is unavailable",
+    )
+    repo, number = entry.get("repository"), entry.get("issue")
+    require(
+        isinstance(repo, str) and release.REPO.fullmatch(repo) is not None and type(number) is int and number > 0,
+        "claims",
+        "requires the session's exact repository and issue",
+    )
+    unresolved = result.get("unresolved_invocations")
+    if not isinstance(unresolved, list):
+        raise GateFailed("claims", "audit has no unresolved invocation list")
+    require(
+        result.get("ok") is False
+        and result.get("claims_clear") is False
+        and result.get("coverage", {}).get("complete") is False
+        and result.get("session_ids") == [entry["session_id"]]
+        and result.get("blocked") == []
+        and result.get("coverage", {}).get("search_errors") == []
+        and not result.get("error")
+        and bool(unresolved),
+        "claims",
+        "the decision accepts only unresolved code-mode cells with every claim released",
+    )
+    cells = []
+    for item in unresolved:
+        require(
+            item.get("code_mode") is True and bool(item.get("call_id")) and bool(item.get("reason")),
+            "claims",
+            "unresolved invocation is not an identified code-mode cell with a reason",
+        )
+        cell = {key: item[key] for key in ("session", "call_id", "reason") if key in item}
+        if item.get("refusals"):
+            cell["refusals"] = [{key: refusal[key] for key in ("line", "column", "syntax") if key in refusal}
+                                for refusal in item["refusals"]]
+        cells.append(cell)
+    destination = {"repository": repo, "issue": number}
+    if operation.state["steps"].get("unresolved_cells_note"):
+        posted_cells = operation.state.get("unresolved_cells", {})
+        require(posted_cells.get("destination") == destination and all(cell in posted_cells.get("cells", []) for cell in cells),
+                "claims", "unresolved cells or their destination changed; preserve the original posted check")
+        cells = posted_cells["cells"]
+    operation.state["unresolved_cells"] = {"decision": decision, "cells": cells, "destination": destination,
+                                            "report": fingerprint(result)}
+    save_state(operation.path, operation.state)
+    note = operation.evidence / "unresolved-cells.md"
+    note.write_text(
+        f"Closeout claim check under [Director decision Q1354]({decision}).\n\n"
+        f"Session: {entry['session_id']}\n\n"
+        "Fresh GitHub inventory and exact release checks confirm every session claim is released. "
+        "The strict audit remains incomplete for these code-mode cells:\n\n"
+        f"```json\n{json.dumps(cells, indent=2)}\n```\n\n"
+        "Only this unresolved-cell outcome is accepted. Retirement still requires every remaining closeout gate.\n"
+    )
+    return result
 
 
 def explicit_session(body: str, session: str) -> bool:
@@ -60,6 +152,23 @@ def explicit_session(body: str, session: str) -> bool:
         return False
     return (claim_release.related_sessions_match(text, session)
             and re.search(rf"(?<![\w-]){re.escape(session)}(?![\w-])", text) is not None)
+
+
+def post_unresolved_cells(entry: dict, operation: Operation) -> None:
+    gate = "unresolved_cells_note"
+    replaying = gate in operation.state["steps"]
+    try:
+        operation.run(gate, [str(GH_PLAN.with_name("gh-comment")), "issue", str(entry["issue"]),
+                      "--repo", entry["repository"], "--body-file", str(operation.evidence / "unresolved-cells.md")], once=True)
+    except GateFailed:
+        if replaying:
+            raise
+        result = json.loads((operation.evidence / (gate + ".json")).read_text())
+        if (result.get("exit_code") not in {None, 0}
+                and json.loads(result.get("stdout") or "{}").get("write_outcome") == "not_started"):
+            operation.state["steps"].pop(gate, None)
+            save_state(operation.path, operation.state)
+        raise
 
 
 async def native_idle(entry: dict) -> None:
@@ -124,10 +233,12 @@ def claim_evidence(entry: dict, operation: Operation, key: str) -> list[dict]:
         return []
     receipt_data = json.loads(path.read_text())
     checked = json.loads(receipt_data.get("stdout") or "{}")
-    if (receipt_data.get("exit_code") != 0 or checked.get("ok") is not True
+    accepted = receipt_data.get("exit_code") == 1 and accepted_unresolved_claims(entry, operation, checked)
+    if (not accepted and (receipt_data.get("exit_code") != 0 or checked.get("ok") is not True
             or checked.get("claims_clear") is not True or checked.get("coverage", {}).get("complete") is not True
+            or checked.get("unresolved_invocations") != [])
             or checked.get("session_ids") != [entry["session_id"]]
-            or checked.get("blocked") != [] or checked.get("unresolved_invocations") != []):
+            or checked.get("blocked") != []):
         return []
     rows = checked.get(key, [])
     if not isinstance(rows, list):
@@ -389,21 +500,27 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
     def call(gate: str, action: str, *extra: str, once: bool = False) -> dict:
         return operation.run(gate, [*terminal, action, "--session-id", terminal_id, *extra], once=once)
 
-    def claims() -> None:
-        result = operation.run(
-            "claims",
-            [
+    def claims() -> dict:
+        decision = getattr(args, "unresolved_cells_decision", None)
+        try:
+            result = operation.run("claims", [
                 "uv", "run",
                 str(SCRIPTS.parents[1] / "work-closeout/scripts/check_claims.py"),
                 "--owner", args.owner,
                 "--session", args.session_id,
                 "--transcript", entry["transcript"],
-                *(["--require-released-claims"] if entry.get("recovery") else []),
-            ],
-            timeout=660,
-        )
+                *(["--require-released-claims"] if entry.get("recovery") or decision else []),
+                *(["--inventory-owner", args.owner] if decision else []),
+            ], timeout=660)
+        except GateFailed:
+            if not decision:
+                raise
+            audited = json.loads((operation.evidence / "claims.json").read_text())
+            require(audited.get("exit_code") == 1, "claims", "unresolved-cell decision needs a completed claims audit")
+            result = unresolved_cell_claims(entry, args, operation, json.loads(audited["stdout"]))
         require(
-            result.get("claims_clear") is True and result.get("coverage", {}).get("complete") is True,
+            accepted_unresolved_claims(entry, operation, result)
+            or result.get("claims_clear") is True and result.get("coverage", {}).get("complete") is True,
             "claims",
             "claim releases or discovery coverage are incomplete",
         )
@@ -425,6 +542,7 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
                     "review_wait",
                     "required review still needs its current-head disposition",
                 )
+        return result
 
     def prompt(gate: str) -> None:
         pane = call(gate, "read")
@@ -480,9 +598,11 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
                 time.sleep(min(0.25, remaining))
 
     with closure.ownership(args.session_id, create=True):
-        claims()
+        claim_report = claims()
         if not entry.get("recovery") or entry["recovery"]["kind"] == "handoff":
             verify_handoff(entry, args, operation, retired=False)
+        if accepted_unresolved_claims(entry, operation, claim_report):
+            post_unresolved_cells(entry, operation)
         if successor:
             adopt_workers(args.ledger, args.session_id, successor)
         if not session_liveness.process_absent(entry.get("pid")) and not operation.state["steps"].get("quit"):
@@ -559,6 +679,8 @@ def main() -> int:
     parser.add_argument("--owner", required=True)
     parser.add_argument("--evidence", type=Path, required=True)
     parser.add_argument("--handoff-url", help="explicit posted handoff after source verification, including a different work issue")
+    parser.add_argument("--unresolved-cells-decision", metavar="URL",
+                        help="Apply Q1354 only to unresolved code-mode cells after fresh exact claim-release checks")
     parser.add_argument("--recover-ended", action="store_true", help="Recover a claim-free gone or proven handed-off generation")
     parser.add_argument("--successor-session", help="Exact successor ledger row of a handed-off lead; its workers and Current Status actors move to it")
     parser.add_argument("--exit-seconds", type=float, default=30)

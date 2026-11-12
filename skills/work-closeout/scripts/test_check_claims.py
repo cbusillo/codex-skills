@@ -664,6 +664,35 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.comments.append(self.release)
         self.assertTrue(helper.check([self.receipt_entry()], require_released_claims=True)["claims_clear"])
 
+    def test_inventory_reads_claims_missing_from_the_transcript_even_under_live_policy(self) -> None:
+        entry = self.receipt_entry(records=())
+        self.enterContext(patch_attr(helper, "search_account", return_value="cbusillo"))
+        self.enterContext(patch_attr(helper.github_plan_lease, "uses_live_claims", return_value=True))
+        sessions: Any = importlib.import_module("release_session_claims")
+        inventory = self.enterContext(patch_attr(sessions, "discover", return_value=([(REPO, 1)], [REPO])))
+        for released in (False, True):
+            with self.subTest(released=released):
+                self.comments = [self.source, self.release] if released else [self.source]
+                report = helper.check([entry], inventory_owner="cbusillo", require_released_claims=True)
+                self.assertEqual(report["claims_clear"], released, report)
+                self.assertEqual(bool(report["blocked"]), not released)
+        self.assertEqual(inventory.call_count, 2)
+        child = self.receipt_entry("child-session", records=())
+        with patch_attr(helper.history, "expand", return_value=helper.history.expand([entry, child])):
+            expanded = helper.check([entry], inventory_owner="cbusillo", require_released_claims=True)
+            self.assertTrue(expanded["claims_clear"], expanded)
+            self.assertEqual({row["source_session"] for row in expanded["released_claims"]}, {SESSION})
+        with patch_attr(helper, "search_account", side_effect=ValueError("a client App is configured")):
+            with self.assertRaises(ValueError):
+                helper.check([entry], inventory_owner="cbusillo", require_released_claims=True)
+
+    def test_unresolved_audit_identifies_code_mode_without_reclassifying_shell_uncertainty(self) -> None:
+        for javascript in (False, True):
+            rows = [code_call("cell", exec_source(OPAQUE_CLAIM))] if javascript else [shell_call("cell", OPAQUE_CLAIM)]
+            report = helper.reconstructed_targets(self.entry(rows=rows))
+            self.assertTrue(report["unresolved_invocations"])
+            self.assertEqual({row["code_mode"] for row in report["unresolved_invocations"]}, {javascript})
+
     def test_own_open_pr_without_a_current_head_handoff_refuses_with_its_remedies(self) -> None:
         handoffs: Any = importlib.import_module("ready_handoff")
         head = "c" * 40

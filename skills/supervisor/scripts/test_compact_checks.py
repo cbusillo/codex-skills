@@ -59,6 +59,75 @@ class ChangesTests(unittest.TestCase):
 
 
 class OperationTests(unittest.TestCase):
+    def test_unresolved_cell_decision_preserves_the_audit_and_refuses_other_failures(self) -> None:
+        transcript = self.root / "source.jsonl"
+        transcript.write_text(json.dumps({"type": "response_item", "payload": {
+            "type": "custom_tool_call", "name": "exec", "call_id": "opaque-cell", "input": "eval(source)"}}) + "\n")
+        entry: dict[str, Any] = {"session_id": "native", "harness": "codex", "transcript": str(transcript),
+                 "repository": "owner/repo", "issue": 1}
+        report = {"ok": False, "claims_clear": False, "session_ids": ["native"],
+                  "coverage": {"complete": False, "search_errors": []}, "blocked": [],
+                  "released_claims": [{"source_session": "native", "claim_comment": 42}],
+                  "handoff_comments": [{"source_session": "native", "comment": {"id": 43}}],
+                  "unresolved_invocations": [{"session": "native", "transcript": str(transcript),
+                                              "call_id": "opaque-cell", "reason": "computed", "code_mode": True,
+                                              "refusals": [{"line": 1, "column": 5, "syntax": "object_pattern", "call": "private-source-material"}]},
+                                             {"session": "native", "call_id": "settling-cell", "reason": "computed", "code_mode": True}]}
+        args = argparse.Namespace(owner="owner", unresolved_cells_decision=session_closeout.UNRESOLVED_CELLS_DECISION)
+        decision = {"user": {"login": "agent[bot]"}, "created_at": "2026-01-01T00:00:00Z",
+                    "updated_at": "2026-01-01T00:00:00Z"}
+        for obstruction in ("none", "held", "search", "error", "shell", "recovery", "decision", "edited", "wrong_url"):
+            with self.subTest(obstruction=obstruction):
+                checked = json.loads(json.dumps(report))
+                current = dict(entry)
+                if obstruction == "held":
+                    checked["blocked"] = ["held claim"]
+                elif obstruction == "search":
+                    checked["coverage"]["search_errors"] = ["unavailable"]
+                elif obstruction == "error":
+                    checked["error"] = "source read failed"
+                elif obstruction == "shell":
+                    checked["unresolved_invocations"][0]["code_mode"] = False
+                elif obstruction == "recovery":
+                    current["recovery"] = {"kind": "gone"}
+                operation = check_operation.Operation(self.root / obstruction, ["native"])
+                audit_path = operation.evidence / "claims.json"
+                audit_path.write_text(json.dumps({"exit_code": 1, "stdout": json.dumps(checked)}))
+                before = audit_path.read_bytes()
+                selected_args = argparse.Namespace(**vars(args))
+                if obstruction == "wrong_url":
+                    selected_args.unresolved_cells_decision = "https://github.com/owner/repo/issues/1#issuecomment-99"
+                reader = SimpleNamespace(get_json=lambda *_, **__: {**decision, **(
+                    {"user": {"login": "foreign"}} if obstruction == "decision" else
+                    {"updated_at": "2026-01-02T00:00:00Z"} if obstruction == "edited" else {})})
+                with (patch.object(session_closeout, "GitHubReader", return_value=reader),
+                      patch.object(session_closeout.github_identity, "automation_login", return_value="agent[bot]"),
+                      patch.object(operation, "run") as post):
+                    if obstruction != "none":
+                        with self.assertRaises(ValueError):
+                            session_closeout.unresolved_cell_claims(current, selected_args, operation, checked)
+                        post.assert_not_called()
+                        continue
+                    self.assertEqual(session_closeout.claim_evidence(current, operation, "handoff_comments"), [])
+                    result = session_closeout.unresolved_cell_claims(current, selected_args, operation, checked)
+                    self.assertEqual(result, report)
+                    self.assertEqual(audit_path.read_bytes(), before)
+                    for key in ("released_claims", "handoff_comments"):
+                        self.assertEqual(session_closeout.claim_evidence(current, operation, key), report[key])
+                    operation.state["steps"]["unresolved_cells_note"] = {"complete": False}
+                    note_before = (operation.evidence / "unresolved-cells.md").read_bytes()
+                    subset = {**checked, "unresolved_invocations": checked["unresolved_invocations"][:1]}
+                    session_closeout.unresolved_cell_claims(current, selected_args, operation, subset)
+                    self.assertEqual((operation.evidence / "unresolved-cells.md").read_bytes(), note_before)
+                    changed = {**checked, "unresolved_invocations": [{**checked["unresolved_invocations"][0], "call_id": "another-cell"}]}
+                    with self.assertRaises(ValueError):
+                        session_closeout.unresolved_cell_claims(current, selected_args, operation, changed)
+                    note = (operation.evidence / "unresolved-cells.md").read_text()
+                    self.assertNotIn("private-source-material", note)
+                    for fact in ("opaque-cell", "computed", args.unresolved_cells_decision, "native"):
+                        self.assertIn(fact, note)
+                    post.assert_not_called()
+
     def test_recovery_accepts_a_newer_verified_handoff_in_the_same_launch(self) -> None:
         ledger = self.root / "ledger.json"
         source = {"session_id": "native", "harness": "claude", "supervisor_owned": True, "transcript": "native.jsonl",
@@ -156,6 +225,42 @@ class OperationTests(unittest.TestCase):
             with self.assertRaises(check_operation.GateFailed):
                 operation.run("quit", ["native"], once=True)
             self.assertEqual(run.call_count, 1)
+
+    def test_confirmed_not_started_comment_can_retry_without_waiving_uncertainty(self) -> None:
+        entry = {"repository": "owner/repo", "issue": 1}
+        for outcome in ("not_started", "unknown"):
+            operation = check_operation.Operation(self.root / outcome, ["session"])
+            with (patch.object(subprocess, "run", side_effect=[
+                subprocess.CompletedProcess([], 1, json.dumps({"write_outcome": outcome}), ""),
+                subprocess.CompletedProcess([], 0, json.dumps({"ok": True}), "")]) as run):
+                with self.assertRaises(check_operation.GateFailed):
+                    session_closeout.post_unresolved_cells(entry, operation)
+                operation = check_operation.Operation(self.root / outcome, ["session"])
+                if outcome == "not_started":
+                    session_closeout.post_unresolved_cells(entry, operation)
+                    self.assertEqual(run.call_count, 2)
+                else:
+                    with self.assertRaises(check_operation.GateFailed):
+                        session_closeout.post_unresolved_cells(entry, operation)
+                    self.assertEqual(run.call_count, 1)
+
+    def test_old_not_started_receipt_cannot_clear_an_interrupted_later_post(self) -> None:
+        entry = {"repository": "owner/repo", "issue": 1}
+        with patch.object(subprocess, "run", side_effect=[
+            subprocess.CompletedProcess([], 1, json.dumps({"write_outcome": "not_started"}), ""),
+            KeyboardInterrupt, subprocess.CompletedProcess([], 0, json.dumps({"ok": True}), "")]) as run:
+            operation = check_operation.Operation(self.root, ["session"])
+            with self.assertRaises(check_operation.GateFailed):
+                session_closeout.post_unresolved_cells(entry, operation)
+            with self.assertRaises(KeyboardInterrupt):
+                session_closeout.post_unresolved_cells(entry, operation)
+            pending = operation.path.read_bytes()
+            for _ in range(2):
+                operation = check_operation.Operation(self.root, ["session"])
+                with self.assertRaises(check_operation.GateFailed):
+                    session_closeout.post_unresolved_cells(entry, operation)
+                self.assertEqual(operation.path.read_bytes(), pending)
+            self.assertEqual(run.call_count, 2)
 
     def test_finish_waits_for_full_source_exit_without_replaying_quit(self) -> None:
         for obstruction in (
@@ -303,14 +408,16 @@ class OperationTests(unittest.TestCase):
                 self.assertLessEqual(elapsed, args.exit_seconds)
 
     def test_closeout_uses_native_shapes_and_retires_only_verified_closures(self) -> None:
-        for outcome in ("complete", "google_complete", "harness_changed", "finish_refused", "finish_timeout", "uncertain_exit", "close_interrupted", "close_uncertain", "resumed", "draft_before_clear", "draft_after_idle", "turn_after_idle"):
+        for outcome in ("complete", "codex_complete", "unresolved_complete", "unresolved_note_failed", "unresolved_handoff_failed", "google_complete", "harness_changed", "finish_refused", "finish_timeout", "uncertain_exit", "close_interrupted", "close_uncertain", "resumed", "draft_before_clear", "draft_after_idle", "turn_after_idle"):
             with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 entry: dict[str, Any] = {"session_id": "native", "harness": "claude", "supervisor_owned": True,
                          "backend": "tmux", "tmux_session_id": "terminal", "transcript": "relative.jsonl",
                          "pid": 8, "tty": "ttys001", "handoff_url": "https://github.com/owner/repo/issues/1#issuecomment-2"}
-                if outcome in {"draft_before_clear", "draft_after_idle", "turn_after_idle", "finish_timeout"}:
+                decision = outcome.startswith("unresolved_") or outcome in {"draft_before_clear", "draft_after_idle", "turn_after_idle", "finish_timeout"}
+                if decision or outcome == "codex_complete":
                     entry["harness"] = "codex"
+                    entry.update(repository="owner/repo", issue=1)
                 elif outcome == "google_complete":
                     entry["harness"] = "agy"
                 transcript = root / entry["transcript"]
@@ -319,24 +426,34 @@ class OperationTests(unittest.TestCase):
                             {"type": "event_msg", "payload": {"type": "agent_message", "message": safe}},
                             {"type": "event_msg", "payload": {"type": "task_complete"}}] if entry["harness"] == "codex" else
                            [{"type": "assistant", "sessionId": "native", "message": {"content": [{"type": "text", "text": safe}], "stop_reason": "end_turn"}}])
+                if decision:
+                    records.insert(1, {"type": "response_item", "payload": {"type": "custom_tool_call",
+                        "name": "exec", "call_id": "opaque-cell", "input": "eval(source)"}})
                 transcript.write_text("\n".join(json.dumps({**row, "timestamp": "2026-01-01T00:00:00Z"}) for row in records) + "\n")
                 ledger = root / "ledger.json"
                 ledger.write_text(json.dumps([entry]))
                 normalized = {**entry, "transcript": str(root / entry["transcript"])}
                 closed = {**normalized, "process_exit_verified": True, "ended_at": "2026-01-01T00:00:00Z"}
                 args = argparse.Namespace(ledger=ledger, session_id="native", supervisor_session="supervisor",
-                                          owner="owner", exit_seconds=1, handoff_url=entry["handoff_url"])
+                                          owner="owner", exit_seconds=1, handoff_url=entry["handoff_url"],
+                                          unresolved_cells_decision=session_closeout.UNRESOLVED_CELLS_DECISION if decision else None)
                 live, present, calls, draft = True, True, [], False
 
                 def command(argv: list[str], **_: Any) -> subprocess.CompletedProcess:
                     nonlocal live, present, draft
                     action = next((word for word in argv if word in {"list", "read", "clear", "send", "close"}),
-                                  "claims" if any(str(word).endswith("check_claims.py") for word in argv) else "finish")
+                                  "claims" if any(str(word).endswith("check_claims.py") for word in argv) else
+                                  "note" if any(str(word).endswith("gh-comment") for word in argv) else "finish")
                     calls.append(action)
                     payload: Any = {"sent": True}
                     code = 0
                     if action == "claims":
-                        payload = {"claims_clear": True, "coverage": {"complete": True}}
+                        payload = audit if decision else {"claims_clear": True, "coverage": {"complete": True}}
+                        code = int(decision)
+                    elif action == "note":
+                        self.assertNotIn("send", calls)
+                        self.assertIn("opaque-cell", (operation.evidence / "unresolved-cells.md").read_text())
+                        code = int(outcome == "unresolved_note_failed")
                     elif action == "finish":
                         payload = {"ok": outcome != "finish_refused", "needs_reconciliation": outcome == "finish_refused"}
                         if outcome == "finish_timeout" and calls.count("finish") == 1:
@@ -371,9 +488,16 @@ class OperationTests(unittest.TestCase):
                 close_evidence = root / (entry["harness"] + "-closeout")
                 close_identity = [str(ledger.resolve()), entry["session_id"]]
                 operation = check_operation.Operation(close_evidence, close_identity)
+                audit = {"ok": False, "claims_clear": False, "session_ids": ["native"], "blocked": [],
+                         "coverage": {"complete": False, "search_errors": []}, "unresolved_invocations": [{
+                             "session": "native", "transcript": str(transcript), "call_id": "opaque-cell", "reason": "computed", "code_mode": True}]}
+                reader = SimpleNamespace(get_json=lambda *_, **__: {"user": {"login": "agent[bot]"},
+                    "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z"})
                 with (patch.object(subprocess, "run", side_effect=command),
+                      patch.object(session_closeout, "GitHubReader", return_value=reader),
                       patch.object(session_closeout, "native_idle", side_effect=idle) as idle_read,
-                      patch.object(session_closeout.release, "handoff", return_value={"body": "Session: native"}),
+                      patch.object(session_closeout.release, "handoff", return_value={"body": "Session: native"},
+                                   side_effect=ValueError("handoff unavailable") if outcome == "unresolved_handoff_failed" else None),
                       patch.object(session_closeout.github_identity, "automation_login", return_value="agent[bot]"),
                       patch.object(session_liveness, "process_absent", side_effect=lambda _: not live),
                       patch.object(session_liveness, "inventory", return_value=[(8, "ttys001", "agy" if outcome == "harness_changed" else entry["harness"]) ]),
@@ -383,7 +507,14 @@ class OperationTests(unittest.TestCase):
                       patch.object(session_closeout.closure, "source_records", return_value={"native": closed}),
                       patch.object(session_closeout.release, "transcript_roots", return_value=[str(root)]),
                       patch.object(session_closeout.release, "validate_closure")):
-                    if outcome in {"draft_before_clear", "draft_after_idle", "turn_after_idle", "harness_changed"}:
+                    if outcome in {"unresolved_note_failed", "unresolved_handoff_failed"}:
+                        with self.assertRaises(check_operation.GateFailed):
+                            session_closeout.closeout(args, operation)
+                        self.assertFalse({"send", "finish", "close"}.intersection(calls))
+                        self.assertEqual(json.loads(ledger.read_text()), [entry])
+                        if outcome == "unresolved_handoff_failed":
+                            self.assertNotIn("note", calls)
+                    elif outcome in {"draft_before_clear", "draft_after_idle", "turn_after_idle", "harness_changed"}:
                         with self.assertRaises(check_operation.GateFailed) as failure:
                             session_closeout.closeout(args, operation)
                         self.assertEqual(failure.exception.gate, "process" if outcome == "harness_changed" else "verdict" if outcome == "turn_after_idle" else "input")
@@ -406,9 +537,12 @@ class OperationTests(unittest.TestCase):
                         self.assertEqual(json.loads(ledger.read_text()), [entry])
                     else:
                         session_closeout.closeout(args, operation)
-                    if outcome in {"complete", "google_complete", "uncertain_exit", "close_interrupted", "finish_timeout"}:
+                    if outcome in {"complete", "codex_complete", "unresolved_complete", "google_complete", "uncertain_exit", "close_interrupted", "finish_timeout"}:
                         self.assertEqual(json.loads(ledger.read_text()), [])
                         self.assertEqual(calls.count("send"), 1)
+                        if decision:
+                            self.assertEqual(calls.count("note"), 1)
+                            self.assertLess(calls.index("note"), calls.index("send"))
                         calls.clear()
                         session_closeout.closeout(args, check_operation.Operation(close_evidence, close_identity))
                         if outcome == "complete":
