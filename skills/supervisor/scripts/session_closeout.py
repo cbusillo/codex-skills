@@ -458,6 +458,8 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
         saved = closure.source_records({args.session_id}).get(args.session_id)
         if isinstance(saved, dict) and saved.get("closure_kind") == "claim_free_recovery":
             entry["recovery"] = saved["recovery"]
+        if entry["recovery"]["kind"] == "gone" and getattr(args, "handoff_url", None):
+            entry["recovery"] = {**entry["recovery"], "handoff_url": args.handoff_url}
     ready(entry, args.supervisor_session, claims_check=lambda: check_claims(
         entry, args.owner, operation, getattr(args, "unresolved_cells_decision", None)))
     successor = handoff_successor(entry, args)
