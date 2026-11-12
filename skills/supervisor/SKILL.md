@@ -361,10 +361,10 @@ terminal text, including non-dim text, proves neither authorship nor approval.
 ## Accounts, Pace, And Launch Tier
 
 Use [account selection](references/helpers.md#choosing-the-account), including
-the optional Context Panel integration. Never apply banked resets;
-ask the Director only when every provider account including use-last is empty.
-Relay expiry notices within 24 hours without treating them as early reset
-authority. Fill productive capacity, soonest expiry first.
+the optional Context Panel integration. When configured, launch where Use next
+says; report the panel's provider and per-account targets and steer real work
+toward them. Keep no pacing or account-order rules of your own. Relay the
+panel's reset prompts; only the Director applies banked resets.
 
 Start new work, including leads, migration and safety slices, on the provider's
 everyday model; try a cheaper tier when work keeps passing. A failed or looping
