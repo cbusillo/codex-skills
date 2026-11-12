@@ -17,6 +17,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import types
 from contextlib import nullcontext, redirect_stderr, redirect_stdout
 from io import StringIO
@@ -3423,8 +3424,8 @@ def test_audit_identity_refused_link_keeps_other_wait_evidence() -> None:
             return []
         if path == "repos/outside/tools/issues/475":
             # The audit's subprocess adapter receives the wrapper refusal.
-            refusal = subprocess.CompletedProcess([], 1, stdout="", stderr="identity_refused: Client App is not installed")
-            with patch.object(module.subprocess, "run", return_value=refusal):
+            refusal = subprocess.CompletedProcess([], 1, stdout=b"", stderr=b"identity_refused: Client App is not installed")
+            with patch.object(module, "read_command", return_value=refusal):
                 return module.gh_json(args, gh="fixture-wrapper")
         if path.endswith("/issues/71"):
             return {"state": "closed", "state_reason": "completed"}
@@ -3841,7 +3842,7 @@ def test_growth_trigger_uses_the_larger_of_the_floor_and_share_of_repository_lin
             info.size = len(content)
             tar.addfile(info, io.BytesIO(content))
     finished = subprocess.CompletedProcess([], 0, stdout=archive.getvalue(), stderr=b"")
-    with patch.object(subprocess, "run", return_value=finished):
+    with patch.object(module, "read_command", return_value=finished):
         assert module.tarball_text_lines("o/live", "grow", gh="gh") == 3
     with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"GITHUB_RETRY_DEADLINE_AT": "1"}):
         stalled = Path(tmp) / "gh"
@@ -4370,6 +4371,46 @@ def test_bare_dependency_uses_the_unique_native_blocker_not_a_closed_local_issue
     report = drift_report(module, row, responses)
     assert report["items"][0]["evidence"][0]["kind"] == "overdue_recheck"
     assert report["complete"] is False
+
+
+def test_blocked_read_honors_deadline_and_names_endpoint() -> None:
+    module = load()
+    with tempfile.TemporaryDirectory() as folder:
+        deadline_file = Path(folder) / "deadline"
+        wrapper = Path(folder) / "gh"
+        wrapper.write_text(f"#!/bin/sh\nprintf '%s' \"$GITHUB_RETRY_DEADLINE_AT\" > '{deadline_file}'\nexec sleep 30\n")
+        wrapper.chmod(0o700)
+        started = time.monotonic()
+        inherited = time.time() + 30
+        with (patch.dict(os.environ, {"GITHUB_RETRY_DEADLINE_AT": str(inherited)}),
+              patch.object(module, "READ_TIMEOUT_SECONDS", 0.2)):
+            try:
+                module.gh_json(["api", "installation/repositories?per_page=100&page=1", "--method", "GET"], gh=str(wrapper))
+            except module.AuditError as error:
+                assert "installation/repositories" in str(error)
+            else:
+                raise AssertionError("Blocked GitHub read did not fail")
+        assert time.monotonic() - started < 8
+        assert float(deadline_file.read_text()) < inherited
+
+
+def test_empty_parent_deadline_does_not_abort_a_read() -> None:
+    module = load()
+    with tempfile.TemporaryDirectory() as folder:
+        wrapper = Path(folder) / "gh"
+        wrapper.write_text("#!/bin/sh\nprintf '%s' \"$GITHUB_RETRY_DEADLINE_AT\"\n")
+        wrapper.chmod(0o700)
+        with patch.dict(os.environ, {"GITHUB_RETRY_DEADLINE_AT": ""}):
+            assert math.isfinite(module.gh_json(["api", "installation/repositories"], gh=str(wrapper)))
+
+
+def test_timed_out_installation_selection_keeps_discovery_incomplete() -> None:
+    module = load()
+
+    def blocked(_args: list[str]) -> Any:
+        raise module.AuditError("unavailable") from subprocess.TimeoutExpired("fixture-read", 0.2)
+
+    assert module.repository_listing_gaps(False, fetch=blocked)
 
 
 def main() -> int:

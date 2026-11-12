@@ -13,7 +13,10 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from unittest import mock
 
@@ -265,6 +268,53 @@ class DailyTests(unittest.TestCase):
         self.assertIsNotNone(children[0].poll())
         with self.assertRaises(ProcessLookupError):
             os.killpg(children[0].pid, 0)
+
+    def test_command_passes_a_deadline_before_its_outer_timeout(self) -> None:
+        output = self.root / "deadline.json"
+        for inherited in (None, 2000, 1000.5):
+            with (self.subTest(inherited=inherited), mock.patch.dict(os.environ),
+                  mock.patch.object(daily.time, "time", return_value=1000),
+                  output.open("wb") as stream, (self.root / "error").open("wb") as error):
+                os.environ.pop("GITHUB_RETRY_DEADLINE_AT", None)
+                if inherited is not None:
+                    os.environ["GITHUB_RETRY_DEADLINE_AT"] = str(inherited)
+                code = daily.command([sys.executable, "-c", "import os;print(os.environ.get('GITHUB_RETRY_DEADLINE_AT'))"],
+                                     self.root, subprocess.DEVNULL, stream, error, threading.Event(), 5)
+                self.assertEqual(code, 0)
+                deadline = float(output.read_text())
+                self.assertGreater(deadline, daily.time.time())
+                self.assertLess(deadline, daily.time.time() + 5)
+                if inherited is not None:
+                    self.assertLessEqual(deadline, inherited)
+
+    def test_command_reaps_descendants_after_the_leader_exits(self) -> None:
+        script = (
+            "import subprocess,sys\nfrom pathlib import Path\n"
+            "child=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)'])\n"
+            "Path('read.pid').write_text(str(child.pid))\n"
+        )
+        self.assertEqual(daily.command([sys.executable, "-c", script], self.root, subprocess.DEVNULL,
+                                       subprocess.DEVNULL, subprocess.DEVNULL, threading.Event(), 5), 0)
+        pid = int((self.root / "read.pid").read_text())
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.01)
+        self.fail("Read descendant survived its completed command")
+
+    def test_guarded_command_failure_retains_the_stderr_location(self) -> None:
+        output = StringIO()
+        stopped = threading.Event()
+        stopped.set()
+        error_path = self.root / "scan.stderr"
+        with redirect_stdout(output), error_path.open("wb") as error:
+            code = daily.guarded(lambda: daily.command([sys.executable, "-c", "import time;time.sleep(30)"], self.root,
+                                                       subprocess.DEVNULL, subprocess.DEVNULL, error, stopped, 5))
+        self.assertEqual(code, 1)
+        self.assertIn(str(error_path), json.loads(output.getvalue())["reason"])
 
 
 if __name__ == "__main__":

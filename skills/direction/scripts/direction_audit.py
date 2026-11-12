@@ -365,13 +365,30 @@ def _parse_time(value: Any) -> dt.datetime | None:
 
 
 NOT_FOUND_RE = re.compile(r"\bHTTP 404\b")
+READ_TIMEOUT_SECONDS = 60
+
+
+def read_command(args: list[str], *, gh: str, timeout: float | None = None) -> subprocess.CompletedProcess[bytes]:
+    timeout = min(READ_TIMEOUT_SECONDS if timeout is None else timeout, github_api.remaining_retry_timeout_seconds())
+    if timeout <= 0:
+        raise AuditError(f"GitHub read {args[1]} exceeded the read deadline before starting")
+    deadline = min(time.time() + timeout, float(os.environ.get("GITHUB_RETRY_DEADLINE_AT") or "inf"))
+    environment = {**os.environ, "GITHUB_RETRY_DEADLINE_AT": str(deadline)}
+    try:
+        return subprocess.run([gh, *args], stdin=subprocess.DEVNULL, capture_output=True, env=environment, timeout=timeout + 5)
+    except subprocess.TimeoutExpired as exc:
+        detail = github_api.subprocess_output_text(exc.stderr).strip()[:400]
+        message = f"GitHub read {args[1]} timed out after {timeout:.1f}s: {detail}"
+        print(message, file=sys.stderr, flush=True)
+        raise AuditError(message) from exc
 
 
 def gh_json(args: list[str], *, gh: str) -> Any:
-    proc = subprocess.run([gh, *args], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    proc = read_command(args, gh=gh)
     if proc.returncode != 0:
-        error = ReferenceNotFound if NOT_FOUND_RE.search(proc.stderr) else AuditError
-        raise error(f"{gh} {' '.join(args)} failed: {proc.stderr.strip()[:400]}")
+        detail = proc.stderr.decode(errors="replace").strip()
+        error = ReferenceNotFound if NOT_FOUND_RE.search(detail) else AuditError
+        raise error(f"{gh} {' '.join(args)} failed: {detail[:400]}")
     try:
         return json.loads(proc.stdout or "null")
     except json.JSONDecodeError as exc:
@@ -2161,11 +2178,8 @@ def default_branch_net_lines(
 
 
 def tarball_text_lines(repo: str, sha: str, *, gh: str) -> int:
-    try:
-        proc = subprocess.run([gh, "api", f"repos/{repo}/tarball/{sha}"], capture_output=True,
-                              timeout=github_api.remaining_retry_timeout_seconds())
-    except subprocess.TimeoutExpired as exc:
-        raise AuditError("tarball read exceeded the read deadline") from exc
+    proc = read_command(["api", f"repos/{repo}/tarball/{sha}"], gh=gh,
+                        timeout=github_api.remaining_retry_timeout_seconds())
     if proc.returncode != 0:
         raise AuditError(f"tarball read failed: {proc.stderr.decode(errors='replace').strip()[:400]}")
     lines = 0
@@ -2213,8 +2227,9 @@ def repository_listing_gaps(cut: bool, *, fetch: Callable[[list[str]], Any]) -> 
         if isinstance(installation, dict) and installation.get("repository_selection") == "selected":
             # An App installed on chosen repositories cannot see the rest of the account.
             gaps.append({"source": "repositories", "reason": "installation_selected_repositories"})
-    except AuditError:
-        pass  # The Director's own login lists every repository it owns.
+    except AuditError as exc:
+        if isinstance(exc.__cause__, (subprocess.TimeoutExpired, github_next_reads.ReadDeadline)):
+            gaps.append({"source": "repositories", "reason": "installation_selection_unavailable"})
     return gaps
 
 

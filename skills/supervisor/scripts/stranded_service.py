@@ -19,6 +19,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from typing import BinaryIO
 
 import services
 import stranded_archive
@@ -89,17 +90,28 @@ def render(config_path, output):
     return target
 
 
-def command(argv, cwd, stdin, stdout, stderr, stopped, timeout):
+def command(argv: list[str], cwd: Path, stdin: int, stdout: int | BinaryIO, stderr: int | BinaryIO,
+            stopped: threading.Event, timeout: float) -> int:
+    read_deadline = time.time() + timeout - min(30, timeout / 5)
+    inherited = os.environ.get("GITHUB_RETRY_DEADLINE_AT")
+    if inherited:
+        read_deadline = min(read_deadline, float(inherited))
     child = subprocess.Popen(argv, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr,
-                             start_new_session=True)
+                             start_new_session=True, env={**os.environ, "GITHUB_RETRY_DEADLINE_AT": str(read_deadline)})
     try:
         deadline = time.monotonic() + timeout
         while child.poll() is None:
             if stopped.wait(0.1) or time.monotonic() >= deadline:
-                raise TimeoutError("daily command stopped or timed out")
+                reason = "stopped" if stopped.is_set() else f"timed out after {timeout:g}s"
+                script = next((Path(arg).name for arg in argv if arg.endswith(".py")), Path(argv[0]).name)
+                raise TimeoutError(f"{script} {reason}; inspect {getattr(stderr, 'name', 'command stderr')}")
         return child.returncode
     finally:
         services.stop_child(child)
+        try:
+            os.killpg(child.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
 
 def run_once(config_path: Path, stopped: threading.Event, retry_unsent: bool = False) -> int:
@@ -139,7 +151,7 @@ def run_once(config_path: Path, stopped: threading.Event, retry_unsent: bool = F
                 scan_code = command(scan, catalog, subprocess.DEVNULL, out, err, stopped, 900)
         services.emit("scanned", exit_code=scan_code, report=str(report))
         if scan_code not in (0, 3) or not report.stat().st_size:
-            raise ValueError("scan did not produce a digest")
+            raise ValueError(f"scan did not produce a digest (exit {scan_code}); inspect {attempt / 'scan.stderr'}")
         reservation = {"day": day, "scan_exit_code": scan_code, "report": str(report)}
         marker.write_text(json.dumps(reservation) + "\n")
         delivery = [config["uv"], "run", "--no-project", "--no-cache",
@@ -190,7 +202,7 @@ def run_weekly(config_path, stopped):
         with os.fdopen(handle, "wb") as out, stderr.open("wb") as err:
             code = command(audit, catalog, subprocess.DEVNULL, out, err, stopped, WEEKLY_AUDIT_SECONDS)
         if code not in WEEKLY_STAMP_WRITTEN_CODES:
-            services.emit("weekly_not_recorded", exit_code=code, output=str(attempt))
+            services.emit("weekly_not_recorded", exit_code=code, output=str(attempt), stderr=str(stderr))
             return 1
         receipt = attempt.rename(folder / f"{today.isoformat()}.receipt.json")
         services.emit("weekly_audited", exit_code=code, receipt=str(receipt))
@@ -200,8 +212,8 @@ def run_weekly(config_path, stopped):
 def guarded(action):
     try:
         return action()
-    except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError):
-        services.emit("reconciliation_required", reason="inspect retained scan and delivery evidence")
+    except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as error:
+        services.emit("reconciliation_required", reason=str(error))
         return 1
 
 
@@ -243,8 +255,8 @@ def main(argv=None):
         config_path = args.config.resolve()
         daily_code = guarded(lambda: run_once(config_path, stopped, retry_unsent=args.command == "retry-unsent"))
         return guarded(lambda: run_weekly(config_path, stopped)) or daily_code
-    except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError):
-        services.emit("reconciliation_required", reason="inspect retained scan and delivery evidence")
+    except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as error:
+        services.emit("reconciliation_required", reason=str(error))
         return 1
     finally:
         for sig, handler in previous.items():
