@@ -3021,7 +3021,7 @@ class TerminalTests(unittest.TestCase):
                 self.assertEqual(autocompact(iterm_tab.append_brief(f"claude {option}", "brief")), ["500k"])
         self.assertNotIn("--autocompact", iterm_tab.append_brief("codex --remote unix://", "brief"))
 
-    def test_every_claude_account_home_launches_without_the_question_picker_or_auto_memory(self) -> None:
+    def test_every_claude_account_home_launches_denying_unanswerable_prompts_without_the_question_picker_or_auto_memory(self) -> None:
         default_home = ACCOUNTS_TOML.replace('env = { CLAUDE_CONFIG_DIR = "~/claude-main" }', 'env = {}')
         homes = [(text, name) for text in (ACCOUNTS_TOML, default_home) for name in ("main", "spare")]
         fake_claude = fixture_executable(self.root / "claude", f"#!{sys.executable}\nimport json, sys\nprint(json.dumps(sys.argv[1:]))\n")
@@ -3048,7 +3048,7 @@ class TerminalTests(unittest.TestCase):
                 self.assertEqual(options.disallowedTools, [iterm_tab.CLAUDE_QUESTION_TOOL])
                 received = json.loads(options.settings)
                 self.assertIs(received[iterm_tab.CLAUDE_AUTO_MEMORY_SETTING], False)
-                self.assertIs(received["permissions"][iterm_tab.CLAUDE_DENY_SETTING], True)
+                self.assertIs(received["permissions"][iterm_tab.CLAUDE_UNATTENDED_DENY_SETTING], True)
                 self.assertEqual(args[separator + 1 :], [brief])
         self.assertNotIn(iterm_tab.CLAUDE_QUESTION_TOOL, iterm_tab.append_brief("codex --remote unix://", "brief"))
 
@@ -3088,7 +3088,7 @@ class TerminalTests(unittest.TestCase):
                 index = max(i for i, arg in enumerate(args) if arg == "--settings")
                 received = json.loads(args[index + 1])
                 self.assertEqual(received["model"], settings["model"])
-                self.assertEqual(received["permissions"], {**settings["permissions"], iterm_tab.CLAUDE_DENY_SETTING: True})
+                self.assertEqual(received["permissions"], {**settings["permissions"], iterm_tab.CLAUDE_UNATTENDED_DENY_SETTING: True})
                 self.assertIs(received[iterm_tab.CLAUDE_SUGGESTION_SETTING], False)
                 self.assertIs(received[iterm_tab.CLAUDE_AUTO_MEMORY_SETTING], False)
                 self.assertEqual(args[-1], "brief")
@@ -3102,7 +3102,7 @@ class TerminalTests(unittest.TestCase):
         path.write_text(json.dumps(settings))
         with self.assertRaises(ValueError):
             iterm_tab.append_brief(f"cd {shlex.quote(str(self.root))} && exec claude --settings settings.json", "brief")
-        settings["permissions"][iterm_tab.CLAUDE_DENY_SETTING] = True
+        settings["permissions"][iterm_tab.CLAUDE_UNATTENDED_DENY_SETTING] = True
         settings["env"] = {"FIXTURE_PRIVATE_VALUE": "opaque-fixture-value"}
         path.write_text(json.dumps(settings))
         for invocation in (f"cd {shlex.quote(str(self.root))} && exec claude --settings settings.json",
