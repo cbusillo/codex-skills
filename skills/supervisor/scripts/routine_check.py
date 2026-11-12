@@ -100,13 +100,22 @@ def role_prompt(roles: tuple[str, ...]) -> list[str]:
     return prompts
 
 
+def source_seat(row: dict) -> str | None:
+    queue = row.get("queue") or {}
+    if queue.get("next_actor_session_state") in {EXPIRED, UNKNOWN} or queue.get("reason") == "next_actor_session_released":
+        return None
+    actor = (queue.get("next_actor") or "").casefold()
+    role = actor.removeprefix("agent:supervisor-")
+    return role if actor.startswith("agent:supervisor-") and role in SUPERVISOR_ROLES else None
+
+
 def seat_note(row: dict, roles: tuple[str, ...], now: datetime) -> str | None:
     if not roles:
         return ""
     actor = (row.get("queue", {}).get("next_actor") or "").casefold()
     if actor == "agent:supervisor" or row.get("queue", {}).get("next_actor_session_state") in {EXPIRED, UNKNOWN}:
         return " | UNROUTED"
-    role = actor.removeprefix("agent:supervisor-")
+    role = source_seat(row)
     if role not in SUPERVISOR_ROLES or role in roles:
         return ""
     recorded = recorded_time(row["queue"].get("status_recorded_at"))
@@ -249,32 +258,35 @@ def refused_read(row: dict) -> str:
     return " ".join(match[1].split()) if match else ""
 
 
+def work_rows(selection: dict) -> list[tuple[str, dict]]:
+    return [(field, row) for field in ("candidates", "excluded", "needs_status", "underway") for row in selection.get(field, [])]
+
+
 def queue_rows(selection: dict) -> list[tuple[str, dict]]:
     rows: dict[str, tuple[str, dict]] = {}
     actors = supervisor_actors()
-    for field in ("candidates", "excluded", "needs_status", "underway"):
-        for row in selection.get(field, []):
-            queue = row.get("queue", {})
-            if str(row.get("state", "")).casefold() != "open":
-                continue
-            if queue.get("next_actor_session_state") in {EXPIRED, UNKNOWN} or queue.get("reason") == "next_actor_session_released":
-                rows[pointer(row)] = ("PRODUCTION_READ_REFUSED" if refused_read(row) else "SUPERVISOR_ACTION", row)
-                continue
-            if field == "excluded" and row.get("exclusion") not in {"assigned_elsewhere", "agent_assignment_unresolved"}:
-                continue
-            actor = queue.get("next_actor") or ""
-            if refused_read(row) and actor.startswith("agent") and queue.get("state") in {"available", "review", "needs_status"}:
-                rows[pointer(row)] = ("PRODUCTION_READ_REFUSED", row)
-            elif actor.casefold() in actors and queue.get("state") in {"available", "review", "needs_status"}:
-                rows[pointer(row)] = ("SUPERVISOR_ACTION", row)
-            elif row.get("record_type") == "pull_request":
-                continue
-            elif row.get("exclusion") == "agent_assignment_unresolved" and len(row.get("agent_labels", [])) > 1:
-                rows.setdefault(pointer(row), ("CONFLICT", row))
-            elif queue.get("state") == "available" and actor.startswith("agent"):
-                rows.setdefault(pointer(row), ("NEXT", row))
-            elif queue.get("state") in {"review", "needs_status"}:
-                rows.setdefault(pointer(row), ("REVIEW" if actor.startswith("agent") else "NEEDS_STATUS", row))
+    for field, row in work_rows(selection):
+        queue = row.get("queue", {})
+        if str(row.get("state", "")).casefold() != "open":
+            continue
+        if queue.get("next_actor_session_state") in {EXPIRED, UNKNOWN} or queue.get("reason") == "next_actor_session_released":
+            rows[pointer(row)] = ("PRODUCTION_READ_REFUSED" if refused_read(row) else "SUPERVISOR_ACTION", row)
+            continue
+        if field == "excluded" and row.get("exclusion") not in {"assigned_elsewhere", "agent_assignment_unresolved"}:
+            continue
+        actor = queue.get("next_actor") or ""
+        if refused_read(row) and actor.startswith("agent") and queue.get("state") in {"available", "review", "needs_status"}:
+            rows[pointer(row)] = ("PRODUCTION_READ_REFUSED", row)
+        elif actor.casefold() in actors and queue.get("state") in {"available", "review", "needs_status"}:
+            rows[pointer(row)] = ("SUPERVISOR_ACTION", row)
+        elif row.get("record_type") == "pull_request":
+            continue
+        elif row.get("exclusion") == "agent_assignment_unresolved" and len(row.get("agent_labels", [])) > 1:
+            rows.setdefault(pointer(row), ("CONFLICT", row))
+        elif queue.get("state") == "available" and actor.startswith("agent"):
+            rows.setdefault(pointer(row), ("NEXT", row))
+        elif queue.get("state") in {"review", "needs_status"}:
+            rows.setdefault(pointer(row), ("REVIEW" if actor.startswith("agent") else "NEEDS_STATUS", row))
     return list(rows.values())
 
 
@@ -288,9 +300,24 @@ def milestone_waits(selection: dict) -> list[dict]:
             for wait in [*milestone.get("waits", []), *milestone.get("wait_reviews", [])]]
 
 
+def wait_rows(selection: dict) -> list[dict]:
+    return [*selection.get("waiting", []), *selection.get("recorded_waits", []), *selection.get("stale_waits", []), *milestone_waits(selection)]
+
+
 def answered_waits(selection: dict) -> list[dict]:
-    rows = [*selection.get("waiting", []), *selection.get("recorded_waits", []), *selection.get("stale_waits", []), *milestone_waits(selection)]
+    rows = wait_rows(selection)
     return list({pointer(row): row for row in rows if (row.get("ask") or {}).get("replied_since") is True}.values())
+
+
+def question_seat(question: dict, selection: dict) -> str:
+    try:
+        source = source_item(question["url"]).casefold()
+    except ValueError:
+        return "cleanup"
+    rows = [*(row for _, row in work_rows(selection)), *wait_rows(selection), *selection.get("pr_followthrough", [])]
+    seats = {seat for row in rows if f"{row.get('repo')}#{row.get('number')}".casefold() == source
+             for seat in [source_seat(row)] if seat is not None}
+    return next(iter(seats)) if len(seats) == 1 else "cleanup"
 
 
 def request_text(row: dict) -> str:
@@ -449,7 +476,7 @@ def digest(sources: dict[str, dict], *, full: bool = False, roles: tuple[str, ..
     lines = [f"Routine check at {clock_label(now)} (source candidates; routing receipts are delivery evidence only)"]
     if roles:
         lines.extend(role_prompt(roles))
-        lines.append("Director questions are presented by the seat that owns their source work.")
+        lines.append("Registered questions mark their presenting seat as OWN.")
     for name, report in sources.items():
         lines.extend(source_errors(name, report))
     primary = sources.get("primary", {})
@@ -529,7 +556,9 @@ def digest(sources: dict[str, dict], *, full: bool = False, roles: tuple[str, ..
         if not full and question.get("delivery") == "acknowledged":
             omitted += 1
             continue
-        lines.append(f"QUESTION {pointer(question)}: {question.get('delivery', question.get('status', 'unresolved'))}")
+        seat = question_seat(question, selection) if roles else None
+        ownership = " | OWN" if seat in roles else f" | presented by {seat}" if roles else ""
+        lines.append(f"QUESTION {pointer(question)}: {question.get('delivery', question.get('status', 'unresolved'))}{ownership}")
     if unregistered:
         lines.append(f"UNREGISTERED {len(unregistered)}: {pointer(unregistered[0])}")
     comments = sources.get("comments", {})

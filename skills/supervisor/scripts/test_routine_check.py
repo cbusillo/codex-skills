@@ -1145,6 +1145,50 @@ class PrimaryReadTests(unittest.TestCase):
             output = routine_check.digest({"next": {"candidates": [row]}}, roles=(role,))
             self.assertNotIn("FALLBACK", output)
 
+    def assert_question_presenter(self, sources: dict, presenter: str) -> None:
+        before = json.dumps(sources, sort_keys=True)
+        owners = []
+        for role in routine_check.SUPERVISOR_ROLES:
+            lines = [line for line in routine_check.digest(sources, roles=(role,)).splitlines() if line.startswith("QUESTION ")]
+            self.assertEqual(len(lines), 1)
+            if " | OWN" in lines[0]:
+                owners.append(role)
+        self.assertEqual(owners, [presenter])
+        combined = routine_check.digest(sources, roles=routine_check.SUPERVISOR_ROLES)
+        self.assertEqual(sum(line.startswith("QUESTION ") for line in combined.splitlines()), 1)
+        self.assertIn(" | OWN", combined)
+        self.assertEqual(json.dumps(sources, sort_keys=True), before)
+
+    def test_registered_question_keeps_unique_source_seat_across_existing_reader_groups(self) -> None:
+        question = {"url": "https://github.com/owner/repo/issues/7#issuecomment-70", "registration_url": "registration",
+                    "delivery": "unacknowledged"}
+        for role in routine_check.SUPERVISOR_ROLES:
+            row = queue_row(7, f"agent:supervisor-{role.upper()}", "Read source")
+            for field in ("candidates", "excluded", "underway", "waiting", "pr_followthrough"):
+                with self.subTest(role=role, field=field):
+                    selection = {field: [row, row]}
+                    self.assert_question_presenter({"next": selection, "questions": {"questions": [question]}}, role)
+
+    def test_own_project_lead_and_unmatched_or_conflicting_question_sources_go_to_cleanup(self) -> None:
+        question = {"url": "https://github.com/owner/personal/issues/7#issuecomment-70", "registration_url": "registration",
+                    "delivery": "unacknowledged"}
+        lead = {**queue_row(7, "agent:original-native-lead", "Continue own project"), "repo": "owner/personal"}
+        seats = [{**lead, "queue": {"next_actor": f"agent:supervisor-{role}"}} for role in ("milestone", "tooling")]
+        for rows in ([], [lead], seats, [{**seats[0], "queue": {**seats[0]["queue"], "next_actor_session_state": github_plan_lease.UNKNOWN}}]):
+            with self.subTest(rows=rows):
+                self.assert_question_presenter({"next": {"waiting": rows}, "questions": {"questions": [question]}}, "cleanup")
+
+    def test_question_ownership_preserves_acknowledgement_and_unscoped_output(self) -> None:
+        question = {"url": "https://github.com/owner/repo/issues/7#issuecomment-70", "registration_url": "registration",
+                    "delivery": "acknowledged", "status": "unresolved"}
+        sources = {"questions": {"questions": [question]}}
+        self.assertNotIn("QUESTION ", routine_check.digest(sources, roles=("cleanup",)))
+        full = routine_check.digest(sources, full=True, roles=("cleanup",))
+        self.assertIn("acknowledged | OWN", full)
+        self.assertNotIn(" | OWN", routine_check.digest(sources, full=True))
+        missing = {**question, "delivery": "unknown", "status": "missing_source"}
+        self.assert_question_presenter({"questions": {"questions": [missing]}}, "cleanup")
+
     def test_unrouted_and_undated_seat_rows_are_visible_without_inventing_age(self) -> None:
         for actor in ("agent:supervisor", "agent:supervisor-tooling"):
             row = queue_row(4031, actor, "Take this row")
