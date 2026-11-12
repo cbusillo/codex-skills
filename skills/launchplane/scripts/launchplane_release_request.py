@@ -7,10 +7,13 @@ from __future__ import annotations
 import argparse
 import hashlib
 import http.client
+import importlib
+import json
 import re
 import urllib.error
 import urllib.parse
-from typing import Any, NamedTuple
+from contextlib import nullcontext
+from typing import Any, BinaryIO, NamedTuple
 
 COMMAND = "release-request"
 COMMANDS = frozenset({COMMAND})
@@ -73,6 +76,7 @@ def add_parser(subparsers: Any) -> None:
     parser.add_argument("--product", required=True)
     target = parser.add_mutually_exclusive_group(required=True)
     target.add_argument("--plan", action="store_true", help="Read the current checklist and send nothing.")
+    parser.add_argument("--result-file", help="With --plan, save the complete review to a new owner-only task-evidence file.")
     target.add_argument("--checklist-digest", help="checklist_digest from a reviewed --plan read.")
     parser.add_argument("--reason")
     parser.add_argument("--decision-reference", help="Recorded Director decision comment URL.")
@@ -203,7 +207,7 @@ def _project_review(h: Any, response: dict[str, Any], product: str) -> ReviewSta
     )
 
 
-def _read_review(h: Any, settings: dict[str, str], product: str, timeout: float) -> ReviewState:
+def _read_review(h: Any, settings: dict[str, str], product: str, timeout: float, evidence: BinaryIO | None = None) -> ReviewState:
     response = h.request_launchplane_read(
         service_url=settings["service_url"],
         path=h.internal_helper_path(REVIEW_READ),
@@ -211,6 +215,10 @@ def _read_review(h: Any, settings: dict[str, str], product: str, timeout: float)
         query={"product": product},
         timeout=timeout,
     )
+    if evidence is not None:
+        _require_known_fields(h, REVIEW_READ, response, frozenset({"product", "review"}))
+        if not importlib.import_module("launchplane-call").save_evidence(evidence, json.dumps(response).encode()):
+            raise OSError("private_result_unavailable")
     return _project_review(h, response, product)
 
 
@@ -435,12 +443,19 @@ def _finish_read_failure(h: Any, intent: Intent, timeout: float, error: Exceptio
 
 def execute(h: Any, args: argparse.Namespace) -> int:
     intent = _intent(h, args)
-    settings = h.prepare_operator_settings(args=args, operation=COMMAND, request=intent.request)
-    if settings is None:
-        return 2
+    if args.result_file is not None and not args.plan:
+        raise ValueError("private_result_requires_plan")
     try:
-        acceptance = _read_acceptance(h, settings, intent.product, args.timeout)
-        state = _read_review(h, settings, intent.product, args.timeout)
+        destination = (
+            importlib.import_module("launchplane-call").open_evidence(args.result_file)
+            if args.result_file is not None else nullcontext()
+        )
+        with destination as evidence:
+            settings = h.prepare_operator_settings(args=args, operation=COMMAND, request=intent.request)
+            if settings is None:
+                return 2
+            acceptance = _read_acceptance(h, settings, intent.product, args.timeout)
+            state = _read_review(h, settings, intent.product, args.timeout, evidence)
     except (ValueError, OSError, http.client.HTTPException) as error:
         return _finish_read_failure(h, intent, args.timeout, error)
     if args.plan:
