@@ -3876,11 +3876,22 @@ def test_later_attempt_of_older_execution_is_current(monkeypatch, tmp_path, stat
     assert snapshot["checks"]["all_terminal"] is (status == "completed")
 
 
-def test_unfinished_older_original_run_still_blocks_readiness(monkeypatch, tmp_path):
-    old, new = execution(1, None, status="queued"), execution(2)
-    snapshot, _ = execution_snapshot(monkeypatch, tmp_path, [old, new], [execution_check(new, 21)])
-    assert snapshot["checks"]["pending_count"] == 1
-    assert "ready_to_merge" not in snapshot["actions"]
+@pytest.mark.parametrize("newest", ["success", "queued", "failure"])
+def test_newest_run_settles_each_workflow_over_phantom_queued_runs(monkeypatch, tmp_path, newest):
+    # cbusillo/codex-skills#4172: four runs GitHub never started or cancelled,
+    # then a newer run of each of the same four workflows on the same head.
+    runs, checks = [], []
+    for workflow in range(4):
+        phantom = execution(10 + workflow, None, workflow_id=71 + workflow, status="queued")
+        status, conclusion = ("queued", None) if newest == "queued" else ("completed", newest)
+        replacement = execution(20 + workflow, conclusion, workflow_id=71 + workflow, status=status)
+        runs += [phantom, replacement]
+        if newest != "queued":
+            checks.append(execution_check(replacement, 30 + workflow, conclusion))
+    snapshot, _ = execution_snapshot(monkeypatch, tmp_path, runs, checks)
+    assert snapshot["checks"]["pending_count"] == (4 if newest == "queued" else 0)
+    assert snapshot["checks"]["failed_count"] == (4 if newest == "failure" else 0)
+    assert ("ready_to_merge" in snapshot["actions"]) is (newest == "success")
 
 
 def test_older_attempt_without_start_ordering_remains_current(monkeypatch, tmp_path):
