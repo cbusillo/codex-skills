@@ -2355,19 +2355,15 @@ An exited Supervisor-owned source in the active ledger resumes through guarded
 `new --resume-session-id` on its original account: `--account-provider openai`
 for Codex or `anthropic` for Claude. Claude retains its native original working
 directory and account home, including configured shared project storage; account
-moving is disabled for this exact-source invocation. Source ownership covers
-preparation, startup and same-row registration. Closed, handed-off, unknown-action,
-changed-identity and live-client refusals remain; resume is not a new worker slot.
+moving is disabled for this exact-source invocation.
 
 A live manually resumed client without a maintained launch receipt stays
 unregistered. Its owning Supervisor finishes and exits that client first. A
 finished source can then use the existing guarded ended-session recovery above;
 a continuing source uses this exact-source launch, which refreshes its original
-row. Never borrow the old pane's nonce or construct a receipt from a live PID.
-For a managed partial launch, preserve its real returned launch object and use
+row. For a managed partial launch, preserve its real returned launch object and use
 `register --receipt-file` without launching again, including after an early
-startup stop. Registration rechecks the actual process and terminal; normal
-closeout still requires that refreshed process to exit.
+startup stop. Normal closeout still requires the refreshed process to exit.
 
 After a Codex source's retirement, verify its exact canonical closed-log
 source row and export that unchanged row to private JSON, preserving absolute

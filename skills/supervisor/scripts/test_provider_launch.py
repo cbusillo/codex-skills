@@ -807,6 +807,10 @@ class ClaudeResumeTests(unittest.TestCase):
                 "file_native": {"harness": "claude", "session_id": self.session, "home": str(self.home)},
             },
         }
+        self.result: dict[str, Any] = {
+            "session_id": "fictional-iterm", "tty": "/dev/new-fictional", "pid": 456,
+            "window_id": "window", "tab_id": "tab", "backend": "iterm",
+        }
         self.ledger = self.root / "ledger.json"
         self.ledger.write_text(json.dumps([self.entry]))
         self.args = argparse.Namespace(
@@ -923,14 +927,7 @@ class ClaudeResumeTests(unittest.TestCase):
 
     def test_iterm_registration_uses_same_source_and_refuses_changed_custody(self) -> None:
         self.choice.update(resume_session_id=self.session, resume_source=self.entry)
-        result: dict[str, Any] = {
-            "session_id": "fictional-iterm",
-            "tty": "/dev/new-fictional",
-            "pid": 456,
-            "window_id": "window",
-            "tab_id": "tab",
-            "backend": "iterm",
-        }
+        result = dict(self.result)
         before = self.ledger.read_bytes()
         born = datetime.now(UTC)
         with (
@@ -998,14 +995,7 @@ class ClaudeResumeTests(unittest.TestCase):
 
     def test_replacement_process_between_discovery_and_native_identity_refuses(self) -> None:
         self.choice.update(resume_session_id=self.session, resume_source=self.entry)
-        result: dict[str, Any] = {
-            "session_id": "fictional-iterm",
-            "tty": "/dev/new-fictional",
-            "pid": 456,
-            "window_id": "window",
-            "tab_id": "tab",
-            "backend": "iterm",
-        }
+        result = dict(self.result)
         replaced = False
 
         def arguments(_pid: int, _command: str) -> tuple[list[str], bool]:
