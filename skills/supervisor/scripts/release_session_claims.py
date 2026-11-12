@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from collections.abc import Callable
 from contextlib import contextmanager, nullcontext
 from datetime import UTC, datetime, timedelta, timezone
 import json
@@ -235,16 +236,116 @@ def transcript_roots(harness: str, configured: Path | None, explicit: list[Path]
     return list(dict.fromkeys(roots))
 
 
+UNRESOLVED_CELLS_DECISION = "https://github.com/cbusillo/codex-skills/issues/3523#issuecomment-6828126999"
+
+
+def require_claim_check(condition: bool, _gate: str, reason: str) -> None:
+    if not condition:
+        raise ValueError(reason)
+
+
+def unresolved_cell_check(entry: dict, decision: str, result: dict) -> dict:
+    require_claim_check(
+        entry["harness"] == "codex",
+        "claims",
+        "unresolved-cell retirement requires a Codex session",
+    )
+    require_claim_check(
+        decision == UNRESOLVED_CELLS_DECISION,
+        "claims",
+        "requires the recorded Q1354 decision URL",
+    )
+    reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 120)
+    actor = github_identity.automation_login()
+    require_claim_check(bool(actor), "identity", "configured automation identity is unknown")
+    match = release.COMMENT_URL.fullmatch(decision)
+    posted = reader.get_json(f"/repos/{match[1]}/issues/comments/{match[3]}", step="closeout_decision")
+    require_claim_check(
+        (posted.get("user") or {}).get("login") == actor
+        and bool(posted.get("created_at"))
+        and posted.get("created_at") == posted.get("updated_at"),
+        "claims",
+        "recorded Director decision was changed or is unavailable",
+    )
+    repo, number = entry.get("repository"), entry.get("issue")
+    if repo is None and number is None:
+        targets = {(row["repository"], row["record"]) for row in result.get("released_claims", [])
+                   if row.get("source_session") == entry["session_id"]}
+        if len(targets) == 1:
+            repo, number = targets.pop()
+    require_claim_check(
+        isinstance(repo, str) and REPO.fullmatch(repo) is not None and type(number) is int and number > 0,
+        "claims",
+        "requires the session's exact repository and issue",
+    )
+    unresolved = result.get("unresolved_invocations")
+    if not isinstance(unresolved, list):
+        raise ValueError("audit has no unresolved invocation list")
+    require_claim_check(
+        result.get("ok") is False
+        and result.get("claims_clear") is False
+        and result.get("coverage", {}).get("complete") is False
+        and result.get("session_ids") == [entry["session_id"]]
+        and result.get("blocked") == []
+        and result.get("coverage", {}).get("search_errors") == []
+        and not result.get("error")
+        and bool(unresolved),
+        "claims",
+        "the decision accepts only unresolved code-mode cells with every claim released",
+    )
+    cells = []
+    for item in unresolved:
+        require_claim_check(
+            item.get("code_mode") is True and bool(item.get("call_id")) and bool(item.get("reason")),
+            "claims",
+            "unresolved invocation is not an identified code-mode cell with a reason",
+        )
+        cell = {key: item[key] for key in ("session", "call_id", "reason") if key in item}
+        if item.get("refusals"):
+            cell["refusals"] = [{key: refusal[key] for key in ("line", "column", "syntax") if key in refusal}
+                                for refusal in item["refusals"]]
+        cells.append(cell)
+    destination = {"repository": repo, "issue": number}
+    return {"decision": decision, "cells": cells, "destination": destination}
+
+
+def unresolved_cells_note(entry: dict, checked: dict) -> str:
+    return (
+        f"Closeout claim check under [Director decision Q1354]({checked['decision']}).\n\n"
+        f"Session: {entry['session_id']}\n\n"
+        "Fresh GitHub inventory and exact release checks confirm every session claim is released. "
+        "The strict audit remains incomplete for these code-mode cells:\n\n"
+        f"```json\n{json.dumps(checked['cells'], indent=2)}\n```\n\n"
+        "Only this unresolved-cell outcome is accepted. Retirement still requires every remaining closeout gate.\n"
+    )
+
+
 def recovery_claims(entry: dict) -> dict:
-    if entry.get("recovery", {}).get("unresolved_cells_decision"):
-        from session_closeout import check_recovery_claims
-        return check_recovery_claims(entry)
     result = subprocess.run(["uv", "run", str(GITHUB.parents[1] / "work-closeout/scripts/check_claims.py"),
                              "--session", entry["session_id"], "--transcript", entry["transcript"],
-                             "--require-released-claims"], capture_output=True, text=True, timeout=660)
+                             "--require-released-claims",
+                             *(["--inventory-owner", entry["recovery"]["owner"]]
+                               if entry.get("recovery", {}).get("unresolved_cells") else [])], capture_output=True, text=True, timeout=660)
     report = json.loads(result.stdout)
     if not isinstance(report, dict):
         raise ValueError("recovery claim check returned no report object")
+    accepted = entry.get("recovery", {}).get("unresolved_cells")
+    if result.returncode == 1 and accepted:
+        checked = unresolved_cell_check(entry, accepted["decision"], report)
+        if (checked["destination"] != accepted["destination"]
+                or not all(cell in accepted["cells"] for cell in checked["cells"])):
+            raise ValueError("recovery cells differ from the recorded claim check")
+        reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 120)
+        match = HANDOFF.fullmatch(accepted.get("note_url") or "")
+        destination = checked["destination"]
+        if not match or match[1] != destination["repository"] or int(match[2]) != destination["issue"]:
+            raise ValueError("recovery requires its original posted claim-check note")
+        posted = handoff(reader, {**entry, "handoff_url": accepted["note_url"]}, github_identity.automation_login())
+        body = re.sub(r"\n*<!-- github-skill-operation:.*?-->\s*$", "", posted.get("body") or "", flags=re.DOTALL)
+        if (posted.get("created_at") != posted.get("updated_at")
+                or not posted.get("created_at") or body.strip() != unresolved_cells_note(entry, accepted).strip()):
+            raise ValueError("recovery claim-check note changed or differs from the recorded cells")
+        return report
     if (result.returncode or report.get("ok") is not True or report.get("claims_clear") is not True
             or report.get("coverage", {}).get("complete") is not True
             or report.get("session_ids") != [entry["session_id"]]
@@ -324,7 +425,7 @@ def require_successor(entry: dict, successor: dict) -> None:
         raise ValueError("successor row does not match this handoff's work and generation")
 
 
-def validate_recovery(entry: dict, supervisor_session: str, *, before_exit: bool = False) -> dict:
+def validate_recovery(entry: dict, supervisor_session: str, *, before_exit: bool = False, claims_check: Callable[[], dict] | None = None) -> dict:
     if entry.get("supervisor_owned") is not True or entry["session_id"] == supervisor_session:
         raise ValueError("recovery requires another explicitly Supervisor-owned session")
     kind = entry.get("recovery", {}).get("kind")
@@ -358,7 +459,7 @@ def validate_recovery(entry: dict, supervisor_session: str, *, before_exit: bool
         entry["recovery"]["transcripts"] = snapshots
     elif kind != "handoff":
         raise ValueError("a live source needs a qualified handoff before recovery")
-    recovery_claims(entry)
+    (claims_check or (lambda: recovery_claims(entry)))()
     if session_record.session_status(entry) != status:
         raise ValueError("source transcript changed during recovery")
     if not before_exit:
@@ -1181,8 +1282,7 @@ def main():
     parser.add_argument("--recover-ended", action="store_true", help="Record claim-free ended custody without inventing a final verdict")
     parser.add_argument("--successor-session", help="Exact successor row for a handed-off generation")
     parser.add_argument("--handoff-url", help="Posted Safe handoff for handed-off recovery")
-    parser.add_argument("--unresolved-cells-decision", help="Apply Q1354 to unresolved code-mode cells during recovery")
-    parser.add_argument("--claims-evidence", type=Path, help="Original recovery claim-check journal")
+    parser.add_argument("--unresolved-cells-check", type=Path, help="Original closeout journal containing the posted Q1354 check")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--deadline-seconds", type=int, default=600)
     parser.add_argument("--account-config", type=Path)
@@ -1194,9 +1294,8 @@ def main():
     try:
         if args.mode == "backfill" and args.checkout_root is None:
             raise ValueError("backfill requires --checkout-root for canonical release preflight")
-        if (args.unresolved_cells_decision or args.claims_evidence) and not (
-                args.mode == "finish" and args.recover_ended and args.unresolved_cells_decision and args.claims_evidence):
-            raise ValueError("unresolved-cell recovery requires finish --recover-ended, the decision and claim-check evidence")
+        if args.unresolved_cells_check and not (args.mode == "finish" and args.recover_ended):
+            raise ValueError("unresolved-cell checks belong to finish --recover-ended")
         if args.mode != "finish" and (args.recover_ended or args.successor_session or args.handoff_url):
             raise ValueError("recovery options belong to finish")
         if (args.successor_session or args.handoff_url) and not args.recover_ended:
@@ -1230,10 +1329,17 @@ def main():
                          "successor_session": args.successor_session} if args.successor_session else {"kind": "gone"}
                 saved = closure.source_records({entry["session_id"]}).get(entry["session_id"])
                 entry["recovery"] = saved["recovery"] if saved and saved.get("closure_kind") == "claim_free_recovery" else basis
-                entry["_recovery_preview"] = not args.apply
-                if args.unresolved_cells_decision:
-                    entry["recovery"].update(unresolved_cells_decision=args.unresolved_cells_decision,
-                                             claims_evidence=str(args.claims_evidence.resolve()))
+                if args.unresolved_cells_check:
+                    state = json.loads(args.unresolved_cells_check.read_text())
+                    if not state.get("steps", {}).get("unresolved_cells_note", {}).get("complete"):
+                        raise ValueError("requires the confirmed posted unresolved-cell check")
+                    checked = {**{key: state["unresolved_cells"][key] for key in ("decision", "cells", "destination")},
+                               "note_url": state["steps"]["unresolved_cells_note"]["result"]["url"]}
+                    if entry["recovery"].get("unresolved_cells", checked) != checked:
+                        raise ValueError("recorded unresolved-cell check changed")
+                    if entry["recovery"].get("owner", args.owner) != args.owner:
+                        raise ValueError("recorded recovery inventory owner changed")
+                    entry["recovery"].update(unresolved_cells=checked, owner=args.owner)
                 closed = record_recovery(args.closed_log, entry, args.supervisor_session, persist=args.apply)
                 print(json.dumps({"ok": True, "needs_reconciliation": False, "reports": [{
                     "session_id": entry["session_id"], "status": closed["closure_kind"], "dry_run": not args.apply}]}))

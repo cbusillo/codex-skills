@@ -121,13 +121,17 @@ def terminal_state(record):
 
 def transcript_snapshot(record, path):
     """Keep a crash-truncated final line intact; never tolerate interior corruption."""
-    before = path.stat()
-    lines = native_helpers()[0].transcript_lines(path)
-    records, truncated = native_transcript_records({**record, "transcript": str(path)}, lines, local_only=False)
-    after = path.stat()
-    if (before.st_mtime_ns, before.st_size) != (after.st_mtime_ns, after.st_size):
+    paths = (path, path.with_name(path.name + "-wal")) if record["harness"] == "agy" else (path,)
+    before = {value: (value.stat().st_mtime_ns, value.stat().st_size) for value in paths if value.exists()}
+    if record["harness"] == "agy":
+        records, truncated = native_helpers()[0].read_jsonl(path), False
+    else:
+        lines = native_helpers()[0].transcript_lines(path)
+        records, truncated = native_transcript_records({**record, "transcript": str(path)}, lines, local_only=False)
+    after = {value: (value.stat().st_mtime_ns, value.stat().st_size) for value in paths if value.exists()}
+    if before != after:
         raise ValueError("Source transcript changed during termination checks")
-    return records, after.st_mtime_ns, after.st_size, truncated
+    return records, max(value[0] for value in after.values()), sum(value[1] for value in after.values()), truncated
 
 
 def transcript_records(record, lines, *, require_identity: bool = True):
@@ -221,7 +225,7 @@ def _initial_source(record, session, *, latest_pid=None):
     _validate_metadata(record, session)
     if record.get("session_id") != session or record.get("host") != socket.gethostname():
         raise ValueError("Run termination checks on the recorded source host with the exact native session")
-    if record.get("harness") not in {"codex", "claude"}:
+    if record.get("harness") not in {"codex", "claude", "agy"}:
         raise ValueError("Termination record requires the original native harness")
     pid, tty = record.get("pid"), record.get("tty")
     if type(pid) is not int or pid <= 0 or not isinstance(tty, str) or not tty.strip():
@@ -298,7 +302,7 @@ def _verify_transcripts(record: dict, roots: frozenset[Path], *, before_boot: da
     reader = native_helpers()[0]
     paths = {reader.recorded_transcript(record["transcript"])}
     for root in roots:
-        for pattern in reader.transcript_glob(session):
+        for pattern in reader.transcript_glob(session, ".db" if record["harness"] == "agy" else ".jsonl"):
             paths.update(path.resolve() for path in Path(root).rglob(pattern))
     now = datetime.now(timezone.utc)
     ended = stamp(record["ended_at"])

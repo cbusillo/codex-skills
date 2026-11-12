@@ -5,6 +5,7 @@
 import argparse
 import asyncio
 import json
+import os
 import shlex
 import sqlite3
 import subprocess
@@ -64,6 +65,42 @@ class GoogleWorkerTests(unittest.TestCase):
                 else:
                     self.assertEqual(first, [])
                 self.assertEqual(reader(entry), first)
+
+    def test_crashed_google_worker_uses_native_database_and_refuses_live_or_changed_sources(self) -> None:
+        import github_plan_termination as termination
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            session = "12345678-1234-1234-1234-123456789abc"
+            transcript = root / f"{session}.db"
+            at = datetime(2026, 1, 1, tzinfo=UTC)
+            metadata = protobuf({1: protobuf({1: int(at.timestamp())})})
+            response = protobuf({1: 15, 4: 3, 5: metadata, 20: protobuf({1: b"Still working"})})
+            with sqlite3.connect(transcript) as database:
+                database.execute("CREATE TABLE trajectory_meta (cascade_id TEXT)")
+                database.execute("INSERT INTO trajectory_meta VALUES (?)", (session,))
+                database.execute("CREATE TABLE steps (idx INTEGER, step_type INTEGER, status INTEGER, has_subtrajectory INTEGER, step_payload BLOB)")
+                database.execute("INSERT INTO steps VALUES (0,15,3,0,?)", (response,))
+            database.close()
+            os.utime(transcript, (at.timestamp(),) * 2)
+            record = {"session_id": session, "harness": "agy", "pid": 8, "tty": "ttys001", "host": "fixture",
+                      "transcript": str(transcript), "transcript_roots": [str(root)],
+                      "tmux_socket": "supervisor", "tmux_session_id": "tmux:supervisor:" + "a" * 32,
+                      "ended_at": "2026-01-02T00:00:00Z", "cause": "host crash", "retained_artifacts": []}
+            with (patch.object(termination.socket, "gethostname", return_value="fixture"),
+                  patch.object(termination, "inventory", return_value=[]),
+                  patch.object(session_liveness, "native_exit_cutoff", return_value=None),
+                  patch.object(session_liveness, "host_boot_time", return_value=None),
+                  patch.object(termination, "run_terminal", return_value=subprocess.CompletedProcess(
+                      [], 1, "", "no server running on /fixture/socket"))):
+                self.assertEqual(termination.verify(record, session)["session_id"], session)
+                with patch.object(termination, "inventory", return_value=[(8, "ttys001", "agy")]):
+                    with self.assertRaises(ValueError):
+                        termination.verify(record, session)
+                with sqlite3.connect(transcript) as database:
+                    database.execute("UPDATE trajectory_meta SET cascade_id='another-session'")
+                with self.assertRaises(ValueError):
+                    termination.verify(record, session)
 
     def test_native_error_requires_a_new_final_while_compaction_preserves_the_verdict(self) -> None:
         fields = iterm_tab.claim_history.protobuf_fields
