@@ -218,7 +218,7 @@ def _read_review(h: Any, settings: dict[str, str], product: str, timeout: float,
     if evidence is not None:
         _require_known_fields(h, REVIEW_READ, response, frozenset({"product", "review"}))
         if not importlib.import_module("launchplane-call").save_evidence(evidence, json.dumps(response).encode()):
-            raise OSError("private_result_unavailable")
+            raise h.LaunchplaneSafetyError("private_result_unavailable")
     return _project_review(h, response, product)
 
 
@@ -427,6 +427,8 @@ def _finish_refused_post(h: Any, settings: dict[str, str], intent: Intent, accep
 
 
 def _finish_read_failure(h: Any, intent: Intent, timeout: float, error: Exception) -> int:
+    if isinstance(error, h.LaunchplaneSafetyError) and error.code == "private_result_unavailable":
+        return _finish_private_failure(h, intent, "unavailable")
     if isinstance(error, urllib.error.HTTPError):
         try:
             h.emit_http_error_payload(operation=COMMAND, request=intent.request, exc=error)
@@ -441,6 +443,13 @@ def _finish_read_failure(h: Any, intent: Intent, timeout: float, error: Exceptio
     return 1
 
 
+def _finish_private_failure(h: Any, intent: Intent, status: str) -> int:
+    return _finish(
+        h, intent, status, diagnostics={"error_code": "private_result_unavailable"},
+        recommendation="The private result could not be saved. Preserve any partial file and choose a new file in the evidence directory outside the repository. Nothing was sent.",
+    )
+
+
 def execute(h: Any, args: argparse.Namespace) -> int:
     intent = _intent(h, args)
     if args.result_file is not None and not args.plan:
@@ -450,14 +459,20 @@ def execute(h: Any, args: argparse.Namespace) -> int:
             importlib.import_module("launchplane-call").open_evidence(args.result_file)
             if args.result_file is not None else nullcontext()
         )
+    except (ValueError, OSError):
+        return _finish_private_failure(h, intent, "invalid")
+    try:
         with destination as evidence:
             settings = h.prepare_operator_settings(args=args, operation=COMMAND, request=intent.request)
             if settings is None:
                 return 2
-            acceptance = _read_acceptance(h, settings, intent.product, args.timeout)
-            state = _read_review(h, settings, intent.product, args.timeout, evidence)
-    except (ValueError, OSError, http.client.HTTPException) as error:
-        return _finish_read_failure(h, intent, args.timeout, error)
+            try:
+                acceptance = _read_acceptance(h, settings, intent.product, args.timeout)
+                state = _read_review(h, settings, intent.product, args.timeout, evidence)
+            except (ValueError, OSError, http.client.HTTPException) as error:
+                return _finish_read_failure(h, intent, args.timeout, error)
+    except OSError:
+        return _finish_private_failure(h, intent, "unavailable")
     if args.plan:
         return _finish_plan(h, settings, intent, state, acceptance)
     if (saved := _matching_request(state, intent)) is not None and (acceptance == STANDING_ACCEPTANCE or state.refusal or state.digest != intent.digest):

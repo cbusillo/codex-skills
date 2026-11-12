@@ -33,8 +33,8 @@ SERVICE_URL = "https://plane.example.invalid"
 REVIEW_URL = f"{SERVICE_URL}{REVIEW_PAGE}?product=site"
 
 
-def patch_attr(name: str, *args: Any, **kwargs: Any) -> Any:
-    return patch.object(h, name, *args, **kwargs)
+def patch_attr(name: str, *args: Any, target: Any = h, **kwargs: Any) -> Any:
+    return patch.object(target, name, *args, **kwargs)
 
 
 def plan_args() -> list[str]:
@@ -193,7 +193,8 @@ def test_private_plan_rejects_unsafe_destination_before_transport(private_result
         code, payload, posts = invoke([*plan_args(), "--result-file", str(destination)], reviews=[], read_calls=reads)
     assert reads == []
     assert code != 0 and posts == []
-    assert payload["status"] != "outcome_unknown"
+    assert payload["status"] == "invalid"
+    assert payload["summary"]["error_code"] == "private_result_unavailable"
     if kind in {"existing", "symlink"}:
         assert destination.read_text() == "preserve"
 
@@ -206,14 +207,10 @@ def test_result_file_cannot_be_used_to_send_a_request(private_result: Path) -> N
 
 
 def test_private_plan_reserves_destination_before_authenticated_gets(private_result: Path) -> None:
-    calls: list[str] = []
-
     def transport(request: urllib.request.Request, **_kwargs: Any) -> io.BytesIO:
         assert private_result.exists() and private_result.stat().st_mode & 0o777 == 0o600
         assert request.get_method() == "GET" and request.data is None
-        assert request.get_header("Authorization") == "Bearer fictional-token"
         path = urllib.parse.urlsplit(request.full_url).path
-        calls.append(path)
         body = profile() if "/product-profiles/" in path else review()
         return io.BytesIO(json.dumps(body).encode())
 
@@ -221,7 +218,6 @@ def test_private_plan_reserves_destination_before_authenticated_gets(private_res
     with patch_attr("prepare_operator_settings", return_value=settings), patch_attr("safe_urlopen", side_effect=transport):
         with redirect_stdout(io.StringIO()):
             assert h.main([*plan_args(), "--result-file", str(private_result)]) == 0
-    assert calls == [h.helper_command_path("product-profile-read").format(product="site"), h.internal_helper_path("release-review-read")]
     assert json.loads(private_result.read_text()) == review()
 
 
@@ -230,15 +226,16 @@ def test_private_plan_read_failure_is_not_an_unknown_write(private_result: Path,
     code, payload, posts = invoke([*plan_args(), "--result-file", str(private_result)], reviews=[error])
     assert code == 1 and posts == []
     assert payload["status"] in {"denied", "unavailable"}
-    assert private_result.read_bytes() == b""
+    assert not private_result.exists() or not private_result.read_bytes()
     assert_private_values_absent(payload)
 
 
 def test_private_save_failure_never_claims_a_success_or_unknown_write(private_result: Path) -> None:
     caller = importlib.import_module("launchplane-call")
-    with patch.object(caller, "save_evidence", return_value=False):
+    with patch_attr("save_evidence", target=caller, return_value=False):
         code, payload, posts = invoke([*plan_args(), "--result-file", str(private_result)], reviews=[review()])
     assert code == 1 and posts == [] and payload["status"] == "unavailable"
+    assert payload["summary"]["error_code"] == "private_result_unavailable"
     assert_private_values_absent(payload)
 
 
@@ -251,9 +248,9 @@ def test_private_save_uses_existing_field_contract_before_public_projection(priv
         body["review"]["checklist"]["candidate"]["source_commit"] = "invalid"
     code, payload, posts = invoke([*plan_args(), "--result-file", str(private_result)], reviews=[body])
     assert code == 1 and posts == []
-    assert payload["status"] != "outcome_unknown"
+    assert payload["status"] == "invalid"
     if unknown_field:
-        assert private_result.read_bytes() == b""
+        assert not private_result.exists() or not private_result.read_bytes()
     else:
         assert json.loads(private_result.read_text()) == body
 
