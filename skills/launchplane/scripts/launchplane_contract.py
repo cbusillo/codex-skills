@@ -302,6 +302,21 @@ LOCAL_EXTENSION_ROUTES = {
         "path": "/v1/drivers/odoo/target-replacement-plan",
         "mode": "read",
     },
+    "target-replacement-apply": {
+        "method": "POST",
+        "path": "/v1/drivers/odoo/target-replacement-apply",
+        "mode": "apply",
+    },
+    "prelaunch-rebuild-policy-dry-run": {
+        "method": "POST",
+        "path": "/v1/product-profiles/prelaunch-rebuild/apply",
+        "mode": "dry-run",
+    },
+    "prelaunch-rebuild-policy-apply": {
+        "method": "POST",
+        "path": "/v1/product-profiles/prelaunch-rebuild/apply",
+        "mode": "apply",
+    },
     "testing-rebuild-submit": {
         "method": "POST",
         "path": "/v1/drivers/odoo/target-replacement-apply",

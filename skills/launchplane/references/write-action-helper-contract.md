@@ -1123,6 +1123,65 @@ installed local helper bindings.
     --native-execution-binding-file /absolute/private/new-binding.json
   ```
 
+- Private replacement/policy coverage uses the existing routes and private admin
+  configuration. It adds no authority. Use private JSON files outside Git:
+
+  ```sh
+  uv run skills/launchplane/scripts/launchplane-write-action.py \
+    target-replacement-plan-read --payload-file /private/replacement.json \
+    --result-file /private/task-evidence/example/plan.json
+  uv run skills/launchplane/scripts/launchplane-write-action.py \
+    target-replacement-apply --payload-file /private/replacement.json \
+    --reviewed-plan-file /private/task-evidence/example/plan.json \
+    --idempotency-key ORIGINAL_KEY --result-file /private/task-evidence/example/apply.json
+  uv run skills/launchplane/scripts/launchplane-write-action.py \
+    prelaunch-rebuild-policy-dry-run --payload-file /private/policy.json \
+    --result-file /private/task-evidence/example/policy-plan.json
+  uv run skills/launchplane/scripts/launchplane-write-action.py \
+    prelaunch-rebuild-policy-apply --payload-file /private/policy.json \
+    --reviewed-plan-file /private/task-evidence/example/policy-plan.json \
+    --idempotency-key ORIGINAL_KEY --result-file /private/task-evidence/example/policy-apply.json
+  ```
+
+  The replacement file is the producer's product/replacement envelope, including
+  `strategy`, `data_source_mode`, `allow_empty_data`, `confirmation` and any
+  candidate/CAS inputs. This private path covers recreate-in-place with existing
+  or empty data, including production empty mode. Native testing cutovers retain
+  their testing-rebuild commands. The policy file holds the producer's exact
+  product/context/instance policy intent, expected target/domains and reason;
+  the command supplies `mode` and the reviewed service `plan_sha256` on apply.
+  Read the [producer schemas](https://github.com/cbusillo/launchplane/blob/main/docs/agent-operator-contract.md)
+  for field meanings. Classification and runtime sync are separate operations.
+  File-based plan inputs cannot mix with the reader's argument-based inputs below.
+  Without a candidate pair, an apply needs a nonempty
+  `expected_current_artifact_id` in the planned request matching the reviewed
+  `expected_artifact_id`. Replan with that CAS input if absent. A first-empty
+  apply with no current artifact supplies the explicit candidate pair instead.
+
+  Each result is a new mode-0600 file under an existing task-evidence directory,
+  opened exclusively before the request. Its private envelope contains
+  `operation`, exact `request`, `service_fingerprint`, `http_status` and
+  `raw_response_base64` (the complete original response bytes), or a bounded
+  `transport_error` when the response could not be obtained. Decode the raw
+  response privately. Stdout contains only status, HTTP status, trace/error code,
+  plan status or an accepted replacement's operation ID. Target names, domains,
+  volumes, confirmation and keys are never projected. Never upload these files
+  to public workflow artifacts or print them into public logs.
+  The [generic caller's private-file rules](agent-operator-contract.md#generic-caller)
+  apply, including no symlinked parent and no result inside the active repository.
+
+  Apply requires the unchanged private plan from the same service and exact
+  request; replacement needs a ready plan, policy forwards its reviewed digest.
+  Replacement review is a caller-side check: this route accepts no plan digest.
+  The producer still enforces CAS, confirmation, empty-storage, Live, backup and
+  release protections. A replacement receipt queues work, not completion; use
+  `target-replacement-operation-read` with its saved ID. Policy success requires
+  `mode=apply` and `applied=true`; use `product-profile-read --product` for readback.
+  Transport loss, malformed apply replies or HTTP 408/5xx leave outcome unknown.
+  Preserve the original request, response and key; reconcile that original
+  operation before any retry, without a new key or changed intent. No automatic
+  retry, target inspection, runtime sync, classification or workflow dispatch occurs.
+
 - `target-replacement-plan-read --product --instance` calls
   `POST /v1/drivers/odoo/target-replacement-plan` with
   `{"schema_version": 1, "product": P, "replacement": {"product": P, "instance": I}}`

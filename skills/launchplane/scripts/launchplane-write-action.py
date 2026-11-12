@@ -8,9 +8,11 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import copy
 import hashlib
 import http.client
+import importlib
 import json
 import os
 import re
@@ -6181,6 +6183,251 @@ def _target_replacement_plan_candidate(args: argparse.Namespace) -> dict[str, st
     return candidate
 
 
+PRIVATE_REPLACEMENT_COMMANDS = frozenset(
+    {
+        "target-replacement-apply",
+        "prelaunch-rebuild-policy-dry-run",
+        "prelaunch-rebuild-policy-apply",
+    }
+)
+
+
+def _private_replacement_body(args: argparse.Namespace) -> dict[str, Any]:
+    body: dict[str, Any] = read_payload_file(args.payload_file)
+    policy = args.command.startswith("prelaunch-rebuild-policy-")
+    if policy:
+        fields = {
+            "schema_version",
+            "product",
+            "context",
+            "instance",
+            "enabled",
+            "approval_issue_url",
+            "data_source_mode",
+            "confirmation",
+            "expected_target_name",
+            "expected_domains",
+            "reason",
+        }
+        required = {"product", "context", "instance", "enabled", "reason"}
+    else:
+        fields = {"schema_version", "product", "replacement"}
+        required = {"product", "replacement"}
+    if not required <= body.keys() or body.keys() - fields:
+        raise ValueError("invalid_private_replacement_request")
+    if not isinstance(body["product"], str):
+        raise ValueError("invalid_private_replacement_request")
+    body["product"] = body["product"].strip()
+    if "schema_version" in body and (type(body["schema_version"]) is not int or body["schema_version"] != 1):
+        raise ValueError("invalid_private_replacement_request")
+    if policy:
+        if type(body["enabled"]) is not bool or body.get("data_source_mode", "empty") not in {"empty", "upstream_restore"}:
+            raise ValueError("invalid_private_replacement_request")
+        for field in ("product", "context", "instance", "reason"):
+            if not isinstance(body[field], str) or not body[field].strip():
+                raise ValueError("invalid_private_replacement_request")
+        body["mode"] = "apply" if args.command.endswith("apply") else "dry-run"
+        return body
+    replacement = body["replacement"]
+    fields = TARGET_REPLACEMENT_REQUEST_FIELDS - {
+        "verify_health",
+        "verify_canonical",
+        "verify_logo",
+        "no_cache",
+        "timeout_seconds",
+        "health_timeout_seconds",
+    } | {"reason"}
+    if isinstance(replacement, dict):
+        for field in (
+            "product",
+            "instance",
+            "confirmation",
+            "artifact_id",
+            "source_git_ref",
+            "expected_current_artifact_id",
+            "reason",
+        ):
+            if field in replacement:
+                if not isinstance(replacement[field], str):
+                    raise ValueError("invalid_private_replacement_request")
+                replacement[field] = replacement[field].strip()
+                if field in {"instance", "confirmation"}:
+                    replacement[field] = replacement[field].lower()
+    if (
+        not isinstance(replacement, dict)
+        or replacement.keys() - fields
+        or replacement.get("product") != body["product"]
+        or not replacement.get("instance")
+        or replacement.get("strategy", "recreate-in-place") != "recreate-in-place"
+        or replacement.get("data_source_mode", "existing") not in {"existing", "empty"}
+        or type(replacement.get("allow_empty_data", False)) is not bool
+    ):
+        raise ValueError("invalid_private_replacement_request")
+    if replacement.get("data_source_mode") == "empty" and (
+        replacement.get("allow_empty_data") is not True or not replacement.get("confirmation")
+    ):
+        raise ValueError("empty_replacement_confirmation_required")
+    if bool(replacement.get("artifact_id")) != bool(replacement.get("source_git_ref")):
+        raise ValueError("artifact_id_and_source_git_ref_required_together")
+    return body
+
+
+def _private_replacement_review(args: argparse.Namespace, body: dict[str, Any], service_url: str) -> None:
+    from launchplane_testing_rebuild import service_fingerprint
+
+    if not args.reviewed_plan_file:
+        raise ValueError("reviewed_private_plan_required")
+    _require_idempotency(args)
+    saved: dict[str, Any] = read_payload_file(args.reviewed_plan_file)
+    policy = args.command.startswith("prelaunch-rebuild-policy-")
+    operation = "prelaunch-rebuild-policy-dry-run" if policy else "target-replacement-plan-read"
+    expected = {**body, "mode": "dry-run"} if policy else body
+    try:
+        response = json.loads(base64.b64decode(saved.get("raw_response_base64", ""), validate=True))
+    except (TypeError, ValueError):
+        raise ValueError("reviewed_private_plan_mismatch") from None
+    if not isinstance(response, dict):
+        raise ValueError("reviewed_private_plan_mismatch")
+    result = response.get("result", {})
+    if (
+        saved.get("operation") != operation
+        or saved.get("request") != expected
+        or saved.get("service_fingerprint") != service_fingerprint(sys.modules[__name__], service_url)
+        or type(saved.get("http_status")) is not int
+        or not 200 <= saved["http_status"] < 300
+        or response.get("status") != "accepted"
+        or not isinstance(result, dict)
+    ):
+        raise ValueError("reviewed_private_plan_mismatch")
+    if policy:
+        digest = result.get("plan_sha256")
+        if (
+            result.get("mode") != "dry-run"
+            or result.get("applied") is not False
+            or not isinstance(digest, str)
+            or not re.fullmatch(r"[a-f0-9]{64}", digest)
+        ):
+            raise ValueError("reviewed_private_plan_mismatch")
+        body["reviewed_plan_sha256"] = digest
+    elif result.get("plan_status") != "ready":
+        raise ValueError("reviewed_private_plan_not_ready")
+    elif (
+        any(
+            result.get(field) != body["replacement"].get(field, default)
+            for field, default in (
+                ("product", None),
+                ("instance", None),
+                ("strategy", "recreate-in-place"),
+                ("data_source_mode", "existing"),
+                ("allow_empty_data", False),
+            )
+        )
+        or body["replacement"].get("artifact_id")
+        and any(
+            result.get(field, "") != body["replacement"].get(request_field, "")
+            for field, request_field in (
+                ("expected_artifact_id", "artifact_id"),
+                ("expected_source_git_ref", "source_git_ref"),
+            )
+        )
+    ):
+        raise ValueError("reviewed_private_plan_mismatch")
+
+    if not policy and not body["replacement"].get("artifact_id"):
+        current = body["replacement"].get("expected_current_artifact_id")
+        if not current or current != result.get("expected_artifact_id"):
+            raise ValueError("reviewed_current_artifact_required")
+
+
+def execute_private_replacement(args: argparse.Namespace) -> int:
+    from launchplane_testing_rebuild import aligned_receipt, service_fingerprint
+
+    private_io = importlib.import_module("launchplane-call")
+    operation = args.command
+    body = _private_replacement_body(args)
+    applying = operation.endswith("apply")
+    request: dict[str, object] = {"payload_source": "private_file", "mode": "apply" if applying else "dry-run"}
+    settings = prepare_operator_settings(args=args, operation=operation, request=request)
+    if settings is None:
+        return 2
+    if applying:
+        _private_replacement_review(args, body, settings["service_url"])
+    try:
+        evidence = private_io.open_evidence(args.result_file)
+    except (OSError, RuntimeError, ValueError):
+        raise ValueError("private_result_unavailable") from None
+    saved: dict[str, Any] = {
+        "operation": operation,
+        "request": body,
+        "service_fingerprint": service_fingerprint(sys.modules[__name__], settings["service_url"]),
+    }
+    output: dict[str, Any] = base_payload(status="unavailable", operation=operation, request=request)
+    summary: dict[str, Any] = {}
+    output["summary"] = summary
+    code = 1
+    try:
+        try:
+            status, raw = private_io.exchange(
+                settings,
+                "POST",
+                helper_command_path(operation),
+                {},
+                body,
+                args.idempotency_key.strip() if applying else "",
+                args.timeout,
+            )
+            saved.update(http_status=status, raw_response_base64=base64.b64encode(raw).decode("ascii"))
+            try:
+                payload: dict[str, Any] = _require_dict(json.loads(raw))
+            except (ValueError, UnicodeDecodeError):
+                payload = {}
+            summary["http_status"] = status
+            diagnostics = service_response_diagnostics(payload)
+            summary.update({key: diagnostics[key] for key in ("trace_id", "error_code") if key in diagnostics})
+            accepted = payload.get("status") == "accepted" and isinstance(payload.get("result"), dict)
+            result: dict[str, Any] = _require_dict(payload["result"]) if accepted else {}
+            if accepted and operation == "target-replacement-apply":
+                try:
+                    receipt = aligned_receipt(sys.modules[__name__], payload, body, args.idempotency_key.strip())
+                    output["result"] = {"operation_id": public_identifier(receipt["operation_id"])}
+                except (LaunchplaneSafetyError, ValueError):
+                    accepted = False
+            if accepted and operation == "prelaunch-rebuild-policy-apply":
+                accepted = result.get("applied") is True and result.get("mode") == "apply"
+            if 200 <= status < 300 and accepted:
+                output["status"] = "accepted"
+                code = 0
+                if operation == "target-replacement-plan-read":
+                    plan_status = result.get("plan_status")
+                    if plan_status in ("ready", "blocked"):
+                        output["result"] = {"plan_status": plan_status}
+            elif applying and (status == 408 or status >= 500 or 200 <= status < 300):
+                output["status"] = "outcome_unknown"
+            elif 400 <= status < 500:
+                output["status"] = "denied" if status == 403 else "refused"
+        except (OSError, ValueError, http.client.HTTPException) as error:
+            saved["transport_error"] = type(error).__name__
+            output["status"] = "outcome_unknown" if applying else "unavailable"
+        if not private_io.save_evidence(evidence, json.dumps(saved, ensure_ascii=False).encode()):
+            code = 1
+            output["status"] = "outcome_unknown" if applying else "unavailable"
+    finally:
+        try:
+            evidence.close()
+        except OSError:
+            code = 1
+            output["status"] = "outcome_unknown" if applying else "unavailable"
+    if applying:
+        summary["recommendation"] = (
+            "Preserve the original private request, saved response and key. Reconcile the original operation before "
+            "any retry; never change intent or use a new key. Replacement uses target-replacement-operation-read "
+            "with the saved ID; policy uses product-profile-read for the exact product. Readback does not settle "
+            "the original operation. Acceptance queues replacement work; it does not prove completion."
+        )
+    emit(output)
+    return code
+
+
 def execute_target_replacement_plan_read(*, args: argparse.Namespace) -> int:
     """POST the read-only plan route: it builds a plan and writes no record."""
     product = public_identifier(_required_argument(args, "product"))
@@ -11804,8 +12051,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             "and the env-key names it would deliver or retire."
         ),
     )
-    target_replacement_plan_read.add_argument("--product", required=True)
-    target_replacement_plan_read.add_argument("--instance", required=True)
+    target_replacement_plan_read.add_argument("--product")
+    target_replacement_plan_read.add_argument("--instance")
     target_replacement_plan_read.add_argument(
         "--artifact-id",
         help="Plan with this candidate artifact instead of the lane's current one; needs --source-git-ref.",
@@ -11814,6 +12061,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--source-git-ref",
         help="The candidate artifact's source commit; needs --artifact-id.",
     )
+
+    for command in ("target-replacement-plan-read", *sorted(PRIVATE_REPLACEMENT_COMMANDS)):
+        private = target_replacement_plan_read if command == "target-replacement-plan-read" else subparsers.add_parser(
+            command, help="Use the existing private replacement or prelaunch policy route with full private evidence.")
+        private.add_argument("--payload-file", required=command != "target-replacement-plan-read")
+        private.add_argument("--result-file", required=command != "target-replacement-plan-read")
+        if command.endswith("apply"):
+            private.add_argument("--idempotency-key", required=True)
+            private.add_argument("--reviewed-plan-file", required=True)
 
     for command, help_text in (
         ("testing-hold-dry-run", "Dry-run setting or lifting a testing lane's staff-testing hold."),
@@ -12810,7 +13066,13 @@ def main(argv: list[str]) -> int:
             return execute_product_read(
                 args=args, operation=args.command, request=request, path=path, query=query,
             )
+        if args.command in PRIVATE_REPLACEMENT_COMMANDS:
+            return execute_private_replacement(args)
         if args.command == "target-replacement-plan-read":
+            if args.payload_file or args.result_file:
+                if not args.payload_file or not args.result_file or any((args.product, args.instance, args.artifact_id, args.source_git_ref)):
+                    raise ValueError("private_plan_arguments_required_together")
+                return execute_private_replacement(args)
             return execute_target_replacement_plan_read(args=args)
         if args.command == "target-replacement-operation-read":
             path = _product_read_path(args.command, operation_id=args.operation_id)
