@@ -4278,6 +4278,70 @@ def test_graph_walk_skips_edges_a_zero_summary_proves_empty() -> None:
     assert not [path for path in paths if "/issues/2/" in path]
 
 
+def test_completed_child_clauses_do_not_make_remaining_parent_work_stale() -> None:
+    module = load()
+    for completed in ("The settings slice #11 is delivered through #20, merged yesterday.",
+                      "Q1225 is resolved and #11 is closed; the criterion was cut.",
+                      "Checked the closed reader child #11 and current source."):
+        status = f"## Current Status\nNext action: Continue remaining engineering. {completed}\nLast verified: October 28, 2026.\n"
+        row = {**issue(18, "Parent", body=status), "state": "open", "structured_wait": None, "sub_issues_summary": {"total": 2}}
+        children = [{"number": 11, "state": "closed"}, {"number": 12, "state": "closed"}]
+        responses = {"repos/owner/catalog/issues/18/sub_issues": children}
+        assert drift_report(module, row, responses)["items"] == []
+        row["body"] = status.replace("Continue remaining engineering.", "Remaining work is #12.")
+        evidence = drift_report(module, row, responses)["items"][0]["evidence"]
+        assert evidence[0]["children"] == [12]
+        row["body"] = status.replace("Continue remaining engineering.", "Remaining work is #11.")
+        assert drift_report(module, row, responses)["items"][0]["evidence"][0]["children"] == [11]
+
+
+def test_implementing_a_decision_is_not_waiting_for_its_answer() -> None:
+    module = load()
+    question = drift_comment(1, 7, "Director question: **Q71. Which rollout?**")
+    decision = drift_comment(2, 7, f"Director decision: {question['html_url']} (Q71): Two releases.")
+    wait = drift_wait("Gated release automation after final implementation", "The next normal release completes replay. Under Q71 simpler this is release 2.")
+    status = "## Current Status\nNext actor: agent\nNext action: Build replay under Q71.\n"
+    row = {**issue(7, "Replay", body=status), "state": "open", "structured_wait": wait}
+    assert drift_report(module, row, {"repos/owner/catalog/issues/7/comments": [question, decision]})["items"] == []
+
+
+def test_date_wait_is_not_impossible_because_of_old_trial_comment() -> None:
+    module = load()
+    wait = drift_wait("The November 13 three-seat trial judgment date", "November 13 is reached",
+                      event={"version": 1, "kind": "date", "at": "2026-11-13", "evidence": "Q71 date"})
+    old = drift_comment(1, 7, "The three-seat trial judgment could never happen that way.")
+    row = {**issue(7, "Trial"), "state": "open", "structured_wait": wait}
+    assert drift_report(module, row, {"repos/owner/catalog/issues/7/comments": [old]})["items"] == []
+
+
+def test_replacement_event_wait_does_not_inherit_old_attempt_impossibility() -> None:
+    module = load()
+    wait = drift_wait("Event: a job stops under current source, which saves the attempt-bound quality-run scope",
+                      "An agent verifies that job against the finish line", recheck="2026-11-22")
+    old = drift_comment(1, 7, "The old quality scope was not retained and neither job is qualified for recovery.", created="2026-11-01T00:00:00Z")
+    replacement = drift_comment(2, 7, module.github_plan_wait.marker(wait), created="2026-11-05T00:00:00Z")
+    row = {**issue(7, "Recovery"), "state": "open", "comments": 2}
+    responses = {"repos/owner/catalog/issues/7/comments": [old, replacement]}
+    report = module.stale_wait_report([row], "owner/catalog", fetch=drift_fetch(responses), now=dt.datetime(2026, 11, 9, tzinfo=dt.UTC), read_waits=True)
+    assert report["items"] == []
+    old["created_at"] = "2026-11-06T00:00:00Z"
+    report = module.stale_wait_report([row], "owner/catalog", fetch=drift_fetch(responses), now=dt.datetime(2026, 11, 9, tzinfo=dt.UTC), read_waits=True)
+    assert report["items"][0]["evidence"][0]["kind"] == "impossible_ends_when"
+
+
+def test_bare_dependency_uses_the_unique_native_blocker_not_a_closed_local_issue() -> None:
+    module = load()
+    wait = drift_wait("Production-use event on #142, then the handoff invitation", "OPW#142 records production use and the handoff is invited")
+    row = {**issue(7, "Track"), "state": "open", "structured_wait": wait, "issue_dependencies_summary": {"total_blocked_by": 1}}
+    responses = {"repos/owner/catalog/issues/7/dependencies/blocked_by": [
+        {"number": 142, "html_url": "https://github.com/owner/odoo-tenant-opw/issues/142", "state": "open"}],
+        "repos/owner/odoo-tenant-opw/issues/142": {"state": "open"},
+        "repos/owner/catalog/issues/142": {"state": "closed", "state_reason": "completed"}}
+    assert drift_report(module, row, responses)["items"] == []
+    row["structured_wait"] = drift_wait("Production-use event on owner/catalog#142", "Production use")
+    assert drift_report(module, row, responses)["items"][0]["evidence"][0]["kind"] == "closed_dependency"
+
+
 def main() -> int:
     tests = [value for name, value in globals().items() if name.startswith("test_") and callable(value)]
     for test in tests:

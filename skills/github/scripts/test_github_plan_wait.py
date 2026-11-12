@@ -101,6 +101,8 @@ class WaitRecordTests(unittest.TestCase):
         completion = {"user": {"login": "owner"}, "body": waits.marker(resolved)}
         self.assertIs(waits.current_source(issue, [completion], {"owner"}), issue)
         self.assertEqual(waits.current(issue, [completion], {"owner"})["waits"], record["waits"][1:])
+        copied = {"user": {"login": "owner"}, "body": waits.marker({**waits.snapshot(resolved), "evidence": "Rechecked unchanged wait"})}
+        self.assertIs(waits.current_source(issue, [completion, copied], {"owner"}), issue)
 
     def test_release_pointer_requires_a_wait_and_full_source_commit(self) -> None:
         for commit in ("", "main", "abc123"):

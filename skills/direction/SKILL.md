@@ -602,9 +602,14 @@ For a Supervisor check, use
 `--stale-waits-only` with the existing audit command: it reads only open issues
 and their prerequisites, leaving weekly audit markers and windows untouched.
 Items marked `keeps_wait` are records their own evidence has overtaken: a wait
-citing an already recorded decision, an `ends_when` its issue says cannot occur,
-a status over seven days old whose named children are all closed, and a past
+citing an unanswered decision requirement that now has an answer, a prose
+`ends_when` contradicted after the current wait began, a status over seven days
+old whose outstanding named children are all closed, and a past
 recheck date. Each carries its age and matched evidence; the wait stays in force.
+Completed child clauses, decisions cited as implementation context, and date
+events do not supply drift evidence. Copying an unchanged wait preserves its
+original age. A bare issue number uses a unique matching native blocker before
+falling back to the reporting repository; explicit references keep their target.
 Unrecognized status formats and prerequisites closed as abandoned or duplicate
 remain unproven; closure evidence includes the issue closure reason. A recorded
 PR landing requires its default-branch destination; a merge means the PR merged

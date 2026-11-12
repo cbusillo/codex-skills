@@ -16,7 +16,7 @@ from github_plan_status.questions import recorded_decision
 
 import datetime as dt
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
@@ -1001,7 +1001,8 @@ def waiting_records(issue: dict[str, Any], status_text: str, *, reference_reposi
     return records
 
 
-def issue_references(text: str, *, repo: str | None, known_repositories: set[str] | None = None) -> list[dict[str, Any]]:
+def issue_references(text: str, *, repo: str | None, known_repositories: set[str] | None = None,
+                     native_blockers: Iterable[dict[str, Any]] = ()) -> list[dict[str, Any]]:
     """Resolve repository shorthand only within its reporting owner's context."""
     plain = re.sub(r"\[([^]]+)]\(([^)]+)\)", r"\2", text)
     references: dict[tuple[str, int], dict[str, Any]] = {}
@@ -1025,6 +1026,12 @@ def issue_references(text: str, *, repo: str | None, known_repositories: set[str
             if ref.group(6) and target.casefold() not in {name.casefold() for name in (known_repositories or {repo})}:
                 continue
         number = int(ref.group(3) or ref.group(5) or ref.group(7) or ref.group(8))
+        if ref.group(8):
+            native = {item["repo"] for blocker in native_blockers
+                      for item in issue_references(blocker.get("html_url") or blocker.get("url") or "", repo=None)
+                      if item["number"] == number}
+            if len(native) == 1:
+                target = native.pop()
         previous_end = ref.end()
         key = (target.casefold(), number)
         # A bare #N only assumes this repository; any named form of it makes it explicit.

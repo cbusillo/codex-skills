@@ -220,7 +220,7 @@ def records(text: str, *, prefix: str = PREFIX, validator: Callable[[Any], None]
 def _select_record(issue: dict[str, Any], comments: list[dict[str, Any]], trusted: set[str] | Callable[[dict[str, Any]], bool], *,
                    prefix: str, validator: Callable[[Any], None]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """Last authorized record wins; arbitrary discussion cannot change it."""
-    selected = None
+    selected: dict[str, Any] | None = None
     selected_source = None
     sources = [issue, *comments]
     for source in sources:
@@ -233,7 +233,8 @@ def _select_record(issue: dict[str, Any], comments: list[dict[str, Any]], truste
             raise ValueError("Multiple structured records in one source; preserve them for review")
         if found:
             record = found[0]
-            keep_age = False
+            keep_age = (prefix == PREFIX and selected is not None
+                        and record["state"] == selected["state"] and record["waits"] == selected["waits"])
             if prefix == PREFIX and "replaces" in record:
                 if selected is None or record["replaces"] != record_digest(selected):
                     continue
