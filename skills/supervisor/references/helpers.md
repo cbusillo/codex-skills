@@ -1461,8 +1461,9 @@ the Tooling Supervisor may pass `--unresolved-cells-decision` with the exact
 to `session_closeout.py`. It inventories GitHub again, requires every exact
 claim release, and posts the cell IDs and reasons on the session's issue before
 normal exit and finish. The audit remains incomplete; every other closeout gate
-still applies. Recovery and non-code-mode uncertainty do not qualify. An uncertain
-note post stops for reconciliation through the original closeout evidence.
+still applies. Recovery and non-code-mode uncertainty do not qualify. A confirmed
+pre-write failure can retry with the same evidence; an uncertain post refuses
+replay and preserves the original evidence.
 A canceled background command needs its matching native error notification;
 a kill request alone cannot prove completion. Unfinished commands still block.
 A completed one-shot timer needs its matching native DONE notification, session,

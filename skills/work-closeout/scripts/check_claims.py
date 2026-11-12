@@ -289,6 +289,7 @@ def reconstructed_targets(entry: dict) -> dict:
         finished = result_times(rows, ended, inputs, recorded)
         for item in unresolved:
             item["finished_at"] = finished.get(item["call_id"])
+            item["code_mode"] = bool(inputs.get(item["call_id"], (None, False))[1])
     return discovery
 
 
@@ -494,6 +495,8 @@ def check(
     if inventory_owner is not None:
         if not require_released_claims:
             raise ValueError("a full session inventory requires exact claim releases")
+        if search_account().casefold() != inventory_owner.casefold():
+            raise ValueError("session inventory must cover the configured automation account")
         inventory_reader = (reader_for_repo or repository_reader)(None, deadline)
         records, _repos = sessions.discover(inventory_reader, inventory_owner, expanded)
         inventory_requests = len(inventory_reader.requests)
@@ -612,6 +615,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--termination-record", type=Path, help="Original Codex source-host record for verified reboot recovery")
     parser.add_argument("--confirm-session-ended", action="store_true", help="Attest native task and unavailable peer closure")
     parser.add_argument("--require-released-claims", action="store_true", help="Verify exact claim releases even under live-claim policy")
+    parser.add_argument("--inventory-owner", help="Also inventory every accessible session claim in this automation account")
     parser.add_argument("--read-timeout", type=float, default=600, help="Bounded aggregate claim/source read budget in seconds")
     args = parser.parse_args(argv)
     try:
@@ -637,7 +641,7 @@ def main(argv: list[str] | None = None) -> int:
             import github_plan_native
             record = github_plan_native._cancel_selected(args.termination_record, args.session[0])
         report = check(entries, owners=args.owner, termination_record=record, read_timeout=args.read_timeout,
-                       require_released_claims=args.require_released_claims)
+                       require_released_claims=args.require_released_claims, inventory_owner=args.inventory_owner)
         if args.termination_record and args.termination_record.read_bytes() != record_bytes:
             raise ValueError("termination record changed during claim readback")
         report["checked_at"] = time.time()
