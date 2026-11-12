@@ -294,24 +294,31 @@ def recovery_handoff(entry: dict) -> None:
     rows = session_record.load_ledger(Path(basis["ledger"]))
     if any(row.get("lead_session_id") == entry["session_id"] for row in rows):
         raise ValueError("source still owns worker rows; preserve its session")
-    successor = basis.get("successor_session")
-    candidates = [row for row in rows if row["session_id"] == successor] if successor else [
-        row for row in rows if row["session_id"] != entry["session_id"]
-        and row.get("repository") == entry.get("repository") and row.get("issue") == entry.get("issue")
-        and row.get("launch_started_at") and release.stamp(row["launch_started_at"]) > release.stamp(entry["launch_started_at"])]
-    if not candidates and successor:
-        saved = closure.source_records({successor}).get(successor)
-        candidates = [saved] if saved else []
+    candidates = successor_candidates(entry, rows, basis.get("successor_session"))
     if len(candidates) != 1:
         raise ValueError("recovery needs one matching successor row; select --successor-session")
-    successor = candidates[0]
+    require_successor(entry, candidates[0])
+    basis["successor_session"] = candidates[0]["session_id"]
+
+
+def successor_candidates(entry: dict, rows: list[dict], selected: str | None) -> list[dict]:
+    if selected:
+        candidates = [row for row in rows if row["session_id"] == selected]
+        if not candidates and (saved := closure.source_records({selected}).get(selected)):
+            candidates.append(saved)
+        return candidates
+    return [row for row in rows if row["session_id"] != entry["session_id"]
+            and row.get("repository") == entry.get("repository") and row.get("issue") == entry.get("issue")
+            and row.get("launch_started_at") and release.stamp(row["launch_started_at"]) > release.stamp(entry["launch_started_at"])]
+
+
+def require_successor(entry: dict, successor: dict) -> None:
     if (successor["session_id"] == entry["session_id"] or successor.get("supervisor_owned") is not True
             or not entry.get("repository") or not entry.get("issue")
             or successor.get("repository") != entry["repository"] or successor.get("issue") != entry["issue"]
-            or not successor.get("launch_started_at")
+            or not successor.get("launch_started_at") or not entry.get("launch_started_at")
             or release.stamp(successor["launch_started_at"]) <= release.stamp(entry["launch_started_at"])):
         raise ValueError("successor row does not match this handoff's work and generation")
-    basis["successor_session"] = successor["session_id"]
 
 
 def validate_recovery(entry: dict, supervisor_session: str, *, before_exit: bool = False) -> dict:
@@ -833,7 +840,7 @@ def finished_claims(reader, entry, actor, issues, apply):
                 if not body_records or any(r not in source_records for r in body_records):
                     if body_records:
                         retained_status.append(identity)
-                    else:
+                    elif issue.get("state") != "closed" or claim.declares_session(issue["body"], entry["session_id"]):
                         signoffs.append((identity, issue))
             for source in sources:
                 source_identity = {**identity, "claim_comment": source["id"]}

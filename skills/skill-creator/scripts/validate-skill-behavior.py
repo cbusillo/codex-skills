@@ -60,27 +60,6 @@ def launchplane_environment(**overrides: str) -> dict[str, str]:
     return environment
 
 
-def run_launchplane_payload_probe(
-    helper: Path,
-    payload_path: Path,
-    fixture: Path,
-    repo: Path,
-) -> subprocess.CompletedProcess[str]:
-    return run_probe(
-        [
-            sys.executable,
-            str(helper),
-            "--config",
-            str(fixture / "missing-operator-config.json"),
-            "product-config-dry-run",
-            "--payload-file",
-            str(payload_path),
-        ],
-        cwd=repo,
-        env=launchplane_environment(),
-    )
-
-
 def validator_module() -> Any:
     path = ROOT / "skill-creator" / "scripts" / "validate-skill-repo.py"
     spec = importlib.util.spec_from_file_location("skill_repo_behavior_validator", path)
@@ -105,13 +84,10 @@ def command_argv(skill_name: str, command_name: str) -> list[str]:
 def test_launchplane_write_action_helper_contract() -> None:
     with tempfile.TemporaryDirectory() as directory:
         fixture = Path(directory).resolve()
-        repo = fixture / "repo"
-        repo.mkdir()
-        subprocess.run(["git", "init", "--quiet", str(repo)], check=True)
-        check_launchplane_write_action_helper_contract(fixture, repo)
+        check_launchplane_write_action_helper_contract(fixture)
 
 
-def check_launchplane_write_action_helper_contract(fixture: Path, repo: Path) -> None:
+def check_launchplane_write_action_helper_contract(fixture: Path) -> None:
     helper = ROOT / "launchplane" / "scripts" / "launchplane-write-action.py"
     no_context = run_probe(
         [
@@ -211,49 +187,6 @@ def check_launchplane_write_action_helper_contract(fixture: Path, repo: Path) ->
         and "secret-token-never-render" not in rendered_public_hint,
         "Write-action diagnostic must not render public URL hint or token values",
     )
-
-    repo_payload = repo / "payload.json"
-    try:
-        repo_payload.write_text('{"reason":"example"}\n', encoding="utf-8")
-        repo_local = run_launchplane_payload_probe(helper, repo_payload, fixture, repo)
-    finally:
-        repo_payload.unlink(missing_ok=True)
-    require(repo_local.returncode == 2, "Write-action helper must reject repo-local payload files")
-    repo_payload_error = json.loads(repo_local.stdout)
-    require(
-        "repo_local_payload_unsupported" in json.dumps(repo_payload_error),
-        "Write-action helper must report repo-local payload rejection compactly",
-    )
-
-    with tempfile.TemporaryDirectory() as tmp:
-        external_payload = Path(tmp) / "operator-payload.json"
-        external_payload.write_text('{"reason":"external"}\n', encoding="utf-8")
-        external_private = run_launchplane_payload_probe(helper, external_payload, fixture, repo)
-        require(
-            external_private.returncode == 2,
-            "Write-action helper should reach missing-config handling for external payload files",
-        )
-        external_private_error = json.loads(external_private.stdout)
-        require(
-            "missing_operator_config" in json.dumps(external_private_error)
-            and "repo_local_payload_unsupported" not in json.dumps(external_private_error),
-            "Write-action helper must not reject external private payload files as repo-local",
-        )
-        repo_symlink = repo / "payload-link.json"
-        try:
-            repo_symlink.symlink_to(external_payload)
-            symlink_local = run_launchplane_payload_probe(helper, repo_symlink, fixture, repo)
-        finally:
-            repo_symlink.unlink(missing_ok=True)
-        require(
-            symlink_local.returncode == 2,
-            "Write-action helper must reject repo-local symlink payload files",
-        )
-        symlink_payload_error = json.loads(symlink_local.stdout)
-        require(
-            "repo_local_payload_unsupported" in json.dumps(symlink_payload_error),
-            "Write-action helper must report repo-local symlink payload rejection compactly",
-        )
 
     with tempfile.TemporaryDirectory() as tmp:
         env_path = Path(tmp) / "local-operator.env"

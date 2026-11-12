@@ -21,7 +21,6 @@ OPERATION_PATHS = {
     "prepare_testing_replacement_resources": "/v1/products/{product}/testing-replacement-resources",
     "read_agent_context": "/v1/agent/context",
     "evaluate_agent_write_intent": "/v1/agent/write-intents/evaluate",
-    "apply_product_config": "/v1/product-config/apply",
     "apply_odoo_addon_settings": "/v1/product-config/odoo-addon-settings/apply",
     "apply_odoo_website_settings": "/v1/product-config/odoo-website-settings/apply",
     "write_merge_train_controller_run_once": "/v1/work-graph/merge-train/controller/run-once",
@@ -34,8 +33,6 @@ HELPER_OPERATIONS = {
        for mode in ("dry-run", "apply", "readback", "release")},
     "agent-context": "read_agent_context",
     "product-config-preflight": "evaluate_agent_write_intent",
-    "product-config-dry-run": "apply_product_config",
-    "product-config-apply": "apply_product_config",
     "odoo-addon-settings-dry-run": "apply_odoo_addon_settings",
     "odoo-addon-settings-apply": "apply_odoo_addon_settings",
     "odoo-website-settings-dry-run": "apply_odoo_website_settings",
@@ -79,6 +76,13 @@ LOCAL_EXTENSION_ROUTES = {
             "method": "POST", "path": "/v1/product-review/withdrawal", "mode": mode,
         }
         for mode in ("dry-run", "apply", "readback")
+    },
+    **{
+        command: {"method": "POST", "path": "/v1/products/{product}/releases/{decision_record_id}/backup-continuation", "mode": mode}
+        for command, mode in (("release-continuation-review", "dry-run"), ("release-continuation-apply", "apply"))
+    },
+    "odoo-promotion-operation-read": {
+        "method": "GET", "path": "/v1/odoo-prod-promotions/operations/{operation_id}", "mode": "read",
     },
     **{
         "testing-candidate-release-" + mode: {
@@ -560,6 +564,7 @@ BOUNDED_READ_RESPONSE_FIELDS: dict[str, frozenset[str]] = {
         "governance-projection-read": {"status", "trace_id", "projection"},
         "merge-train-policy-targets-read": {"status", "trace_id", "policy", "targets"},
         "odoo-host-source-grants-read": {"status", "trace_id", "result"},
+        "odoo-promotion-operation-read": {"status", "trace_id", "operation"},
         "path-check": {"status", "trace_id", "check"},
         "preview-history-read": {"status", "trace_id", "preview", "generations"},
         "private-health-endpoint-read": {

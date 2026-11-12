@@ -16,6 +16,9 @@ resources:
   - path: scripts/launchplane-context.py
     kind: script
     description: Read Launchplane context for a repository, branch, issue, or pull request.
+  - path: scripts/launchplane-call.py
+    kind: script
+    description: Call a live OpenAPI operation, print only service-approved fields, and save its full reply privately.
   - path: scripts/launchplane-write-action.py
     kind: script
     description: Perform bounded Launchplane write-action preflight, dry-run, apply, and merge-train controller calls.
@@ -185,34 +188,11 @@ commands:
         "<reason>",
       ]
     purpose: Preflights product-config intent through the bounded helper path.
-  - name: launchplane-product-config-dry-run
+  - name: launchplane-call
     source: skill
-    resource_path: scripts/launchplane-write-action.py
-    example_argv:
-      [
-        "uv",
-        "run",
-        "scripts/launchplane-write-action.py",
-        "product-config-dry-run",
-        "--payload-file",
-        "<file>",
-      ]
-    purpose: Performs a redacted product-config dry-run before any apply.
-  - name: launchplane-product-config-apply
-    source: skill
-    resource_path: scripts/launchplane-write-action.py
-    example_argv:
-      [
-        "uv",
-        "run",
-        "scripts/launchplane-write-action.py",
-        "product-config-apply",
-        "--payload-file",
-        "<file>",
-        "--idempotency-key",
-        "<key>",
-      ]
-    purpose: Applies product-config changes through the bounded helper after approval.
+    resource_path: scripts/launchplane-call.py
+    example_argv: ["uv", "run", "scripts/launchplane-call.py", "apply_product_config", "--mode", "dry-run", "--body-file", "<private-file>", "--response-file", "<task-evidence>/response.json"]
+    purpose: Calls Launchplane from its live description, leaving request validation and reviewed-apply enforcement with the service.
   - name: launchplane-product-expected-config-dry-run
     source: skill
     resource_path: scripts/launchplane-write-action.py
@@ -692,7 +672,7 @@ policy:
       match:
         shell_regex: "\\b(curl|wget|http)\\b.*\\b/v1/(product-config/apply|agent/write-intents/evaluate)\\b"
       action: require_preferred
-      message: Raw Launchplane product-config API calls bypass helper-owned dry-run/apply discipline, redaction, private config sourcing, and traceable admin output. Use the write-action helper.
+      message: Use the bounded preflight or generic caller with private config and response evidence; Launchplane owns request validation and reviewed apply.
       preferred:
         - kind: script
           path: scripts/launchplane-write-action.py
@@ -706,17 +686,9 @@ policy:
             ]
           purpose: Preflights product-config intent through the bounded helper path.
         - kind: script
-          path: scripts/launchplane-write-action.py
-          example_argv:
-            [
-              "uv",
-              "run",
-              "scripts/launchplane-write-action.py",
-              "product-config-dry-run",
-              "--payload-file",
-              "<file>",
-            ]
-          purpose: Performs redacted product-config dry-run before any apply.
+          path: scripts/launchplane-call.py
+          example_argv: ["uv", "run", "scripts/launchplane-call.py", "apply_product_config", "--mode", "dry-run", "--body-file", "<private-file>", "--response-file", "<task-evidence>/response.json"]
+          purpose: Runs the service-owned dry-run and saves its full response privately before apply.
     - id: prefer-launchplane-write-helper-for-merge-train-api
       match:
         shell_regex: "\\b(curl|wget|http)\\b.*\\b/v1/work-graph/merge-train/controller/run-once\\b"
@@ -1086,13 +1058,13 @@ product-config-preflight` when agent-side authorization or managed-secret
   5. Use the signed-in, scoped admin path when a human-approved runtime or
      managed-secret mutation is required.
   6. Build a product-config request for `POST /v1/product-config/apply` only in
-     an approved admin surface. The helper may submit dry-run/apply from a
+     an approved admin surface. The generic caller submits dry-run/apply from a
      private local payload file, never from chat, CLI plaintext secret args, or
      committed examples.
-  7. **Dry-run** and inspect redacted results.
+  7. **Dry-run** and inspect the saved private response.
   8. **Apply** with a concrete reason after the dry-run succeeds, under the
      authority established by [task scope](../references/execution-scope.md).
-  9. Inspect returned `next_actions` and complete required follow-up actions;
+  9. Inspect `next_actions` in the saved private response and complete required follow-up actions;
      product-config apply can update Launchplane records before the live target
      runtime has been synced.
 
@@ -1192,7 +1164,7 @@ reviewed-inspect procedure and verify the situation.
 
 ## Tools
 
-Use `scripts/launchplane-write-action.py --help` for the installed command list.
+Use [the generic caller](references/agent-operator-contract.md#generic-caller) for product-config. Use `scripts/launchplane-write-action.py --help` for the remaining installed commands.
 Before selecting an operation, read its section of the
 [write-action helper contract](references/write-action-helper-contract.md),
 which owns request fields, reviewed evidence, idempotency, output bounds and

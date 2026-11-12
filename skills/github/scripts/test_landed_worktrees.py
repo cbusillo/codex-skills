@@ -831,6 +831,35 @@ class MainTests(Fixture):
         self.assertEqual(result["worktrees"], completed)
         self.assertEqual(result["strays"][0]["decision"], "kept")
 
+    def test_exact_retirement_preserves_foreign_evidence_trees_and_strays(self) -> None:
+        for portable in (False, True):
+            with self.subTest(portable=portable):
+                target = self.worktree(f"owned-{portable}", lock=None if portable else MANAGED_LOCK)
+                self.commit(target, "Completed own work")
+                self.git(target, "push", "-q", str(self.remote), "HEAD")
+                sibling = self.worktree(f"foreign-{portable}")
+                stray = self.root / "sample" / f"foreign-stray-{portable}"
+                stray.mkdir()
+                foreign = self.base / "Developer/task-evidence/foreign" / f"old-{portable}"
+                foreign.mkdir(parents=True)
+                (foreign / "input").write_text("foreign custody")
+                os.utime(foreign / "input", (0, 0))
+                os.utime(foreign, (0, 0))
+                with mock.patch.object(landed_worktrees, "portable_retire",
+                                       return_value=subprocess.CompletedProcess([], 0, "", "")) as physical:
+                    code, result, host = self.run_main(None, target=target, entrypoint=True, portable=portable)
+                self.assertEqual(result, {})
+                if portable:
+                    self.assertEqual(code, 0)
+                    self.assertEqual(physical.call_args.args, (target,))
+                    host.assert_not_called()
+                else:
+                    self.assertEqual(host.call_args.args[1], [str(self.base / "host-helper"), "retire", str(target)])
+                    physical.assert_not_called()
+                self.assertTrue(sibling.is_dir())
+                self.assertTrue(stray.is_dir())
+                self.assertEqual((foreign / "input").read_text(), "foreign custody")
+
     def test_explicit_retirement_of_fresh_published_abandoned_work_reaches_host(self):
         for lock in (MANAGED_LOCK, "Old registration lock", None):
             with self.subTest(lock=lock):

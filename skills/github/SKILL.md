@@ -9,7 +9,7 @@ resources:
     description: Bounded read-only downloader for private comment attachments under verified standing approval.
   - path: scripts/dev-worktree
     kind: script
-    description: Portable task worktree creation with private per-host root and existing host-helper integration.
+    description: Portable task worktree creation with private per-host root, host integration and --task-only for explicit foreign-custody boundaries.
   - path: references/worktrees.md
     kind: reference
     description: Read before task worktree creation or host-root configuration; includes Claude Desktop trust and cleanup.
@@ -104,7 +104,7 @@ commands:
     source: skill
     resource_path: scripts/dev-worktree
     example_argv: ["scripts/dev-worktree", "/absolute/repository", "task-slug", "origin/main"]
-    purpose: Creates the claimed work/task-slug branch in a new linked worktree under the configured per-host root.
+    purpose: Creates the claimed work/task-slug branch under the configured root; use --task-only when the task preserves foreign worktrees or evidence.
   - name: github-app-guided-setup
     source: skill
     resource_path: scripts/github_app_setup.py

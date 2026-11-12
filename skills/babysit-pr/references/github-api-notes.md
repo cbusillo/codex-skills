@@ -76,7 +76,9 @@ The shared check reader selects the current execution by head SHA, workflow ID,
 event, source branch, source repository and returned PR target context. Run
 number orders original executions and run attempt orders retries. A later
 attempt of an older run takes precedence when its attempt start is newer;
-unfinished older runs and attempts without ordering evidence remain current.
+attempts without ordering evidence remain current. An older run that never
+finished is history once a newer run exists, since GitHub can leave a run
+queued forever and refuse to cancel it.
 Workflow/job names and update times cannot prove supersession. Separate
 dispatches retain their own run IDs because inputs can
 differ. Actions job checks must match the run, head and check suite; reporter

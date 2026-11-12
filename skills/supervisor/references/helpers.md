@@ -1401,7 +1401,15 @@ count remains for the batch. Never clear an unverified slot or remove lead field
 to bypass registration. Pilot leads
 launched before this change are relaunched with `--worker-cap` to allocate them.
 Leads use the existing closeout helper with their own native id as
-`--supervisor-session`; the Supervisor can adopt a departed lead's workers.
+`--supervisor-session`. A lead's handoff ends in its closeout with
+`--successor-session <new-id>`, or the one later lead row on the same anchor;
+the successor must be a lead still in the active ledger.
+After the handoff is verified and before quit, closeout moves the lead's worker
+rows to the successor; it refuses while the lead has unsettled launches. After
+exit, open records whose Current Status actor is `agent:<old-id>` get the
+successor as actor through `gh-plan.py update-section`, then finish reruns.
+Ownership named any other way still needs reconciliation. A worker's note to
+the old lead is refused with the lead its row now names.
 Existing-row maintenance, including a cap change, waits for launches and
 registrations on the ledger to finish and uses the same ledger lock and atomic
 writer; never overwrite an old whole-ledger snapshot.
@@ -2275,7 +2283,8 @@ helper can discover it; otherwise select its exact ID. Keep the same journal
 after a definite refusal. An uncertain mutation still requires reconciliation.
 The Safe verdict may already be in a completed native turn after that posted
 handoff; a later acknowledgement does not erase it. An explicitly conditional
-handoff still refuses. Recovery never writes a replacement verdict.
+handoff still refuses. Recovery never writes a replacement verdict. Its
+Current Status actors move to the successor as in a normal lead handoff.
 
 `release_session_claims.py finish --recover-ended` previews this claim-free
 closure after process exit; add `--apply` to record it. Use the same successor
@@ -2307,7 +2316,9 @@ attestation/release and changes no wait, blocker, status or retained artifact.
 A record's verified exact claim release accounts for its unambiguous session
 sign-off. It can also account for a follow-up it explicitly names when the
 configured automation authored that follow-up. Its Next actor must hand work
-away from the session, or the record must be closed. Session routing, legacy
+away from the session, or the record must be closed. A closed record whose only
+link to the session is its Current Status actor holds no ownership; any other
+ownership declaration in its body is still reconciled. Session routing, legacy
 claims, conflicting identities and unmatched structured claims still require
 reconciliation. The native claim check uses the same interpretation.
 A confirmed release readback in the source's verified native transcript proves

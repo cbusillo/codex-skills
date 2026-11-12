@@ -422,9 +422,12 @@ for the weekly direction audit. Client test notes already settling acceptance
 need no new pre-merge question.
 
 Assign leads worker caps and providers, watch their responsiveness and milestone
-handoffs, and launch work outside their milestones. Adopt a departed lead's
-worker rows for closeout. Recover retained worker registrations before resuming or retiring the
-lead's row; preserve it while any remain unknown. Leads idle between worker-finish, scoped foreign-watch
+handoffs, and launch work outside their milestones. When a lead hands off,
+launch its successor on the same anchor, then close the old lead right away with
+`session_closeout.py --successor-session <new-id>`; closeout moves its worker
+rows and the Current Status actors naming it to the successor. Recover retained
+worker registrations before resuming or retiring the lead's row; preserve it
+while any remain unknown. Leads idle between worker-finish, scoped foreign-watch
 and native-message events, with a rare backstop check; use their
 [lead brief](references/brief-rules.md#milestone-lead-briefs).
 Run [Routine check](references/routine-check.md) about every 30 minutes and act
