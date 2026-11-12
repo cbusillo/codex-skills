@@ -2284,8 +2284,10 @@ unresolved mutations still refuse.
 
 Recovery also accepts `--unresolved-cells-decision` under the same Q1354 checks
 as normal closeout, using the same audit and once-only note journal. Legacy rows
-without issue metadata require one unambiguous source-session work record in
-the fresh exact-release evidence. The canonical closure retains the accepted
+without issue metadata use one unambiguous released source record, or an exact
+`--handoff-url` from that session's freshly verified release handoffs. The
+selector does not change ledger identity or replace a live source's Safe
+handoff and successor checks. The canonical closure retains the accepted
 cells, original note URL and the inventory's `--owner` value. Later validation repeats fresh
 claim checks and verifies that unchanged note; it posts nothing. The finish
 helper takes `--unresolved-cells-check <original-closeout-operation.json>` to

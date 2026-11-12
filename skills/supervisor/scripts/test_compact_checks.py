@@ -228,22 +228,23 @@ class OperationTests(unittest.TestCase):
             args = argparse.Namespace(ledger=ledger, session_id="native", supervisor_session="supervisor", owner="test",
                                       recover_ended=True, successor_session=None, handoff_url=None, exit_seconds=.1,
                                       unresolved_cells_decision=session_closeout.UNRESOLVED_CELLS_DECISION)
-            claims = {"ok": False, "claims_clear": False, "session_ids": ["native"],
+            claims: dict[str, Any] = {"ok": False, "claims_clear": False, "session_ids": ["native"],
                       "coverage": {"complete": False, "search_errors": []}, "blocked": [],
-                      "released_claims": [{"source_session": "native", "repository": "owner/repo", "record": 1}],
+                      "released_claims": [{"source_session": "native", "repository": "owner/repo", "record": 1,
+                                       "handoff_urls": ["https://github.com/owner/repo/issues/1#issuecomment-11"]},
+                                      {"source_session": "native", "repository": "owner/repo", "record": 2,
+                                       "handoff_urls": ["https://github.com/owner/repo/issues/2#issuecomment-12"]}],
                       "unresolved_invocations": [{"session": "native", "call_id": "opaque", "reason": "computed", "code_mode": True}]}
             decision = {"user": {"login": "fixture[bot]"}, "created_at": "2026-01-01T00:00:00Z",
                         "updated_at": "2026-01-01T00:00:00Z"}
             notes = []
-            reads = 0
+            settled = False
             stop_disappearance = True
 
             def command(argv: list[str], **_: Any) -> subprocess.CompletedProcess:
-                nonlocal reads
                 if any(str(word).endswith("check_claims.py") for word in argv):
                     self.assertIn("--require-released-claims", argv)
-                    reads += 1
-                    if settles and reads >= 3:
+                    if settled:
                         return subprocess.CompletedProcess(argv, 0, json.dumps({**claims, "ok": True, "claims_clear": True,
                             "coverage": {"complete": True}, "unresolved_invocations": []}), "")
                     self.assertIn("--inventory-owner", argv)
@@ -251,6 +252,11 @@ class OperationTests(unittest.TestCase):
                 self.assertIn("gh-comment", argv[0])
                 notes.append(Path(argv[argv.index("--body-file") + 1]).read_text())
                 return subprocess.CompletedProcess(argv, 0, json.dumps({"ok": True, "url": "https://github.com/owner/repo/issues/1#issuecomment-9"}), "")
+
+            def ownership(*_args: Any, **_kwargs: Any) -> Any:
+                nonlocal settled
+                settled = settles
+                return nullcontext()
 
             release = session_closeout.release
 
@@ -283,19 +289,27 @@ class OperationTests(unittest.TestCase):
                       if path.endswith("/9") else decision))),
                   patch.object(session_closeout.github_identity, "automation_login", return_value="fixture[bot]"),
                   patch.object(session_closeout.closure, "closed_log", return_value=log),
-                  patch.object(session_closeout.closure, "ownership", return_value=nullcontext()),
+                  patch.object(session_closeout.closure, "ownership", side_effect=ownership),
                   patch.object(session_closeout.session_liveness, "process_absent", return_value=True),
                   patch.object(session_closeout.session_liveness, "inventory", return_value=[]),
                   patch_attr(release, "inventory", return_value=[]),
                   patch.object(release.native_closure, "verify_source_process"),
                   patch.object(release, "transcript_roots", return_value=[str(root)])):
                 operation = check_operation.Operation(root / "recovery", [str(ledger), "native"])
+                args.handoff_url = claims["released_claims"][0]["handoff_urls"][0]
                 claims["blocked"] = ["held claim"]
                 with self.assertRaises(ValueError):
                     session_closeout.closeout(args, operation)
                 self.assertEqual(json.loads(ledger.read_text()), [source, other])
                 self.assertEqual(notes, [])
                 claims["blocked"] = []
+                for selected in (None, "https://github.com/owner/repo/issues/1#issuecomment-99"):
+                    args.handoff_url = selected
+                    with self.assertRaises(ValueError):
+                        session_closeout.closeout(args, operation)
+                    self.assertEqual(notes, [])
+                    self.assertEqual(json.loads(ledger.read_text()), [source, other])
+                args.handoff_url = claims["released_claims"][0]["handoff_urls"][0].replace("/issues/", "/pull/")
                 with self.assertRaises(check_operation.GateFailed):
                     session_closeout.closeout(args, operation)
                 self.assertEqual(json.loads(ledger.read_text()), [source, other])
@@ -307,6 +321,12 @@ class OperationTests(unittest.TestCase):
                     self.assertEqual(closed["recovery"]["owner"], args.owner)
                     self.assertIn("opaque", notes[0])
                 fresh = check_operation.Operation(root / "different-evidence", [str(ledger), "native"])
+                if not settles:
+                    args.handoff_url = claims["released_claims"][1]["handoff_urls"][0]
+                    with self.assertRaises(ValueError):
+                        session_closeout.closeout(args, fresh)
+                    self.assertEqual(len(notes), 1)
+                args.handoff_url = None
                 session_closeout.closeout(args, fresh)
                 self.assertEqual(len(notes), int(not settles))
                 self.assertEqual(json.loads(ledger.read_text()), [other])
