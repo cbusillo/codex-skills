@@ -272,19 +272,25 @@ class DailyTests(unittest.TestCase):
     def test_command_passes_a_deadline_before_its_outer_timeout(self) -> None:
         started = time.time()
         output = self.root / "deadline.json"
-        with output.open("wb") as stream, (self.root / "error").open("wb") as error:
+        inherited = started + 0.5
+        with (mock.patch.dict(os.environ, {"GITHUB_RETRY_DEADLINE_AT": str(inherited)}),
+              output.open("wb") as stream, (self.root / "error").open("wb") as error):
             code = daily.command([sys.executable, "-c", "import os;print(os.environ.get('GITHUB_RETRY_DEADLINE_AT'))"],
                                  self.root, subprocess.DEVNULL, stream, error, threading.Event(), 5)
         self.assertEqual(code, 0)
         self.assertGreater(float(output.read_text()), started)
-        self.assertLess(float(output.read_text()), started + 5)
+        self.assertLessEqual(float(output.read_text()), inherited)
 
-    def test_guarded_failure_retains_the_actual_read_reason(self) -> None:
+    def test_guarded_command_failure_retains_the_stderr_location(self) -> None:
         output = StringIO()
-        with redirect_stdout(output):
-            code = daily.guarded(lambda: (_ for _ in ()).throw(TimeoutError("GET installation/repositories timed out")))
+        stopped = threading.Event()
+        stopped.set()
+        error_path = self.root / "scan.stderr"
+        with redirect_stdout(output), error_path.open("wb") as error:
+            code = daily.guarded(lambda: daily.command([sys.executable, "-c", "import time;time.sleep(30)"], self.root,
+                                                       subprocess.DEVNULL, subprocess.DEVNULL, error, stopped, 5))
         self.assertEqual(code, 1)
-        self.assertIn("installation/repositories", json.loads(output.getvalue())["reason"])
+        self.assertIn(str(error_path), json.loads(output.getvalue())["reason"])
 
 
 if __name__ == "__main__":

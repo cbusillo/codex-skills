@@ -640,8 +640,9 @@ suppresses duplicate kickstarts. Exit 3 from the collector is archived with
 coverage warnings and retained as `scan_exit_code: 3` in the daily receipt.
 Other collector failures retain output without posting. Scan and archive have
 15-minute and two-minute bounds, respectively.
-Runner failures retain the actual exception and the command's stderr location
-in the existing reconciliation event; inspect those before retrying.
+Runner timeout and scan failures retain their reason and stderr location in
+the existing reconciliation event. An incomplete weekly attempt names its
+output and stderr in `weekly_not_recorded`; inspect those before retrying.
 
 After filling the private configuration, render, install and start only this job:
 

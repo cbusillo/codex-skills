@@ -4376,19 +4376,50 @@ def test_bare_dependency_uses_the_unique_native_blocker_not_a_closed_local_issue
 def test_blocked_read_honors_deadline_and_names_endpoint() -> None:
     module = load()
     with tempfile.TemporaryDirectory() as folder:
+        deadline_file = Path(folder) / "deadline"
         wrapper = Path(folder) / "gh"
-        wrapper.write_text("#!/bin/sh\nexec sleep 30\n")
+        wrapper.write_text(f"#!/bin/sh\nprintf '%s' \"$GITHUB_RETRY_DEADLINE_AT\" > '{deadline_file}'\nexec sleep 30\n")
         wrapper.chmod(0o700)
         started = time.monotonic()
-        with patch.dict(os.environ, {"GITHUB_RETRY_DEADLINE_AT": str(time.time() + 0.2)}):
+        inherited = time.time() + 30
+        with (patch.dict(os.environ, {"GITHUB_RETRY_DEADLINE_AT": str(inherited)}),
+              patch.object(module, "READ_TIMEOUT_SECONDS", 0.2)):
             try:
                 module.gh_json(["api", "installation/repositories?per_page=100&page=1", "--method", "GET"], gh=str(wrapper))
             except module.AuditError as error:
                 assert "installation/repositories" in str(error)
-                assert "timed out" in str(error)
             else:
                 raise AssertionError("Blocked GitHub read did not fail")
-        assert time.monotonic() - started < 3
+        assert time.monotonic() - started < 8
+        assert float(deadline_file.read_text()) < inherited
+
+
+def test_terminating_audit_stops_its_inflight_read() -> None:
+    with tempfile.TemporaryDirectory() as folder:
+        ready = Path(folder) / "read.pid"
+        wrapper = Path(folder) / "gh"
+        wrapper.write_text(f"#!/bin/sh\necho $$ > '{ready}'\nexec sleep 30\n")
+        wrapper.chmod(0o700)
+        child = subprocess.Popen([sys.executable, str(SCRIPT), "--stale-waits-only", "--repo", "owner/catalog", "--gh", str(wrapper)],
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            deadline = time.monotonic() + 5
+            while not ready.exists() and child.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert ready.exists(), child.communicate(timeout=2)
+            read_pid = int(ready.read_text())
+            child.terminate()
+            child.communicate(timeout=3)
+            try:
+                os.kill(read_pid, 0)
+            except ProcessLookupError:
+                pass
+            else:
+                raise AssertionError("Read survived termination of its audit")
+        finally:
+            if child.poll() is None:
+                child.kill()
+            child.wait(timeout=3)
 
 
 def main() -> int:

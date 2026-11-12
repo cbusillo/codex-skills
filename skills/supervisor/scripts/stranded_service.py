@@ -147,7 +147,7 @@ def run_once(config_path: Path, stopped: threading.Event, retry_unsent: bool = F
                 scan_code = command(scan, catalog, subprocess.DEVNULL, out, err, stopped, 900)
         services.emit("scanned", exit_code=scan_code, report=str(report))
         if scan_code not in (0, 3) or not report.stat().st_size:
-            raise ValueError("scan did not produce a digest")
+            raise ValueError(f"scan did not produce a digest (exit {scan_code}); inspect {attempt / 'scan.stderr'}")
         reservation = {"day": day, "scan_exit_code": scan_code, "report": str(report)}
         marker.write_text(json.dumps(reservation) + "\n")
         delivery = [config["uv"], "run", "--no-project", "--no-cache",
@@ -198,7 +198,7 @@ def run_weekly(config_path, stopped):
         with os.fdopen(handle, "wb") as out, stderr.open("wb") as err:
             code = command(audit, catalog, subprocess.DEVNULL, out, err, stopped, WEEKLY_AUDIT_SECONDS)
         if code not in WEEKLY_STAMP_WRITTEN_CODES:
-            services.emit("weekly_not_recorded", exit_code=code, output=str(attempt))
+            services.emit("weekly_not_recorded", exit_code=code, output=str(attempt), stderr=str(stderr))
             return 1
         receipt = attempt.rename(folder / f"{today.isoformat()}.receipt.json")
         services.emit("weekly_audited", exit_code=code, receipt=str(receipt))

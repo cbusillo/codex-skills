@@ -26,6 +26,7 @@ import sys
 import tarfile
 import time
 from typing import Any, Callable, NamedTuple
+from types import FrameType
 from io import BytesIO, UnsupportedOperation
 from urllib.parse import quote
 
@@ -367,16 +368,29 @@ def _parse_time(value: Any) -> dt.datetime | None:
 
 NOT_FOUND_RE = re.compile(r"\bHTTP 404\b")
 READ_TIMEOUT_SECONDS = 60
+READ_CHILDREN: set[int] = set()
+
+
+def stop_reads(signum: int, _frame: FrameType | None) -> None:
+    for pid in READ_CHILDREN.copy():
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    raise SystemExit(128 + signum)
 
 
 def read_command(args: list[str], *, gh: str) -> subprocess.CompletedProcess[bytes]:
     timeout = min(READ_TIMEOUT_SECONDS, github_api.remaining_retry_timeout_seconds())
     if timeout <= 0:
         raise AuditError(f"GitHub read {args[1]} exceeded the read deadline before starting")
+    deadline = min(time.time() + timeout, float(os.environ.get("GITHUB_RETRY_DEADLINE_AT", "inf")))
+    environment = {**os.environ, "GITHUB_RETRY_DEADLINE_AT": str(deadline)}
     with subprocess.Popen([gh, *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                          stderr=subprocess.PIPE, start_new_session=True) as child:
+                          stderr=subprocess.PIPE, start_new_session=True, env=environment) as child:
+        READ_CHILDREN.add(child.pid)
         try:
-            output, error = child.communicate(timeout=timeout)
+            output, error = child.communicate(timeout=timeout + 5)
         except subprocess.TimeoutExpired as exc:
             try:
                 os.killpg(child.pid, signal.SIGKILL)
@@ -386,6 +400,8 @@ def read_command(args: list[str], *, gh: str) -> subprocess.CompletedProcess[byt
             message = f"GitHub read {args[1]} timed out after {timeout:.1f}s: {error.decode(errors='replace').strip()[:400]}"
             print(message, file=sys.stderr, flush=True)
             raise AuditError(message) from exc
+        finally:
+            READ_CHILDREN.discard(child.pid)
         return subprocess.CompletedProcess(child.args, child.returncode, output, error)
 
 
@@ -2760,7 +2776,7 @@ def audit_one(
     return (1 if "marker_error" in result else 0 if result["ok"] else 3), result
 
 
-def main(argv: list[str] | None = None) -> int:
+def audit_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Audit merged direction against GitHub state and record local audit windows.")
     repository_scope.add_include_archived_argument(parser)
     parser.add_argument("--repo", help="OWNER/REPO; defaults to the origin remote of the current checkout")
@@ -2883,6 +2899,15 @@ def main(argv: list[str] | None = None) -> int:
                              include_archived=args.include_archived)
     print(json.dumps(result, indent=2, sort_keys=True))
     return code
+
+
+def main(argv: list[str] | None = None) -> int:
+    previous = {sig: signal.signal(sig, stop_reads) for sig in (signal.SIGTERM, signal.SIGINT)}
+    try:
+        return audit_main(argv)
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
 
 
 if __name__ == "__main__":
