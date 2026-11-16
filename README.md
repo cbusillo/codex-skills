@@ -593,7 +593,7 @@ and the hook never writes the marker or any memory file.
 
 ## Execution Environment
 
-Repository validation uses uv `>=0.11.29,<1`, keeps Python 3.12 as its minimum
+Repository validation uses uv `>=0.11.29,<1`, keeps Python 3.13 as its minimum
 compatibility lane, continuously tests current stable Python 3.14, and pins
 GitHub Actions jobs to the reviewed Ubuntu LTS runner major. Compatible uv/Python patch
 releases and runner image revisions intentionally float within those bounds and

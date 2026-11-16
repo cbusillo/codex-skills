@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.13"
 # dependencies = []
 # ///
 """Validate tracked files for public-safety secret leaks."""

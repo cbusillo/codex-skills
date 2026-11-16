@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.13"
 # dependencies = [
 #     "packaging==26.3",
 # ]
@@ -37,7 +37,7 @@ from pep723_metadata import (
 
 ROOT = Path(__file__).resolve().parents[1]
 PYPI_INDEX = "https://pypi.org/simple"
-MINIMUM_PYTHON = "3.12"
+MINIMUM_PYTHON = (ROOT / ".python-version").read_text(encoding="utf-8").strip()
 VERSION_PATTERN = r"[A-Za-z0-9](?:[A-Za-z0-9.!+_-]*[A-Za-z0-9])?"
 SUPPORTED_REQUIREMENT = re.compile(
     rf"^(?P<name>{PACKAGE_NAME_PATTERN})(?:(?P<operator>==|>=)(?P<version>{VERSION_PATTERN}))?$"

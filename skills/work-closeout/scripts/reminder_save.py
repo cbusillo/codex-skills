@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.13"
 # dependencies = []
 # ///
 """Save plain or session reminders through the shared native writer, or prepare a dry run."""

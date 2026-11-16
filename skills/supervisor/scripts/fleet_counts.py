@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.13"
 # dependencies = []
 # ///
 """Count open issues and PRs across an owner's visible, non-archived repositories."""

@@ -1,5 +1,5 @@
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.13"
 # dependencies = []
 # ///
 """Read-only Git evidence; remote advertisements are live, never fetch-cache claims."""

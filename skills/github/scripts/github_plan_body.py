@@ -1,5 +1,5 @@
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.13"
 # dependencies = []
 # ///
 """Compatibility exports for the canonical planning ownership envelope."""

@@ -1,5 +1,5 @@
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.13"
 # dependencies = []
 # ///
 """Director-agent dry run and readback of reviewed stored runtime-setting removal; no apply."""

@@ -1,5 +1,5 @@
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.13"
 # dependencies = ["pytest==9.2.0"]
 # ///
 from __future__ import annotations

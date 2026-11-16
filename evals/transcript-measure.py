@@ -1,5 +1,5 @@
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.13"
 # ///
 """Measure how interactive Claude Code and Codex sessions load the skill that owns each step.
 

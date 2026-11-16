@@ -1,7 +1,7 @@
 """Shared LM Studio/OpenAI-compatible endpoint helpers."""
 
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.13"
 # dependencies = [
 #     "PyYAML==6.0.3",
 # ]

@@ -6,7 +6,7 @@ if [ -n "${XDG_CONFIG_HOME:-}" ]; then
 else
     uv_user_home=${HOME:-}
     if [ -z "$uv_user_home" ]; then
-        uv_user_home=$(uv run --no-project --no-config --no-cache --python 3.12 python -c 'from pathlib import Path; print(Path.home())')
+        uv_user_home=$(uv run --no-project --no-config --no-cache --python 3.13 python -c 'from pathlib import Path; print(Path.home())')
     fi
     uv_config="$uv_user_home/.config/uv/uv.toml"
 fi
@@ -15,4 +15,4 @@ if [ -f "$uv_config" ]; then
 else
     cache_dir=$(UV_NO_CACHE=0 uv --no-config cache dir)
 fi
-UV_CACHE_DIR="$cache_dir" exec uv run --no-project --no-config --python 3.12 python "$@"
+UV_CACHE_DIR="$cache_dir" exec uv run --no-project --no-config --python 3.13 python "$@"

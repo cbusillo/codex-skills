@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.13"
 # dependencies = []
 # ///
 """Plan or explicitly apply the standard ruleset pair, and optionally the client lock, to owned repositories."""

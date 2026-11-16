@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.13"
 # dependencies = ["websockets==17.4"]
 # ///
 """Generate interactive zsh functions and launch the real harness binary."""

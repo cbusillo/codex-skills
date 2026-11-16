@@ -1,5 +1,5 @@
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.13"
 # dependencies = ["websockets==17.4"]
 # ///
 """Per-client native RPC ingress: every attachment/action owns its thread lease."""

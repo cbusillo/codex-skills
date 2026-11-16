@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.13"
 # dependencies = ["cryptography==50.0.2", "pytest==9.2.0"]
 # ///
 """Qualify scoped public CA handling using disposable in-memory certificates."""

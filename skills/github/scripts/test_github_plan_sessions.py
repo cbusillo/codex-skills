@@ -1,5 +1,5 @@
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.13"
 # dependencies = ["aiohttp==3.14.5"]
 # ///
 """Fake native daemon evidence, including refusal and read-only transport."""

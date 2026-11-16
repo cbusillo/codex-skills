@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.13"
 # dependencies = ["pytest==9.2.0"]
 # ///
 """Names-only reads through the CLI and synthetic HTTP responses; no live data."""

@@ -1,5 +1,5 @@
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.13"
 # dependencies = []
 # ///
 """tmux backend for iterm_tab; launchd startup and an explicit read-only view."""

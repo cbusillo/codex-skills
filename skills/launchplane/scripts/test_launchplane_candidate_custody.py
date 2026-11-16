@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.13"
 # dependencies = ["pytest==9.2.0", "jsonschema==4.26.0", "rfc3339-validator==0.1.4"]
 # ///
 import copy
