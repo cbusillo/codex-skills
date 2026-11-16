@@ -601,6 +601,9 @@ must keep passing the canonical gate. See
 [`skills/github/references/execution-environment.md`](skills/github/references/execution-environment.md)
 for the complete dependency-introduction and update policy.
 
+Before updating a host that only has Python 3.12, run `uv python install 3.13`
+so hooks and services that disable interpreter downloads can start.
+
 The validation gate imports the Codex manual helper offline before starting
 parallel helper tests. This initializes Node's ESM loader and the helper's
 builtins; printing `node --version` does not perform that initialization.

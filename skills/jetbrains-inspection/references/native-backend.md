@@ -515,9 +515,9 @@ to group cleanup. The post-group licence scan has its own fresh budget, so a
 noisy helper cannot consume the time or bytes reserved for licensing events.
 
 The observer uses [waitid with WNOWAIT](https://docs.python.org/3.13/library/os.html#os.waitid)
-when available. Python 3.12 on macOS uses
+when available. On macOS without waitid, the fallback uses
 [kqueue process-exit events](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/kqueue.2.html),
-preserving the declared Python minimum. Neither mechanism reaps before cleanup.
+Neither mechanism reaps before cleanup.
 If recovery cannot prove the group or identity, run a read-only census with
 `ps -axo pid=,pgid=,stat=,command=` against the reported PID/PGID. Let unrelated
 processes finish, and bring the Director one recommendation before ending an
