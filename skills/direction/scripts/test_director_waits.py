@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.13"
 # dependencies = ["PyYAML==6.0.3"]
 # ///
 """Behavior proof for full Director waits, age evidence and coverage bounds."""

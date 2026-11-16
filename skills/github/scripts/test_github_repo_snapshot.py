@@ -1,5 +1,5 @@
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.13"
 # ///
 """Exercise the snapshot CLI offline with repository metadata fixtures."""
 import json

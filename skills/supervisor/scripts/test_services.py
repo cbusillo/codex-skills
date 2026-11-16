@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.13"
 # dependencies = []
 # ///
 """Exercise generated service entry points with bounded offline child fixtures."""
@@ -176,7 +176,7 @@ class ServicesTests(unittest.TestCase):
             "Path('started').touch()\ntime.sleep(60)\n")
         uv = self.data["uv"]
         self.data["services"]["foreign"]["argv"] = [
-            uv, *cache_flags, "run", "--no-project", "--python", "3.12", "python", str(self.fixture)]
+            uv, *cache_flags, "run", "--no-project", "--python", sys.executable, "python", str(self.fixture)]
         self.save()
         cache = self.root / "shared-cache"
         cache.mkdir()

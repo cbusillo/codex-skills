@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.13"
 # dependencies = ["zstandard==0.25.0"]
 # ///
 """Synthetic provider fixtures exercise evidence extraction, not instruction text."""

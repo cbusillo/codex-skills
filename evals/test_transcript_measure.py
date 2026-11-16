@@ -1,5 +1,5 @@
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.13"
 # ///
 """The transcript measure credits loads only when they come before the step they own."""
 

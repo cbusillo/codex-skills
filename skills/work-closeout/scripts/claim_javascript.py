@@ -1,5 +1,5 @@
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.13"
 # dependencies = ["tree-sitter==0.26.1", "tree-sitter-javascript==0.25.0"]
 # ///
 from __future__ import annotations

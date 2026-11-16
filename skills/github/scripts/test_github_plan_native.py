@@ -1,5 +1,5 @@
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.13"
 # dependencies = ["aiohttp==3.14.5", "zstandard==0.25.0"]
 # ///
 """Synthetic native facts and disposable daemon transport; no native client actions."""

@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "codex-skills-plan-status"
 version = "0.1.0"
 description = "Planning status, structured waits and Client test notes for catalog and train consumers"
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 dependencies = []
 
 [tool.setuptools]

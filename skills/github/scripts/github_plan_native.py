@@ -1,5 +1,5 @@
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.13"
 # dependencies = ["aiohttp==3.14.5"]
 # ///
 """Native thread facts and exact typed queue input; never load a thread to read it."""

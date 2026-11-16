@@ -593,13 +593,16 @@ and the hook never writes the marker or any memory file.
 
 ## Execution Environment
 
-Repository validation uses uv `>=0.11.29,<1`, keeps Python 3.12 as its minimum
+Repository validation uses uv `>=0.11.29,<1`, keeps Python 3.13 as its minimum
 compatibility lane, continuously tests current stable Python 3.14, and pins
 GitHub Actions jobs to the reviewed Ubuntu LTS runner major. Compatible uv/Python patch
 releases and runner image revisions intentionally float within those bounds and
 must keep passing the canonical gate. See
 [`skills/github/references/execution-environment.md`](skills/github/references/execution-environment.md)
 for the complete dependency-introduction and update policy.
+
+Before updating a host that only has Python 3.12, run `uv python install 3.13`
+so hooks and services that disable interpreter downloads can start.
 
 The validation gate imports the Codex manual helper offline before starting
 parallel helper tests. This initializes Node's ESM loader and the helper's

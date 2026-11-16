@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run --quiet --no-python-downloads --script
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.13"
 # dependencies = []
 # ///
 """Opt-in Claude account moves; Context Panel remains the only account chooser."""

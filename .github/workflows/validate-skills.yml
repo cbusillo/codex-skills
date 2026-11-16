@@ -18,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.12", "3.14"]
+        python-version: ["3.13", "3.14"]
     env:
       # Pull-request time budget for the gate; exceeding it adds a warning.
       TIME_BUDGET_SECONDS: "120"

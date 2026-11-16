@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.13"
 # dependencies = ["PyYAML==6.0.3"]
 # ///
 """Offline routing regressions through the real selection and creation paths."""

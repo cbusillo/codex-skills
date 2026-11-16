@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.13"
 # dependencies = ["PyYAML==6.0.3"]
 # ///
 """Tests for the read-only direction audit. Each case plants a real drift."""

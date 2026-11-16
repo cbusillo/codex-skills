@@ -1,7 +1,7 @@
 # Test quality warnings
 
 `scripts/check_test_quality.py` scans tracked test files for likely change
-detectors. Run it with Python 3.12 or newer; it has no third-party dependencies.
+detectors. Run it with Python 3.13 or newer; it has no third-party dependencies.
 It prints candidates for review and exits zero even when it finds them.
 An unreadable repository or input exits nonzero; a Python parse error becomes
 a visible coverage warning. Do not hide scanner failures with `continue-on-error`.
@@ -77,7 +77,7 @@ No blocking mode is enabled: tune false positives before introducing one.
    extra checkout is an untracked directory: run the scanner after other
    linters/clean-tree checks, or add `.test-quality-catalog/` to
    `.git/info/exclude` and exclude it from any recursive consumer linter.
-2. Install Python 3.12 or newer using the consumer's existing setup. Invoke the
+2. Install Python 3.13 or newer using the consumer's existing setup. Invoke the
    scanner with the consumer root as `--repo`; the script's location does not
    select the repository. If using uv, use `uv run --no-project --no-config` so
    the consumer's dependency setup cannot affect this dependency-free script.

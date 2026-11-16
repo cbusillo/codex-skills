@@ -20,4 +20,4 @@ runs:
         while IFS= read -r path; do
           [[ -z "$path" ]] || paths+=("$path")
         done <<< "$SHIP_PATHS"
-        uv run --no-project --python 3.12 "$GITHUB_ACTION_PATH/../../../skills/github/scripts/check_client_placeholders.py" --repo-root "$REPOSITORY_ROOT" "${paths[@]}"
+        uv run --no-project "$GITHUB_ACTION_PATH/../../../skills/github/scripts/check_client_placeholders.py" --repo-root "$REPOSITORY_ROOT" "${paths[@]}"

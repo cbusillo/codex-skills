@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.13"
 # dependencies = ["zstandard==0.25.0"]
 # ///
 """Report transcript activity and context for the ledger's explicit sessions."""

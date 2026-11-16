@@ -241,7 +241,7 @@ The repository therefore uses `scripts/update_pep723_dependencies.py` for this
 surface. Its offline check parses each header as TOML, rejects unsupported
 direct requirement forms, and verifies exact consistent pins without network
 access. Update mode asks `uv pip compile --no-deps` to resolve the highest
-stable release compatible with Python 3.12 from PyPI, independently confirms
+stable release compatible with the minimum in `.python-version` from PyPI, independently confirms
 that the selected release has a non-yanked PyPI file, then rewrites only the
 canonical top-level `dependencies` assignment in deterministic package-name
 order. Resolver subprocesses receive an allowlisted environment so ambient uv
