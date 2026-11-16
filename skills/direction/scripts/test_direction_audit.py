@@ -4316,14 +4316,20 @@ def test_implementing_a_decision_is_not_waiting_for_its_answer() -> None:
 
 def test_date_wait_is_not_impossible_because_of_old_trial_comment() -> None:
     module = load()
+    class Clock(dt.datetime):
+        @classmethod
+        def now(cls, tz: dt.tzinfo | None = None) -> Self:
+            return cls(2026, 11, 14, tzinfo=dt.UTC).astimezone(tz)
+
     wait = drift_wait("The November 13 three-seat trial judgment date", "November 13 is reached",
                       event={"version": 1, "kind": "date", "at": "2026-11-13", "evidence": "Q71 date"})
     old = drift_comment(1, 7, "The three-seat trial judgment could never happen that way.")
     row = {**issue(7, "Trial"), "state": "open", "structured_wait": wait}
     assert drift_report(module, row, {"repos/owner/catalog/issues/7/comments": [old]})["items"] == []
     row["structured_wait"] = {**wait, "waits": [{**wait["waits"][0], "waiting_for": "Date after owner/catalog#30 lands"}]}
-    report = drift_report(module, row, {"repos/owner/catalog/issues/7/comments": [old],
-                                     "repos/owner/catalog/issues/30": {"state": "closed", "state_reason": "not_planned"}})
+    with patch.object(dt, "datetime", Clock):
+        report = drift_report(module, row, {"repos/owner/catalog/issues/7/comments": [old],
+                                         "repos/owner/catalog/issues/30": {"state": "closed", "state_reason": "not_planned"}})
     assert report["items"][0]["evidence"][0]["kind"] == "impossible_ends_when"
 
 

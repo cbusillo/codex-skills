@@ -172,8 +172,8 @@ def resolve_events(record: dict[str, Any], *, now: Any, one: Any, listing: Any, 
             "replaces": record_digest(record)}
 
 
-def project_dates(record: dict[str, Any]) -> dict[str, Any]:
-    return resolve_events(record, now=dt.datetime.now(dt.UTC), one=None, listing=None, kinds={"date"})
+def project_dates(record: dict[str, Any], *, now: dt.datetime | None = None) -> dict[str, Any]:
+    return resolve_events(record, now=now or dt.datetime.now(dt.UTC), one=None, listing=None, kinds={"date"})
 
 
 def live_lines(text: str, *, prefix: str = PREFIX, skip_html: bool = True) -> list[tuple[int, str]]:

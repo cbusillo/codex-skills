@@ -825,13 +825,14 @@ def enrich_waiting_inbound_blockers(
     return incomplete
 
 
-def current_audit_wait(issue: dict[str, Any], repo: str, *, fetch: Callable[[list[str]], Any]) -> dict[str, Any] | None:
+def current_audit_wait(issue: dict[str, Any], repo: str, *, fetch: Callable[[list[str]], Any],
+                       now: dt.datetime | None = None) -> dict[str, Any] | None:
     supplied: dict[str, Any] | None = issue.get("structured_wait")
     if "structured_wait" in issue:
         if supplied is None:
             return None
         github_plan_wait.validate(supplied)
-        return github_plan_wait.project_dates(supplied)
+        return github_plan_wait.project_dates(supplied, now=now)
 
     def comments(_limit: int | None) -> tuple[list[dict[str, Any]], bool]:
         rows, cut = fetch_paginated(f"repos/{repo}/issues/{issue['number']}/comments", fetch=fetch, max_pages=2)
@@ -841,7 +842,7 @@ def current_audit_wait(issue: dict[str, Any], repo: str, *, fetch: Callable[[lis
     if not complete:
         raise AuditError("Issue wait discussion is incomplete")
     record, recorded = github_plan_wait.resolve(issue, discussion, github_plan_wait.authors(repo))
-    return github_plan_wait.project_dates(record) if recorded else None
+    return github_plan_wait.project_dates(record, now=now) if recorded else None
 
 
 def parked_issue(issue: dict[str, Any], repo: str) -> bool:
@@ -1311,7 +1312,7 @@ def stale_wait_report(
         if str(issue.get("state", "open")).casefold() == "open" and ("structured_wait" in issue or read_waits):
             try:
                 recorded = "structured_wait" in issue or issue.get("comments") or "github-plan:wait" in str(issue.get("body") or "")
-                current = current_audit_wait(issue, repo, fetch=lambda args: read(args[1])) if recorded else None
+                current = current_audit_wait(issue, repo, fetch=lambda args: read(args[1]), now=now) if recorded else None
                 drift, drift_errors, drift_asks = record_drift(issue, repo, status, current, read=read, now=now)
                 errors.extend(error for error in drift_errors if error not in errors)
                 asks.extend(drift_asks)
@@ -1335,7 +1336,7 @@ def stale_wait_report(
                 and not agent_delivery_wait(normalized_status, repo, number)):
             continue
         try:
-            wait = current_audit_wait(issue, repo, fetch=lambda args: read(args[1]))
+            wait = current_audit_wait(issue, repo, fetch=lambda args: read(args[1]), now=now)
         except (AuditError, ValueError) as error:
             errors.append({"number": number, "source": "structured_wait", "reason": str(error)})
             continue
