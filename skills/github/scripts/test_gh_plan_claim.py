@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.13"
-# dependencies = ["PyYAML==6.0.3", "aiohttp==3.14.5", "tree-sitter==0.26.0", "tree-sitter-bash==0.25.1", "tree-sitter-javascript==0.25.0"]
+# dependencies = ["PyYAML==6.0.3", "aiohttp==3.14.5", "tree-sitter==0.26.1", "tree-sitter-bash==0.25.1", "tree-sitter-javascript==0.25.0"]
 # ///
 """Behavioral tests for claim ownership, races, and partial recovery."""
 
