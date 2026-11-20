@@ -1573,8 +1573,8 @@ class AccountChoiceTests(unittest.TestCase):
 
     def test_registered_launch_returns_handles_and_actionable_view_problem(self) -> None:
         choice = account_choice.choose("anthropic", accounts_config(), self.snapshot(), None, now=NOW)
-        receipt = {"session_id": "terminal", "native_session_id": "worker", "ledger_recorded": True,
-                   "account": account_choice.public(choice), "view": {"status": "unavailable", "reason": "fixture failure"}}
+        receipt: dict[str, Any] = {"session_id": "terminal", "native_session_id": "worker", "ledger_recorded": True,
+                                   "account": account_choice.public(choice), "view": {"status": "unavailable", "reason": "fixture failure"}}
         with contextlib.redirect_stdout(io.StringIO()) as out:
             iterm_tab.print_terminal_result(argparse.Namespace(command="new", details=False), receipt)
         result = json.loads(out.getvalue())

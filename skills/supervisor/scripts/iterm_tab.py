@@ -2747,7 +2747,8 @@ def print_terminal_result(args: argparse.Namespace, result: dict | list) -> None
         view = row.get("view") or {}
         if view.get("status") in {"unsupported", "unavailable"}:
             item["view"] = view
-        if account := row.get("account"):
+        account = row.get("account")
+        if isinstance(account, dict):
             item["account"] = account_choice.account_summary(account, shared=index == 0)
             if not registered:
                 item["account"].update({key: account[key] for key in ("account_id", "account_binding", "source", "resume_session_id",
