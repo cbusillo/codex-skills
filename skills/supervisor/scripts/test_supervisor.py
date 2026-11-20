@@ -1571,6 +1571,15 @@ class AccountChoiceTests(unittest.TestCase):
             choice["reset_prompts"] = ["Apply fixture reset now"]
             self.assertEqual(preview()["notify_director"], choice["reset_prompts"])
 
+    def test_named_preview_can_read_an_account_when_the_ranking_is_unusable(self) -> None:
+        snapshot = self.snapshot()
+        snapshot["ranking"] *= 2
+        choice = account_choice.choose("anthropic", accounts_config(), snapshot, None, now=NOW, name="spare")
+        self.assertEqual(choice["name"], "spare")
+        self.assertIsNone(choice["ranking_entry"])
+        with self.assertRaises(ValueError):
+            account_choice.choose("anthropic", accounts_config(), snapshot, None, now=NOW)
+
     def test_registered_launch_returns_handles_and_actionable_view_problem(self) -> None:
         choice = account_choice.choose("anthropic", accounts_config(), self.snapshot(), None, now=NOW)
         receipt: dict[str, Any] = {"session_id": "terminal", "native_session_id": "worker", "ledger_recorded": True,

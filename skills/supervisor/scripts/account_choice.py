@@ -219,8 +219,12 @@ def resolve_choice(provider: str, config: dict, snapshot: dict, account_id: obje
     if len(configured) != 1:
         raise ValueError(f"Context Panel {provider} choice matches no single configured account")
     row = matched[0]
-    ranking = provider_ranking(snapshot, provider)
-    entry = next((entry for entry in (ranking.get("entries") or [])
+    try:
+        ranking = provider_ranking(snapshot, provider)
+    except ValueError:
+        ranking = {}
+    entries = ranking.get("entries")
+    entry = next((entry for entry in (entries if isinstance(entries, list) else [])
                   if isinstance(entry, dict) and entry.get("accountID") == account_id), None)
     return {**decision(configured[0], source, reason, account_id=account_id,
                     remaining=row.get("remainingFraction"), unused_at_pace=provider_unused_at_pace(snapshot, provider),
