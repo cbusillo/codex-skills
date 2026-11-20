@@ -110,8 +110,8 @@ only worker-confirmed obsolete jobs, then require a fresh verdict. Unobserved
 schedule-error, expiry, restart and durable receipt shapes remain UNKNOWN;
 transcript age/time never supplies them.
 
-For tmux entries, replace `iterm_session_id` with `tmux_session_id` from launch
-output and record `backend: "tmux"`, `tmux_socket`, `window_id`, `tab_id`, `tty`
+For tmux entries, replace `iterm_session_id` with `tmux_session_id` from the full launch receipt
+and record `backend: "tmux"`, `tmux_socket`, `window_id`, `tab_id`, `tty`
 and the verified harness `pid`. Keep the native `session_id` and transcript
 fields unchanged. The tmux terminal id contains a launch nonce: never replace
 it with a pane number or a title. A mixed ledger may hold both backends; use
@@ -1427,8 +1427,8 @@ first native thread ID and transcript into that launch's private receipt,
 without changing the closed-session log or other launches. The launcher
 matches account, process generation and terminal, checks the transcript identity
 header, and atomically appends an owned row. Streaming transcript content does
-not delay registration. The receipt includes `native_session_id`, `transcript`,
-`native_receipt` and `ledger_recorded`; terminal `session_id` keeps its existing meaning.
+not delay registration. The compact result carries the terminal and native session IDs.
+Read the registered ledger row for the transcript and native receipt paths.
 First-screen verification and all shutdown checks still apply.
 A registration failure after submission names the terminal and retains its
 receipt. Inspect the terminal and save the reported `launch` object to a private
@@ -1443,8 +1443,7 @@ For fresh Claude workers, use `--account-provider anthropic --ledger
 /private/launch-ledger.json` with a direct `claude` run file that carries no
 `--session-id`, resume or prompt. The launcher assigns the native session ID,
 waits for that exact transcript under the selected account, matches the Claude
-process on the terminal, and appends the owned row; the receipt reports
-`native_session_id`, `transcript` and `ledger_recorded`. A failure keeps the
+process on the terminal, and appends the owned row with its transcript path. A failure keeps the
 launch object, including `file_native`, for the same `register --receipt-file`
 recovery.
 For fresh Google workers, use `--account-provider google --ledger` with the
@@ -1573,7 +1572,7 @@ broadcast input, uses bracketed paste for multiline messages, and sends text
 and Return separately. Verify input and prompt
 before `--verified-target`, then read back once; do not replay an uncertain send.
 
-Codex launch output includes `codex_home`, `pid`, `tty`, `launch_pid`,
+The full Codex launch receipt includes `codex_home`, `pid`, `tty`, `launch_pid`,
 `launch_started_at` and `launch_generation` when the managed proxy can be
 identified on the exact launch TTY. Launch and reattachment share that proxy's
 process and generation identity, including before the native client starts.
@@ -1994,21 +1993,19 @@ retrying, never replay the whole batch. Only this launcher's own expired receipt
 files are pruned. Use `account_choice.py --provider PROVIDER [--count N]` for
 read-only previews; normal `iterm_tab.py new` owns actual receipts.
 
-Read the returned account, source and reason before recording the session.
-Successful launch output reports environment variable names, without their
-private path values. A daemon refusal includes the selected home in its recovery
-diagnostic; keep that diagnostic out of public comments.
+Routine previews return the provider and account. Registered launches return terminal and native
+session handles. Relay `notify_director` reset prompts and surface configuration or sign-in problems.
+Unregistered launches and partial failures retain the receipt needed for recovery. For the full
+launch record use `iterm_tab.py new --details`. Keep recovery diagnostics private.
 
-`remaining_fraction` is Context Panel's headline for whichever window limits
-the account now, named by `limiting_window_label`; it is not a weekly figure.
-When reporting capacity, read `window_capacity.five_hour` and
-`window_capacity.weekly`: each lists its windows' remaining fraction, reset and
-observed burn. Read the configured snapshot command for Use next's published
-provider and per-account targets; do not derive targets from observed burn.
-The [Context Panel contract](https://github.com/cbusillo/context-panel/blob/main/docs/provider-usage-access.md#use-next-ranking-and-launch-receipts)
-owns their units and unknown states. `recent_burn_units_per_hour` reports the
-last two hours' pace; `unused_at_pace` passes through the provider forecast.
-Missing measurements remain unknown.
+To place more work, add `--pace` to the chooser preview. It reports Context Panel's provider
+forecast and provider and selected-account targets in weekly percentage points per hour.
+An unknown target is null. Credit workload, when measured separately, is a multiplier.
+For a capacity report or to explain a choice, use `--details`. Read the selected ranking entry,
+its reserve and deadlines, and the five-hour and weekly windows' remaining fraction, reset and
+observed burn. The headline fraction belongs to the limiting window. The
+[Context Panel contract](https://github.com/cbusillo/context-panel/blob/main/docs/provider-usage-access.md#use-next-ranking-and-launch-receipts)
+owns the calculations.
 
 For a long-running Supervisor or lead, check wakes and cache misses before
 lowering its [launch tier](../SKILL.md#accounts-pace-and-launch-tier): on
@@ -2022,7 +2019,7 @@ Morning numbers and account reads include each provider account's
 `coverage`. These and `known_expiries` pass through Context Panel's summary
 unchanged; a missing summary is `null` (unknown), not zero resets. Report a
 missing earliest expiry as unknown, even when resets are available. Use the
-existing named-account preview to read accounts outside the published launch order.
+named-account preview with `--details` to read accounts outside the published launch order.
 If a preview refuses because an account needs sign-in, report its expiry as unknown
 until sign-in is restored.
 

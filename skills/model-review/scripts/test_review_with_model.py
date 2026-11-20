@@ -317,7 +317,7 @@ class ReviewWithModelTests(unittest.TestCase):
         snapshot["answers"]["useNext"] = [r for r in snapshot["answers"]["useNext"] if r["provider"] != "anthropic"]
         snapshot["ranking"] = [{"provider": "anthropic", "nextCapacityAt": "2099-01-01T00:00:00Z"}]
         self.snapshot_file.write_text(json.dumps(snapshot))
-        code, result = self.review_by_policy("google", FAKE_ANSWER=completed("none"))
+        code, result = self.review_by_policy("google", "--details", FAKE_ANSWER=completed("none"))
         self.assertEqual((code, result["provider"]), (0, "openai"))
         self.assertEqual(result["account"]["account_id"], next(r["accountID"] for r in snapshot["answers"]["useNext"]
                                                             if r["provider"] == "openai"))
@@ -377,6 +377,7 @@ class ReviewWithModelTests(unittest.TestCase):
         child = self.child_env()
         self.assertEqual(child["ANTHROPIC_API_KEY"], token)
         self.assertIsNone(result["launch_receipt"])
+        self.assertNotIn("window_capacity", result["account"])
         self.assertFalse((self.storage / "Launch Receipts").exists())
 
     def test_malformed_decision_never_launches(self) -> None:
@@ -454,7 +455,7 @@ class ReviewWithModelTests(unittest.TestCase):
         for provider, variable in review_with_model.account_choice.ACCOUNT_VARIABLES.items():
             with self.subTest(provider=provider):
                 code, result = self.review(
-                    provider, CODEX_HOME=str(self.home / "caller-openai"),
+                    provider, "--details", CODEX_HOME=str(self.home / "caller-openai"),
                     CLAUDE_CONFIG_DIR=str(self.home / "caller-anthropic"),
                     OPENAI_API_KEY="fake-openai-key", CODEX_API_KEY="fake-codex-key",
                     ANTHROPIC_API_KEY="fake-anthropic-key", ANTHROPIC_AUTH_TOKEN="fake-auth",
@@ -497,7 +498,7 @@ class ReviewWithModelTests(unittest.TestCase):
             snapshot["accounts"] = [{"id": account_id, "provider": "anthropic", "label": label}]
             snapshot["answers"]["useNext"] = [{"provider": "anthropic", "accountID": account_id}]
             self.snapshot_file.write_text(json.dumps(snapshot))
-            code, result = self.review("anthropic", FAKE_CLAUDE_JSON=json.dumps({"result": completed("none")}))
+            code, result = self.review("anthropic", "--details", FAKE_CLAUDE_JSON=json.dumps({"result": completed("none")}))
             self.assertEqual((code, result["account"]["account_id"]), (0, account_id))
             self.assertEqual(self.child_env()["CLAUDE_CONFIG_DIR"], home)
         self.assertEqual(len(list((self.storage / "Launch Receipts").glob("*.json"))), 2)
@@ -559,7 +560,7 @@ class ReviewWithModelTests(unittest.TestCase):
                 self.assertIn(f"exit {exit_code}: {reason}", result["error"])
                 self.assertNotIn("launch_receipt", result)
                 self.assertFalse(self.child_env_file.exists())
-        code, result = self.review("anthropic", FAKE_RECORD_FILE=str(received),
+        code, result = self.review("anthropic", "--details", FAKE_RECORD_FILE=str(received),
                                    FAKE_CLAUDE_JSON=json.dumps({"result": completed("none")}))
         self.assertEqual((code, result["ok"]), (0, True))
         self.assertTrue(self.child_env_file.exists())

@@ -101,7 +101,8 @@ budget, and put both results in the PR's review note.
    overrides so they cannot bypass that home; the unconfigured CLI-login path
    preserves the CLI's existing authentication environment. Neither reads or
    changes credentials. JSON reports the selected account and, only for the
-   configured Context Panel integration, its count-only launch receipt. Receipt
+   configured Context Panel integration, its count-only launch receipt. Add `--details` for
+   the account capacity report. Receipt
    failures stop a configured launch. See [account configuration](../supervisor/references/helpers.md#choosing-the-account)
    for existing-account mapping, storage recovery and Google's login binding.
 

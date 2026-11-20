@@ -729,7 +729,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         else:
             result.pop("response")
             result["response_file"] = str(destination)
-    print(json.dumps(result, indent=2), flush=True)
+    if not args.details and result.get("account"):
+        result["account"] = account_choice.account_summary(result["account"])
+    print(json.dumps(result, indent=2 if args.details else None), flush=True)
     if planted is not None:
         consume_fault(planted)
     return 0 if result["ok"] else 2 if result.get("installed") is False else 1
@@ -882,6 +884,7 @@ def main() -> int:
     run.add_argument("--input", action="append",
                      help="A file outside the repository the reviewer needs, such as a saved issue; repeatable.")
     run.add_argument("--model", help="Model to request; model_source says whether the CLI reported it.")
+    run.add_argument("--details", action="store_true", help="include the full account and capacity report")
     run.add_argument("--out", help="Write the review here instead of including it in the JSON.")
     run.add_argument("--timeout", type=int, help="Seconds; default: standing provider setting, otherwise 900.")
     run.set_defaults(func=cmd_run)
