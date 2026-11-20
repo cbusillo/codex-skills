@@ -219,9 +219,17 @@ def resolve_choice(provider: str, config: dict, snapshot: dict, account_id: obje
     if len(configured) != 1:
         raise ValueError(f"Context Panel {provider} choice matches no single configured account")
     row = matched[0]
-    return decision(configured[0], source, reason, account_id=account_id,
+    ranking = provider_ranking(snapshot, provider)
+    entry = next((entry for entry in (ranking.get("entries") or [])
+                  if isinstance(entry, dict) and entry.get("accountID") == account_id), None)
+    return {**decision(configured[0], source, reason, account_id=account_id,
                     remaining=row.get("remainingFraction"), unused_at_pace=provider_unused_at_pace(snapshot, provider),
-                    **window_report(row), **snapshot_notices(snapshot))
+                    **window_report(row), **snapshot_notices(snapshot)),
+            "ranking_entry": {key: entry.get(key) for key in ("reason", "notes", "deadline", "reserve", "targetPointsPerHour",
+                                                              "depleteBy", "bankedResetExpiresAt", "spendsCreditsBeforeReset",
+                                                              "creditExpiresAt", "creditWorkloadMultiplier")} if entry else None,
+            "provider_weekly_points_per_hour": ranking.get("targetPointsPerHour"),
+            "usage_credits": row.get("usageCredits"), "observed_at": row.get("observedAt"), "state": row.get("state")}
 
 
 def provider_unused_at_pace(snapshot, provider):
@@ -274,6 +282,8 @@ def period_window(window):
     return {"label": window.get("label") if isinstance(window.get("label"), str) else None,
             "remaining_fraction": number_or_none(window.get("remainingFraction")),
             "natural_reset_at": reset if isinstance(reset, str) else None,
+            "observed_at": window.get("observedAt"), "is_current": window.get("isCurrent"),
+            "assumption": window.get("presentationAssumption"),
             "burn_units_per_hour": burn_rate(window, "burn"),
             "recent_burn_units_per_hour": burn_rate(window, "recentBurn"),
             "burn_sample_count": samples if isinstance(samples, int) and not isinstance(samples, bool) else None}
@@ -375,8 +385,11 @@ def _choose_batch(provider, config, snapshot, unavailable_reason, count, now, na
             raise ValueError("Context Panel has too few usable Codex accounts for this batch; "
                              "an account needs sign-in. Use a smaller batch or sign in again")
     if not ids:
-        raise ValueError(f"Context Panel has no {provider} choice; next capacity at "
-                         f"{ranking.get('nextCapacityAt') or 'unknown'}")
+        reasons = dict.fromkeys(row["reason"] for row in [*(ranking.get("excluded") or []), *(ranking.get("entries") or [])]
+                                if isinstance(row, dict) and row.get("canLaunch") is not True and isinstance(row.get("reason"), str))
+        wait = "; ".join(reasons)
+        raise ValueError(f"Context Panel has no {provider} choice; next capacity at {ranking.get('nextCapacityAt') or 'unknown'}"
+                         + (f". {wait}" if wait else ""))
     return [resolve_choice(provider, config, snapshot, i, source, reason) for i in ids]
 
 
@@ -648,16 +661,50 @@ def public(choice):
     return result
 
 
+def account_summary(account: dict, *, pace: bool = False) -> dict:
+    result = {"provider": account["provider"], "name": account["name"]}
+    if account.get("source") not in {"context-panel", "context-panel-batch"}:
+        result["reason"] = account.get("reason")
+    entry = account.get("ranking_entry") or {}
+    for key in ("configuration_errors", "reset_prompts"):
+        if account.get(key):
+            result[key] = account[key]
+    windows = (window for group in (account.get("window_capacity") or {}).values() for window in group or ())
+    limited_reading = account.get("state") in {"stale", "unavailable"} or any(
+        window.get("assumption") or window.get("remaining_fraction") == 0 for window in windows)
+    if (pace or limited_reading) and entry.get("notes"):
+        result["notes"] = entry["notes"]
+    warnings = (account.get("tools") or {}).get("warnings")
+    if warnings:
+        result["warnings"] = warnings
+    if pace:
+        result.update(account_weekly_points_per_hour=entry.get("targetPointsPerHour"),
+                      provider_weekly_points_per_hour=account.get("provider_weekly_points_per_hour"),
+                      forecast=(account.get("unused_at_pace") or {}).get("line"))
+        if entry.get("creditWorkloadMultiplier") is not None:
+            result["credit_workload_multiplier"] = entry["creditWorkloadMultiplier"]
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description="Choose the CLI existing login or a configured Context Panel account.")
     parser.add_argument("--provider", choices=PROVIDERS, required=True)
     parser.add_argument("--config", type=Path, help="private config; default skill-data/supervisor.toml")
     parser.add_argument("--account", help="use this configured account by name")
     parser.add_argument("--count", type=int, default=1, help="preview a batch from the published launch order")
+    view = parser.add_mutually_exclusive_group()
+    view.add_argument("--pace", action="store_true", help="include published workload targets and the provider forecast")
+    view.add_argument("--details", action="store_true", help="show full capacity, ranking and account diagnostics")
     args = parser.parse_args()
     try:
         choices = select_batch(args.provider, args.config, args.account, args.count)
-        print(json.dumps(public(choices[0]) if args.count == 1 else [public(c) for c in choices], indent=2))
+        rows = [public(choice) for choice in choices]
+        if not args.details:
+            rows = [account_summary(row, pace=args.pace) for row in rows]
+            for row in rows[1:]:
+                for key in ("configuration_errors", "reset_prompts", "provider_weekly_points_per_hour", "forecast"):
+                    row.pop(key, None)
+        print(json.dumps(rows[0] if args.count == 1 else rows, indent=2 if args.details else None))
     except ValueError as error:
         parser.exit(1, f"refused: {error}\n")
 

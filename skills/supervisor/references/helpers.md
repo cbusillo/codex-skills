@@ -1994,21 +1994,19 @@ retrying, never replay the whole batch. Only this launcher's own expired receipt
 files are pruned. Use `account_choice.py --provider PROVIDER [--count N]` for
 read-only previews; normal `iterm_tab.py new` owns actual receipts.
 
-Read the returned account, source and reason before recording the session.
-Successful launch output reports environment variable names, without their
-private path values. A daemon refusal includes the selected home in its recovery
-diagnostic; keep that diagnostic out of public comments.
+Routine previews return the provider and account. Registered launches return terminal and native
+session handles. Act on any configuration errors, reset prompts or sign-in warnings in the result.
+Unregistered launches and partial failures retain the receipt needed for recovery. For the full
+launch record use `iterm_tab.py new --details`. Keep recovery diagnostics private.
 
-`remaining_fraction` is Context Panel's headline for whichever window limits
-the account now, named by `limiting_window_label`; it is not a weekly figure.
-When reporting capacity, read `window_capacity.five_hour` and
-`window_capacity.weekly`: each lists its windows' remaining fraction, reset and
-observed burn. Read the configured snapshot command for Use next's published
-provider and per-account targets; do not derive targets from observed burn.
-The [Context Panel contract](https://github.com/cbusillo/context-panel/blob/main/docs/provider-usage-access.md#use-next-ranking-and-launch-receipts)
-owns their units and unknown states. `recent_burn_units_per_hour` reports the
-last two hours' pace; `unused_at_pace` passes through the provider forecast.
-Missing measurements remain unknown.
+To place more work, add `--pace` to the chooser preview. It reports Context Panel's provider
+forecast and provider and selected-account targets in weekly percentage points per hour.
+An unknown target is null. Credit workload, when measured separately, is a multiplier.
+For a capacity report or to explain a choice, use `--details`. Read the selected ranking entry,
+its reserve and deadlines, and the five-hour and weekly windows' remaining fraction, reset and
+observed burn. The headline fraction belongs to the limiting window. The
+[Context Panel contract](https://github.com/cbusillo/context-panel/blob/main/docs/provider-usage-access.md#use-next-ranking-and-launch-receipts)
+owns the calculations.
 
 For a long-running Supervisor or lead, check wakes and cache misses before
 lowering its [launch tier](../SKILL.md#accounts-pace-and-launch-tier): on
@@ -2022,7 +2020,7 @@ Morning numbers and account reads include each provider account's
 `coverage`. These and `known_expiries` pass through Context Panel's summary
 unchanged; a missing summary is `null` (unknown), not zero resets. Report a
 missing earliest expiry as unknown, even when resets are available. Use the
-existing named-account preview to read accounts outside the published launch order.
+named-account preview with `--details` to read accounts outside the published launch order.
 If a preview refuses because an account needs sign-in, report its expiry as unknown
 until sign-in is restored.
 

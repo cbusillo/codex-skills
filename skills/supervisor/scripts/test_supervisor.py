@@ -1543,6 +1543,27 @@ class AccountChoiceTests(unittest.TestCase):
              "recentBurn": {"unitsPerHour": 0.0, "observedDurationHours": 2, "sampleCount": 24}}])
         return snapshot
 
+    def test_preview_selects_small_result_or_published_pace_and_keeps_actionable_notices(self) -> None:
+        snapshot = self.snapshot()
+        row = snapshot["accounts"][1]
+        rank = snapshot["ranking"][0]
+        rank.update(targetPointsPerHour=2.5, entries=[
+            {"accountID": snapshot["accounts"][0]["id"], "targetPointsPerHour": 2.5},
+            {"accountID": row["id"], "reason": "Expiring credits", "notes": ["Extra work needed"], "targetPointsPerHour": 0}])
+        snapshot["providers"] = [{"provider": row["provider"], "unusedAtPace": {"line": "Add work"}}]
+        choice = account_choice.choose(row["provider"], accounts_config(), snapshot, None, now=NOW)
+        with patch.object(account_choice, "select_batch", return_value=[choice]):
+            def preview(*options: str) -> dict:
+                with patch.object(sys, "argv", ["chooser", "--provider", row["provider"], *options]), contextlib.redirect_stdout(io.StringIO()) as out:
+                    account_choice.main()
+                return json.loads(out.getvalue())
+            self.assertEqual(preview(), {"name": choice["name"], "provider": row["provider"]})
+            self.assertEqual(preview("--pace")["account_weekly_points_per_hour"], rank["entries"][1]["targetPointsPerHour"])
+            self.assertEqual(preview("--pace")["provider_weekly_points_per_hour"], rank["targetPointsPerHour"])
+            self.assertEqual(preview("--details")["ranking_entry"]["reason"], rank["entries"][1]["reason"])
+            choice["reset_prompts"] = ["Apply fixture reset now"]
+            self.assertEqual(preview()["reset_prompts"], choice["reset_prompts"])
+
     def test_report_passes_banked_reset_summary_through_unchanged(self) -> None:
         snapshot = self.snapshot()
         summary = {"availableCount": 3, "earliestKnownExpiry": "2026-11-04T07:00:00Z",

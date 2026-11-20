@@ -2735,6 +2735,28 @@ async def open_tmux_view(connection, terminal, container, *, window_id=None, win
         return result
 
 
+def print_terminal_result(args: argparse.Namespace, result: dict | list) -> None:
+    if args.command != "new" or args.details:
+        print(json.dumps(result, indent=2))
+        return
+    rows = result if isinstance(result, list) else [result]
+    output = []
+    for row in rows:
+        if row.get("ledger_recorded"):
+            item = {key: row[key] for key in ("session_id", "native_session_id", "ledger_recorded") if key in row}
+            if row.get("account"):
+                item["account"] = account_choice.account_summary(row["account"])
+        else:
+            item = dict(row)
+            if account := row.get("account"):
+                item["account"] = {key: value for key, value in account.items()
+                                   if key not in ("window_capacity", "unused_at_pace", "banked_resets", "usage_credits",
+                                                  "ranking_entry", "provider_weekly_points_per_hour")}
+                item["account"].update(account_choice.account_summary(account))
+        output.append(item)
+    print(json.dumps(output if isinstance(result, list) else output[0]))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--backend", choices=("iterm", "tmux"), default="iterm")
@@ -2753,6 +2775,7 @@ def main():
     close.add_argument("--ledger", type=Path, required=True,
                        help="private Supervisor launch ledger; Director-owned entries refuse")
     new = commands.add_parser("new")
+    new.add_argument("--details", action="store_true", help="return the full launch receipt and account report")
     new.add_argument("--window-id", required=True)
     new.add_argument("--command-file", type=Path, action="append",
                      help="one agent invocation and settings, without its prompt; repeat for a batch")
@@ -2846,7 +2869,7 @@ def main():
         import tmux_terminal
 
         try:
-            print(json.dumps(asyncio.run(tmux_terminal.operate(args)), indent=2))
+            print_terminal_result(args, asyncio.run(tmux_terminal.operate(args)))
         except LaunchFailure as error:
             print(json.dumps(error.detail, indent=2))
             parser.exit(1, "launch failed; inspect the reported terminals before retrying\n")
@@ -2864,7 +2887,7 @@ def main():
         try:
             with input_preflight():
                 app = await iterm2.async_get_app(connection)
-            print(json.dumps(await operate(app, args), indent=2))
+            print_terminal_result(args, await operate(app, args))
         except LaunchFailure as error:
             print(json.dumps(error.detail, indent=2))
             parser.exit(1, "launch failed; inspect the reported tabs before retrying\n")
