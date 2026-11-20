@@ -2741,18 +2741,17 @@ def print_terminal_result(args: argparse.Namespace, result: dict | list) -> None
         return
     rows = result if isinstance(result, list) else [result]
     output = []
-    for row in rows:
-        if row.get("ledger_recorded"):
-            item = {key: row[key] for key in ("session_id", "native_session_id", "ledger_recorded") if key in row}
-            if row.get("account"):
-                item["account"] = account_choice.account_summary(row["account"])
-        else:
-            item = dict(row)
-            if account := row.get("account"):
-                item["account"] = {key: value for key, value in account.items()
-                                   if key not in ("window_capacity", "unused_at_pace", "banked_resets", "usage_credits",
-                                                  "ranking_entry", "provider_weekly_points_per_hour")}
-                item["account"].update(account_choice.account_summary(account))
+    for index, row in enumerate(rows):
+        registered = row.get("ledger_recorded")
+        item = {key: row[key] for key in ("session_id", "native_session_id", "ledger_recorded") if key in row} if registered else dict(row)
+        view = row.get("view") or {}
+        if view.get("status") in {"unsupported", "unavailable"}:
+            item["view"] = view
+        if account := row.get("account"):
+            item["account"] = account_choice.account_summary(account, shared=index == 0)
+            if not registered:
+                item["account"].update({key: account[key] for key in ("account_id", "account_binding", "source", "resume_session_id",
+                                                                      "env_keys", "tools") if key in account})
         output.append(item)
     print(json.dumps(output if isinstance(result, list) else output[0]))
 

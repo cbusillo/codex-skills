@@ -110,8 +110,8 @@ only worker-confirmed obsolete jobs, then require a fresh verdict. Unobserved
 schedule-error, expiry, restart and durable receipt shapes remain UNKNOWN;
 transcript age/time never supplies them.
 
-For tmux entries, replace `iterm_session_id` with `tmux_session_id` from launch
-output and record `backend: "tmux"`, `tmux_socket`, `window_id`, `tab_id`, `tty`
+For tmux entries, replace `iterm_session_id` with `tmux_session_id` from the full launch receipt
+and record `backend: "tmux"`, `tmux_socket`, `window_id`, `tab_id`, `tty`
 and the verified harness `pid`. Keep the native `session_id` and transcript
 fields unchanged. The tmux terminal id contains a launch nonce: never replace
 it with a pane number or a title. A mixed ledger may hold both backends; use
@@ -1427,8 +1427,8 @@ first native thread ID and transcript into that launch's private receipt,
 without changing the closed-session log or other launches. The launcher
 matches account, process generation and terminal, checks the transcript identity
 header, and atomically appends an owned row. Streaming transcript content does
-not delay registration. The receipt includes `native_session_id`, `transcript`,
-`native_receipt` and `ledger_recorded`; terminal `session_id` keeps its existing meaning.
+not delay registration. The compact result carries the terminal and native session IDs.
+Read the registered ledger row for the transcript and native receipt paths.
 First-screen verification and all shutdown checks still apply.
 A registration failure after submission names the terminal and retains its
 receipt. Inspect the terminal and save the reported `launch` object to a private
@@ -1443,8 +1443,7 @@ For fresh Claude workers, use `--account-provider anthropic --ledger
 /private/launch-ledger.json` with a direct `claude` run file that carries no
 `--session-id`, resume or prompt. The launcher assigns the native session ID,
 waits for that exact transcript under the selected account, matches the Claude
-process on the terminal, and appends the owned row; the receipt reports
-`native_session_id`, `transcript` and `ledger_recorded`. A failure keeps the
+process on the terminal, and appends the owned row with its transcript path. A failure keeps the
 launch object, including `file_native`, for the same `register --receipt-file`
 recovery.
 For fresh Google workers, use `--account-provider google --ledger` with the
@@ -1573,7 +1572,7 @@ broadcast input, uses bracketed paste for multiline messages, and sends text
 and Return separately. Verify input and prompt
 before `--verified-target`, then read back once; do not replay an uncertain send.
 
-Codex launch output includes `codex_home`, `pid`, `tty`, `launch_pid`,
+The full Codex launch receipt includes `codex_home`, `pid`, `tty`, `launch_pid`,
 `launch_started_at` and `launch_generation` when the managed proxy can be
 identified on the exact launch TTY. Launch and reattachment share that proxy's
 process and generation identity, including before the native client starts.
@@ -1995,7 +1994,7 @@ files are pruned. Use `account_choice.py --provider PROVIDER [--count N]` for
 read-only previews; normal `iterm_tab.py new` owns actual receipts.
 
 Routine previews return the provider and account. Registered launches return terminal and native
-session handles. Act on any configuration errors, reset prompts or sign-in warnings in the result.
+session handles. Relay `notify_director` reset prompts and surface configuration or sign-in problems.
 Unregistered launches and partial failures retain the receipt needed for recovery. For the full
 launch record use `iterm_tab.py new --details`. Keep recovery diagnostics private.
 

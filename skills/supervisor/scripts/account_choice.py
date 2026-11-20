@@ -385,8 +385,9 @@ def _choose_batch(provider, config, snapshot, unavailable_reason, count, now, na
             raise ValueError("Context Panel has too few usable Codex accounts for this batch; "
                              "an account needs sign-in. Use a smaller batch or sign in again")
     if not ids:
-        reasons = dict.fromkeys(row["reason"] for row in [*(ranking.get("excluded") or []), *(ranking.get("entries") or [])]
-                                if isinstance(row, dict) and row.get("canLaunch") is not True and isinstance(row.get("reason"), str))
+        blocked = [entry for entry in ranking.get("entries") or [] if isinstance(entry, dict) and entry.get("canLaunch") is False]
+        reasons = dict.fromkeys(row["reason"] for row in [*(ranking.get("excluded") or []), *blocked]
+                                if isinstance(row, dict) and isinstance(row.get("reason"), str))
         wait = "; ".join(reasons)
         raise ValueError(f"Context Panel has no {provider} choice; next capacity at {ranking.get('nextCapacityAt') or 'unknown'}"
                          + (f". {wait}" if wait else ""))
@@ -661,14 +662,17 @@ def public(choice):
     return result
 
 
-def account_summary(account: dict, *, pace: bool = False) -> dict:
+def account_summary(account: dict, *, pace: bool = False, shared: bool = True) -> dict:
     result = {"provider": account["provider"], "name": account["name"]}
     if account.get("source") not in {"context-panel", "context-panel-batch"}:
         result["reason"] = account.get("reason")
     entry = account.get("ranking_entry") or {}
-    for key in ("configuration_errors", "reset_prompts"):
-        if account.get(key):
-            result[key] = account[key]
+    if shared and account.get("configuration_errors"):
+        result["configuration_errors"] = account["configuration_errors"]
+    if shared and account.get("reset_prompts"):
+        result["notify_director"] = account["reset_prompts"]
+    if account.get("gui"):
+        result["gui"] = account["gui"]
     windows = (window for group in (account.get("window_capacity") or {}).values() for window in group or ())
     limited_reading = account.get("state") in {"stale", "unavailable"} or any(
         window.get("assumption") or window.get("remaining_fraction") == 0 for window in windows)
@@ -678,9 +682,10 @@ def account_summary(account: dict, *, pace: bool = False) -> dict:
     if warnings:
         result["warnings"] = warnings
     if pace:
-        result.update(account_weekly_points_per_hour=entry.get("targetPointsPerHour"),
-                      provider_weekly_points_per_hour=account.get("provider_weekly_points_per_hour"),
-                      forecast=(account.get("unused_at_pace") or {}).get("line"))
+        result["account_weekly_points_per_hour"] = entry.get("targetPointsPerHour")
+        if shared:
+            result["provider_weekly_points_per_hour"] = account.get("provider_weekly_points_per_hour")
+            result["forecast"] = (account.get("unused_at_pace") or {}).get("line")
         if entry.get("creditWorkloadMultiplier") is not None:
             result["credit_workload_multiplier"] = entry["creditWorkloadMultiplier"]
     return result
@@ -700,10 +705,7 @@ def main():
         choices = select_batch(args.provider, args.config, args.account, args.count)
         rows = [public(choice) for choice in choices]
         if not args.details:
-            rows = [account_summary(row, pace=args.pace) for row in rows]
-            for row in rows[1:]:
-                for key in ("configuration_errors", "reset_prompts", "provider_weekly_points_per_hour", "forecast"):
-                    row.pop(key, None)
+            rows = [account_summary(row, pace=args.pace, shared=index == 0) for index, row in enumerate(rows)]
         print(json.dumps(rows[0] if args.count == 1 else rows, indent=2 if args.details else None))
     except ValueError as error:
         parser.exit(1, f"refused: {error}\n")

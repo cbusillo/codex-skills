@@ -1490,8 +1490,15 @@ class AccountChoiceTests(unittest.TestCase):
         snapshot = self.snapshot(order=[])
         snapshot["answers"]["useNext"] = []
         snapshot["ranking"][0]["nextCapacityAt"] = "2026-10-04T03:00:00Z"
-        with self.assertRaisesRegex(ValueError, "next capacity at 2026-10-04T03:00:00Z"):
+        ranking = snapshot["ranking"][0]
+        ranking["excluded"] = [{"reason": "Fixture gate closed"}]
+        ranking["entries"] = [{"reason": "Fixture chosen before"}, {"reason": "Fixture receipts pending", "canLaunch": False}]
+        with self.assertRaises(ValueError) as refusal:
             account_choice.choose("anthropic", accounts_config(), snapshot, None, now=NOW)
+        self.assertIn(ranking["nextCapacityAt"], str(refusal.exception))
+        self.assertIn(ranking["excluded"][0]["reason"], str(refusal.exception))
+        self.assertIn(ranking["entries"][1]["reason"], str(refusal.exception))
+        self.assertNotIn(ranking["entries"][0]["reason"], str(refusal.exception))
         with self.assertRaisesRegex(ValueError, "snapshot unavailable.*exited 1"):
             account_choice.choose("anthropic", accounts_config(), None, "snapshot command exited 1")
 
@@ -1562,7 +1569,20 @@ class AccountChoiceTests(unittest.TestCase):
             self.assertEqual(preview("--pace")["provider_weekly_points_per_hour"], rank["targetPointsPerHour"])
             self.assertEqual(preview("--details")["ranking_entry"]["reason"], rank["entries"][1]["reason"])
             choice["reset_prompts"] = ["Apply fixture reset now"]
-            self.assertEqual(preview()["reset_prompts"], choice["reset_prompts"])
+            self.assertEqual(preview()["notify_director"], choice["reset_prompts"])
+
+    def test_registered_launch_returns_handles_and_actionable_view_problem(self) -> None:
+        choice = account_choice.choose("anthropic", accounts_config(), self.snapshot(), None, now=NOW)
+        receipt = {"session_id": "terminal", "native_session_id": "worker", "ledger_recorded": True,
+                   "account": account_choice.public(choice), "view": {"status": "unavailable", "reason": "fixture failure"}}
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            iterm_tab.print_terminal_result(argparse.Namespace(command="new", details=False), receipt)
+        result = json.loads(out.getvalue())
+        self.assertEqual(result["session_id"], receipt["session_id"])
+        self.assertEqual(result["native_session_id"], receipt["native_session_id"])
+        self.assertEqual(result["view"], receipt["view"])
+        self.assertNotIn("window_capacity", result["account"])
+        self.assertIn("window_capacity", receipt["account"])
 
     def test_report_passes_banked_reset_summary_through_unchanged(self) -> None:
         snapshot = self.snapshot()
