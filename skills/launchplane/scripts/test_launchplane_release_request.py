@@ -283,6 +283,17 @@ def test_plan_reports_current_review_prerequisites(fields: dict[str, Any], reaso
     assert_private_values_absent(payload)
 
 
+def test_standing_request_on_a_prelaunch_odoo_review_reaches_the_service() -> None:
+    body = review(required=False)
+    body["review"]["checklist"]["first_live_origin"] = "https://private-site.example"
+    code, payload, posts = invoke(
+        request_args(), reviews=[body], posts=[{**body, "release_request": saved_request()}], acceptance="director_standing"
+    )
+    assert code == 0 and len(posts) == 1
+    assert payload["status"] == "ok"
+    assert "private-site" not in json.dumps(payload)
+
+
 def test_same_production_and_candidate_is_not_a_release() -> None:
     body = review()
     body["review"]["checklist"]["candidate"] = body["review"]["checklist"]["production"]
