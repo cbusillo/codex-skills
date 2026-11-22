@@ -186,10 +186,8 @@ def _project_saved_request(h: Any, value: object, product: str) -> dict[str, Any
 
 
 def _review_prerequisite(status: dict[str, Any], checklist: dict[str, Any] | None, *, hotfix: bool) -> str:
-    # A prelaunch Odoo checklist needs no Client review, yet the Director's standing
-    # request may still release it; the service decides that case.
-    first_live = checklist is not None and bool(checklist.get("first_live_origin"))
-    if status.get("required") is not True and not first_live:
+    service_decides_prelaunch_odoo = checklist is not None and bool(checklist.get("first_live_origin"))
+    if status.get("required") is not True and not service_decides_prelaunch_odoo:
         return "release_review_not_required"
     if status.get("unavailable_reason") is not None or checklist is None:
         return "checklist_unavailable"
